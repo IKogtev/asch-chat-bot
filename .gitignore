@@ -1,0 +1,14 @@
+# Test output
+test_report_*.txt
+test_results_*.json
+
+# Logs
+*.log
+kb_service/
+kb_default/
+kb_data/
+logs/
+data/
+venv/
+
+.env
