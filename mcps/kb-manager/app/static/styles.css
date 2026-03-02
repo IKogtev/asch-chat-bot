@@ -799,3 +799,26 @@ select:focus {
 .file {
     margin-left: 10px;
 }
+
+.tree {
+    list-style: none;
+    padding-left: 20px;
+}
+
+.folder-toggle {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.folder-content {
+    display: none;
+    margin-left: 15px;
+}
+
+.folder-content.open {
+    display: block;
+}
+
+.file {
+    margin-left: 10px;
+}
