@@ -48,7 +48,6 @@ class DocumentLoader:
             files = [Path(filepath)]
         else:
             files = list(self.documents_dir.rglob("*"))
-        # for path in self.documents_dir.rglob("*"):
         for path in files:
             if not path.is_file():
                 self.logger.info(f"{path} оказался не файлом")
@@ -90,7 +89,6 @@ class DocumentLoader:
                         "section_path": section_path,
                         "user_id": user_id,
                         "version": 1,           
-                        # "relative_path": str(kb_id+"/"+path.name)
                         "content_hash": content_hash,
                         "relative_path": str(path.relative_to(self.documents_dir))
                     }
