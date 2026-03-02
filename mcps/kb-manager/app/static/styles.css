@@ -777,3 +777,25 @@ select:focus {
 .kb-delete-btn:hover {
     color: #c0392b;
 }
+
+.filesystem-tree ul {
+    list-style: none;
+    padding-left: 20px;
+}
+
+.folder-toggle {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.folder-content {
+    display: none;
+}
+
+.folder-content.open {
+    display: block;
+}
+
+.file {
+    margin-left: 10px;
+}
