@@ -1,0 +1,3 @@
+*__pycache__
+*.pyc
+kb-manager/app/utils/__pycache__/
