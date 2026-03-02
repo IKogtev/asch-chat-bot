@@ -1,0 +1,41 @@
+
+# ============================================================================
+# CORE DEPENDENCIES (обязательные)
+# ============================================================================
+
+# MCP Server
+starlette>=0.27.0
+uvicorn[standard]>=0.23.0
+websockets<14.0  # Явно указываем актуальную версию
+fastmcp>=0.2.0
+# Environment
+python-dotenv>=1.0.0
+
+# LlamaIndex Core (минимальный набор)
+llama-index-core>=0.10.0
+llama-index-readers-file>=0.1.0
+# ============================================================================
+# DOCUMENT PARSING (опционально, но рекомендуется)
+# ============================================================================
+
+# PDF support (выбери один из вариантов)
+pypdf>=3.0.0              # Легковесный, базовый функционал
+
+# DOCX support
+python-docx>=0.8.11
+
+# Markdown parsing
+markdown>=3.4.0
+
+# S3 support (для download_from_s3)
+boto3>=1.26.0
+botocore>=1.29.0
+
+# Utilities
+pydantic>=2.0.0
+# qdrant requirements
+qdrant-client>=1.7.0
+qdrant-client
+llama-index-vector-stores-qdrant
+pdfplumber
+python-docx

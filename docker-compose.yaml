@@ -80,6 +80,7 @@ services:
 volumes:
   pg_data:
   pgadmin_data:
+  
 
 networks:
   aszh-bot-network:
