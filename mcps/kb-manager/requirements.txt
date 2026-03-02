@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.1
+python-multipart==0.0.20
+
+qdrant-client>=1.7.0
+
+llama-index-core>=0.10.0
+pypdf==5.1.0
+docx2txt==0.8
+
+llama-index-vector-stores-qdrant
+python-dotenv
+openpyxl==3.1.5
+pandas==2.3.3
+pdfplumber
+python-docx
+watchdog
