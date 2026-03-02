@@ -152,9 +152,9 @@ async def main() -> None:
     if not tg_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
 
-    dsn = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_DSN") or "").strip()
+    dsn = (os.getenv("POSTGRES_DSN") or os.getenv("DATABASE_URL") or "").strip()
     if not dsn:
-        raise RuntimeError("DATABASE_URL (or POSTGRES_DSN) is missing in .env")
+        raise RuntimeError("POSTGRES_DSN or DATABASE_URL is missing in .env")
 
     adk_base = os.getenv("ADK_API_BASE", "http://127.0.0.1:8000").strip()
     # По твоему /list-apps app называется "agent"

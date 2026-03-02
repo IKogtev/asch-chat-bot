@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: aszh-bot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aszh-bot
+      POSTGRES_PASSWORD: aszh-bot
+      POSTGRES_DB: aszh-bot
+      TZ: Europe/Moscow
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aszh-bot -d aszh-bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - aszh-bot-network
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: aszh-bot-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: vitaly.kogtev@nstdata.ru
+      PGADMIN_DEFAULT_PASSWORD: vitaly.kogtev@nstdata.ru
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - aszh-bot-network
+
+  adk-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: aszh-adk-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL}
+      - LLM_API_MODEL=${LLM_API_MODEL}
+      - PORT=8000
+      - HOST=0.0.0.0
+    volumes:
+      - ./agent:/app/agent
+    networks:
+      - aszh-bot-network
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: aszh-bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      adk-agent:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ADK_API_BASE=http://adk-agent:8000
+      - ADK_APP_NAME=agent
+    networks:
+      - aszh-bot-network
+
+volumes:
+  pg_data:
+  pgadmin_data:
+
+networks:
+  aszh-bot-network:
+    driver: bridge
