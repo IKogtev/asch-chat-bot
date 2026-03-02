@@ -141,6 +141,8 @@ function showTab(tabName) {
         loadDocuments();
     } else if (tabName === 'search') {
         loadKnowledgeBasesForSearch();
+    } else if (tabName === 'tree_files'){
+        loadFilesystemTree();
     }
 }
 
@@ -1037,3 +1039,56 @@ async function switchCollectionAlias() {
         errorBox.classList.remove("hidden");
     }
 }
+
+async function loadFilesystemTree() {
+    const container = document.getElementById("filesystem-tree");
+
+    container.innerHTML = "⏳ Loading...";
+
+    try {
+        const response = await fetch("/api/filesystem/folders");
+        const tree = await response.json();
+
+        container.innerHTML = renderTree(tree);
+
+    } catch (err) {
+        container.innerHTML = "❌ Error loading tree";
+        console.error(err);
+    }
+}
+
+function renderTree(node) {
+    let html = "<ul class='tree'>";
+
+    for (const key in node) {
+
+        if (key === "files") {
+            node[key].forEach(file => {
+                html += `<li class="file">📄 ${escapeHtml(file)}</li>`;
+            });
+        }
+
+        else if (typeof node[key] === "object") {
+            html += `
+                <li class="folder">
+                    <span class="folder-toggle">📁 ${escapeHtml(key)}</span>
+                    <div class="folder-content">
+                        ${renderTree(node[key])}
+                    </div>
+                </li>
+            `;
+        }
+    }
+
+    html += "</ul>";
+    return html;
+}
+
+document.addEventListener("click", function (e) {
+
+    if (e.target.classList.contains("folder-toggle")) {
+        const content = e.target.nextElementSibling;
+        content.classList.toggle("open");
+    }
+
+});
