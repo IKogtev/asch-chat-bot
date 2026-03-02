@@ -2,9 +2,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements-bot.txt .
-RUN pip install --no-cache-dir -r requirements-bot.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем utils для логирования
+COPY utils/ ./utils/
 
 COPY bot/ ./bot/
 
-CMD ["python", "bot/bot_v2.py"]
+# Создаём директорию для логов
+RUN mkdir -p /app/logs
+
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "bot.bot_v2"]

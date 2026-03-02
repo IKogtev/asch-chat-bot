@@ -1,211 +1,410 @@
 import asyncio
 import os
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Optional
 
-import aiohttp
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from dotenv import load_dotenv
+import aiohttp
 
-Role = Literal["user", "model"]
+from utils import setup_logger
+
+# Настройка логгера
+logger = setup_logger('bot', 'bot.log')
 
 
 class PostgresChatStore:
+    """Хранилище истории диалогов в PostgreSQL"""
+    
     def __init__(self, dsn: str, max_turns: int = 30):
         self.dsn = dsn
         self.max_turns = max_turns
         self.pool: Optional[asyncpg.Pool] = None
-
+        logger.info(f"Инициализация PostgresChatStore (max_turns={max_turns})")
+    
     async def connect(self) -> None:
-        self.pool = await asyncpg.create_pool(dsn=self.dsn, min_size=1, max_size=10)
-
+        """Подключение к БД"""
+        try:
+            self.pool = await asyncpg.create_pool(self.dsn, min_size=2, max_size=10)
+            logger.info("Подключение к PostgreSQL установлено")
+        except Exception as e:
+            logger.error(f"Ошибка подключения к БД: {e}", exc_info=True)
+            raise
+    
+    async def ensure_schema(self) -> None:
+        """Создание таблицы если не существует"""
+        if not self.pool:
+            logger.error("Pool не инициализирован")
+            raise RuntimeError("Pool not initialized")
+        
+        query = """
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_id ON chat_history(user_id);
+        CREATE INDEX IF NOT EXISTS idx_created_at ON chat_history(created_at);
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(query)
+            logger.info("Схема БД проверена/создана")
+        except Exception as e:
+            logger.error(f"Ошибка создания схемы: {e}", exc_info=True)
+            raise
+    
+    async def append(self, user_id: int, role: str, content: str) -> None:
+        """Добавление сообщения в историю"""
+        if not self.pool:
+            logger.warning("Pool не инициализирован, сообщение не сохранено")
+            return
+        
+        query = """
+        INSERT INTO chat_history (user_id, role, content)
+        VALUES ($1, $2, $3)
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(query, user_id, role, content)
+            logger.debug(f"Сохранено сообщение: user={user_id}, role={role}, len={len(content)}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
+    
+    async def get_history(self, user_id: int) -> list[dict]:
+        """Получение истории диалога"""
+        if not self.pool:
+            logger.warning("Pool не инициализирован")
+            return []
+        
+        query = """
+        SELECT role, content, created_at
+        FROM chat_history
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(query, user_id, self.max_turns)
+            
+            history = [
+                {"role": row["role"], "content": row["content"]}
+                for row in reversed(rows)
+            ]
+            logger.debug(f"Загружена история для user={user_id}: {len(history)} сообщений")
+            return history
+        except Exception as e:
+            logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
+            return []
+    
+    async def reset(self, user_id: int) -> None:
+        """Очистка истории пользователя"""
+        if not self.pool:
+            logger.warning("Pool не инициализирован")
+            return
+        
+        query = "DELETE FROM chat_history WHERE user_id = $1"
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(query, user_id)
+            logger.info(f"История очищена для user={user_id}: {result}")
+        except Exception as e:
+            logger.error(f"Ошибка очистки истории: {e}", exc_info=True)
+    
     async def close(self) -> None:
+        """Закрытие пула соединений"""
         if self.pool:
             await self.pool.close()
-
-    async def ensure_schema(self) -> None:
-        assert self.pool is not None
-        sql = """
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('user', 'model')),
-            text TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id_created_at
-            ON chat_messages (user_id, created_at DESC);
-        """
-        async with self.pool.acquire() as conn:
-            await conn.execute(sql)
-
-    async def append(self, user_id: int, role: Role, text: str) -> None:
-        assert self.pool is not None
-        sql = "INSERT INTO chat_messages (user_id, role, text) VALUES ($1, $2, $3)"
-        async with self.pool.acquire() as conn:
-            await conn.execute(sql, user_id, role, text)
-
-    async def reset(self, user_id: int) -> None:
-        assert self.pool is not None
-        sql = "DELETE FROM chat_messages WHERE user_id = $1"
-        async with self.pool.acquire() as conn:
-            await conn.execute(sql, user_id)
+            logger.info("Пул соединений PostgreSQL закрыт")
 
 
 class AdkApiClient:
-    """
-    Под твою OpenAPI:
-      - GET  /list-apps
-      - POST /apps/{app_name}/users/{user_id}/sessions/{session_id}
-      - POST /run
-
-    /run может ожидать snake_case или camelCase — сделаем fallback.
-    """
-
-    def __init__(self, base_url: str, app_name: str, timeout_s: int = 120):
-        self.base_url = base_url.rstrip("/")
+    """Клиент для взаимодействия с Google ADK API"""
+    
+    def __init__(self, base_url: str, app_name: str):
+        self.base_url = base_url.rstrip('/')
         self.app_name = app_name
-        self.timeout = aiohttp.ClientTimeout(total=timeout_s)
         self.http: Optional[aiohttp.ClientSession] = None
-
+        logger.info(f"Инициализация ADK клиента: {base_url}, app={app_name}")
+    
     async def open(self) -> None:
-        if self.http is None:
-            self.http = aiohttp.ClientSession(timeout=self.timeout)
-
+        """Открытие HTTP сессии"""
+        self.http = aiohttp.ClientSession()
+        logger.info("HTTP сессия ADK клиента открыта")
+    
     async def close(self) -> None:
+        """Закрытие HTTP сессии"""
         if self.http:
             await self.http.close()
-            self.http = None
-
+            logger.info("HTTP сессия ADK клиента закрыта")
+    
     async def ensure_session(self, user_id: str, session_id: str) -> None:
-        assert self.http is not None
+        """Создание/проверка сессии в ADK"""
+        if not self.http:
+            logger.error("HTTP сессия не инициализирована")
+            raise RuntimeError("HTTP session not initialized")
+        
         url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}"
-        async with self.http.post(url, json={}) as resp:
-            if resp.status in (200, 201):
-                return
-            # если уже существует — некоторые реализации возвращают 409/400
-            if resp.status in (400, 409):
-                try:
-                    data = await resp.json()
-                    detail = (data.get("detail") or "").lower()
-                    if "exists" in detail or "already" in detail:
-                        return
-                except Exception:
-                    pass
-            raise RuntimeError(f"ADK ensure_session failed: {resp.status} {await resp.text()}")
-
+        
+        try:
+            async with self.http.post(url, json={}) as resp:
+                if resp.status in (200, 201):
+                    logger.debug(f"Сессия создана/проверена: user={user_id}, session={session_id}")
+                    return
+                
+                if resp.status in (400, 409):
+                    try:
+                        data = await resp.json()
+                        detail = (data.get("detail") or "").lower()
+                        if "exists" in detail or "already" in detail:
+                            logger.debug(f"Сессия уже существует: user={user_id}")
+                            return
+                    except Exception:
+                        pass
+                
+                text = await resp.text()
+                logger.error(f"ADK ensure_session failed: {resp.status} {text}")
+                raise RuntimeError(f"ADK ensure_session failed: {resp.status}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Ошибка сети при ensure_session: {e}", exc_info=True)
+            raise
+    
     async def run(self, user_id: str, session_id: str, text: str) -> str:
-        assert self.http is not None
+        """Отправка сообщения агенту и получение ответа"""
+        if not self.http:
+            logger.error("HTTP сессия не инициализирована")
+            raise RuntimeError("HTTP session not initialized")
+        
         url = f"{self.base_url}/run"
-
-        # пробуем оба формата payload: snake_case и camelCase
-        payloads: List[Dict[str, Any]] = [
-            {
-                "app_name": self.app_name,
-                "user_id": user_id,
-                "session_id": session_id,
-                "new_message": {"role": "user", "parts": [{"text": text}]},
-            },
-            {
-                "appName": self.app_name,
-                "userId": user_id,
-                "sessionId": session_id,
-                "newMessage": {"role": "user", "parts": [{"text": text}]},
-            },
-        ]
-
-        last_err: Optional[Tuple[int, str]] = None
-        for payload in payloads:
+        
+        payload = {
+            "app_name": self.app_name,
+            "user_id": user_id,
+            "session_id": session_id,
+            "new_message": {
+                "role": "user",
+                "parts": [{"text": text}]
+            }
+        }
+        
+        try:
+            logger.debug(f"Отправка в ADK: POST {url}")
+            logger.debug(f"Payload: {payload}")
+            
             async with self.http.post(url, json=payload) as resp:
-                if resp.status == 200:
+                text_resp = await resp.text()
+                
+                if resp.status != 200:
+                    logger.error(f"ADK run failed: {resp.status} {text_resp}")
+                    raise RuntimeError(f"ADK run failed: {resp.status}")
+                
+                try:
                     events = await resp.json()
-                    return self._extract_model_text(events) or "Пустой ответ от агента."
-                last_err = (resp.status, await resp.text())
-
-        raise RuntimeError(f"ADK /run failed: {last_err[0]} {last_err[1]}")  # type: ignore[index]
+                    # Добавь это логирование
+                    logger.debug(f"Структура ответа ADK: {events}")
+                except Exception as e:
+                    logger.warning(f"Ответ не в формате JSON: {text_resp[:200]}")
+                    return text_resp
+                
+                answer = self._extract_model_text(events)
+                
+                if not answer:
+                    logger.warning("Пустой ответ от агента")
+                    # Добавь вывод структуры для анализа
+                    logger.error(f"Не удалось извлечь текст из: {events}")
+                    return "Агент не вернул ответ"
+                
+                logger.debug(f"Получен ответ от ADK: {answer[:100]}...")
+                return answer
+                
+        except aiohttp.ClientError as e:
+            logger.error(f"Ошибка сети при run: {e}", exc_info=True)
+            raise
 
     @staticmethod
-    def _extract_model_text(events: Any) -> str:
-        if not isinstance(events, list):
+    def _extract_model_text(events: list) -> str:
+        """Извлечение текста ответа из событий ADK"""
+        if not events:
             return ""
-        for ev in reversed(events):
-            content = (ev or {}).get("content") or {}
-            if content.get("role") != "model":
-                continue
-            parts = content.get("parts") or []
-            texts = []
-            for p in parts:
-                t = p.get("text")
-                if isinstance(t, str) and t.strip():
-                    texts.append(t)
-            if texts:
-                return "".join(texts).strip()
+        
+        # Проверь все возможные форматы
+        for event in reversed(events):
+            if isinstance(event, dict):
+                # Формат 1: model_turn
+                if "model_turn" in event:
+                    parts = event["model_turn"].get("parts", [])
+                    for part in parts:
+                        if "text" in part:
+                            return part["text"]
+                
+                # Формат 2: content
+                if "content" in event:
+                    content = event["content"]
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, dict):
+                        if "text" in content:
+                            return content["text"]
+                        # Проверь вложенные parts
+                        if "parts" in content:
+                            for part in content["parts"]:
+                                if isinstance(part, dict) and "text" in part:
+                                    return part["text"]
+                
+                # Формат 3: прямой text
+                if "text" in event:
+                    return event["text"]
+                
+                # Формат 4: message с content
+                if "message" in event:
+                    msg = event["message"]
+                    if isinstance(msg, dict):
+                        if "content" in msg:
+                            content = msg["content"]
+                            if isinstance(content, str):
+                                return content
+                            if isinstance(content, dict) and "text" in content:
+                                return content["text"]
+        
         return ""
-
-
 async def main() -> None:
+    """Главная функция бота"""
     load_dotenv()
-
+    logger.info("=" * 60)
+    logger.info("Запуск Telegram бота")
+    logger.info("=" * 60)
+    
+    # Загрузка конфигурации
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not tg_token:
+        logger.error("TELEGRAM_BOT_TOKEN отсутствует в .env")
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
-
-    dsn = (os.getenv("POSTGRES_DSN") or os.getenv("DATABASE_URL") or "").strip()
+    
+    dsn = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_DSN") or "").strip()
     if not dsn:
-        raise RuntimeError("POSTGRES_DSN or DATABASE_URL is missing in .env")
-
-    adk_base = os.getenv("ADK_API_BASE", "http://127.0.0.1:8000").strip()
-    # По твоему /list-apps app называется "agent"
+        logger.error("DATABASE_URL отсутствует в .env")
+        raise RuntimeError("DATABASE_URL (or POSTGRES_DSN) is missing in .env")
+    
+    adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
-
+    
+    logger.info(f"Конфигурация:")
+    logger.info(f"  ADK Base: {adk_base}")
+    logger.info(f"  ADK App: {adk_app}")
+    logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
+    
+    # Инициализация компонентов
     bot = Bot(token=tg_token)
     dp = Dispatcher()
-
+    
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
-
+    
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
-
+    
+    logger.info("Все компоненты инициализированы")
+    
+    # Обработчики команд
     @dp.message(Command("start"))
     async def start(m: Message) -> None:
+        user_id = m.from_user.id
+        username = m.from_user.username or "unknown"
+        logger.info(f"Команда /start от user_id={user_id} (@{username})")
+        
         await m.answer(
-            f"Привет! Я бот через Google ADK.\n"
-            f"Использую app: {adk_app}\n"
-            f"Команды: /reset — сбросить диалог."
+            f"👋 Привет! Я бот базы знаний через Google ADK.\n\n"
+            f"🤖 Использую агент: {adk_app}\n\n"
+            f"📋 Команды:\n"
+            f"/reset — сбросить историю диалога\n"
+            f"/help — показать помощь"
         )
-
+    
     @dp.message(Command("reset"))
     async def reset(m: Message) -> None:
-        # сбрасываем только лог в БД; контекст в ADK можно “сбросить” сменой session_id
-        await store.reset(m.from_user.id)
-        await m.answer("Ок, локальный лог сброшен 🙂\n(Если нужно сбросить контекст агента — скажи, сделаю reset через новую session_id.)")
-
+        user_id = m.from_user.id
+        username = m.from_user.username or "unknown"
+        logger.info(f"Команда /reset от user_id={user_id} (@{username})")
+        
+        try:
+            await store.reset(user_id)
+            await m.answer("✅ История диалога сброшена")
+            logger.info(f"История сброшена для user_id={user_id}")
+        except Exception as e:
+            logger.error(f"Ошибка при сбросе истории: {e}", exc_info=True)
+            await m.answer("❌ Ошибка при сбросе истории")
+    
+    @dp.message(Command("help"))
+    async def help_cmd(m: Message) -> None:
+        user_id = m.from_user.id
+        logger.info(f"Команда /help от user_id={user_id}")
+        
+        await m.answer(
+            "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
+            "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
+            "Команды:\n"
+            "/start — начать работу\n"
+            "/reset — сбросить историю\n"
+            "/help — эта справка"
+        )
+    
     @dp.message(F.text)
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
-        session_id = "default"  # можно сделать str(m.chat.id) для групп
+        username = m.from_user.username or "unknown"
+        session_id = "default"
         user_text = (m.text or "").strip()
+        
         if not user_text:
             return
-
-        await adk.ensure_session(user_id=user_id, session_id=session_id)
-        answer = await adk.run(user_id=user_id, session_id=session_id, text=user_text)
-
-        await store.append(m.from_user.id, "user", user_text)
-        await store.append(m.from_user.id, "model", answer)
-
-        await m.answer(answer)
-
+        
+        logger.info(f"📨 Сообщение от user_id={user_id} (@{username}): {user_text[:100]}")
+        
+        try:
+            # Создание/проверка сессии
+            await adk.ensure_session(user_id=user_id, session_id=session_id)
+            
+            # Отправка в агент
+            answer = await adk.run(user_id=user_id, session_id=session_id, text=user_text)
+            
+            logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+            
+            # Сохранение в БД
+            await store.append(int(user_id), "user", user_text)
+            await store.append(int(user_id), "model", answer)
+            
+            # Отправка ответа
+            await m.answer(answer)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
+            await m.answer(
+                "😔 Произошла ошибка при обработке запроса.\n"
+                "Попробуйте позже или используйте /reset для сброса диалога."
+            )
+    
+    # Запуск бота
     try:
+        logger.info("🚀 Бот запущен и готов к работе")
         await dp.start_polling(bot)
     finally:
+        logger.info("Остановка бота...")
         await adk.close()
         await store.close()
-
+        await bot.session.close()
+        logger.info("Бот остановлен")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал остановки (Ctrl+C)")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
+        raise
