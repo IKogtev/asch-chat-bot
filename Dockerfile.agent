@@ -5,7 +5,13 @@ WORKDIR /app
 COPY requirements-agent.txt .
 RUN pip install --no-cache-dir -r requirements-agent.txt
 
+# Копируем utils для логирования
+COPY utils/ ./utils/
+
 COPY agent/ ./agent/
+
+# Создаём директорию для логов
+RUN mkdir -p /app/logs
 
 ENV PYTHONPATH=/app
 
