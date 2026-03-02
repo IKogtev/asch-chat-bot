@@ -449,7 +449,7 @@ async def download_document(document_id: str):
 
 @app.post("/api/filesystem/sync")
 async def filesystem_sync(
-    kb_id: str = Form("default"),
+    kb_id: str = Form("01_Маркетинговые материалы"),
     collection_type: str = Form("kb")
 ):
     file_storage_service.sync(kb_id, collection_type)

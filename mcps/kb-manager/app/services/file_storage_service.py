@@ -111,13 +111,6 @@ class FileStorageService:
 
         disk_files = self.scan_files()
         indexed_docs = self.qdrant.list_documents()
-
-        # группируем qdrant по relative_path
-        # indexed_map = {
-        #     doc["source_name"]: doc
-        #     for doc in indexed_docs
-        #     if doc.get("kb_id") == kb_id
-        # }
         indexed_map = {}
 
         for doc in indexed_docs:
@@ -143,9 +136,6 @@ class FileStorageService:
 
             elif indexed_map[filename][0]["doc_hash"] != file["hash"]:
                 self.logger.info(f"UPDATED FILE: {filename}")
-                # self.qdrant.delete_document(
-                #     indexed_map[filename]["document_id"]
-                # )
                 for doc in indexed_map[filename]:
                     self.qdrant.delete_document(doc["document_id"])
                 self._index_file(file, kb_id, collection_type)
@@ -154,7 +144,6 @@ class FileStorageService:
         for filename, docs in indexed_map.items():
             if filename not in disk_filenames:
                 self.logger.info(f"DELETED FILE: {filename}")
-                # self.qdrant.delete_document(doc["document_id"])
                 for doc in docs:
                     self.qdrant.delete_document(doc["document_id"])
 
@@ -170,9 +159,7 @@ class FileStorageService:
         single_file_path = file_info["absolute_path"]
 
         loader = DocumentLoader(
-            # documents_dir=self.root,
             documents_dir=single_file_path.parent,
-            # documents_dir=None,
             service_dir=self.service_dir,
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap

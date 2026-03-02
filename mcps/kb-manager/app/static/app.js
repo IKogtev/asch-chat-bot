@@ -209,6 +209,57 @@ document.addEventListener("click", function (e) {
         const docName = e.target.dataset.docName;
         viewDocument(docId, docName);
     }
+    if (e.target.classList.contains("delete-doc-btn")) {
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        deleteDocument(docId, docName);
+    }
+});
+
+document.addEventListener("click", async function (e) {
+
+    if (e.target.classList.contains("sync-kb-btn")) {
+
+        e.stopPropagation(); // чтобы не сработал toggleKB
+
+        const button = e.target;
+        const kbId = button.dataset.kbId;
+
+        button.disabled = true;
+        button.innerText = "⏳ Syncing...";
+
+        const formData = new FormData();
+        formData.append("kb_id", kbId);
+        formData.append("collection_type", "kb");
+
+        try {
+            const response = await fetch("/api/filesystem/sync", {
+                method: "POST",
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error("Sync failed");
+            }
+
+            button.innerText = "✅ Synced";
+
+            setTimeout(() => {
+                button.innerText = "🔄 Sync KB";
+                button.disabled = false;
+            }, 1500);
+
+            if (button.innerText==="✅ Synced"){
+                loadDocuments()
+            }
+
+        } catch (err) {
+            console.error(err);
+            button.innerText = "❌ Error";
+            button.disabled = false;
+        }
+    }
+    
 });
 
 // Documents Management
@@ -231,7 +282,6 @@ async function loadDocuments() {
             loadCollectionInfo();
             return;
         }
-        // <div class="document-title">📄 ${isFAQ?escapeHtml(extractQuestionFromText(doc.question_preview || "")): escapeHtml(doc.source_name||doc.source)}</div>
                                 
         container.innerHTML = knowledgeBases.map(kb => `
             <div class="kb-section">
@@ -241,6 +291,11 @@ async function loadDocuments() {
                         <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
                     </div>
                     <div class="kb-stats">
+                        <button
+                            class="sync-kb-btn btn btn-primary btn-small"
+                            data-kb-id="${escapeHtml(kb.kb_id)}">
+                            🔄 Sync KB
+                        </button>
                         <span class="badge badge-primary">${kb.document_count} documents</span>
                         <span class="badge badge-secondary">${kb.total_chunks} chunks</span>
                         <button
@@ -264,8 +319,10 @@ async function loadDocuments() {
                                         data-doc-name="${doc.source_name || doc.source}">
                                         👁️ View
                                     </button>
-                                    <button onclick="deleteDocument('${doc.document_id}', '${escapeHtml(doc.source_name)}')" 
-                                            class="btn btn-danger btn-small">
+                                    <button 
+                                        class="delete-doc-btn btn btn-danger btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
                                         🗑️ Delete
                                     </button>
                                 </div>
@@ -292,8 +349,6 @@ async function loadDocuments() {
                 </div>
             </div>
         `).join('');
-        
-        // <button onclick="viewDocument('${doc.document_id}', '${escapeHtml(doc.source_name || doc.source)}')"
         loadCollectionInfo();
     } catch (error) {
         container.innerHTML = `
@@ -488,7 +543,6 @@ async function performSearch() {
             const score = typeof r.score === 'number'
                 ? r.score.toFixed(3)
                 : '—';
-            // const question = isFAQ?extractQuestionFromText(r.text): "";
             const question = isFAQ?parseFaqQuestion(r.text || 'unknown'): "";
             const answer = isFAQ? (r.answer || ''): "";
             const title = `${isFAQ? question || 'FAQ': r.source_name || r.source || 'Unknown'}`;
@@ -799,7 +853,7 @@ document
       
       alert(`Collection "${data.deleted_collection}" deleted`);
 
-      // 🔥 обновляем список коллекций
+      // обновляем список коллекций
       
       await loadAliasData();
       await loadCollections();
@@ -819,7 +873,6 @@ document
 
     } catch (err) {
       alert(`Failed to delete collection: It's active collection`); 
-        // ${err.message}` не надо пока что
       console.error(err);
     }
   });
