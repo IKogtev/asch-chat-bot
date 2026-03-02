@@ -77,10 +77,112 @@ services:
     networks:
       - aszh-bot-network
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: always
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-storage:/qdrant/storage # здесь qdrant будет хранить свои данные индексы
+    networks:
+      - aszh-bot-network
+  kb-manager:
+    build:
+      context: ./mcps/kb-manager
+      dockerfile: Dockerfile
+    image: kb-manager:latest
+    container_name: kb-manager
+    restart: unless-stopped
+    ports:
+      - 5000:5000
+    volumes:
+      - ./kb_storage:/app/data/kb_documents
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=kb_collection
+      - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=20
+      - LOG_TO_FILE=false
+      - KB_STORAGE_ROOT=/app/data/kb_documents
+    
+    depends_on:
+      - qdrant
+    networks:
+      - aszh-bot-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  kbsearch:
+    build:
+      context: ./mcps/mcp-server-kbsearch
+      dockerfile: Dockerfile
+    image: mcp-server-kbsearch:latest
+    container_name: mcp-kbsearch
+    restart: unless-stopped
+    ports:
+      - "7001:7001"
+    environment:
+      # Основные настройки сервера
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7001
+      - MCP_KBSEARCH=/kbsearch
+      - MCP_TOKEN=${MCP_TOKEN:-REDACTED_EXAMPLE}
+      - IN_DOCKER=true
+      - LOG_TO_FILE=false
+      
+      # Настройки удалённого эмбеддинга
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-REDACTED_EXAMPLE}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+
+      # Настройки эмбеддинга и индексирования
+      - KB_CHUNK_SIZE=512
+      - KB_CHUNK_OVERLAP=50
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-10}
+      - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.5}
+
+      # Qdrant
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=kb_collection
+      - USE_QDRANT=true
+    depends_on:
+      - qdrant
+    networks:
+      - aszh-bot-network
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:7001/kb/status')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  mcp-filesystem:
+    image: mcp/filesystem:latest
+    container_name: mcp-filesystem
+    volumes:
+      - ./kb_storage:/mcp-filesystem/kb:ro
+    ports:
+      - "7002:7002"
+    command: ["/mcp-filesystem"]
+    networks:
+      - aszh-bot-network
+
 volumes:
   pg_data:
   pgadmin_data:
+  qdrant-storage:
 
 networks:
   aszh-bot-network:
+    # external: true
     driver: bridge

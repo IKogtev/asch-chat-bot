@@ -1,0 +1,57 @@
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test/
+
+# Documentation
+*.md
+README.md
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Data directories (ВАЖНО!)
+data/kb_index/*
+data/kb_documents/*
+data/kb_metadata/*
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

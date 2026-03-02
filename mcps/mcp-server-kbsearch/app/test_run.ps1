@@ -1,0 +1,1 @@
+py ..\test-dbsearch\test-mcp-dbsearch_r2_v2.py

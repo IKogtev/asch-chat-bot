@@ -32,11 +32,11 @@
             <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Switch alias 🔄</button>
         </div>
 
-
         <div class="tabs">
             <button class="tab-button active" onclick="showTab('documents')">Documents</button>
             <button class="tab-button" onclick="showTab('search')">Search</button>
             <button class="tab-button" onclick="showTab('upload')">Upload</button>
+            <button class="tab-button" onclick="showTab('tree_files')">Tree Files</button>
         </div>
 
         <!-- Documents Tab -->
@@ -143,6 +143,11 @@
 
                 <div id="upload-result" class="result-message"></div>
             </div>
+        </div>
+
+        <!-- Tree tab -->
+        <div id="tree_files-tab" class="tab-content">
+            <div id="filesystem-tree"></div>
         </div>
 
         <!-- Modal for viewing document chunks -->
