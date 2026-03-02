@@ -1,0 +1,15 @@
+# Основные зависимости для MCP клиента и агента
+langchain-mcp-adapters
+langchain>=0.2.0
+langchain-openai
+langchain-community
+langchain-core
+
+# HTTP клиент для прямых запросов к серверу
+httpx
+
+# Для запуска uvicorn сервера в тестах
+uvicorn
+
+# Для загрузки переменных окружения из .env файла
+python-dotenv

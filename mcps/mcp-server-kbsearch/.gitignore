@@ -1,15 +1,15 @@
 # Test output
-test_report_*.txt
-test_results_*.json
+test_report.txt
+test_results.json
 
 # Logs
 *.log
-kb_service/
 kb_default/
 kb_data/
 logs/
-kb_storage/
 data/
 venv/
+
+*__pycache__
 
 .env
