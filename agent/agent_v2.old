@@ -70,9 +70,6 @@ if KBSEARCH_MCP_URL:
 else:
     logger.warning("⚠ KBSEARCH_MCP_URL не задан — MCP kbsearch не подключён")
 
-if not tools:
-    logger.warning("⚠ Агент создается без tools — функциональность ограничена")
-
 # === Создание агента ===
 root_agent = LlmAgent(
     name="local_llm_agent",
