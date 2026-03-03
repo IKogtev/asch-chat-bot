@@ -85,7 +85,10 @@ async def startup_event():
 
 async def auto_sync():
     while True:
-        file_storage_service.sync(kb_id="01_Маркетинговые материалы", collection_type="kb")
+        for folder in KB_STORAGE_ROOT.iterdir():
+            if folder.is_dir():
+                kb_id = folder.name
+                file_storage_service.sync(kb_id=kb_id, collection_type="kb")
         await asyncio.sleep(86400)
 
 @app.get("/", response_class=HTMLResponse)

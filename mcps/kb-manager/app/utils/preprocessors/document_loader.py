@@ -70,7 +70,18 @@ class DocumentLoader:
             document_id = f"doc_{str(uuid.uuid4())}"
             doc_hash = hash_file(path)
             # логика section_path из папок
-            section_path = [p.name for p in path.relative_to(self.documents_dir).parents if p.name][::-1]
+            full_parts = Path(filepath).parts
+
+            if kb_id not in full_parts:
+                self.logger.error(f"kb_id '{kb_id}' not found in filepath: {filepath}")
+                section_path = []
+            else:
+                # находим индекс kb_id
+                kb_index = full_parts.index(kb_id)
+
+                # берём всё после kb_id до имени файла
+                section_path = list(full_parts[kb_index:-1])
+            # section_path = [p.name for p in path.relative_to(self.documents_dir).parents if p.name][::-1]
             chunks = splitter.split_text(text)
             for i, chunk in enumerate(chunks):
                 kb_id = kb_id if kb_id is not None else path.stem.lower()
