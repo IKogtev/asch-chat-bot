@@ -53,6 +53,9 @@ services:
       - LLM_API_MODEL=${LLM_API_MODEL}
       - PORT=8000
       - HOST=0.0.0.0
+      - KBSEARCH_MCP_URL=${KBSEARCH_MCP_URL}
+      - MCP_TOKEN=${MCP_TOKEN}
+      - KB_COLLECTION=${KB_COLLECTION}      
     volumes:
       - ./agent:/app/agent
     networks:
