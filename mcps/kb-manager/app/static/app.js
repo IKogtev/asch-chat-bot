@@ -435,7 +435,14 @@ async function viewDocument(documentId, filename) {
                 </div>
                 <div class="result-text">${escapeHtml(isFAQ? question+" - "+ answer : chunk.text)}</div>
                 <div class="chunk-metadata-json">
-                    { "source_name": "${escapeHtml(meta.source_name || meta.source || 'unknown')}", "kb_id": "${escapeHtml(meta.kb_id || 'N/A')}", "user_id": "${escapeHtml(meta.user_id || 'N/A')}", "source_type": "${escapeHtml(meta.source_type || 'N/A')}", "version": ${meta.version || 1}, "document_id": "${escapeHtml(meta.document_id || '')}", "created_at": "${meta.created_at || 'Unknown'}" }
+                    { "source_name": "${escapeHtml(meta.source_name || meta.source || 'unknown')}",
+                      "kb_id": "${escapeHtml(meta.kb_id || 'N/A')}", 
+                      "user_id": "${escapeHtml(meta.user_id || 'N/A')}", 
+                      "source_type": "${escapeHtml(meta.source_type || 'N/A')}", 
+                      "version": ${meta.version || 1}, 
+                      "document_id": "${escapeHtml(meta.document_id || '')}", 
+                      "created_at": "${meta.created_at || 'Unknown'}",
+                      "section_path": "[${meta.section_path || '[]'}]" }
                 </div>
             </div>
         `}).join('');

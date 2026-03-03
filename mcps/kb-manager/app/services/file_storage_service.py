@@ -1,9 +1,6 @@
-# kb-manager/app/services/file_storage_service.py
-
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
-import os
 
 from app.utils.utillites import hash_file
 from app.utils.preprocessors.document_loader import DocumentLoader
@@ -41,13 +38,19 @@ class FileStorageService:
     # SCAN FILESYSTEM
     # -------------------------------------------------
 
-    def scan_files(self) -> List[Dict]:
+    def scan_files(self, kb_id:str) -> List[Dict]:
         """
-        Возвращает список всех файлов на диске.
+        Сканирование только конкретного kb.
         """
-        files = []
+        # вычисляем папку kb 
+        kb_root = self.root/kb_id
+        if not kb_root.exists():
+            self.logger.warning(f"KB folder not found: {kb_root}")
+            return []
 
-        for path in self.root.rglob("*"):
+        files = []
+        #  собираем файлы по вычисленной kb папке
+        for path in kb_root.rglob("*"):
             if not path.is_file():
                 continue
 
@@ -78,7 +81,6 @@ class FileStorageService:
         """
 
         tree = {}
-
         for path in self.root.rglob("*"):
             rel = path.relative_to(self.root)
             parts = rel.parts
@@ -109,7 +111,7 @@ class FileStorageService:
         self._sync_lock = True
         self.logger.info("Starting filesystem sync")
 
-        disk_files = self.scan_files()
+        disk_files = self.scan_files(kb_id)
         indexed_docs = self.qdrant.list_documents()
         indexed_map = {}
 
@@ -129,18 +131,18 @@ class FileStorageService:
         for file in disk_files:
             filename = file["filename"]
             disk_filenames.add(filename)
-
+            #  добавление файла если нет в qdrant
             if filename not in indexed_map:
                 self.logger.info(f"NEW FILE: {filename}")
                 self._index_file(file, kb_id, collection_type)
-
+            # обновление файла в qdrant если есть
             elif indexed_map[filename][0]["doc_hash"] != file["hash"]:
                 self.logger.info(f"UPDATED FILE: {filename}")
                 for doc in indexed_map[filename]:
                     self.qdrant.delete_document(doc["document_id"])
                 self._index_file(file, kb_id, collection_type)
 
-        # удалённые файлы
+        # удалённые файлы, удаление из qdrant если локально удалили
         for filename, docs in indexed_map.items():
             if filename not in disk_filenames:
                 self.logger.info(f"DELETED FILE: {filename}")
