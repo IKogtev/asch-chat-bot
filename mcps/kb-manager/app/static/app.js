@@ -195,14 +195,47 @@ function getDocumentTitle(doc) {
         return escapeHtml(extractQuestionFromText(question));
     }
 
+     
     // иначе KB
-    return escapeHtml(
+    const baseTitle =
         doc.source_name ||
         doc.payload?.source_name ||
         doc.source ||
         doc.filename ||
-        'Document'
-    );
+        'Document';
+
+    let sectionPath = doc.section_path || doc.payload?.section_path;
+
+    if (!sectionPath) {
+        return escapeHtml(baseTitle);
+    }
+    if (typeof sectionPath === "string") {
+        // поддержка разных форматов
+        if (sectionPath.includes(",")) {
+            sectionPath = sectionPath.split(",").map(s => s.trim());
+        } else if (sectionPath.includes("/")) {
+            sectionPath = sectionPath.split("/").map(s => s.trim());
+        } else {
+            sectionPath = [sectionPath];
+        }
+    }
+
+    // Если это массив
+    if (Array.isArray(sectionPath)) {
+        const cleaned = sectionPath
+            .map(s => s.trim())
+            .filter(Boolean);
+        
+        const withoutFirst = cleaned.slice(1);
+
+        if (withoutFirst.length > 0) {
+            return escapeHtml(
+                withoutFirst.join("/") + "/" + baseTitle
+            );
+        }
+    }
+
+    return escapeHtml(baseTitle);
 }
 
 document.addEventListener("click", function (e) {
