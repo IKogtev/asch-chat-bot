@@ -279,6 +279,7 @@ class QdrantService:
                         "_max_chunk_index": chunk_index,
                         "created_at": payload.get("created_at", self.get_date_iso("2000-01-01")),
                         "section_path": payload.get("section_path", []),
+                        "content_hash": payload.get("content_hash"),
                     }
                 else: 
                     docs[doc_id]["_max_chunk_index"] = max(
