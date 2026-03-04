@@ -12,4 +12,5 @@ kb_storage/
 data/
 venv/
 
-.env
+*.env
+*.code-workspace
