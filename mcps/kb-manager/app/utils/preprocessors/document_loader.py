@@ -156,7 +156,7 @@ class DocumentLoader:
             doc_hash = item.get("hash")
             source_name = item.get("source_file") 
             category = item.get('category', "-")
-            section_path = " / ".join(item.get('section_path', []))
+            section_path = [" / ".join(item.get('section_path', []))]
             # индексируем ответы или нет doc_text используется для индексации итоговой 
             if index_answers:
                 doc_text = (
@@ -175,6 +175,7 @@ class DocumentLoader:
                     f"topics: {section_path}\n"
                     f"source:{source_name}"
                 )
+            content_hash = compute_chunk_hash(text=doc_text, section_path=section_path,source_name=source_name)
             payload = {
                 "chunk_id": chunk_id,
                 # "question": question,
@@ -189,9 +190,8 @@ class DocumentLoader:
                 "user_id": user_id,
                 "version": version,
                 "document_id": doc_id,
-                "file_path": filepath,
-                # "relative_path": str(kb_id+"/"+source_name)
-                "relative_path": str(path.relative_to(self.documents_dir))
+                "content_hash": content_hash,
+                "file_path": filepath
             }
             # добавляем в список документов
             documents.append({"text": doc_text,

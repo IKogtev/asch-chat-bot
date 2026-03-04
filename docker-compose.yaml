@@ -53,6 +53,9 @@ services:
       - LLM_API_MODEL=${LLM_API_MODEL}
       - PORT=8000
       - HOST=0.0.0.0
+      - KBSEARCH_MCP_URL=${KBSEARCH_MCP_URL}
+      - MCP_TOKEN=${MCP_TOKEN}
+      - KB_COLLECTION=${KB_COLLECTION}
     volumes:
       - ./agent:/app/agent
     networks:
@@ -154,8 +157,9 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
-    depends_on:
-      - qdrant
+    # depends_on:
+    #   kb-manager:
+    #     condition: service_healthy
     networks:
       - aszh-bot-network
     
@@ -167,15 +171,18 @@ services:
       start_period: 60s
 
   mcp-filesystem:
-    image: mcp/filesystem:latest
+    build: 
+      context: ./mcps/mcp-filesystem-http
     container_name: mcp-filesystem
+    restart: unless-stopped
+    ports:
+      - "7002:8080" 
     volumes:
       - ./kb_storage:/mcp-filesystem/kb:ro
-    ports:
-      - "7002:7002"
-    command: ["/mcp-filesystem"]
     networks:
       - aszh-bot-network
+    environment:
+      - NODE_ENV=production
 
 volumes:
   pg_data:
