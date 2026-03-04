@@ -197,20 +197,12 @@ services:
       - "8081:80"
     volumes:
       - ./kb_storage:/srv  # Монтируем ту же папку, что и у kb-manager
-      - ./filebrowser_data:/data
-    # command: >
-    #   filebrowser
-    #     -d /data/database.db
-    #     -r /srv
-    #     -a 0.0.0.0
-    #     -p 80
-    #     --baseURL /files
+      - ./filebrowser_data:/config
+    environment:
+      - FB_DATABASE=/config/database.db
+      - FB_CONFIG=/config/settings.json
     networks:
       - aszh-bot-network
-    # environment:
-    #   - FB_BASEURL=/files
-    #   - FB_USERNAME=admin
-    #   - FB_PASSWORD=admin_password
 
 volumes:
   pg_data:
