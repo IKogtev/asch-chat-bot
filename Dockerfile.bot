@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем utils для логирования
 COPY utils/ ./utils/
 
+COPY contracts/ ./contracts/
+
 COPY bot/ ./bot/
 
 # Создаём директорию для логов

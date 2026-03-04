@@ -8,10 +8,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from dotenv import load_dotenv
 import os
 from pathlib import Path
-import sys
 
-# Добавляем путь к utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.logger import setup_logger
 
 load_dotenv(override=True)
@@ -44,6 +41,28 @@ try:
 except Exception as e:
     logger.error(f"Ошибка загрузки промпта: {e}")
     system_prompt = "Ты полезный ассистент в Telegram."
+
+# === Contract (schema as source of truth) ===
+contract_schema_path = Path(__file__).parent / "contracts" / "agent_response_v1.json"
+contract_version = os.getenv("AGENT_CONTRACT_VERSION", "1.0").strip()
+
+try:
+    schema_txt = contract_schema_path.read_text(encoding="utf-8")
+    # Важно: в промпт кладём “как есть”, чтобы LLM не фантазировала поля.
+    system_prompt += (
+        "\n\n"
+        "=== ОБЯЗАТЕЛЬНЫЙ КОНТРАКТ ОТВЕТА (ТОЛЬКО JSON) ===\n"
+        f"contract_version: {contract_version}\n"
+        "Возвращай ТОЛЬКО валидный JSON, без markdown, без пояснений.\n"
+        "Строго по JSON Schema ниже. Никаких дополнительных полей.\n\n"
+        "JSON Schema:\n"
+        f"{schema_txt}\n"
+        "=== КОНЕЦ КОНТРАКТА ===\n"
+    )
+    logger.info(f"Контракт ответа загружен: {contract_schema_path}")
+except Exception as e:
+    logger.error(f"Не удалось загрузить схему контракта: {e}", exc_info=True)
+    # Не падаем, но логируем — иначе “тихо” поедет формат.
 
 # === Инициализация Tools ===
 tools = []

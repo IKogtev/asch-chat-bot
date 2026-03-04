@@ -1,11 +1,14 @@
 import asyncio
+import json
 import os
 from typing import Optional
+from pathlib import Path
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.types import FSInputFile
 from dotenv import load_dotenv
 import aiohttp
 
@@ -16,6 +19,73 @@ from utils import setup_logger
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
+
+# Пытаемся подключить контракт (pydantic)
+try:
+    from contracts.agent_response_v1 import AgentResponse
+except Exception:
+    AgentResponse = None  # fallback без pydantic
+
+KB_ROOT = Path("/app/kb_storage").resolve()
+
+def safe_resolve_kb_path(rel_path: str) -> Path:
+    rel_path = (rel_path or "").strip().lstrip("/\\")
+    p = (KB_ROOT / rel_path).resolve()
+
+    # защита от ../ и выхода за корень
+    if KB_ROOT != p and KB_ROOT not in p.parents:
+        raise ValueError(f"Path traversal blocked: {rel_path}")
+
+    return p
+
+def coerce_to_contract(answer_text: str) -> dict:
+    """
+    Гарантирует возврат валидного payload контракта.
+    Никогда не выбрасывает исключение наружу.
+    """
+    try:
+        data = json.loads(answer_text)
+        if not isinstance(data, dict):
+            raise ValueError("Not object")
+
+        for k in ("contract_version", "answer", "attachments"):
+            if k not in data:
+                raise ValueError(f"Missing {k}")
+
+        if not isinstance(data["attachments"], list):
+            raise ValueError("attachments must be list")
+
+        return data
+    except Exception:
+        # fallback — оборачиваем в контракт
+        return {
+            "contract_version": "1.0",
+            "answer": (answer_text or "").strip() or "Готово.",
+            "attachments": [],
+        }
+
+async def send_attachments(m: Message, attachments: list[dict]) -> None:
+    for a in attachments:
+        rel = (a.get("path") or "").strip()
+        title = (a.get("title") or Path(rel).name).strip() or "Документ"
+
+        if not rel:
+            continue
+
+        try:
+            file_path = safe_resolve_kb_path(rel)
+        except Exception:
+            await m.answer(f"⚠️ Небезопасный путь: {rel}")
+            continue
+
+        if not file_path.exists() or not file_path.is_file():
+            await m.answer(f"⚠️ Файл не найден: {title}")
+            continue
+
+        await m.answer_document(
+            document=FSInputFile(file_path),
+            caption=title[:1024],
+        )
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -413,17 +483,23 @@ async def main() -> None:
             await adk.ensure_session(user_id=user_id, session_id=session_id)
             
             # Отправка в агент
-            answer = await adk.run(user_id=user_id, session_id=session_id, text=user_text)
-            
-            logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
-            
-            # Сохранение в БД
+            answer_raw = await adk.run(user_id=user_id, session_id=session_id, text=user_text)
+
+            payload = coerce_to_contract(answer_raw)
+
+            text_answer = (payload.get("answer") or "").strip()
+            attachments = payload.get("attachments") or []
+
+            # Сохраняем в БД уже “нормализованный контракт”
             await store.append(int(user_id), "user", user_text)
-            await store.append(int(user_id), "model", answer)
-            
-            # Отправка ответа
-            await m.answer(answer)
-            
+            await store.append(int(user_id), "model", json.dumps(payload, ensure_ascii=False))
+
+            if text_answer:
+                await m.answer(text_answer)
+
+            if attachments:
+                await send_attachments(m, attachments)
+
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(

@@ -81,6 +81,8 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
+    volumes:
+      - ./kb_storage:/app/kb_storage
     networks:
       - aszh-bot-network
 

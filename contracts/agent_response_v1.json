@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "answer", "attachments"],
+  "properties": {
+    "contract_version": { "type": "string", "enum": ["1.0"] },
+    "answer": { "type": "string", "minLength": 1 },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "title"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "mime": { "type": "string" }
+        }
+      }
+    }
+  }
+}
