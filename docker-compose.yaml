@@ -55,7 +55,11 @@ services:
       - HOST=0.0.0.0
       - KBSEARCH_MCP_URL=${KBSEARCH_MCP_URL}
       - MCP_TOKEN=${MCP_TOKEN}
+<<<<<<< HEAD
       - KB_COLLECTION=${KB_COLLECTION}
+=======
+      - KB_COLLECTION=${KB_COLLECTION}      
+>>>>>>> 1dff0bebeabb9b761a31dbc6e3e90d92a829a3d7
     volumes:
       - ./agent:/app/agent
     networks:
