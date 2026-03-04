@@ -14,7 +14,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.logger import setup_logger
 
-load_dotenv()
+load_dotenv(override=True)
 
 logger = setup_logger("agent", "agent.log")
 
