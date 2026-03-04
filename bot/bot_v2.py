@@ -9,11 +9,13 @@ from aiogram.types import Message
 from dotenv import load_dotenv
 import aiohttp
 
+# Загружаем переменные окружения ДО импорта setup_logger
+load_dotenv(override=True)
+
 from utils import setup_logger
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
-
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -228,53 +230,93 @@ class AdkApiClient:
 
     @staticmethod
     def _extract_model_text(events: list) -> str:
-        """Извлечение текста ответа из событий ADK"""
+        """
+        Извлечение финального текста ответа из событий ADK.
+
+        Важно: ADK может вернуть parts вида:
+          {"text": "...", "thought": True}   # внутренние рассуждения
+          {"text": "..."}                   # финальный ответ пользователю
+
+        Поэтому:
+        - пропускаем part["thought"] == True
+        - собираем все оставшиеся text и склеиваем
+        """
         if not events:
             return ""
-        
-        # Проверь все возможные форматы
-        for event in reversed(events):
-            if isinstance(event, dict):
-                # Формат 1: model_turn
-                if "model_turn" in event:
-                    parts = event["model_turn"].get("parts", [])
+
+        out: list[str] = []
+
+        # Проходим в прямом порядке: ответ может состоять из нескольких частей
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+
+            # Формат 1: model_turn
+            if "model_turn" in event and isinstance(event["model_turn"], dict):
+                parts = event["model_turn"].get("parts", []) or []
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("thought") is True:
+                        continue
+                    text = part.get("text")
+                    if text:
+                        out.append(text)
+
+            # Формат 2: content (как в твоём логе: event["content"]["parts"]...)
+            if "content" in event:
+                content = event["content"]
+
+                # иногда content может быть строкой
+                if isinstance(content, str):
+                    out.append(content)
+                    continue
+
+                if isinstance(content, dict):
+                    # content.text
+                    if "text" in content and isinstance(content["text"], str):
+                        out.append(content["text"])
+
+                    # content.parts
+                    parts = content.get("parts", []) or []
                     for part in parts:
-                        if "text" in part:
-                            return part["text"]
-                
-                # Формат 2: content
-                if "content" in event:
-                    content = event["content"]
-                    if isinstance(content, str):
-                        return content
-                    if isinstance(content, dict):
-                        if "text" in content:
-                            return content["text"]
-                        # Проверь вложенные parts
-                        if "parts" in content:
-                            for part in content["parts"]:
-                                if isinstance(part, dict) and "text" in part:
-                                    return part["text"]
-                
-                # Формат 3: прямой text
-                if "text" in event:
-                    return event["text"]
-                
-                # Формат 4: message с content
-                if "message" in event:
-                    msg = event["message"]
-                    if isinstance(msg, dict):
-                        if "content" in msg:
-                            content = msg["content"]
-                            if isinstance(content, str):
-                                return content
-                            if isinstance(content, dict) and "text" in content:
-                                return content["text"]
-        
-        return ""
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("thought") is True:
+                            continue
+                        text = part.get("text")
+                        if text:
+                            out.append(text)
+
+            # Формат 3: прямой text (редко, но оставим)
+            if "text" in event and isinstance(event["text"], str):
+                out.append(event["text"])
+
+            # Формат 4: message.content
+            if "message" in event and isinstance(event["message"], dict):
+                msg = event["message"]
+                content = msg.get("content")
+
+                if isinstance(content, str):
+                    out.append(content)
+                elif isinstance(content, dict):
+                    if "text" in content and isinstance(content["text"], str):
+                        out.append(content["text"])
+                    parts = content.get("parts", []) or []
+                    for part in parts:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("thought") is True:
+                            continue
+                        text = part.get("text")
+                        if text:
+                            out.append(text)
+
+        # Склеиваем и чистим
+        final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
+        return final
 async def main() -> None:
     """Главная функция бота"""
-    load_dotenv()
     logger.info("=" * 60)
     logger.info("Запуск Telegram бота")
     logger.info("=" * 60)

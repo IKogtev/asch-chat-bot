@@ -47,6 +47,8 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
@@ -72,6 +74,8 @@ services:
         condition: service_healthy
       adk-agent:
         condition: service_started
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
