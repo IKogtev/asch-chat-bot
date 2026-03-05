@@ -81,10 +81,13 @@ class DocumentLoader:
 
                 # берём всё после kb_id до имени файла
                 section_path = list(full_parts[kb_index:-1])
-            # section_path = [p.name for p in path.relative_to(self.documents_dir).parents if p.name][::-1]
+            
+            # adding section_relationships
+            section_relationships = ["/".join(section_path[:i+1]) for i in range(len(section_path))]
+            # chunking
             chunks = splitter.split_text(text)
+            kb_id = kb_id if kb_id is not None else path.stem.lower()
             for i, chunk in enumerate(chunks):
-                kb_id = kb_id if kb_id is not None else path.stem.lower()
                 content_hash = compute_chunk_hash(text=chunk, section_path=section_path,source_name=path.name)
                 docs_texts.append({
                     "text": chunk,
@@ -101,7 +104,8 @@ class DocumentLoader:
                         "user_id": user_id,
                         "version": 1,           
                         "content_hash": content_hash,
-                        "relative_path": str(path.relative_to(self.documents_dir))
+                        "relative_path": str(path.relative_to(self.documents_dir)),
+                        "section_relationships": section_relationships,
                     }
                 })
         points_count = len(docs_texts)
