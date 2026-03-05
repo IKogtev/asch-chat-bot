@@ -87,8 +87,8 @@ class DocumentLoader:
             # chunking
             chunks = splitter.split_text(text)
             kb_id = kb_id if kb_id is not None else path.stem.lower()
+            content_hash = compute_chunk_hash(text=text, section_path=section_path,source_name=path.name)
             for i, chunk in enumerate(chunks):
-                content_hash = compute_chunk_hash(text=chunk, section_path=section_path,source_name=path.name)
                 docs_texts.append({
                     "text": chunk,
                     "meta": {
