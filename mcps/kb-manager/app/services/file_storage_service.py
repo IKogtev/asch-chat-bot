@@ -139,9 +139,8 @@ class FileStorageService:
             stored_docs = indexed_map[filename]
             stored_doc_hash = stored_docs[0].get("doc_hash")
             current_doc_hash = file["hash"]
-
+        
             reindex_needed = False
-
             # --- Проверка doc_hash ---
             if stored_doc_hash != current_doc_hash:
                 self.logger.info(f"UPDATED (doc_hash): {filename}")
@@ -153,6 +152,7 @@ class FileStorageService:
                 stored_content_hashes = {
                     doc.get("content_hash")
                     for doc in stored_docs
+                    if doc.get("content_hash") is not None
                 }
 
                 # генерируем новые чанки временно
@@ -172,12 +172,12 @@ class FileStorageService:
                 new_content_hashes = {
                     d["meta"]["content_hash"]
                     for d in docs
+                    if d["meta"].get("content_hash") is not None
                 }
-
-                if new_content_hashes != stored_content_hashes:
+                if new_content_hashes - stored_content_hashes:
                     self.logger.info(f"UPDATED (content_hash): {filename}")
                     reindex_needed = True
-
+            
             # --- Переиндексация если нужно ---
             if reindex_needed:
                 for doc in stored_docs:
