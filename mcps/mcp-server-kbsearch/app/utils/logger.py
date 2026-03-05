@@ -6,10 +6,13 @@ from datetime import datetime
 # ЛОГИРОВАНИЕ
 # -------------------------
 
-def setup_logger(name: str, service_dir) -> logging.Logger:
+def setup_logger(name: str, service_dir, log_level: str ="INFO") -> logging.Logger:
     """Настройка структурированного логирования"""
     logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
+    log_level_dict = {"INFO": logging.INFO,
+                      "WARNING": logging.WARNING,
+                      "DEBUG": logging.DEBUG} 
+    logger.setLevel(log_level_dict[log_level])
     if logger.handlers:
         return logger
     formatter = logging.Formatter(
