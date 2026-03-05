@@ -5,11 +5,12 @@ from typing import Optional
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,FSInputFile
 from dotenv import load_dotenv
 from pathlib import Path
 import aiohttp
 import time
+import tempfile
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
@@ -21,6 +22,7 @@ logger = setup_logger('bot', 'bot.log')
 CALLBACK_MAP = {}
 TREE_CACHE = None
 TREE_TS = 0
+KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
 TITLE_START = """
 👋 Привет! Я бот базы знаний через Google ADK.
 
@@ -505,13 +507,31 @@ async def main() -> None:
             return
         #подумать как сделать TODO
         doc_id = await get_document_id(path)
+        if not doc_id:
+            await callback.answer("Документ не найден", show_alert=True)
+            return
+        
+        url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
+        filename = path.split("/")[-1]
 
-        url = f"http://kb-manager:5000/api/documents/download/{doc_id}"
+        # скачиваем файл
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await callback.answer("Ошибка загрузки файла", show_alert=True)
+                    return
 
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                tmp.write(await resp.read())
+                tmp.close()
+
+        # отправляем
         await callback.message.answer_document(
-            document=url,
-            caption=path.split("/")[-1]
+            document=FSInputFile(tmp.name, filename=filename),
+            # caption=filename
         )
+
+        os.remove(tmp.name)
 
     # Запуск бота
     try:
@@ -579,12 +599,31 @@ def build_menu_from_tree(tree: dict, path: list[str]):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def get_kb_tree():
-    KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
+    
     url = f"{KB_MANAGER_URL}/api/filesystem/folders"
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
             return await resp.json()
+
+async def get_document_id(path: str) -> str | None:
+    filename = path.split("/")[-1]
+
+    url = f"{KB_MANAGER_URL}/api/documents"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                logger.error(f"kb-manager error: {resp.status}")
+                return None
+
+            docs = await resp.json()
+
+    for doc in docs:
+        if doc.get("source_name") == filename:
+            return doc.get("document_id")
+
+    return None
 
 if __name__ == "__main__":
     try:

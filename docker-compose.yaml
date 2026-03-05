@@ -191,22 +191,7 @@ services:
       - aszh-bot-network
     environment:
       - NODE_ENV=production
-
-  # file-manager:
-  #   image: filebrowser/filebrowser:latest
-  #   container_name: kb-file-ui
-  #   user: "0:0"
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8081:80"
-  #   volumes:
-  #     - ./kb_storage:/srv  # Монтируем ту же папку, что и у kb-manager
-  #     - ./filebrowser_data:/config
-  #   environment:
-  #     - FB_DATABASE=/config/database.db
-  #     - FB_CONFIG=/config/settings.json
-  #   networks:
-  #     - aszh-bot-network
+      
   file-manager:
     image: filebrowser/filebrowser:latest
     container_name: kb-file-ui
