@@ -241,6 +241,16 @@ async def initialize_kb_on_startup() -> None:
         
     except Exception as e:
         logger.error(f"Критическая ошибка при инициализации KB: {e}", exc_info=True)
+        
+def get_file_link(file_name: Annotated[str, "Name of source file"], section_list: Annotated[List[str], "List of upper folders' name up to storage root folder"]) -> str:
+    """
+    Generates a direct download link for a file.
+    Using in kb_search function to form path relative to storage root and add it to response
+    """
+    file_path = "/".join(section_list) + "/" + file_name
+    # Очищаем путь от возможных начальных слешей
+    clean_path = file_path.lstrip("/")
+    return f"{clean_path}"
 
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
@@ -309,6 +319,8 @@ async def kb_search(
                 results.append(result)
             
             logger.info(f"Найдено {len(results)} результатов")
+            for res in results:
+                res['relative_path'] = get_file_link(res['metadata']['source'], res['metadata']['section_path'])
             
             return {
                 "success": True,
