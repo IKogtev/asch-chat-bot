@@ -326,7 +326,7 @@ async def kb_search(
             logger.info(f"Найдено {len(results)} результатов")
             
             for res in results:
-                res['relative_path'] = get_file_link(res['metadata']['source'], res['metadata']['section_path'])
+                res['metadata']['relative_path'] = get_file_link(res['metadata']['source'], res['metadata']['section_path'])
             
             logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
             return {
