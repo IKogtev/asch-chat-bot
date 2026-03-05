@@ -9,6 +9,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.types import FSInputFile
 from dotenv import load_dotenv
 import aiohttp
 
@@ -16,6 +17,7 @@ import aiohttp
 load_dotenv(override=True)
 
 from utils import setup_logger
+from utils.document_handler import DocumentHandler
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -348,9 +350,16 @@ async def main() -> None:
     adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
     
+    # Конфигурация для DocumentHandler
+    kb_manager_url = os.getenv("KB_MANAGER_URL", "http://kb-manager:8001").strip()
+    kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
+    downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
+    
     logger.info(f"Конфигурация:")
     logger.info(f"  ADK Base: {adk_base}")
     logger.info(f"  ADK App: {adk_app}")
+    logger.info(f"  KB Manager: {kb_manager_url}")
+    logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
     
     # Инициализация компонентов
@@ -364,8 +373,15 @@ async def main() -> None:
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
     
-    logger.info("Все компоненты инициализированы")
+    # Инициализация DocumentHandler
+    doc_handler = DocumentHandler(
+        kb_manager_url=kb_manager_url,
+        kb_manager_token=kb_manager_token,
+        downloads_dir=downloads_dir
+    )
     
+    logger.info("Все компоненты инициализированы")
+
     # Обработчики команд
     @dp.message(Command("start"))
     async def start(m: Message) -> None:
@@ -446,8 +462,8 @@ async def main() -> None:
             await adk.ensure_session(user_id=user_id, session_id=session_id)
             
             # Загрузка истории из БД
-            history = await store.get_history(int(user_id))
-            logger.debug(f"Загружено {len(history)} сообщений из истории")
+            history_raw = await store.get_history(int(user_id))
+            logger.debug(f"Загружено {len(history_raw)} сообщений из истории")
 
             # Конвертируем в формат ADK/Gemini
             history = [
@@ -539,17 +555,52 @@ async def main() -> None:
             await store.append(int(user_id), "user", user_text)
             await store.append(int(user_id), "model", answer)
             
+            # Извлекаем document_id из ответа
+            doc_ids = doc_handler.extract_document_ids(answer)
+            
+            # Очищаем ответ от [document_id:...]
+            clean_answer = doc_handler.remove_document_ids(answer)
+            
             # Конвертируем в HTML и отправляем
-            html_answer = markdown_to_safe_html(answer)
+            html_answer = markdown_to_safe_html(clean_answer)
             await m.answer(html_answer, parse_mode="HTML")
             
+            # Если есть документы - скачиваем и отправляем
+            if doc_ids:
+                logger.info(f"📎 Найдено {len(doc_ids)} документов для отправки")
+                
+                for doc_id in doc_ids:
+                    try:
+                        file_path = await doc_handler.download_document(doc_id)
+                        
+                        if file_path and file_path.exists():
+                            # Отправляем файл
+                            filename = file_path.name
+                            document = FSInputFile(str(file_path), filename=filename)
+                            await m.answer_document(document, caption=f"📄 {filename}")
+                            logger.info(f"✅ Документ {filename} отправлен user_id={user_id}")
+                        else:
+                            logger.warning(f"⚠️ Файл не найден: {doc_id}")
+                            await m.answer(f"⚠️ Не удалось загрузить документ {doc_id}")
+                            
+                    except Exception as doc_err:
+                        logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
+                        await m.answer(f"❌ Ошибка при загрузке документа")
+
+                    try:
+                        if file_path and file_path.exists():
+                            file_path.unlink()  # Удаляем временный файл
+                            logger.debug(f"🗑️ Удалён временный файл: {filename}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить файл {filename}: {e}")
+                                    
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(
                 "😔 Произошла ошибка при обработке запроса.\n"
                 "Попробуйте позже или используйте /reset для сброса диалога."
             )
-
+    
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
