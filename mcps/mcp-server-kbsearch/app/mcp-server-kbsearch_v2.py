@@ -6,7 +6,7 @@ from starlette.requests import Request
 from contextlib import asynccontextmanager
 
 # FastMCP
-from typing import Annotated, Dict
+from typing import Annotated, Dict, List
 from fastmcp import FastMCP
 # Утилиты
 import asyncio
