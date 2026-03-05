@@ -13,3 +13,5 @@ data/
 venv/
 
 .env
+agent/__pycache__/
+agent/agent/
