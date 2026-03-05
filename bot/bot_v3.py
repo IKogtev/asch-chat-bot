@@ -5,11 +5,12 @@ from typing import Optional
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,FSInputFile
 from dotenv import load_dotenv
 from pathlib import Path
 import aiohttp
 import time
+import tempfile
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
@@ -21,6 +22,7 @@ logger = setup_logger('bot', 'bot.log')
 CALLBACK_MAP = {}
 TREE_CACHE = None
 TREE_TS = 0
+KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
 TITLE_START = """
 👋 Привет! Я бот базы знаний через Google ADK.
 
@@ -400,13 +402,20 @@ async def main() -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
+        await show_main_menu(m)
+    
+    @dp.callback_query(lambda c: c.data == "home")
+    async def go_home(callback: CallbackQuery):
+        await callback.answer()
+
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-        await m.answer(
+
+        await callback.message.edit_text(
             TITLE_START,
             reply_markup=menu
         )
-    
+
     @dp.message(Command("reset"))
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
@@ -485,8 +494,7 @@ async def main() -> None:
         tree = await get_tree_cached()
 
         menu = build_menu_from_tree(tree, path_list)
-        title = "📁 /".join(path_list) if path_list else TITLE_START
-
+        title = "📁 /".join(path_list) 
         await callback.message.edit_text(
             title,
             reply_markup=menu
@@ -503,15 +511,32 @@ async def main() -> None:
         if not path:
             await callback.answer("Файл не найден", show_alert=True)
             return
-        #подумать как сделать TODO
         doc_id = await get_document_id(path)
+        if not doc_id:
+            await callback.answer("Документ не найден", show_alert=True)
+            return
+        
+        url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
+        filename = path.split("/")[-1]
 
-        url = f"http://kb-manager:5000/api/documents/download/{doc_id}"
+        # скачиваем файл
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await callback.answer("Ошибка загрузки файла", show_alert=True)
+                    return
 
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                tmp.write(await resp.read())
+                tmp.close()
+
+        # отправляем
         await callback.message.answer_document(
-            document=url,
-            caption=path.split("/")[-1]
+            document=FSInputFile(tmp.name, filename=filename),
+            # caption=filename
         )
+
+        os.remove(tmp.name)
 
     # Запуск бота
     try:
@@ -523,6 +548,15 @@ async def main() -> None:
         await store.close()
         await bot.session.close()
         logger.info("Бот остановлен")
+
+async def show_main_menu(message: Message):
+    tree = await get_tree_cached()
+    menu = build_menu_from_tree(tree, [])
+
+    await message.answer(
+        TITLE_START,
+        reply_markup=menu
+    )
 
 def build_menu_from_tree(tree: dict, path: list[str]):
     node = tree
@@ -557,34 +591,57 @@ def build_menu_from_tree(tree: dict, path: list[str]):
                 callback_data=f"f:{pid}"
             )
         ])
+    # навигация
+    nav_buttons = []
     if path:
         parent = "/".join(path[:-1])
         pid = store_path(parent)
 
-        buttons.append([
+        nav_buttons.append(
             InlineKeyboardButton(
                 text="⬅ Назад",
                 callback_data=f"d:{pid}"
             )
-        ])
-        root_pid = store_path("")
-        buttons.append([
+        )
+        nav_buttons.append(
             InlineKeyboardButton(
-                text="🏠 В корень",
-                callback_data=f"d:{root_pid}"
+                text="🏠 на главную",
+                callback_data="home"
+                
             )
-        ])
+        )
+    if nav_buttons:
+        buttons.append(nav_buttons)
     
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def get_kb_tree():
-    KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
+    
     url = f"{KB_MANAGER_URL}/api/filesystem/folders"
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
             return await resp.json()
+
+async def get_document_id(path: str) -> str | None:
+    filename = path.split("/")[-1]
+
+    url = f"{KB_MANAGER_URL}/api/documents"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                logger.error(f"kb-manager error: {resp.status}")
+                return None
+
+            docs = await resp.json()
+
+    for doc in docs:
+        if doc.get("source_name") == filename:
+            return doc.get("document_id")
+
+    return None
 
 if __name__ == "__main__":
     try:
