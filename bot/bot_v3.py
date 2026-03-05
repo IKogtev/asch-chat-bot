@@ -402,13 +402,20 @@ async def main() -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
+        await show_main_menu(m)
+    
+    @dp.callback_query(lambda c: c.data == "home")
+    async def go_home(callback: CallbackQuery):
+        await callback.answer()
+
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-        await m.answer(
+
+        await callback.message.edit_text(
             TITLE_START,
             reply_markup=menu
         )
-    
+
     @dp.message(Command("reset"))
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
@@ -487,8 +494,7 @@ async def main() -> None:
         tree = await get_tree_cached()
 
         menu = build_menu_from_tree(tree, path_list)
-        title = "📁 /".join(path_list) if path_list else TITLE_START
-
+        title = "📁 /".join(path_list) 
         await callback.message.edit_text(
             title,
             reply_markup=menu
@@ -505,7 +511,6 @@ async def main() -> None:
         if not path:
             await callback.answer("Файл не найден", show_alert=True)
             return
-        #подумать как сделать TODO
         doc_id = await get_document_id(path)
         if not doc_id:
             await callback.answer("Документ не найден", show_alert=True)
@@ -544,6 +549,15 @@ async def main() -> None:
         await bot.session.close()
         logger.info("Бот остановлен")
 
+async def show_main_menu(message: Message):
+    tree = await get_tree_cached()
+    menu = build_menu_from_tree(tree, [])
+
+    await message.answer(
+        TITLE_START,
+        reply_markup=menu
+    )
+
 def build_menu_from_tree(tree: dict, path: list[str]):
     node = tree
 
@@ -577,23 +591,27 @@ def build_menu_from_tree(tree: dict, path: list[str]):
                 callback_data=f"f:{pid}"
             )
         ])
+    # навигация
+    nav_buttons = []
     if path:
         parent = "/".join(path[:-1])
         pid = store_path(parent)
 
-        buttons.append([
+        nav_buttons.append(
             InlineKeyboardButton(
                 text="⬅ Назад",
                 callback_data=f"d:{pid}"
             )
-        ])
-        root_pid = store_path("")
-        buttons.append([
+        )
+        nav_buttons.append(
             InlineKeyboardButton(
-                text="🏠 В корень",
-                callback_data=f"d:{root_pid}"
+                text="🏠 на главную",
+                callback_data="home"
+                
             )
-        ])
+        )
+    if nav_buttons:
+        buttons.append(nav_buttons)
     
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
