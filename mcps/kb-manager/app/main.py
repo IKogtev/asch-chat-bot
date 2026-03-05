@@ -83,13 +83,42 @@ async def startup_event():
     qdrant_service.ensure_collection()
     asyncio.create_task(auto_sync())
 
+async def run_sync_all_once():
+    if not KB_STORAGE_ROOT.exists():
+        return {"status": "error", "message": "storage root not found"}
+    for folder in KB_STORAGE_ROOT.iterdir():
+        if folder.is_dir():
+            kb_id = folder.name
+            try:
+
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None, lambda kid=kb_id: file_storage_service.sync(
+                        kb_id=kid, collection_type="kb"
+                        )
+                    )
+            except Exception as e:
+                logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
+
+    return {
+        "status": "success",
+        "message": "SYNC completed"
+    }            
+
 async def auto_sync():
     while True:
-        for folder in KB_STORAGE_ROOT.iterdir():
-            if folder.is_dir():
-                kb_id = folder.name
-                file_storage_service.sync(kb_id=kb_id, collection_type="kb")
+        await run_sync_all_once()
         await asyncio.sleep(86400)
+
+@app.post("/api/filesystem/sync_all")
+async def manual_sync_all():
+    """
+    Эндпоинт для ручной синхронизации по кнопке.
+    Вызывает ту же логику, но один раз и сразу возвращает ответ.
+    """
+    result = await run_sync_all_once()
+    return result
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():

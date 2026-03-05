@@ -297,6 +297,70 @@ document.addEventListener("click", async function (e) {
     
 });
 
+// 
+async function syncAll(btnElement) {
+    // 1. Защита: если кнопка не передана, выходим
+    if (!btnElement) {
+        console.error("Кнопка не передана в функцию syncAll!");
+        return;
+    }
+
+    // Сохраняем оригинальный текст и состояние
+    const originalText = btnElement.innerText;
+    
+    try {
+        // 2. Блокируем кнопку визуально и функционально
+        btnElement.disabled = true;
+        btnElement.innerText = "⏳ Синхронизация...";
+        btnElement.style.opacity = "0.7"; // Визуальный эффект
+
+        console.log("Отправка запроса на /api/filesystem/sync_all...");
+
+        // 3. Делаем запрос
+        const response = await fetch("/api/filesystem/sync_all", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            }
+        });
+
+        // 4. Проверяем статус ответа
+        if (!response.ok) {
+            // Пытаемся получить текст ошибки от сервера
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Ошибка сервера: ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log("Успех!", result);
+
+        // 5. Показываем успех
+        btnElement.innerText = "✅ Готово";
+        btnElement.style.backgroundColor = "#28a745"; // Зеленый цвет (если используете Bootstrap)
+
+        // 6. Обновляем список документов (если функция существует)
+        if (typeof loadDocuments === 'function') {
+            await loadDocuments();
+        } else {
+            console.warn("Функция loadDocuments не найдена, список не обновлен.");
+        }
+
+    } catch (error) {
+        console.error("Ошибка синхронизации:", error);
+        btnElement.innerText = "❌ Ошибка";
+        btnElement.style.backgroundColor = "#dc3545"; // Красный цвет
+        alert("Не удалось синхронизировать: " + error.message);
+    } finally {
+        // 7. Возвращаем кнопку в исходное состояние через 2 секунды
+        setTimeout(() => {
+            btnElement.disabled = false;
+            btnElement.innerText = originalText;
+            btnElement.style.opacity = "1";
+            btnElement.style.backgroundColor = ""; // Сброс цвета
+        }, 2000);
+    }
+}
+
 // Documents Management
 async function loadDocuments() {
     const container = document.getElementById('documents-list');
