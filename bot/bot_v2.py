@@ -1,6 +1,9 @@
 import asyncio
 import os
 from typing import Optional
+import json
+import html as html_module
+import re
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
@@ -195,11 +198,16 @@ class AdkApiClient:
         }
         
         try:
-            logger.debug(f"Отправка в ADK: POST {url}")
-            logger.debug(f"Payload: {payload}")
+            logger.debug(f"=== ADK REQUEST ===")
+            logger.debug(f"URL: {url}")
+            logger.debug(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
             
             async with self.http.post(url, json=payload) as resp:
                 text_resp = await resp.text()
+                
+                logger.debug(f"=== ADK RESPONSE ===")
+                logger.debug(f"Status: {resp.status}")
+                logger.debug(f"Raw response: {text_resp[:1000]}")
                 
                 if resp.status != 200:
                     logger.error(f"ADK run failed: {resp.status} {text_resp}")
@@ -207,8 +215,8 @@ class AdkApiClient:
                 
                 try:
                     events = await resp.json()
-                    # Добавь это логирование
-                    logger.debug(f"Структура ответа ADK: {events}")
+                    logger.debug(f"=== PARSED EVENTS ===")
+                    logger.debug(f"Events structure: {json.dumps(events, indent=2, ensure_ascii=False)}")
                 except Exception as e:
                     logger.warning(f"Ответ не в формате JSON: {text_resp[:200]}")
                     return text_resp
@@ -217,11 +225,11 @@ class AdkApiClient:
                 
                 if not answer:
                     logger.warning("Пустой ответ от агента")
-                    # Добавь вывод структуры для анализа
-                    logger.error(f"Не удалось извлечь текст из: {events}")
+                    logger.error(f"Не удалось извлечь текст из: {json.dumps(events, indent=2, ensure_ascii=False)}")
                     return "Агент не вернул ответ"
                 
-                logger.debug(f"Получен ответ от ADK: {answer[:100]}...")
+                logger.debug(f"=== EXTRACTED ANSWER ===")
+                logger.debug(f"Answer: {answer}")
                 return answer
                 
         except aiohttp.ClientError as e:
@@ -395,7 +403,26 @@ async def main() -> None:
             "/reset — сбросить историю\n"
             "/help — эта справка"
         )
-    
+
+    def markdown_to_safe_html(text: str) -> str:
+        """Конвертация Markdown в безопасный HTML для Telegram"""
+        # Экранируем HTML
+        text = html_module.escape(text)
+        
+        # **bold** -> <b>bold</b>
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # *italic* -> <i>italic</i> (только если не внутри bold)
+        text = re.sub(r'(?<!</b>)\*([^*]+?)\*(?!<b>)', r'<i>\1</i>', text)
+        
+        # `code` -> <code>code</code>
+        text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+        
+        # [text](url) -> <a href="url">text</a>
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
+        
+        return text
+
     @dp.message(F.text)
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
@@ -421,8 +448,9 @@ async def main() -> None:
             await store.append(int(user_id), "user", user_text)
             await store.append(int(user_id), "model", answer)
             
-            # Отправка ответа
-            await m.answer(answer)
+            # Конвертируем в HTML и отправляем
+            html_answer = markdown_to_safe_html(answer)
+            await m.answer(html_answer, parse_mode="HTML")
             
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
@@ -430,7 +458,7 @@ async def main() -> None:
                 "😔 Произошла ошибка при обработке запроса.\n"
                 "Попробуйте позже или используйте /reset для сброса диалога."
             )
-    
+
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
