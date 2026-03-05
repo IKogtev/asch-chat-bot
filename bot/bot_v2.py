@@ -179,7 +179,7 @@ class AdkApiClient:
             logger.error(f"Ошибка сети при ensure_session: {e}", exc_info=True)
             raise
     
-    async def run(self, user_id: str, session_id: str, text: str) -> str:
+    async def run(self, user_id: str, session_id: str, text: str, history: list[dict] = None) -> tuple[str, list]:
         """Отправка сообщения агенту и получение ответа"""
         if not self.http:
             logger.error("HTTP сессия не инициализирована")
@@ -197,6 +197,10 @@ class AdkApiClient:
             }
         }
         
+        # Добавляем историю, если она передана
+        if history:
+            payload["history"] = history
+            
         try:
             logger.debug(f"=== ADK REQUEST ===")
             logger.debug(f"URL: {url}")
@@ -219,18 +223,18 @@ class AdkApiClient:
                     logger.debug(f"Events structure: {json.dumps(events, indent=2, ensure_ascii=False)}")
                 except Exception as e:
                     logger.warning(f"Ответ не в формате JSON: {text_resp[:200]}")
-                    return text_resp
+                    return text_resp, []
                 
                 answer = self._extract_model_text(events)
                 
                 if not answer:
                     logger.warning("Пустой ответ от агента")
                     logger.error(f"Не удалось извлечь текст из: {json.dumps(events, indent=2, ensure_ascii=False)}")
-                    return "Агент не вернул ответ"
+                    return "Агент не вернул ответ", events
                 
                 logger.debug(f"=== EXTRACTED ANSWER ===")
                 logger.debug(f"Answer: {answer}")
-                return answer
+                return answer, events  # Возвращаем и ответ, и события
                 
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при run: {e}", exc_info=True)
@@ -323,6 +327,7 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
+    
 async def main() -> None:
     """Главная функция бота"""
     logger.info("=" * 60)
@@ -389,7 +394,8 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Ошибка при сбросе истории: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-    
+
+
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
@@ -439,10 +445,95 @@ async def main() -> None:
             # Создание/проверка сессии
             await adk.ensure_session(user_id=user_id, session_id=session_id)
             
-            # Отправка в агент
-            answer = await adk.run(user_id=user_id, session_id=session_id, text=user_text)
+            # Загрузка истории из БД
+            history = await store.get_history(int(user_id))
+            logger.debug(f"Загружено {len(history)} сообщений из истории")
+
+            # Конвертируем в формат ADK/Gemini
+            history = [
+                {
+                    "role": msg["role"],
+                    "parts": [{"text": msg["content"]}]
+                }
+                for msg in history_raw
+            ]
+
+            # Отправка в агент С ИСТОРИЕЙ
+            answer, events = await adk.run(
+                user_id=user_id, 
+                session_id=session_id, 
+                text=user_text,
+                history=history  # Передаём историю
+            )
             
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+            
+            # Логируем метаданные только в DEBUG режиме
+            if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG" and events:
+                try:
+                    for event in events:
+                        if not isinstance(event, dict):
+                            continue
+                        
+                        # 1. Логируем usageMetadata (токены)
+                        if "usageMetadata" in event:
+                            usage = event["usageMetadata"]
+                            logger.debug(
+                                f"📊 Использование токенов: "
+                                f"prompt={usage.get('promptTokenCount', 0)}, "
+                                f"response={usage.get('candidatesTokenCount', 0)}, "
+                                f"total={usage.get('totalTokenCount', 0)}, "
+                                f"cached={usage.get('cachedContentTokenCount', 0)}"
+                            )
+                        
+                        # 2. Логируем actions (может содержать tool info)
+                        if "actions" in event and event["actions"]:
+                            actions = event["actions"]
+                            
+                            # Проверяем stateDelta
+                            if actions.get("stateDelta"):
+                                logger.debug(f"🔄 State delta: {json.dumps(actions['stateDelta'], indent=2, ensure_ascii=False)}")
+                            
+                            # Проверяем artifactDelta
+                            if actions.get("artifactDelta"):
+                                logger.debug(f"📦 Artifact delta: {json.dumps(actions['artifactDelta'], indent=2, ensure_ascii=False)}")
+                            
+                            # Проверяем requestedToolConfirmations
+                            if actions.get("requestedToolConfirmations"):
+                                logger.debug(f"🔧 Tool confirmations: {json.dumps(actions['requestedToolConfirmations'], indent=2, ensure_ascii=False)}")
+                        
+                        # 3. Логируем author и invocationId
+                        if "author" in event:
+                            logger.debug(f"👤 Author: {event['author']}")
+                        
+                        if "invocationId" in event:
+                            logger.debug(f"🆔 Invocation ID: {event['invocationId']}")
+                        
+                        # 4. Проверяем content.parts на tool_use/tool_response
+                        if "content" in event and isinstance(event["content"], dict):
+                            parts = event["content"].get("parts", [])
+                            for part in parts:
+                                if not isinstance(part, dict):
+                                    continue
+                                
+                                # Если есть tool_use
+                                if "tool_use" in part:
+                                    logger.debug(f"🔧 Tool use: {json.dumps(part['tool_use'], indent=2, ensure_ascii=False)}")
+                                
+                                # Если есть tool_response
+                                if "tool_response" in part:
+                                    logger.debug(f"📥 Tool response: {json.dumps(part['tool_response'], indent=2, ensure_ascii=False)}")
+                                
+                                # Если есть function_call (альтернативный формат)
+                                if "function_call" in part:
+                                    logger.debug(f"🔧 Function call: {json.dumps(part['function_call'], indent=2, ensure_ascii=False)}")
+                                
+                                # Если есть function_response
+                                if "function_response" in part:
+                                    logger.debug(f"📥 Function response: {json.dumps(part['function_response'], indent=2, ensure_ascii=False)}")
+                
+                except Exception as log_err:
+                    logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")            
             
             # Сохранение в БД
             await store.append(int(user_id), "user", user_text)
