@@ -11,6 +11,7 @@ from qdrant_client.models import (
     )
 from enum import Enum
 from app.utils.utillites import RemoteEmbedding, chunk_id_to_uuid, meta_id_for_collection
+from app.models import CollectionType as CollectionTypeAlias
 
 class CollectionType(str, Enum):
     DOCUMENTS = "documents"
@@ -83,6 +84,7 @@ class QdrantService:
                 print(f"Created collection: {self.collection_name}")
             else:
                 print(f"Collection {self.collection_name} already exists")
+            self.switch_alias(self.collection_name, CollectionTypeAlias.kb)
         except Exception as e:
             print(f"Error ensuring collection: {e}")
     
@@ -277,6 +279,7 @@ class QdrantService:
                         "_max_chunk_index": chunk_index,
                         "created_at": payload.get("created_at", self.get_date_iso("2000-01-01")),
                         "section_path": payload.get("section_path", []),
+                        "content_hash": payload.get("content_hash"),
                     }
                 else: 
                     docs[doc_id]["_max_chunk_index"] = max(
