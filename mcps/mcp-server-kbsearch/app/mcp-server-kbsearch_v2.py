@@ -15,6 +15,7 @@ from datetime import datetime
 import uvicorn
 from dotenv import load_dotenv
 import re
+import json
 import os, shutil
 
 # вынесенная работа с хранилищем, аналогичная с faq 
@@ -84,7 +85,9 @@ MAP_TRUE = False
 # настраиваем логирование сервера
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-logger = setup_logger("kbsearch_server", service_dir=KB_SERVICE_DIR, log_level)
+logger = setup_logger("kbsearch_server", service_dir=KB_SERVICE_DIR, log_level=LOG_LEVEL)
+
+logger.info(f"Logging level: {LOG_LEVEL}")
 #  создаем storage объект, отвечающий за всю работу с хранилищами
 storage = LocalStorage(documents_dir=KB_DOCUMENTS_DIR, service_dir=KB_SERVICE_DIR,
                        local_mount=KB_LOCAL_MOUNT if IN_DOCKER else None,
@@ -321,9 +324,11 @@ async def kb_search(
                 results.append(result)
             
             logger.info(f"Найдено {len(results)} результатов")
+            
             for res in results:
                 res['relative_path'] = get_file_link(res['metadata']['source'], res['metadata']['section_path'])
             
+            logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
             return {
                 "success": True,
                 "query": query,

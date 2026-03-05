@@ -20,7 +20,7 @@ def setup_logger(name: str, service_dir, log_level: str ="INFO") -> logging.Logg
         datefmt='%Y-%m-%d %H:%M:%S')
     # STDOUT handler
     stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(logging.INFO)
+    stdout_handler.setLevel(log_level_dict[log_level])
     stdout_handler.setFormatter(formatter)
     logger.addHandler(stdout_handler)
     # File handler (DEV)
