@@ -191,19 +191,38 @@ services:
     environment:
       - NODE_ENV=production
 
+  # file-manager:
+  #   image: filebrowser/filebrowser:latest
+  #   container_name: kb-file-ui
+  #   user: "0:0"
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8081:80"
+  #   volumes:
+  #     - ./kb_storage:/srv  # Монтируем ту же папку, что и у kb-manager
+  #     - ./filebrowser_data:/config
+  #   environment:
+  #     - FB_DATABASE=/config/database.db
+  #     - FB_CONFIG=/config/settings.json
+  #   networks:
+  #     - aszh-bot-network
   file-manager:
     image: filebrowser/filebrowser:latest
     container_name: kb-file-ui
     user: "0:0"
     restart: unless-stopped
+    entrypoint: ["/entrypoint.sh"]
     ports:
       - "8081:80"
     volumes:
-      - ./kb_storage:/srv  # Монтируем ту же папку, что и у kb-manager
-      - ./filebrowser_data:/config
+      - ./kb_storage:/srv
+      - ./filebrowser_data:/config      # ← тут будет и БД, и конфиг
+      - ./entrypoint.sh:/entrypoint.sh:ro
     environment:
       - FB_DATABASE=/config/database.db
       - FB_CONFIG=/config/settings.json
+      - FB_ADMIN_USER=admin                  # ← логин (можно вынести в .env)
+      - FB_ADMIN_PASSWORD=super_secure_password                           # ← загружаем переменные из файла
     networks:
       - aszh-bot-network
 
