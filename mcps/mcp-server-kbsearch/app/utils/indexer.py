@@ -316,7 +316,7 @@ class Indexer:
             "error": None
         }
         try:
-            self.logger.info("Очищаем FAQ индекс...")
+            self.logger.info("Очищаем индекс...")
             target = collection_name if collection_name else self.cfg.qdrant_alias
             is_active_alias = (target==self.cfg.qdrant_alias)
             if self.cfg.use_qdrant:
@@ -357,7 +357,7 @@ class Indexer:
             result['success'] = True
             return result
         except Exception as e:
-            self.logger.error(f"Ошибка при очистке FAQ индекса: {e}")
+            self.logger.error(f"Ошибка при очистке индекса: {e}")
             return result
         
     def load_metadata(self) -> Dict:
@@ -733,8 +733,13 @@ class Indexer:
             return False
     
     def get_retriever_for_collection(self, collection, top_k, filters: dict | None=None):
-        collection_name = collection or self.get_active_collection()
+        collection_name = collection
+        if collection_name is None: 
+            collection_name = self.get_active_collection() 
         client = self._get_qdrant_client()
+        self.logger.info(f"Name of collection: {collection_name}")
+        if not client.collection_exists(collection_name):
+            collection_name = self.get_active_collection()
         qdrant_filter = None
         if filters:
             conditions = []
