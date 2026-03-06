@@ -266,7 +266,7 @@ mcp = FastMCP("kbsearch")
 @mcp.tool()
 async def kb_search(
     query: Annotated[str, "Search phrase to match against the indexed files"],
-    collection: Annotated[str, "Target FAQ collection. Must be provided"],
+    collection: Annotated[str| None, "Target KB collection. Must be provided"]=None,
     filters: Annotated[dict | None,
         """
         Optional metadata filters.
@@ -300,10 +300,13 @@ async def kb_search(
                 "results": []
             }
         if not indexer.cfg.use_qdrant and not kb_runtime.initialized:
-                return {"success": False, "error": "Локальный FAQ не инициализирован"}
+                return {"success": False, "error": "Локальный KB не инициализирован"}
         try:
             # Поиск ВНУТРИ блокировки - безопасно
-            retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
+            if collection:
+                retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
+            else:
+                retriever = indexer.get_retriever_for_collection(collection=None, top_k=top_k, filters=filters)
             nodes = retriever.retrieve(query)
             if not nodes:
                 return {
@@ -551,7 +554,7 @@ async def kb_collections_delete(request: Request) -> JSONResponse:
     """
     Endpoint to delete collection
     Usage:
-    "curl -X POST http://localhost:7001/kb/collections/delete -H "Content-Type: application/json" -d '{"collection":"faq_collection_v2"}'"
+    "curl -X POST http://localhost:7001/kb/collections/delete -H "Content-Type: application/json" -d '{"collection":"kb_collection"}'"
     """
     payload = await request.json()
     collection = payload.get("collection")
