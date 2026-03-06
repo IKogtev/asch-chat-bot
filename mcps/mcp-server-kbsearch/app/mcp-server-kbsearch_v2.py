@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 # FastMCP
 from typing import Annotated, Dict, List
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
 # Утилиты
 import asyncio
 from pathlib import Path
@@ -278,38 +279,42 @@ async def kb_search(
         """] = None,
     top_k: Annotated[int, "Number of results to return (default: 10)"] = SIMILARITY_TOP_K,
     include_metadata: Annotated[bool, "Include document metadata in the output"] = True,
-) -> Dict:
+):
     """
     Search over pre-indexed files in the internal knowledge base.
 
     The `query` text is searched EXACTLY as provided — no rewriting, expansion, or paraphrasing is applied.
     Use this tool when a user asks something that should be matched against the indexed documents.
-    `top_k` controls how many matching passages to return. 
+    `top_k` controls how many matching passages to return.
     Set `include_metadata=True` if document metadata is needed.
 
     Not for web search or database queries. Only searches the pre-indexed documents.
     """
-    logger.info(f"Поиск: '{query}' (top_k={top_k}), collection={collection},  filters={filters}")
-    
+    logger.info(f"Поиск: '{query}' (top_k={top_k}), collection={collection}, filters={filters}")
+
     async with kb_lock:
         if not kb_runtime.initialized or not indexer.retriever:
             logger.warning("KB не инициализирована")
-            return {
-                "success": False,
-                "error": "База знаний не инициализирована",
-                "results": []
-            }
+            return ToolResult(
+            content="База знаний не инициализирована",
+            structured_content=None,
+            is_error=True
+        )
+
         if not indexer.cfg.use_qdrant and not kb_runtime.initialized:
-                return {"success": False, "error": "Локальный FAQ не инициализирован"}
+            return  ToolResult(
+            content="Локальный FAQ не инициализирован",
+            structured_content=None,
+            is_error=True
+        )
+
         try:
-            # Поиск ВНУТРИ блокировки - безопасно
             retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
             nodes = retriever.retrieve(query)
+
             if not nodes:
-                return {
-                    "success": False,
-                    "error": "Релевантные ответы не найдены"
-                }
+                return "Релевантные ответы не найдены"
+
             results = []
             for i, node in enumerate(nodes[:top_k], 1):
                 result = {
@@ -317,33 +322,83 @@ async def kb_search(
                     "score": node.score,
                     "content": node.get_content()[:500],
                 }
-                
+
                 if include_metadata:
-                    result["metadata"] = node.metadata
-                
+                    result["metadata"] = node.metadata or {}
+
                 results.append(result)
-            
+
             logger.info(f"Найдено {len(results)} результатов")
-            
+
             for res in results:
-                res['metadata']['relative_path'] = get_file_link(res['metadata']['source'], res['metadata']['section_path'])
-            
+                metadata = res.get("metadata") or {}
+                metadata["relative_path"] = get_file_link(
+                    metadata.get("source", ""),
+                    metadata.get("section_path", [])
+                )
+                res["metadata"] = metadata
+
             logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
-            return {
-                "success": True,
-                "query": query,
-                "results_count": len(results),
-                "results": results
-            }
-            
+
+            def cleanup_label(text: str) -> str:
+                text = re.sub(r"^\d+[_\-\s]*", "", text)
+                return text.strip()
+
+            def make_title(metadata: dict) -> str:
+                section = metadata.get("section_path", [])
+                source = metadata.get("source", "")
+
+                cleaned = [cleanup_label(x) for x in section if x]
+
+                if len(cleaned) >= 2:
+                    return " — ".join(cleaned[-2:])
+                if cleaned:
+                    return cleaned[-1]
+                return source
+
+            def build_prompt(results: list[dict], question: str) -> str:
+                blocks = []
+
+                for i, item in enumerate(results):
+                    text = item["content"].strip()
+                    metadata = item.get("metadata", {})
+                    title = make_title(metadata)
+                    relative_path = metadata.get("relative_path", "")
+                    doc_id = metadata.get("document_id", "")
+
+                    block = f"""[{i}] {title}
+RELATIVE_PATH: {relative_path}
+
+DOCUMENT_ID: {doc_id}
+
+{text}
+"""
+                    blocks.append(block)
+
+                context = "\n---\n\n".join(blocks)
+
+                return f"""Используй только информацию из CONTEXT.
+Если ответа нет в контексте — напиши "Не знаю".
+
+CONTEXT
+{context}
+
+QUESTION
+{question}
+"""
+            prompt = build_prompt(results, query)
+            return ToolResult(
+            content=prompt,
+            structured_content=None,
+        )
+
         except Exception as e:
             logger.error(f"Ошибка при поиске: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-                "results": []
-            }
-
+            return ToolResult(
+            content=f"Ошибка при поиске: {e}",
+            structured_content=None,
+            is_error=True
+        )
 @mcp.tool()
 async def get_kb_info() -> Dict:
     """
