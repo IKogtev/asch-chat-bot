@@ -574,26 +574,29 @@ async def main() -> None:
                         file_path = await doc_handler.download_document(doc_id)
                         
                         if file_path and file_path.exists():
-                            # Отправляем файл
+                            # Используем оригинальное имя файла
                             filename = file_path.name
                             document = FSInputFile(str(file_path), filename=filename)
                             await m.answer_document(document, caption=f"📄 {filename}")
-                            logger.info(f"✅ Документ {filename} отправлен user_id={user_id}")
+                            logger.info(f"✅ Документ '{filename}' (id: {doc_id}) отправлен user_id={user_id}")
                         else:
-                            logger.warning(f"⚠️ Файл не найден: {doc_id}")
-                            await m.answer(f"⚠️ Не удалось загрузить документ {doc_id}")
+                            logger.warning(f"⚠️ Файл не найден для document_id: {doc_id}")
+                            await m.answer(f"⚠️ Не удалось загрузить документ")
                             
                     except Exception as doc_err:
                         logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
                         await m.answer(f"❌ Ошибка при загрузке документа")
 
+                    # Удаляем временный файл после отправки
                     try:
                         if file_path and file_path.exists():
-                            file_path.unlink()  # Удаляем временный файл
-                            logger.debug(f"🗑️ Удалён временный файл: {filename}")
+                            temp_filename = file_path.name  # ✅ Сохраняем имя перед удалением
+                            file_path.unlink()
+                            logger.debug(f"🗑️ Удалён временный файл: {temp_filename}")
                     except Exception as e:
-                        logger.warning(f"Не удалось удалить файл {filename}: {e}")
-                                    
+                        temp_filename = file_path.name if file_path else "unknown"
+                        logger.warning(f"Не удалось удалить файл {temp_filename}: {e}")
+                                                                                    
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(

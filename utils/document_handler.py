@@ -49,25 +49,41 @@ class DocumentHandler:
                         logger.error(f"Ошибка загрузки документа {document_id}: HTTP {response.status}")
                         return None
                     
-                    # Получить имя файла из заголовков
+                    # Получить оригинальное имя файла из заголовков
                     content_disposition = response.headers.get('Content-Disposition', '')
-                    filename = document_id
-                    if 'filename=' in content_disposition:
-                        filename = content_disposition.split('filename=')[-1].strip('"')
+                    filename = None
                     
-                    # Сохранить файл
-                    file_path = self.downloads_dir / f"{document_id}_{filename}"
+                    if 'filename=' in content_disposition:
+                        # Извлекаем имя файла из Content-Disposition
+                        filename = content_disposition.split('filename=')[-1].strip('"\'')
+                    
+                    # Если имя не найдено, используем document_id
+                    if not filename:
+                        logger.warning(f"Не удалось извлечь имя файла для {document_id}, используем document_id")
+                        filename = f"{document_id}.file"
+                    
+                    # Сохранить файл с оригинальным именем
+                    file_path = self.downloads_dir / filename
+                    
+                    # Если файл с таким именем уже существует, добавляем суффикс
+                    if file_path.exists():
+                        stem = file_path.stem
+                        suffix = file_path.suffix
+                        counter = 1
+                        while file_path.exists():
+                            file_path = self.downloads_dir / f"{stem}_{counter}{suffix}"
+                            counter += 1
                     
                     with open(file_path, 'wb') as f:
                         f.write(await response.read())
                     
-                    logger.info(f"Документ {document_id} скачан: {file_path}")
+                    logger.info(f"Документ {document_id} скачан как: {filename}")
                     return file_path
                     
         except Exception as e:
             logger.error(f"Ошибка при скачивании документа {document_id}: {e}", exc_info=True)
             return None
-    
+        
     async def download_documents(self, document_ids: List[str]) -> List[Path]:
         """
         Скачать несколько документов
