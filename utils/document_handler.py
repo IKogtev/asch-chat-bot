@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import List, Tuple, Optional
 from .logger import setup_logger
+import cgi
+from urllib.parse import unquote
 
 logger = setup_logger("document_handler", "document_handler.log")
 
@@ -31,12 +33,7 @@ class DocumentHandler:
         return cleaned_text
     
     async def download_document(self, document_id: str) -> Optional[Path]:
-        """
-        Скачать документ через KB Manager API
-        
-        Returns:
-            Path к скачанному файлу или None при ошибке
-        """
+        """Скачать документ через KB Manager API"""
         url = f"{self.kb_manager_url}/api/documents/download/{document_id}"
         headers = {}
         if self.kb_manager_token:
@@ -49,26 +46,29 @@ class DocumentHandler:
                         logger.error(f"Ошибка загрузки документа {document_id}: HTTP {response.status}")
                         return None
                     
-                    # Получить оригинальное имя файла из заголовков
+                    # Парсинг Content-Disposition
                     content_disposition = response.headers.get('Content-Disposition', '')
                     filename = None
                     
-                    if 'filename=' in content_disposition:
-                        # Извлекаем имя файла из Content-Disposition
-                        filename = content_disposition.split('filename=')[-1].strip('"\'')
+                    if content_disposition:
+                        _, params = cgi.parse_header(content_disposition)
+                        # Поддержка filename* (RFC 5987) и обычного filename
+                        filename = params.get('filename*') or params.get('filename')
+                        
+                        # Декодирование RFC 5987: utf-8''encoded_name
+                        if filename and "''" in filename:
+                            filename = unquote(filename.split("''", 1)[-1])
                     
-                    # Если имя не найдено, используем document_id
                     if not filename:
-                        logger.warning(f"Не удалось извлечь имя файла для {document_id}, используем document_id")
+                        logger.warning(f"Не удалось извлечь имя файла для {document_id}")
                         filename = f"{document_id}.file"
                     
-                    # Сохранить файл с оригинальным именем
+                    # Сохранение файла
                     file_path = self.downloads_dir / filename
                     
-                    # Если файл с таким именем уже существует, добавляем суффикс
+                    # Добавление суффикса если файл существует
                     if file_path.exists():
-                        stem = file_path.stem
-                        suffix = file_path.suffix
+                        stem, suffix = file_path.stem, file_path.suffix
                         counter = 1
                         while file_path.exists():
                             file_path = self.downloads_dir / f"{stem}_{counter}{suffix}"
@@ -83,7 +83,7 @@ class DocumentHandler:
         except Exception as e:
             logger.error(f"Ошибка при скачивании документа {document_id}: {e}", exc_info=True)
             return None
-        
+            
     async def download_documents(self, document_ids: List[str]) -> List[Path]:
         """
         Скачать несколько документов

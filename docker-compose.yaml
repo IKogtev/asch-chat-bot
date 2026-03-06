@@ -60,6 +60,8 @@ services:
       - KB_COLLECTION=${KB_COLLECTION}
     volumes:
       - ./agent:/app/agent
+    tmpfs:
+      - /app/agent/.adk:size=100M
     networks:
       - aszh-bot-network
 

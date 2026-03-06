@@ -561,10 +561,11 @@ async def main() -> None:
             # Очищаем ответ от [document_id:...]
             clean_answer = doc_handler.remove_document_ids(answer)
             
-            # Конвертируем в HTML и отправляем
-            html_answer = markdown_to_safe_html(clean_answer)
-            await m.answer(html_answer, parse_mode="HTML")
-            
+            # Отправляем текст только если он не пустой
+            if clean_answer.strip():
+                html_answer = markdown_to_safe_html(clean_answer)
+                await m.answer(html_answer, parse_mode="HTML")
+                            
             # Если есть документы - скачиваем и отправляем
             if doc_ids:
                 logger.info(f"📎 Найдено {len(doc_ids)} документов для отправки")
