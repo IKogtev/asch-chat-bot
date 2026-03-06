@@ -1,13 +1,16 @@
 import asyncio
 import os
 from typing import Optional
+import json
+import html as html_module
+import re
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,FSInputFile
+from aiogram.types import Message
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
-from pathlib import Path
 import aiohttp
 import time
 import tempfile
@@ -16,6 +19,7 @@ import tempfile
 load_dotenv(override=True)
 
 from utils import setup_logger
+from utils.document_handler import DocumentHandler
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -193,7 +197,7 @@ class AdkApiClient:
             logger.error(f"Ошибка сети при ensure_session: {e}", exc_info=True)
             raise
     
-    async def run(self, user_id: str, session_id: str, text: str) -> str:
+    async def run(self, user_id: str, session_id: str, text: str, history: list[dict] = None) -> tuple[str, list]:
         """Отправка сообщения агенту и получение ответа"""
         if not self.http:
             logger.error("HTTP сессия не инициализирована")
@@ -211,12 +215,21 @@ class AdkApiClient:
             }
         }
         
+        # Добавляем историю, если она передана
+        if history:
+            payload["history"] = history
+            
         try:
-            logger.debug(f"Отправка в ADK: POST {url}")
-            logger.debug(f"Payload: {payload}")
+            logger.debug(f"=== ADK REQUEST ===")
+            logger.debug(f"URL: {url}")
+            logger.debug(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
             
             async with self.http.post(url, json=payload) as resp:
                 text_resp = await resp.text()
+                
+                logger.debug(f"=== ADK RESPONSE ===")
+                logger.debug(f"Status: {resp.status}")
+                logger.debug(f"Raw response: {text_resp[:1000]}")
                 
                 if resp.status != 200:
                     logger.error(f"ADK run failed: {resp.status} {text_resp}")
@@ -224,22 +237,22 @@ class AdkApiClient:
                 
                 try:
                     events = await resp.json()
-                    # Добавь это логирование
-                    logger.debug(f"Структура ответа ADK: {events}")
+                    logger.debug(f"=== PARSED EVENTS ===")
+                    logger.debug(f"Events structure: {json.dumps(events, indent=2, ensure_ascii=False)}")
                 except Exception as e:
                     logger.warning(f"Ответ не в формате JSON: {text_resp[:200]}")
-                    return text_resp
+                    return text_resp, []
                 
                 answer = self._extract_model_text(events)
                 
                 if not answer:
                     logger.warning("Пустой ответ от агента")
-                    # Добавь вывод структуры для анализа
-                    logger.error(f"Не удалось извлечь текст из: {events}")
-                    return "Агент не вернул ответ"
+                    logger.error(f"Не удалось извлечь текст из: {json.dumps(events, indent=2, ensure_ascii=False)}")
+                    return "Агент не вернул ответ", events
                 
-                logger.debug(f"Получен ответ от ADK: {answer[:100]}...")
-                return answer
+                logger.debug(f"=== EXTRACTED ANSWER ===")
+                logger.debug(f"Answer: {answer}")
+                return answer, events  # Возвращаем и ответ, и события
                 
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при run: {e}", exc_info=True)
@@ -332,11 +345,13 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
+    
 async def main() -> None:
     """Главная функция бота"""
     logger.info("=" * 60)
     logger.info("Запуск Telegram бота")
     logger.info("=" * 60)
+    
     # Загрузка конфигурации
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not tg_token:
@@ -351,9 +366,17 @@ async def main() -> None:
     adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
     
+    # Конфигурация для DocumentHandler
+    # kb_manager_url = os.getenv("KB_MANAGER_URL", "http://kb-manager:8001").strip()
+    kb_manager_url = os.getenv("KB_MANAGER_URL", KB_MANAGER_URL).strip()
+    kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
+    downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
+    
     logger.info(f"Конфигурация:")
     logger.info(f"  ADK Base: {adk_base}")
     logger.info(f"  ADK App: {adk_app}")
+    logger.info(f"  KB Manager: {kb_manager_url}")
+    logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
     
     # Инициализация компонентов
@@ -367,8 +390,15 @@ async def main() -> None:
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
     
-    logger.info("Все компоненты инициализированы")
+    # Инициализация DocumentHandler
+    doc_handler = DocumentHandler(
+        kb_manager_url=kb_manager_url,
+        kb_manager_token=kb_manager_token,
+        downloads_dir=downloads_dir
+    )
     
+    logger.info("Все компоненты инициализированы")
+
     # Обработчики команд
     @dp.message(Command("start"))
     async def start(m: Message) -> None:
@@ -382,7 +412,7 @@ async def main() -> None:
            TITLE_START,
            reply_markup=menu
         )
-    
+    #домашняя страница
     @dp.callback_query(lambda c: c.data == "home")
     async def go_home(callback: CallbackQuery):
         await callback.answer()
@@ -394,7 +424,7 @@ async def main() -> None:
             TITLE_START,
             reply_markup=menu
         )
-
+    
     @dp.message(Command("reset"))
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
@@ -408,7 +438,8 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Ошибка при сбросе истории: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-    
+
+
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
@@ -422,7 +453,26 @@ async def main() -> None:
             "/reset — сбросить историю\n"
             "/help — эта справка"
         )
-    
+
+    def markdown_to_safe_html(text: str) -> str:
+        """Конвертация Markdown в безопасный HTML для Telegram"""
+        # Экранируем HTML
+        text = html_module.escape(text)
+        
+        # **bold** -> <b>bold</b>
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # *italic* -> <i>italic</i> (только если не внутри bold)
+        text = re.sub(r'(?<!</b>)\*([^*]+?)\*(?!<b>)', r'<i>\1</i>', text)
+        
+        # `code` -> <code>code</code>
+        text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+        
+        # [text](url) -> <a href="url">text</a>
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
+        
+        return text
+
     @dp.message(F.text)
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
@@ -439,25 +489,146 @@ async def main() -> None:
             # Создание/проверка сессии
             await adk.ensure_session(user_id=user_id, session_id=session_id)
             
-            # Отправка в агент
-            answer = await adk.run(user_id=user_id, session_id=session_id, text=user_text)
+            # Загрузка истории из БД
+            history_raw = await store.get_history(int(user_id))
+            logger.debug(f"Загружено {len(history_raw)} сообщений из истории")
+
+            # Конвертируем в формат ADK/Gemini
+            history = [
+                {
+                    "role": msg["role"],
+                    "parts": [{"text": msg["content"]}]
+                }
+                for msg in history_raw
+            ]
+
+            # Отправка в агент С ИСТОРИЕЙ
+            answer, events = await adk.run(
+                user_id=user_id, 
+                session_id=session_id, 
+                text=user_text,
+                history=history  # Передаём историю
+            )
             
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+            
+            # Логируем метаданные только в DEBUG режиме
+            if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG" and events:
+                try:
+                    for event in events:
+                        if not isinstance(event, dict):
+                            continue
+                        
+                        # 1. Логируем usageMetadata (токены)
+                        if "usageMetadata" in event:
+                            usage = event["usageMetadata"]
+                            logger.debug(
+                                f"📊 Использование токенов: "
+                                f"prompt={usage.get('promptTokenCount', 0)}, "
+                                f"response={usage.get('candidatesTokenCount', 0)}, "
+                                f"total={usage.get('totalTokenCount', 0)}, "
+                                f"cached={usage.get('cachedContentTokenCount', 0)}"
+                            )
+                        
+                        # 2. Логируем actions (может содержать tool info)
+                        if "actions" in event and event["actions"]:
+                            actions = event["actions"]
+                            
+                            # Проверяем stateDelta
+                            if actions.get("stateDelta"):
+                                logger.debug(f"🔄 State delta: {json.dumps(actions['stateDelta'], indent=2, ensure_ascii=False)}")
+                            
+                            # Проверяем artifactDelta
+                            if actions.get("artifactDelta"):
+                                logger.debug(f"📦 Artifact delta: {json.dumps(actions['artifactDelta'], indent=2, ensure_ascii=False)}")
+                            
+                            # Проверяем requestedToolConfirmations
+                            if actions.get("requestedToolConfirmations"):
+                                logger.debug(f"🔧 Tool confirmations: {json.dumps(actions['requestedToolConfirmations'], indent=2, ensure_ascii=False)}")
+                        
+                        # 3. Логируем author и invocationId
+                        if "author" in event:
+                            logger.debug(f"👤 Author: {event['author']}")
+                        
+                        if "invocationId" in event:
+                            logger.debug(f"🆔 Invocation ID: {event['invocationId']}")
+                        
+                        # 4. Проверяем content.parts на tool_use/tool_response
+                        if "content" in event and isinstance(event["content"], dict):
+                            parts = event["content"].get("parts", [])
+                            for part in parts:
+                                if not isinstance(part, dict):
+                                    continue
+                                
+                                # Если есть tool_use
+                                if "tool_use" in part:
+                                    logger.debug(f"🔧 Tool use: {json.dumps(part['tool_use'], indent=2, ensure_ascii=False)}")
+                                
+                                # Если есть tool_response
+                                if "tool_response" in part:
+                                    logger.debug(f"📥 Tool response: {json.dumps(part['tool_response'], indent=2, ensure_ascii=False)}")
+                                
+                                # Если есть function_call (альтернативный формат)
+                                if "function_call" in part:
+                                    logger.debug(f"🔧 Function call: {json.dumps(part['function_call'], indent=2, ensure_ascii=False)}")
+                                
+                                # Если есть function_response
+                                if "function_response" in part:
+                                    logger.debug(f"📥 Function response: {json.dumps(part['function_response'], indent=2, ensure_ascii=False)}")
+                
+                except Exception as log_err:
+                    logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")            
             
             # Сохранение в БД
             await store.append(int(user_id), "user", user_text)
             await store.append(int(user_id), "model", answer)
             
-            # Отправка ответа
-            await m.answer(answer)
+            # Извлекаем document_id из ответа
+            doc_ids = doc_handler.extract_document_ids(answer)
             
+            # Очищаем ответ от [document_id:...]
+            clean_answer = doc_handler.remove_document_ids(answer)
+            
+            # Конвертируем в HTML и отправляем
+            html_answer = markdown_to_safe_html(clean_answer)
+            await m.answer(html_answer, parse_mode="HTML")
+            
+            # Если есть документы - скачиваем и отправляем
+            if doc_ids:
+                logger.info(f"📎 Найдено {len(doc_ids)} документов для отправки")
+                
+                for doc_id in doc_ids:
+                    try:
+                        file_path = await doc_handler.download_document(doc_id)
+                        
+                        if file_path and file_path.exists():
+                            # Отправляем файл
+                            filename = file_path.name
+                            document = FSInputFile(str(file_path), filename=filename)
+                            await m.answer_document(document, caption=f"📄 {filename}")
+                            logger.info(f"✅ Документ {filename} отправлен user_id={user_id}")
+                        else:
+                            logger.warning(f"⚠️ Файл не найден: {doc_id}")
+                            await m.answer(f"⚠️ Не удалось загрузить документ {doc_id}")
+                            
+                    except Exception as doc_err:
+                        logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
+                        await m.answer(f"❌ Ошибка при загрузке документа")
+
+                    try:
+                        if file_path and file_path.exists():
+                            file_path.unlink()  # Удаляем временный файл
+                            logger.debug(f"🗑️ Удалён временный файл: {filename}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить файл {filename}: {e}")
+                                    
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(
                 "😔 Произошла ошибка при обработке запроса.\n"
                 "Попробуйте позже или используйте /reset для сброса диалога."
             )
-
+    
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
         await callback.answer()
@@ -517,7 +688,7 @@ async def main() -> None:
         )
 
         os.remove(tmp.name)
-
+    
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
@@ -551,6 +722,7 @@ async def get_tree_cached():
 
     return TREE_CACHE
 
+#  построить меню на основе дерева папок из kb_manager
 def build_menu_from_tree(tree: dict, path: list[str]):
     node = tree
 
@@ -609,6 +781,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# получить дерево папок
 async def get_kb_tree():
     
     url = f"{KB_MANAGER_URL}/api/filesystem/folders"
@@ -617,6 +790,7 @@ async def get_kb_tree():
         async with session.get(url) as resp:
             return await resp.json()
 
+# получить id документа
 async def get_document_id(path: str) -> str | None:
     filename = path.split("/")[-1]
 
@@ -635,6 +809,8 @@ async def get_document_id(path: str) -> str | None:
             return doc.get("document_id")
 
     return None
+
+
 
 if __name__ == "__main__":
     try:
