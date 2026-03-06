@@ -91,6 +91,10 @@ class FileStorageService:
 
             if path.is_file():
                 current.setdefault("files", []).append(parts[-1])
+                # current.setdefault("files", []).append({
+                #     "name": parts[-1],
+                #     "path": str(rel)
+                # })
 
         return tree
 

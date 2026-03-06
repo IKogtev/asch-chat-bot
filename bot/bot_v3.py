@@ -519,10 +519,12 @@ async def main() -> None:
             return
         doc_id = await get_document_id(path)
         if not doc_id:
-            await callback.answer("Документ не найден", show_alert=True)
-            return
-        
-        url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
+            url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={path}"
+            logger.info(f"url adress for system: {url}")
+            # await callback.answer("Документ не найден", show_alert=True)
+            # return
+        else:
+            url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
         filename = path.split("/")[-1]
 
         # скачиваем файл
