@@ -50,6 +50,7 @@ docker compose up -d --build
 - `GET /api/knowledge-bases` - получить информацию о существующих базах знаний для выбранной коллекции
 - `POST /api/knowledge-bases/delete` - удалить базу знаний
 -  `GET /api/documents/download/{document_id}` - скачать файл документа на основе id 
+-  `GET /api/filesystem/download?path={path_to_file}` - скачать файл документа на основе пути к нему, временный формат
 
 ### Structure:
 KB-Manager UI:

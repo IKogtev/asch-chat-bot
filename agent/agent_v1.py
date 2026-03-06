@@ -30,7 +30,7 @@ MCP_TIMEOUT_SEC = float(os.getenv("MCP_TIMEOUT_SEC", "15"))
 
 # === KB Search Defaults ===
 KB_DEFAULT_COLLECTION = os.getenv("KB_DEFAULT_COLLECTION", "kb_collection")
-KB_SIMILARITY_TOP_K = int(os.getenv("KB_SIMILARITY_TOP_K", "10"))
+KB_SIMILARITY_TOP_K = int(os.getenv("KB_SIMILARITY_TOP_K", "5"))
 
 logger.info(f"Инициализация агента с моделью: {MODEL}")
 logger.info(f"API URL: {API_URL}")
@@ -76,7 +76,19 @@ if not tools:
 # === Создание агента ===
 root_agent = LlmAgent(
     name="local_llm_agent",
-    model=LiteLlm(model=MODEL, api_key=API_KEY, api_base=API_URL),
+    model=LiteLlm(
+        model=MODEL,
+        api_key=API_KEY,
+        api_base=API_URL,
+        # Ограничение длины генерируемого ответа
+        max_tokens=2000,
+        # Температура для более предсказуемых ответов
+        temperature=0.1,
+        # Дополнительные параметры для управления контекстом
+        extra_body={
+            "max_context_length": 35000,  # Резерв для ответа модели
+        }
+    ),
     instruction=system_prompt,
     tools=tools,
 )

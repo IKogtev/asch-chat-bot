@@ -491,6 +491,24 @@ async def filesystem_sync(
 async def get_folders():
     return file_storage_service.build_tree()
 
+@app.get("/api/filesystem/download")
+async def download_filesystem_file(path: str):
+
+    file_path = (KB_STORAGE_ROOT / path).resolve()
+
+    # защита от выхода из root
+    if not str(file_path).startswith(str(KB_STORAGE_ROOT)):
+        raise HTTPException(403, "Invalid path")
+
+    if not file_path.exists():
+        raise HTTPException(404, "File not found")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/octet-stream"
+    )
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)

@@ -91,6 +91,10 @@ class FileStorageService:
 
             if path.is_file():
                 current.setdefault("files", []).append(parts[-1])
+                # current.setdefault("files", []).append({
+                #     "name": parts[-1],
+                #     "path": str(rel)
+                # })
 
         return tree
 
@@ -109,12 +113,11 @@ class FileStorageService:
             self.logger.info("Sync already running")
             return
         self._sync_lock = True
-        self.logger.info("Starting filesystem sync")
-
+        self.logger.info("Starting filesystem sync")  
         disk_files = self.scan_files(kb_id)
         indexed_docs = self.qdrant.list_documents()
         indexed_map = {}
-
+        # строим index_map для сопоставления
         for doc in indexed_docs:
             if doc.get("kb_id") != kb_id:
                 continue
@@ -135,12 +138,57 @@ class FileStorageService:
             if filename not in indexed_map:
                 self.logger.info(f"NEW FILE: {filename}")
                 self._index_file(file, kb_id, collection_type)
+                continue
             # обновление файла в qdrant если есть
-            elif indexed_map[filename][0]["doc_hash"] != file["hash"]:
-                self.logger.info(f"UPDATED FILE: {filename}")
-                for doc in indexed_map[filename]:
+            stored_docs = indexed_map[filename]
+            stored_doc_hash = stored_docs[0].get("doc_hash")
+            current_doc_hash = file["hash"]
+        
+            reindex_needed = False
+            # --- Проверка doc_hash ---
+            if stored_doc_hash != current_doc_hash:
+                self.logger.info(f"UPDATED (doc_hash): {filename}")
+                reindex_needed = True
+
+            else:
+                # --- ДОБАВЛЕНА проверка content_hash ---
+                # собираем существующие content_hash
+                stored_content_hashes = {
+                    doc.get("content_hash")
+                    for doc in stored_docs
+                    if doc.get("content_hash") is not None
+                }
+
+                # генерируем новые чанки временно
+                loader = DocumentLoader(
+                    documents_dir=file["absolute_path"].parent,
+                    service_dir=self.service_dir,
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap
+                )
+                docs, _, _, _ = loader.prepare_docs_texts(
+                    kb_id=kb_id,
+                    filepath=file["absolute_path"],
+                    map_true=False,
+                    user_id="filesystem",
+                )
+
+                new_content_hashes = {
+                    d["meta"]["content_hash"]
+                    for d in docs
+                    if d["meta"].get("content_hash") is not None
+                }
+                if new_content_hashes - stored_content_hashes:
+                    self.logger.info(f"UPDATED (content_hash): {filename}")
+                    reindex_needed = True
+            
+            # --- Переиндексация если нужно ---
+            if reindex_needed:
+                for doc in stored_docs:
                     self.qdrant.delete_document(doc["document_id"])
+
                 self._index_file(file, kb_id, collection_type)
+       
 
         # удалённые файлы, удаление из qdrant если локально удалили
         for filename, docs in indexed_map.items():
@@ -151,6 +199,7 @@ class FileStorageService:
 
         self.logger.info("Filesystem sync completed")
         self._sync_lock = False
+             
 
     # -------------------------------------------------
     # INDEX FILE

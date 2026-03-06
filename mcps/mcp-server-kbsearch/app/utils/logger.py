@@ -6,10 +6,13 @@ from datetime import datetime
 # ЛОГИРОВАНИЕ
 # -------------------------
 
-def setup_logger(name: str, service_dir) -> logging.Logger:
+def setup_logger(name: str, service_dir, log_level: str ="INFO") -> logging.Logger:
     """Настройка структурированного логирования"""
     logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
+    log_level_dict = {"INFO": logging.INFO,
+                      "WARNING": logging.WARNING,
+                      "DEBUG": logging.DEBUG} 
+    logger.setLevel(log_level_dict[log_level])
     if logger.handlers:
         return logger
     formatter = logging.Formatter(
@@ -17,7 +20,7 @@ def setup_logger(name: str, service_dir) -> logging.Logger:
         datefmt='%Y-%m-%d %H:%M:%S')
     # STDOUT handler
     stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(logging.INFO)
+    stdout_handler.setLevel(log_level_dict[log_level])
     stdout_handler.setFormatter(formatter)
     logger.addHandler(stdout_handler)
     # File handler (DEV)

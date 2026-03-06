@@ -6,7 +6,7 @@ from starlette.requests import Request
 from contextlib import asynccontextmanager
 
 # FastMCP
-from typing import Annotated, Dict
+from typing import Annotated, Dict, List
 from fastmcp import FastMCP
 # Утилиты
 import asyncio
@@ -15,6 +15,7 @@ from datetime import datetime
 import uvicorn
 from dotenv import load_dotenv
 import re
+import json
 import os, shutil
 
 # вынесенная работа с хранилищем, аналогичная с faq 
@@ -80,8 +81,13 @@ QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "kb_collection_active")
 # Дополнительные параметры индексации, не обязательные 
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
 MAP_TRUE = False
+
 # настраиваем логирование сервера
-logger = setup_logger("kbsearch_server", service_dir=KB_SERVICE_DIR)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+logger = setup_logger("kbsearch_server", service_dir=KB_SERVICE_DIR, log_level=LOG_LEVEL)
+
+logger.info(f"Logging level: {LOG_LEVEL}")
 #  создаем storage объект, отвечающий за всю работу с хранилищами
 storage = LocalStorage(documents_dir=KB_DOCUMENTS_DIR, service_dir=KB_SERVICE_DIR,
                        local_mount=KB_LOCAL_MOUNT if IN_DOCKER else None,
@@ -241,6 +247,16 @@ async def initialize_kb_on_startup() -> None:
         
     except Exception as e:
         logger.error(f"Критическая ошибка при инициализации KB: {e}", exc_info=True)
+        
+def get_file_link(file_name: Annotated[str, "Name of source file"], section_list: Annotated[List[str], "List of upper folders' name up to storage root folder"]) -> str:
+    """
+    Generates a direct download link for a file.
+    Using in kb_search function to form path relative to storage root and add it to response
+    """
+    file_path = "/".join(section_list) + "/" + file_name
+    # Очищаем путь от возможных начальных слешей
+    clean_path = file_path.lstrip("/")
+    return f"{clean_path}"
 
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
@@ -250,15 +266,14 @@ mcp = FastMCP("kbsearch")
 @mcp.tool()
 async def kb_search(
     query: Annotated[str, "Search phrase to match against the indexed files"],
-    collection: Annotated[str, "Target FAQ collection. Must be provided"],
+    collection: Annotated[str| None, "Target KB collection. Must be provided"]=None,
     filters: Annotated[dict | None,
         """
         Optional metadata filters.
         Example:
         {
-        "kb_id": "default_faq",
-        "category": "HR",
-        "section_path": "vacations"
+        "kb_id": "01_Маркетинговые материалы",
+        "section_relationships": "01_Маркетинговые материалы/02_Fort Knox"
         }
         """] = None,
     top_k: Annotated[int, "Number of results to return (default: 10)"] = SIMILARITY_TOP_K,
@@ -285,10 +300,13 @@ async def kb_search(
                 "results": []
             }
         if not indexer.cfg.use_qdrant and not kb_runtime.initialized:
-                return {"success": False, "error": "Локальный FAQ не инициализирован"}
+                return {"success": False, "error": "Локальный KB не инициализирован"}
         try:
             # Поиск ВНУТРИ блокировки - безопасно
-            retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
+            if collection:
+                retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
+            else:
+                retriever = indexer.get_retriever_for_collection(collection=None, top_k=top_k, filters=filters)
             nodes = retriever.retrieve(query)
             if not nodes:
                 return {
@@ -310,6 +328,10 @@ async def kb_search(
             
             logger.info(f"Найдено {len(results)} результатов")
             
+            for res in results:
+                res['metadata']['relative_path'] = get_file_link(res['metadata']['source'], res['metadata']['section_path'])
+            
+            logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
             return {
                 "success": True,
                 "query": query,
@@ -532,7 +554,7 @@ async def kb_collections_delete(request: Request) -> JSONResponse:
     """
     Endpoint to delete collection
     Usage:
-    "curl -X POST http://localhost:7001/kb/collections/delete -H "Content-Type: application/json" -d '{"collection":"faq_collection_v2"}'"
+    "curl -X POST http://localhost:7001/kb/collections/delete -H "Content-Type: application/json" -d '{"collection":"kb_collection"}'"
     """
     payload = await request.json()
     collection = payload.get("collection")

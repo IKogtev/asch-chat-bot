@@ -74,6 +74,8 @@ services:
         condition: service_healthy
       adk-agent:
         condition: service_started
+      kb-manager:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -81,6 +83,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
+      - KB_MANAGER_URL=http://kb-manager:5000
     networks:
       - aszh-bot-network
 
@@ -143,6 +146,7 @@ services:
       - MCP_TOKEN=${MCP_TOKEN:-REDACTED_EXAMPLE}
       - IN_DOCKER=true
       - LOG_TO_FILE=false
+      - LOG_LEVEL=${KB_LOG_LEVEL:-INFO}
       
       # Настройки удалённого эмбеддинга
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
@@ -187,20 +191,24 @@ services:
       - aszh-bot-network
     environment:
       - NODE_ENV=production
-
+      
   file-manager:
     image: filebrowser/filebrowser:latest
     container_name: kb-file-ui
     user: "0:0"
     restart: unless-stopped
+    entrypoint: ["/entrypoint.sh"]
     ports:
       - "8081:80"
     volumes:
-      - ./kb_storage:/srv  # Монтируем ту же папку, что и у kb-manager
-      - ./filebrowser_data:/config
+      - ./kb_storage:/srv
+      - ./filebrowser_data:/config      # ← тут будет и БД, и конфиг
+      - ./entrypoint.sh:/entrypoint.sh:ro
     environment:
       - FB_DATABASE=/config/database.db
       - FB_CONFIG=/config/settings.json
+      - FB_ADMIN_USER=admin                  # ← логин (можно вынести в .env)
+      - FB_ADMIN_PASSWORD=super_secure_password                           # ← загружаем переменные из файла
     networks:
       - aszh-bot-network
 

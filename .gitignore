@@ -14,3 +14,7 @@ venv/
 
 *.env
 *.code-workspace
+.env
+agent/__pycache__/
+agent/agent/
+filebrowser_data/database.db

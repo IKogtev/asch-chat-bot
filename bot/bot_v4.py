@@ -9,9 +9,11 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 import aiohttp
+import time
+import tempfile
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
@@ -21,6 +23,20 @@ from utils.document_handler import DocumentHandler
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
+CALLBACK_MAP = {}
+TREE_CACHE = None
+TREE_TS = 0
+KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
+TITLE_START = """
+👋 Привет! Я бот базы знаний через Google ADK.
+
+🤖 Использую агент: agent
+
+📋 Команды:
+/reset — сбросить историю диалога
+/help — показать помощь
+📁 Корень
+"""
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -351,7 +367,8 @@ async def main() -> None:
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
     
     # Конфигурация для DocumentHandler
-    kb_manager_url = os.getenv("KB_MANAGER_URL", "http://kb-manager:8001").strip()
+    # kb_manager_url = os.getenv("KB_MANAGER_URL", "http://kb-manager:8001").strip()
+    kb_manager_url = os.getenv("KB_MANAGER_URL", KB_MANAGER_URL).strip()
     kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
     
@@ -388,13 +405,24 @@ async def main() -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
-        
+        tree = await get_tree_cached()
+        menu = build_menu_from_tree(tree, [])
+
         await m.answer(
-            f"👋 Привет! Я бот базы знаний через Google ADK.\n\n"
-            f"🤖 Использую агент: {adk_app}\n\n"
-            f"📋 Команды:\n"
-            f"/reset — сбросить историю диалога\n"
-            f"/help — показать помощь"
+           TITLE_START,
+           reply_markup=menu
+        )
+    #домашняя страница
+    @dp.callback_query(lambda c: c.data == "home")
+    async def go_home(callback: CallbackQuery):
+        await callback.answer()
+
+        tree = await get_tree_cached()
+        menu = build_menu_from_tree(tree, [])
+
+        await callback.message.edit_text(
+            TITLE_START,
+            reply_markup=menu
         )
     
     @dp.message(Command("reset"))
@@ -574,35 +602,92 @@ async def main() -> None:
                         file_path = await doc_handler.download_document(doc_id)
                         
                         if file_path and file_path.exists():
-                            # Используем оригинальное имя файла
+                            # Отправляем файл
                             filename = file_path.name
                             document = FSInputFile(str(file_path), filename=filename)
                             await m.answer_document(document, caption=f"📄 {filename}")
-                            logger.info(f"✅ Документ '{filename}' (id: {doc_id}) отправлен user_id={user_id}")
+                            logger.info(f"✅ Документ {filename} отправлен user_id={user_id}")
                         else:
-                            logger.warning(f"⚠️ Файл не найден для document_id: {doc_id}")
-                            await m.answer(f"⚠️ Не удалось загрузить документ")
+                            logger.warning(f"⚠️ Файл не найден: {doc_id}")
+                            await m.answer(f"⚠️ Не удалось загрузить документ {doc_id}")
                             
                     except Exception as doc_err:
                         logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
                         await m.answer(f"❌ Ошибка при загрузке документа")
 
-                    # Удаляем временный файл после отправки
                     try:
                         if file_path and file_path.exists():
-                            temp_filename = file_path.name  # ✅ Сохраняем имя перед удалением
-                            file_path.unlink()
-                            logger.debug(f"🗑️ Удалён временный файл: {temp_filename}")
+                            file_path.unlink()  # Удаляем временный файл
+                            logger.debug(f"🗑️ Удалён временный файл: {filename}")
                     except Exception as e:
-                        temp_filename = file_path.name if file_path else "unknown"
-                        logger.warning(f"Не удалось удалить файл {temp_filename}: {e}")
-                                                                                    
+                        logger.warning(f"Не удалось удалить файл {filename}: {e}")
+                                    
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(
                 "😔 Произошла ошибка при обработке запроса.\n"
                 "Попробуйте позже или используйте /reset для сброса диалога."
             )
+    
+    @dp.callback_query(F.data.startswith("d:"))
+    async def open_dir(callback: CallbackQuery):
+        await callback.answer()
+        pid = callback.data.split(":")[1]
+
+        path = CALLBACK_MAP.get(pid)
+
+        if path is None:
+            await callback.answer("Кнопка устарела", show_alert=True)
+            return
+
+        path_list = path.split("/") if path else []
+        tree = await get_tree_cached()
+
+        menu = build_menu_from_tree(tree, path_list)
+        title = "📁 /".join(path_list) or TITLE_START
+        await callback.message.edit_text(
+            title,
+            reply_markup=menu
+        )
+
+    @dp.callback_query(F.data.startswith("f:"))
+    async def send_file(callback: CallbackQuery):
+
+        await callback.answer()
+
+        pid = callback.data.split(":")[1]
+        path = CALLBACK_MAP.get(pid)
+
+        if not path:
+            await callback.answer("Файл не найден", show_alert=True)
+            return
+        doc_id = await get_document_id(path)
+        if not doc_id:
+            url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={path}"
+            # await callback.answer("Документ не найден", show_alert=True)
+            # return
+        else:
+            url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
+        filename = path.split("/")[-1]
+
+        # скачиваем файл
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await callback.answer("Ошибка загрузки файла", show_alert=True)
+                    return
+
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                tmp.write(await resp.read())
+                tmp.close()
+
+        # отправляем
+        await callback.message.answer_document(
+            document=FSInputFile(tmp.name, filename=filename),
+            # caption=filename
+        )
+
+        os.remove(tmp.name)
     
     # Запуск бота
     try:
@@ -614,6 +699,118 @@ async def main() -> None:
         await store.close()
         await bot.session.close()
         logger.info("Бот остановлен")
+
+# функция хранения пути
+def store_path(path: str):
+    pid = str(len(CALLBACK_MAP) + 1)
+    CALLBACK_MAP[pid] = path
+
+    if len(CALLBACK_MAP) > 5000:
+        CALLBACK_MAP.clear()
+
+    return pid
+
+# кэширование полученных путей 
+async def get_tree_cached():
+    global TREE_CACHE, TREE_TS
+    # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
+    if time.time() - TREE_TS < 15:
+        return TREE_CACHE
+
+    TREE_CACHE = await get_kb_tree()
+    TREE_TS = time.time()
+
+    return TREE_CACHE
+
+#  построить меню на основе дерева папок из kb_manager
+def build_menu_from_tree(tree: dict, path: list[str]):
+    node = tree
+
+    for p in path:
+        node = node[p]
+
+    buttons = []
+
+    # папки
+    for key, value in node.items():
+        if key == "files":
+            continue
+        full_path = "/".join(path + [key])
+        pid = store_path(full_path)
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📁 {key}",
+                callback_data=f"d:{pid}"
+            )
+        ])
+
+    # файлы
+    for f in node.get("files", []):
+        full_path = "/".join(path + [f])
+
+        pid = store_path(full_path)
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📄 {f}",
+                callback_data=f"f:{pid}"
+            )
+        ])
+    # навигация
+    nav_buttons = []
+    if path:
+        parent = "/".join(path[:-1])
+        pid = store_path(parent)
+
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="⬅ Назад",
+                callback_data=f"d:{pid}"
+            )
+        )
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="🏠 на главную",
+                callback_data="home"
+                
+            )
+        )
+    if nav_buttons:
+        buttons.append(nav_buttons)
+    
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# получить дерево папок
+async def get_kb_tree():
+    
+    url = f"{KB_MANAGER_URL}/api/filesystem/folders"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            return await resp.json()
+
+# получить id документа
+async def get_document_id(path: str) -> str | None:
+    filename = path.split("/")[-1]
+
+    url = f"{KB_MANAGER_URL}/api/documents"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                logger.error(f"kb-manager error: {resp.status}")
+                return None
+
+            docs = await resp.json()
+
+    for doc in docs:
+        if doc.get("source_name") == filename:
+            return doc.get("document_id")
+
+    return None
+
+
 
 if __name__ == "__main__":
     try:
