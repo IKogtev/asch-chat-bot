@@ -402,7 +402,13 @@ async def main() -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
-        await show_main_menu(m)
+        tree = await get_tree_cached()
+        menu = build_menu_from_tree(tree, [])
+
+        await m.answer(
+           TITLE_START,
+           reply_markup=menu
+        )
     
     @dp.callback_query(lambda c: c.data == "home")
     async def go_home(callback: CallbackQuery):
@@ -494,7 +500,7 @@ async def main() -> None:
         tree = await get_tree_cached()
 
         menu = build_menu_from_tree(tree, path_list)
-        title = "📁 /".join(path_list) 
+        title = "📁 /".join(path_list) or TITLE_START
         await callback.message.edit_text(
             title,
             reply_markup=menu
@@ -548,15 +554,6 @@ async def main() -> None:
         await store.close()
         await bot.session.close()
         logger.info("Бот остановлен")
-
-async def show_main_menu(message: Message):
-    tree = await get_tree_cached()
-    menu = build_menu_from_tree(tree, [])
-
-    await message.answer(
-        TITLE_START,
-        reply_markup=menu
-    )
 
 def build_menu_from_tree(tree: dict, path: list[str]):
     node = tree
