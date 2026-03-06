@@ -156,7 +156,7 @@ services:
       # Настройки эмбеддинга и индексирования
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
-      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-10}
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-3}
       - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.5}
 
       # Qdrant
