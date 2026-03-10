@@ -143,6 +143,8 @@ function showTab(tabName) {
         loadKnowledgeBasesForSearch();
     } else if (tabName === 'tree_files'){
         loadFilesystemTree();
+    } else if (tabName === 'news_send'){
+        sendNews();
     }
 }
 
@@ -1196,3 +1198,28 @@ document.addEventListener("click", function (e) {
     }
 
 });
+
+async function sendNews() {
+
+    const text = document.getElementById("news-text").value
+
+    if (!text) {
+        alert("Введите текст новости")
+        return
+    }
+
+    const res = await fetch("/api/news/send", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            text: text
+        })
+    })
+
+    const data = await res.json()
+
+    document.getElementById("news-result").innerHTML =
+        `Sent to ${data.users} users`
+}
