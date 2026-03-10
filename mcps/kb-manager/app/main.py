@@ -69,13 +69,13 @@ qdrant_service = QdrantService(
     qdrant_host=QDRANT_HOST,
     qdrant_port=QDRANT_PORT
 )
-file_storage_service = FileStorageService(
-    root_path=KB_STORAGE_ROOT,
-    qdrant_service=qdrant_service,
-    chunk_size=chunk_size,
-    chunk_overlap=chunk_overlap,
-    service_dir=Path("app")
-)
+# file_storage_service = FileStorageService(
+#     root_path=KB_STORAGE_ROOT,
+#     qdrant_service=qdrant_service,
+#     chunk_size=chunk_size,
+#     chunk_overlap=chunk_overlap,
+#     service_dir=Path("app")
+# )
 kb_file_storage = FileStorageService(
     root_path=KB_ROOT,
     qdrant_service=qdrant_service,
@@ -116,14 +116,17 @@ async def sync_function(iter_dir, storager, collection_type):
             continue
 
         kb_id = folder.name
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            lambda kid=kb_id: storager.sync(
-                kb_id=kid,
-                collection_type=collection_type
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda kid=kb_id: storager.sync(
+                    kb_id=kid,
+                    collection_type=collection_type
+                )
             )
-        )
+        except Exception as e:
+            logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
 
 async def run_sync_all_once():
     logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
@@ -133,26 +136,10 @@ async def run_sync_all_once():
         await sync_function(KB_ROOT, kb_file_storage, "kb")
     else: 
         logger.error(f"Something went wrong: {qdrant_service.collection_type}")
-    # if not KB_STORAGE_ROOT.exists():
-    #     return {"status": "error", "message": "storage root not found"}
-    # for folder in KB_STORAGE_ROOT.iterdir():
-    #     if folder.is_dir():
-    #         kb_id = folder.name
-    #         try:
-
-    #             loop = asyncio.get_running_loop()
-    #             await loop.run_in_executor(
-    #                 None, lambda kid=kb_id: file_storage_service.sync(
-    #                     kb_id=kid, collection_type="kb"
-    #                     )
-    #                 )
-    #         except Exception as e:
-    #             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
-
-    # return {
-    #     "status": "success",
-    #     "message": "SYNC completed"
-    # }            
+    return {
+        "status": "success",
+        "message": "SYNC completed"
+    }            
 
 async def auto_sync():
     while True:
@@ -234,7 +221,12 @@ async def upload_document(
         ext = Path(filename).suffix.lower()
         validate_extensions(ext, collection_type)
         tmp_file = await save_upload_to_tmp(file)
-        kb_dir = KB_STORAGE_ROOT/kb_id
+        logger.info(f"collection_type : {collection_type}")
+        if collection_type == CollectionType.FAQ:
+            kb_dir = FAQ_ROOT/kb_id
+        else: 
+            kb_dir = KB_ROOT/kb_id
+        # kb_dir = KB_STORAGE_ROOT/kb_id
         kb_dir.mkdir(parents=True, exist_ok=True)
         final_file_path = kb_dir/filename
         shutil.copy(tmp_file, final_file_path)
@@ -533,12 +525,18 @@ async def filesystem_sync(
     kb_id: str = Form("01_Маркетинговые материалы"),
     collection_type: str = Form("kb")
 ):
-    file_storage_service.sync(kb_id, collection_type)
+    if collection_type == CollectionType.FAQ:
+        faq_file_storage.sync(kb_id, collection_type)
+    elif collection_type== CollectionType.DOCUMENTS:
+        kb_file_storage.sync(kb_id, collection_type) 
+    # file_storage_service.sync(kb_id, collection_type)
     return {"status": "sync_completed"}
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
-    return file_storage_service.build_tree()
+    # meanwhile show only kb_tree 
+    return kb_file_storage.build_tree()
+    # return file_storage_service.build_tree()
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
