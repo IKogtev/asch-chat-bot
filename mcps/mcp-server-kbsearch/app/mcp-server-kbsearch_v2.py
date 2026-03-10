@@ -267,7 +267,7 @@ mcp = FastMCP("kbsearch")
 @mcp.tool()
 async def kb_search(
     query: Annotated[str, "Search phrase to match against the indexed files"],
-    collection: Annotated[str, "Target FAQ collection. Must be provided"],
+    collection: Annotated[str | None, "Target collection. If None, will be used active collection"]=None,
     filters: Annotated[dict | None,
         """
         Optional metadata filters.
@@ -295,32 +295,39 @@ async def kb_search(
     async with kb_lock:
         if not kb_runtime.initialized or not indexer.retriever:
             logger.warning("KB не инициализирована")
-            return ToolResult(
+            res = ToolResult(
             content="База знаний не инициализирована",
-            structured_content=None,
-            is_error=True
-        )
-
-        if not indexer.cfg.use_qdrant and not kb_runtime.initialized:
-            return  ToolResult(
-            content="Локальный FAQ не инициализирован",
-            structured_content=None,
-            is_error=True
-        )
-
+            structured_content=None
+            )
+            res.isError = True
+            return res
+            
+        if not indexer.cfg.use_qdrant and not kb_runtime.initialized:            
+            res = ToolResult(
+                content="Локальный FAQ не инициализирован",
+                structured_content=None
+            )
+            res.isError = True
+            return res
+   
         try:
             retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
             nodes = retriever.retrieve(query)
 
             if not nodes:
-                return "Релевантные ответы не найдены"
+                res = ToolResult(
+                    content=f"Ошибка при поиске: {e}",
+                    structured_content=None
+                )
+                res.isError = True
+                return res
 
             results = []
-            for i, node in enumerate(nodes[:top_k], 1):
+            for i, node in enumerate(nodes[:top_k]):
                 result = {
                     "rank": i,
                     "score": node.score,
-                    "content": node.get_content()[:500],
+                    "content": node.get_content(),
                 }
 
                 if include_metadata:
@@ -378,7 +385,7 @@ DOCUMENT_ID: {doc_id}
                 context = "\n---\n\n".join(blocks)
 
                 return f"""Используй только информацию из CONTEXT.
-Если ответа нет в контексте — напиши "Не знаю".
+Если ответа нет в контексте не придумывай сам.
 
 CONTEXT
 {context}
@@ -387,18 +394,21 @@ QUESTION
 {question}
 """
             prompt = build_prompt(results, query)
-            return ToolResult(
+            res = ToolResult(
             content=prompt,
             structured_content=None,
         )
+            res.isError = False
+            return res
 
         except Exception as e:
             logger.error(f"Ошибка при поиске: {e}", exc_info=True)
-            return ToolResult(
+            res = ToolResult(
             content=f"Ошибка при поиске: {e}",
-            structured_content=None,
-            is_error=True
+            structured_content=None
         )
+            res.isError = True
+            return res
 @mcp.tool()
 async def get_kb_info() -> Dict:
     """
