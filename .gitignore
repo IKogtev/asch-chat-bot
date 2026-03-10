@@ -16,3 +16,4 @@ venv/
 agent/__pycache__/
 agent/agent/
 filebrowser_data/database.db
+filegator_data
