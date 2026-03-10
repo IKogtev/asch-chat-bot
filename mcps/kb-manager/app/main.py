@@ -37,6 +37,11 @@ app.add_middleware(
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))
 KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+# folders subdirs for faq and kb
+KB_ROOT = KB_STORAGE_ROOT / "kb"
+FAQ_ROOT = KB_STORAGE_ROOT / "faq"
+KB_ROOT.mkdir(parents=True, exist_ok=True)
+FAQ_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -71,6 +76,21 @@ file_storage_service = FileStorageService(
     chunk_overlap=chunk_overlap,
     service_dir=Path("app")
 )
+kb_file_storage = FileStorageService(
+    root_path=KB_ROOT,
+    qdrant_service=qdrant_service,
+    chunk_size=chunk_size,
+    chunk_overlap=chunk_overlap,
+    service_dir=Path("app")
+)
+
+faq_file_storage = FileStorageService(
+    root_path=FAQ_ROOT,
+    qdrant_service=qdrant_service,
+    chunk_size=chunk_size,
+    chunk_overlap=chunk_overlap,
+    service_dir=Path("app")
+)
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
@@ -83,27 +103,56 @@ async def startup_event():
     qdrant_service.ensure_collection()
     asyncio.create_task(auto_sync())
 
+
+async def sync_function(iter_dir, storager, collection_type):
+    """
+    syncron function which takes params:
+        iter_dir - dir to itterate KB_ROOT, FAQ_ROOT
+        storager - prepared storager object,
+        collection_type - to work with collection of 1 type
+    """
+    for folder in iter_dir.iterdir():
+        if not folder.is_dir():
+            continue
+
+        kb_id = folder.name
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda kid=kb_id: storager.sync(
+                kb_id=kid,
+                collection_type=collection_type
+            )
+        )
+
 async def run_sync_all_once():
-    if not KB_STORAGE_ROOT.exists():
-        return {"status": "error", "message": "storage root not found"}
-    for folder in KB_STORAGE_ROOT.iterdir():
-        if folder.is_dir():
-            kb_id = folder.name
-            try:
+    logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
+    if qdrant_service.collection_type == CollectionType.FAQ:
+        await sync_function(FAQ_ROOT, faq_file_storage, "faq")
+    elif qdrant_service.collection_type== CollectionType.DOCUMENTS:
+        await sync_function(KB_ROOT, kb_file_storage, "kb")
+    else: 
+        logger.error(f"Something went wrong: {qdrant_service.collection_type}")
+    # if not KB_STORAGE_ROOT.exists():
+    #     return {"status": "error", "message": "storage root not found"}
+    # for folder in KB_STORAGE_ROOT.iterdir():
+    #     if folder.is_dir():
+    #         kb_id = folder.name
+    #         try:
 
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None, lambda kid=kb_id: file_storage_service.sync(
-                        kb_id=kid, collection_type="kb"
-                        )
-                    )
-            except Exception as e:
-                logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
+    #             loop = asyncio.get_running_loop()
+    #             await loop.run_in_executor(
+    #                 None, lambda kid=kb_id: file_storage_service.sync(
+    #                     kb_id=kid, collection_type="kb"
+    #                     )
+    #                 )
+    #         except Exception as e:
+    #             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
 
-    return {
-        "status": "success",
-        "message": "SYNC completed"
-    }            
+    # return {
+    #     "status": "success",
+    #     "message": "SYNC completed"
+    # }            
 
 async def auto_sync():
     while True:
