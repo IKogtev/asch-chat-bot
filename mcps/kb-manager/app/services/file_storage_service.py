@@ -33,6 +33,8 @@ class FileStorageService:
         self.service_dir = service_dir
         self.logger = setup_logger("file_storage", service_dir)
         self._sync_lock=False
+        self.ignore_folders = {".git", "__pycache__", "_prepared"}
+        
 
     # -------------------------------------------------
     # SCAN FILESYSTEM
@@ -52,6 +54,12 @@ class FileStorageService:
         #  собираем файлы по вычисленной kb папке
         for path in kb_root.rglob("*"):
             if not path.is_file():
+                continue
+            rel = path.relative_to(kb_root)
+
+            # если в пути есть игнорируемая папка
+            if any(part in self.ignore_folders for part in rel.parts):
+                self.logger.info(f"Ignored path: {rel}")
                 continue
 
             files.append({
@@ -169,7 +177,7 @@ class FileStorageService:
                 docs, _, _, _ = loader.prepare_docs_texts(
                     kb_id=kb_id,
                     filepath=file["absolute_path"],
-                    map_true=False,
+                    map_true=(collection_type=="faq"),
                     user_id="filesystem",
                 )
 
