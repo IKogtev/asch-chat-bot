@@ -14,12 +14,20 @@ from dotenv import load_dotenv
 import aiohttp
 import time
 import tempfile
+from pathlib import Path
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
 
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
+
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+import json
+class NewsRequest(BaseModel):
+    text: str
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -32,6 +40,25 @@ TITLE_START = """
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
+USERS_FILE = Path("data/telegram_users.json")
+# Создаём файл только если он не существует
+USERS_FILE.parent.mkdir(parents=True, exist_ok=True)  # создаём папку data/ если нет
+if not USERS_FILE.exists():
+    USERS_FILE.write_text("[]")  # создаём файл, если нет (не перезаписывает!)
+
+def load_users():
+    try:
+        return json.loads(USERS_FILE.read_text())
+    except:
+        return []
+
+def save_user(chat_id):
+    users = load_users()
+
+    if chat_id not in users:
+        users.append(chat_id)
+        USERS_FILE.write_text(json.dumps(users))
+        logger.info(f"User saved: {chat_id}")
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -376,6 +403,8 @@ async def main() -> None:
     bot = Bot(token=tg_token)
     dp = Dispatcher()
     
+    bot_api = FastAPI()
+    
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
@@ -400,7 +429,7 @@ async def main() -> None:
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-
+        save_user(user_id)
         await m.answer(
            TITLE_START,
            reply_markup=menu
@@ -646,6 +675,25 @@ async def main() -> None:
             title,
             reply_markup=menu
         )
+    
+    @bot_api.post("/broadcast")
+    async def broadcast_news(data: NewsRequest):
+        
+        users = load_users()
+
+        sent = 0
+
+        for user_id in users:
+            try:
+                await bot.send_message(user_id, data.text)
+                sent += 1
+            except Exception as e:
+                logger.error(f"Failed send to {user_id}: {e}")
+
+        return {
+            "status": "ok",
+            "users": sent
+        }
 
     @dp.callback_query(F.data.startswith("f:"))
     async def send_file(callback: CallbackQuery):
@@ -688,8 +736,10 @@ async def main() -> None:
     
     # Запуск бота
     try:
+        import uvicorn
         logger.info("🚀 Бот запущен и готов к работе")
         await dp.start_polling(bot)
+        uvicorn.run(bot_api, host="0.0.0.0", port=8001)
     finally:
         logger.info("Остановка бота...")
         await adk.close()

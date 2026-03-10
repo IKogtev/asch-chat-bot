@@ -14,7 +14,10 @@ from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLo
 import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
+from pathlib import Path
+import httpx
 
+BOT_API = "http://bot:8001/broadcast"
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -69,13 +72,6 @@ qdrant_service = QdrantService(
     qdrant_host=QDRANT_HOST,
     qdrant_port=QDRANT_PORT
 )
-# file_storage_service = FileStorageService(
-#     root_path=KB_STORAGE_ROOT,
-#     qdrant_service=qdrant_service,
-#     chunk_size=chunk_size,
-#     chunk_overlap=chunk_overlap,
-#     service_dir=Path("app")
-# )
 kb_file_storage = FileStorageService(
     root_path=KB_ROOT,
     qdrant_service=qdrant_service,
@@ -215,7 +211,6 @@ async def upload_document(
     tmp_file = None
     try:
         # get type of collection:
-        # collection_type = qdrant_service.collection_type
         collection_type = collection_type
         filename = file.filename or "unknown"
         ext = Path(filename).suffix.lower()
@@ -226,7 +221,6 @@ async def upload_document(
             kb_dir = FAQ_ROOT/kb_id
         else: 
             kb_dir = KB_ROOT/kb_id
-        # kb_dir = KB_STORAGE_ROOT/kb_id
         kb_dir.mkdir(parents=True, exist_ok=True)
         final_file_path = kb_dir/filename
         shutil.copy(tmp_file, final_file_path)
@@ -529,14 +523,12 @@ async def filesystem_sync(
         faq_file_storage.sync(kb_id, collection_type)
     elif collection_type== CollectionType.DOCUMENTS:
         kb_file_storage.sync(kb_id, collection_type) 
-    # file_storage_service.sync(kb_id, collection_type)
     return {"status": "sync_completed"}
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
     # meanwhile show only kb_tree 
     return kb_file_storage.build_tree()
-    # return file_storage_service.build_tree()
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
@@ -555,6 +547,21 @@ async def download_filesystem_file(path: str):
         filename=file_path.name,
         media_type="application/octet-stream"
     )
+
+@app.post("/api/news/send")
+async def send_news(data: dict):
+
+    text = data.get("text")
+
+    async with httpx.AsyncClient() as client:
+
+        r = await client.post(
+            BOT_API,
+            json={"text": text},
+            timeout=20
+        )
+
+    return r.json()
 
 if __name__ == "__main__":
     import uvicorn
