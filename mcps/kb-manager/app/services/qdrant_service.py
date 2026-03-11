@@ -239,7 +239,17 @@ class QdrantService:
                 ]
             )
         )
-        
+        # Обновляем document_count в метаданных после удаления
+        try:
+            actual_documents = self.list_documents()
+            info = self.qdrant_client.get_collection(collection_name=self.collection_name)
+            self.upsert_meta(
+                document_count=len(actual_documents),
+                points_count=int(str(info.points_count)) - 1,
+                last_update=datetime.now().isoformat(),
+            )
+        except Exception:
+            pass
         return True
     
     def list_documents(self) -> List[Dict[str, Any]]:
@@ -415,6 +425,25 @@ class QdrantService:
                 "name": self.collection_name,
                 "error": str(e)
             }
+
+    def refresh_collection_metadata(self) -> Dict[str, Any]:
+        """Пересчитать и обновить document_count в метаданных по фактическим данным коллекции"""
+        try:
+            actual_documents = self.list_documents()
+            info = self.qdrant_client.get_collection(collection_name=self.collection_name)
+            actual_doc_count = len(actual_documents)
+            points_count = int(str(info.points_count)) - 1
+            self.upsert_meta(
+                document_count=actual_doc_count,
+                points_count=points_count,
+                index_status='initialized',
+                storage_type='qdrant',
+                source='update from ui',
+                __type__='collection_meta',
+            )
+            return {"document_count": actual_doc_count, "points_count": points_count}
+        except Exception as e:
+            return {"error": str(e)}
         
     def list_collections(self) -> Dict:
         try:
@@ -545,21 +574,24 @@ class QdrantService:
             # вставляем подготовленные точки в qdrant 
             if not points:
                 continue
-            self.qdrant_client.upsert(collection_name=self.collection_name, points=points)    
-            info = self.qdrant_client.get_collection(collection_name=self.collection_name)
-            
-            meta = {'last_update': datetime.now().isoformat(),
-                    'points_count': int(str(info.points_count))-1,
-                    'documents_count': docs_count,
-                    'index_status': 'initialized',
-                    'storage_type': 'qdrant',
-                    'source': "update from ui",
-                    '__type__': "collection_meta"
-                    }
-            self.upsert_meta(**meta)
+            self.qdrant_client.upsert(collection_name=self.collection_name, points=points)
+        # После загрузки пересчитываем document_count по фактическим данным коллекции
+        info = self.qdrant_client.get_collection(collection_name=self.collection_name)
+        actual_documents = self.list_documents()
+        actual_doc_count = len(actual_documents)
+        meta = {
+            'last_update': datetime.now().isoformat(),
+            'points_count': int(str(info.points_count)) - 1,
+            'document_count': actual_doc_count,
+            'index_status': 'initialized',
+            'storage_type': 'qdrant',
+            'source': "update from ui",
+            '__type__': "collection_meta"
+        }
+        self.upsert_meta(**meta)
         return {
-            "documents_count": points_count
-    }
+            "documens_count": points_count
+        }
     
     def upsert_meta(self, **updates):
         meta_id = meta_id_for_collection(self.collection_name)

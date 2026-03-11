@@ -365,7 +365,8 @@ async function syncAll(btnElement) {
 async function loadDocuments() {
     const container = document.getElementById('documents-list');
     container.innerHTML = '<div class="loading">Loading knowledge bases...</div>';
-    
+    // Обновляем document_count в метаданных (для MCP kb-status)
+    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
     try {
         const response = await fetch(`${API_BASE}/api/knowledge-bases`);
         const knowledgeBases = await response.json();

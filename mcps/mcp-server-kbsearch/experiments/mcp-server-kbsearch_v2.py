@@ -139,7 +139,7 @@ def get_kb_status() -> Dict:
         "initialized": kb_runtime.initialized,
         "index_exists": bool(kb_runtime.initialized),
         "points_count": metadata.get("points_count", 0),
-        "documents_count": metadata.get("documents_count", 0),
+        "document_count": metadata.get("document_count", 0),
         "metadata": metadata,
         "last_update": kb_runtime.last_update
     }
