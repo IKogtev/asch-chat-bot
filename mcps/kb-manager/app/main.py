@@ -69,7 +69,10 @@ file_storage_service = FileStorageService(
     qdrant_service=qdrant_service,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
-    service_dir=Path("app")
+    service_dir=Path("app"),
+    # ext_allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
+    ext_allowed = SUPPORTED_KB_EXTENSIONS
+    
 )
 
 # Mount static files
@@ -85,6 +88,7 @@ async def startup_event():
 
 async def run_sync_all_once():
     if not KB_STORAGE_ROOT.exists():
+        logger.info("status error storage root not found")
         return {"status": "error", "message": "storage root not found"}
     for folder in KB_STORAGE_ROOT.iterdir():
         if folder.is_dir():
@@ -99,7 +103,8 @@ async def run_sync_all_once():
                     )
             except Exception as e:
                 logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
-
+    
+    logger.info("status success Sync completed")
     return {
         "status": "success",
         "message": "SYNC completed"
