@@ -167,9 +167,9 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
-    # depends_on:
-    #   kb-manager:
-    #     condition: service_healthy
+    depends_on:
+      kb-manager:
+        condition: service_healthy
     networks:
       - aszh-bot-network
     
@@ -195,22 +195,24 @@ services:
       - NODE_ENV=production
       
   file-manager:
-    image: filebrowser/filebrowser:latest
+    image: filegator/filegator:latest
     container_name: kb-file-ui
-    user: "0:0"
+    user: "0:0" # Запускаем от рута, чтобы отработал chown в скрипте
     restart: unless-stopped
-    entrypoint: ["/entrypoint.sh"]
+    entrypoint: ["/filegator_init.sh"]
     ports:
-      - "8081:80"
+      - "8081:8080"
     volumes:
-      - ./kb_storage:/srv
-      - ./filebrowser_data:/config      # ← тут будет и БД, и конфиг
-      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./kb_storage:/var/www/filegator/repository 
+      - ./filegator_data:/var/www/filegator/private
+      - ./filegator_init.sh:/filegator_init.sh:ro # Прокидываем наш скрипт
     environment:
-      - FB_DATABASE=/config/database.db
-      - FB_CONFIG=/config/settings.json
-      - FB_ADMIN_USER=admin                  # ← логин (можно вынести в .env)
-      - FB_ADMIN_PASSWORD=super_secure_password                           # ← загружаем переменные из файла
+      - TZ=Europe/Moscow
+      # username=admin
+      # если хотим изменить то меняем в filegator_init.sh на нужный нам, 
+      # только важно вставлять сразу хэш пароля, можно получить вот тут 
+      # хэш: https://bcrypt-generator.com/ 
+      # password=admin123 
     networks:
       - aszh-bot-network
 

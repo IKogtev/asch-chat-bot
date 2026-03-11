@@ -15,6 +15,7 @@ import aiohttp
 import time
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
@@ -708,7 +709,7 @@ async def main() -> None:
             return
         doc_id = await get_document_id(path)
         if not doc_id:
-            url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={path}"
+            url = f"{KB_MANAGER_URL}/api/filesystem/download?path={quote(path)}"
             # await callback.answer("Документ не найден", show_alert=True)
             # return
         else:
