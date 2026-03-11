@@ -239,7 +239,7 @@ async def test_kb_indexing() -> Dict[str, Any]:
                     result["details"]["kb_status"] = status
                     metadata = status.get('metadata', {})
                     logger.info(f"  Статус KB: {str(metadata.get('index_status'))}")
-                    logger.info(f"  Документов в индексе: {status.get('documents_count')}")
+                    logger.info(f"  Документов в индексе: {status.get('document_count')}")
                 else:
                     logger.error(f"✗ Ошибка индексации: {response_data.get('error')}")
                     result["details"]["error"] = response_data.get("error")

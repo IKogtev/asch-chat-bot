@@ -14,7 +14,7 @@ from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLo
 import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
-
+from urllib.parse import unquote
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -69,7 +69,10 @@ file_storage_service = FileStorageService(
     qdrant_service=qdrant_service,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
-    service_dir=Path("app")
+    service_dir=Path("app"),
+    # ext_allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
+    ext_allowed = SUPPORTED_KB_EXTENSIONS
+    
 )
 
 # Mount static files
@@ -85,12 +88,12 @@ async def startup_event():
 
 async def run_sync_all_once():
     if not KB_STORAGE_ROOT.exists():
+        logger.info("status error storage root not found")
         return {"status": "error", "message": "storage root not found"}
     for folder in KB_STORAGE_ROOT.iterdir():
         if folder.is_dir():
             kb_id = folder.name
             try:
-
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None, lambda kid=kb_id: file_storage_service.sync(
@@ -99,7 +102,8 @@ async def run_sync_all_once():
                     )
             except Exception as e:
                 logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
-
+    
+    logger.info("status success Sync completed")
     return {
         "status": "success",
         "message": "SYNC completed"
@@ -244,7 +248,7 @@ async def upload_document(
             "kb_id": kb_id,
             "source_name": filename,
             "source_type": ext.lstrip("."),
-            "documents_count": docs_count,
+            "document_count": docs_count,
             "points_count": points_count,
             "source_hash": source_hash,
             "message": "Document uploaded successfully",
@@ -313,6 +317,20 @@ async def collection_info():
     try:
         info = qdrant_service.get_collection_info()
         return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/collections/refresh_metadata")
+async def refresh_collection_metadata():
+    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
+    try:
+        result = qdrant_service.refresh_collection_metadata()
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -493,7 +511,7 @@ async def get_folders():
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
-
+    path = unquote(path)
     file_path = (KB_STORAGE_ROOT / path).resolve()
 
     # защита от выхода из root

@@ -68,6 +68,7 @@ class DocumentLoader:
                 self.logger.info("not stripped???")
                 continue        
             document_id = f"doc_{str(uuid.uuid4())}"
+            unique_documents.add(document_id)
             doc_hash = hash_file(path)
             # логика section_path из папок
             full_parts = Path(filepath).parts
@@ -109,9 +110,9 @@ class DocumentLoader:
                     }
                 })
         points_count = len(docs_texts)
-        documents_count = len(unique_documents)
+        document_count = len(unique_documents)
         
-        return docs_texts, {}, documents_count, points_count
+        return docs_texts, {}, document_count, points_count
 
     def extract_raw_text_from_tabular(self, path: Path) -> str:
         suffix = path.suffix.lower()
@@ -157,7 +158,8 @@ class DocumentLoader:
             # формируем текст документа
             doc_id = item.get("document_id", f"doc_{str(uuid.uuid4())}")
             chunk_id = f"{doc_id}#0"
-            doc_hash = item.get("hash")
+            # doc_hash = item.get("hash")
+            doc_hash = hash_file(filepath)
             source_name = item.get("source_file") 
             category = item.get('category', "-")
             section_path = [" / ".join(item.get('section_path', []))]
