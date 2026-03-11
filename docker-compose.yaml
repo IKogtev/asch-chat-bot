@@ -200,7 +200,7 @@ services:
     user: "0:0" # Запускаем от рута, чтобы отработал chown в скрипте
     restart: unless-stopped
     entrypoint: ["/filegator_init.sh"]
-    command: ["php", "-S", "0.0.0.0:8080", "-t", "/var/www/filegator/dist"] # Стандартная команда запуска
+    # command: ["php", "-S", "0.0.0.0:8080", "-t", "/var/www/filegator/dist"] # Стандартная команда запуска
     ports:
       - "8081:8080"
     volumes:

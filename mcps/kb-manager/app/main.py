@@ -94,7 +94,6 @@ async def run_sync_all_once():
         if folder.is_dir():
             kb_id = folder.name
             try:
-
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None, lambda kid=kb_id: file_storage_service.sync(
