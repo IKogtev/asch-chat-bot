@@ -5,6 +5,7 @@ import json
 import html as html_module
 import re
 
+
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -20,6 +21,7 @@ load_dotenv(override=True)
 
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
+from urllib.parse import quote
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -28,14 +30,9 @@ TREE_CACHE = None
 TREE_TS = 0
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
 TITLE_START = """
-👋 Привет! Я бот базы знаний через Google ADK.
+👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
-🤖 Использую агент: agent
-
-📋 Команды:
-/reset — сбросить историю диалога
-/help — показать помощь
-📁 Корень
+📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
 
 class PostgresChatStore:
@@ -367,15 +364,13 @@ async def main() -> None:
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
     
     # Конфигурация для DocumentHandler
-    # kb_manager_url = os.getenv("KB_MANAGER_URL", "http://kb-manager:8001").strip()
-    kb_manager_url = os.getenv("KB_MANAGER_URL", KB_MANAGER_URL).strip()
     kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
     
     logger.info(f"Конфигурация:")
     logger.info(f"  ADK Base: {adk_base}")
     logger.info(f"  ADK App: {adk_app}")
-    logger.info(f"  KB Manager: {kb_manager_url}")
+    logger.info(f"  KB Manager: {KB_MANAGER_URL}")
     logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
     
@@ -392,7 +387,7 @@ async def main() -> None:
     
     # Инициализация DocumentHandler
     doc_handler = DocumentHandler(
-        kb_manager_url=kb_manager_url,
+        kb_manager_url=KB_MANAGER_URL,
         kb_manager_token=kb_manager_token,
         downloads_dir=downloads_dir
     )
@@ -589,10 +584,11 @@ async def main() -> None:
             # Очищаем ответ от [document_id:...]
             clean_answer = doc_handler.remove_document_ids(answer)
             
-            # Конвертируем в HTML и отправляем
-            html_answer = markdown_to_safe_html(clean_answer)
-            await m.answer(html_answer, parse_mode="HTML")
-            
+            # Отправляем текст только если он не пустой
+            if clean_answer.strip():
+                html_answer = markdown_to_safe_html(clean_answer)
+                await m.answer(html_answer, parse_mode="HTML")
+                            
             # Если есть документы - скачиваем и отправляем
             if doc_ids:
                 logger.info(f"📎 Найдено {len(doc_ids)} документов для отправки")
@@ -602,26 +598,29 @@ async def main() -> None:
                         file_path = await doc_handler.download_document(doc_id)
                         
                         if file_path and file_path.exists():
-                            # Отправляем файл
+                            # Используем оригинальное имя файла
                             filename = file_path.name
                             document = FSInputFile(str(file_path), filename=filename)
                             await m.answer_document(document, caption=f"📄 {filename}")
-                            logger.info(f"✅ Документ {filename} отправлен user_id={user_id}")
+                            logger.info(f"✅ Документ '{filename}' (id: {doc_id}) отправлен user_id={user_id}")
                         else:
-                            logger.warning(f"⚠️ Файл не найден: {doc_id}")
-                            await m.answer(f"⚠️ Не удалось загрузить документ {doc_id}")
+                            logger.warning(f"⚠️ Файл не найден для document_id: {doc_id}")
+                            await m.answer(f"⚠️ Не удалось загрузить документ")
                             
                     except Exception as doc_err:
                         logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
                         await m.answer(f"❌ Ошибка при загрузке документа")
 
+                    # Удаляем временный файл после отправки
                     try:
                         if file_path and file_path.exists():
-                            file_path.unlink()  # Удаляем временный файл
-                            logger.debug(f"🗑️ Удалён временный файл: {filename}")
+                            temp_filename = file_path.name  # ✅ Сохраняем имя перед удалением
+                            file_path.unlink()
+                            logger.debug(f"🗑️ Удалён временный файл: {temp_filename}")
                     except Exception as e:
-                        logger.warning(f"Не удалось удалить файл {filename}: {e}")
-                                    
+                        temp_filename = file_path.name if file_path else "unknown"
+                        logger.warning(f"Не удалось удалить файл {temp_filename}: {e}")
+                                                                                    
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(
@@ -663,7 +662,7 @@ async def main() -> None:
             return
         doc_id = await get_document_id(path)
         if not doc_id:
-            url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={path}"
+            url = f"{KB_MANAGER_URL}/api/filesystem/download?path={quote(path)}"
             # await callback.answer("Документ не найден", show_alert=True)
             # return
         else:
