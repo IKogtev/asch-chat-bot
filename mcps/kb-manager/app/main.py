@@ -14,7 +14,7 @@ from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLo
 import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
-
+from urllib.parse import unquote
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -497,7 +497,7 @@ async def get_folders():
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
-
+    path = unquote(path)
     file_path = (KB_STORAGE_ROOT / path).resolve()
 
     # защита от выхода из root
