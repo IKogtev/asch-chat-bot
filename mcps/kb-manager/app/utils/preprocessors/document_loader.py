@@ -158,7 +158,8 @@ class DocumentLoader:
             # формируем текст документа
             doc_id = item.get("document_id", f"doc_{str(uuid.uuid4())}")
             chunk_id = f"{doc_id}#0"
-            doc_hash = item.get("hash")
+            # doc_hash = item.get("hash")
+            doc_hash = hash_file(filepath)
             source_name = item.get("source_file") 
             category = item.get('category', "-")
             section_path = [" / ".join(item.get('section_path', []))]
