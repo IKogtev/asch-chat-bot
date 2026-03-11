@@ -5,6 +5,7 @@ import json
 import html as html_module
 import re
 
+
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -20,6 +21,7 @@ load_dotenv(override=True)
 
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
+from urllib.parse import quote
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -660,7 +662,7 @@ async def main() -> None:
             return
         doc_id = await get_document_id(path)
         if not doc_id:
-            url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={path}"
+            url = f"{KB_MANAGER_URL}/api/filesystem/download?path={quote(path)}"
             # await callback.answer("Документ не найден", show_alert=True)
             # return
         else:
