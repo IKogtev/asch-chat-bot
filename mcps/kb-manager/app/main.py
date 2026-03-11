@@ -248,7 +248,7 @@ async def upload_document(
             "kb_id": kb_id,
             "source_name": filename,
             "source_type": ext.lstrip("."),
-            "documents_count": docs_count,
+            "document_count": docs_count,
             "points_count": points_count,
             "source_hash": source_hash,
             "message": "Document uploaded successfully",
@@ -317,6 +317,20 @@ async def collection_info():
     try:
         info = qdrant_service.get_collection_info()
         return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/collections/refresh_metadata")
+async def refresh_collection_metadata():
+    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
+    try:
+        result = qdrant_service.refresh_collection_metadata()
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
