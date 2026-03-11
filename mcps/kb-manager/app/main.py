@@ -16,6 +16,7 @@ from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx
+from urllib.parse import unquote
 
 BOT_API = "http://bot:8001/broadcast"
 
@@ -77,7 +78,8 @@ kb_file_storage = FileStorageService(
     qdrant_service=qdrant_service,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
-    service_dir=Path("app")
+    service_dir=Path("app"),
+    ext_allowed = SUPPORTED_KB_EXTENSIONS
 )
 
 faq_file_storage = FileStorageService(
