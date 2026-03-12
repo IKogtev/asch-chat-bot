@@ -282,7 +282,7 @@ async def upload_document(
             "kb_id": kb_id,
             "source_name": filename,
             "source_type": ext.lstrip("."),
-            "documents_count": docs_count,
+            "document_count": docs_count,
             "points_count": points_count,
             "source_hash": source_hash,
             "message": "Document uploaded successfully",
@@ -549,7 +549,7 @@ async def get_folders():
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
-
+    path = unquote(path)
     file_path = (KB_STORAGE_ROOT / path).resolve()
 
     # защита от выхода из root

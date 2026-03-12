@@ -15,4 +15,4 @@ RUN mkdir -p /app/logs
 
 ENV PYTHONPATH=/app
 
-CMD ["python", "-m", "bot.bot_v4"]
+CMD ["python", "-m", "bot.bot_v5"]

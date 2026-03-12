@@ -63,6 +63,7 @@ class FileStorageService:
             if any(part in self.ignore_folders for part in rel.parts):
                 self.logger.info(f"Ignored path: {rel}")
                 continue
+
             if path.stat().st_size < 1000:
                 continue
             if path.suffix.lower() not in self.allowed_ext:
@@ -219,7 +220,6 @@ class FileStorageService:
             self.logger.error(f"[SYNC SERVICE] Critical sync error: {e}")
         finally:
             self._sync_lock = False
-
              
 
     # -------------------------------------------------
