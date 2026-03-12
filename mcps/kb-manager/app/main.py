@@ -569,16 +569,22 @@ async def download_filesystem_file(path: str):
 async def send_news(data: dict):
 
     text = data.get("text")
-
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    
     async with httpx.AsyncClient() as client:
+        try:
+            r = await client.post(
+                BOT_API,
+                json={"text": text},
+                timeout=30
+            )
+            r.raise_for_status()
 
-        r = await client.post(
-            BOT_API,
-            json={"text": text},
-            timeout=20
-        )
-
-    return r.json()
+            return r.json()
+        except httpx.HTTPError as e:
+            logger.error(f"Broadcast failed: {e}")
+            raise HTTPException(status_code=502, detail="Bot service unvailable")
 
 if __name__ == "__main__":
     import uvicorn

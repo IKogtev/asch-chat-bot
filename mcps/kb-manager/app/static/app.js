@@ -1202,25 +1202,44 @@ document.addEventListener("click", function (e) {
 
 async function sendNews() {
 
-    const text = document.getElementById("news-text").value
+    const text = document.getElementById("news-text").value;
+    const resultDiv = document.getElementById("news-result");
+    const sendBtn = document.getElementById("news-send-btn");
 
     if (!text) {
         alert("Введите текст новости")
         return
     }
+    // Блокировка кнопки
+    sendBtn.disabled = true;
+    sendBtn.innerText = "⏳ Отправка...";
+    resultDiv.innerHTML = "";
+    try {
+        const res = await fetch("/api/news/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: text })
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.innerHTML = `
+                ✅ Отправлено!<br>
+                📬 Получателей: ${data.sent || 0}<br>
+                ❌ Ошибок: ${data.failed || 0}
+            `;
+            document.getElementById("news-text").value = "";
+        } else {
+            throw new Error(data.detail || "Ошибка отправки");
+        }
+    } catch (err) {
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    } finally {
+        sendBtn.disabled = false;
+        sendBtn.innerText = "📤 Отправить новость";
+    }
 
-    const res = await fetch("/api/news/send", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            text: text
-        })
-    })
-
-    const data = await res.json()
-
-    document.getElementById("news-result").innerHTML =
-        `Sent to ${data.users} users`
+    // document.getElementById("news-result").innerHTML =
+    //     `Sent to ${data.users} users`
 }
