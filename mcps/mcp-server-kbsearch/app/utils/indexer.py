@@ -265,7 +265,7 @@ class Indexer:
             self.metadata = self.load_metadata()
             self.metadata.update({
                              'last_updated': datetime.now().isoformat(),
-                             'documents_count': doc_counter,
+                             'document_count': doc_counter,
                              'index_status': 'initialized',
                              'storage_type': 'qdrant' if self.cfg.use_qdrant else 'local_folder',
                              'source': str(self.cfg.documents_dir),
@@ -384,7 +384,7 @@ class Indexer:
             "version": self.cfg.version,
             "created_at": datetime.now().isoformat(),
             "last_updated": None,
-            "documents_count": 0,
+            "document_count": 0,
             "llm_using": self.cfg.embed_model_name,
             "index_status": "not_initialized",
             'storage_type': 'qdrant' if self.cfg.use_qdrant else 'local_folder',
@@ -580,7 +580,7 @@ class Indexer:
         payload = {
             "__type__": self.collection_meta_type,
             "index_status": "empty",
-            "documents_count": 0,
+            "document_count": 0,
             "created_at": datetime.now().isoformat(),
             "last_updated": datetime.now().isoformat(),
             "embedding": {

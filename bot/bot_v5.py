@@ -4,8 +4,8 @@ from typing import Optional
 import json
 import html as html_module
 import re
-from uuid import uuid4
-
+#from uuid import uuid4
+from urllib.parse import quote
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
@@ -143,7 +143,6 @@ class PostgresChatStore:
             await self.pool.close()
             logger.info("Пул соединений PostgreSQL закрыт")
 
-
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
     
@@ -195,8 +194,26 @@ class AdkApiClient:
             logger.error(f"Ошибка сети при ensure_session: {e}", exc_info=True)
             raise
     
-    async def run(self, user_id: str, session_id: str, text: str, history: list[dict] = None) -> tuple[str, list]:
-        """Отправка сообщения агенту и получение ответа"""
+    async def delete_session(self, user_id: str, session_id: str) -> None:
+        """Удаление сессии ADK"""
+        if not self.http:
+            logger.error("HTTP сессия не инициализирована")
+            raise RuntimeError("HTTP session not initialized")
+        
+        url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}"
+        
+        try:
+            async with self.http.delete(url) as resp:
+                if resp.status in (200, 204, 404):
+                    logger.info(f"🗑️ Сессия удалена для user={user_id}, session={session_id}")
+                else:
+                    text = await resp.text()
+                    logger.warning(f"⚠️ Не удалось удалить сессию: {resp.status} - {text}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Ошибка сети при delete_session: {e}", exc_info=True)
+    
+    async def run(self, user_id: str, session_id: str, text: str) -> tuple[str, list]:
+        """Отправка сообщения агенту и получение ответа (БЕЗ передачи истории)"""
         if not self.http:
             logger.error("HTTP сессия не инициализирована")
             raise RuntimeError("HTTP session not initialized")
@@ -212,17 +229,6 @@ class AdkApiClient:
                 "parts": [{"text": text}]
             }
         }
-        
-        # ✅ Передаём историю в правильном формате ADK
-        if history:
-            # Конвертируем в формат ADK: {"role": "user/model", "parts": [...]}
-            payload["history"] = [
-                {
-                    "role": msg["role"],
-                    "parts": msg.get("parts", [{"text": msg.get("content", "")}])
-                }
-                for msg in history
-            ]
         
         try:
             logger.debug(f"=== ADK REQUEST ===")
@@ -257,7 +263,7 @@ class AdkApiClient:
                 
                 logger.debug(f"=== EXTRACTED ANSWER ===")
                 logger.debug(f"Answer: {answer}")
-                return answer, events  # Возвращаем и ответ, и события
+                return answer, events
                 
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при run: {e}", exc_info=True)
@@ -350,7 +356,7 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
-    
+        
 async def main() -> None:
     """Главная функция бота"""
     logger.info("=" * 60)
@@ -432,16 +438,25 @@ async def main() -> None:
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
+        session_id = "default"
+        
         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
         
         try:
+            # Удаляем сессию в ADK
+            await adk.delete_session(user_id=str(user_id), session_id=session_id)
+            
+            # Создаём новую сессию
+            await adk.ensure_session(user_id=str(user_id), session_id=session_id)
+            
+            # Очищаем историю в БД
             await store.reset(user_id)
-            await m.answer("✅ История диалога сброшена")
-            logger.info(f"История сброшена для user_id={user_id}")
+            
+            await m.answer("✅ История диалога и сессия сброшены")
+            logger.info(f"История и сессия сброшены для user_id={user_id}")
         except Exception as e:
-            logger.error(f"Ошибка при сбросе истории: {e}", exc_info=True)
+            logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-
 
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
@@ -480,7 +495,7 @@ async def main() -> None:
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
         username = m.from_user.username or "unknown"
-        session_id = f"req-{uuid4().hex}"
+        session_id = "default"
         user_text = (m.text or "").strip()
         
         if not user_text:
@@ -492,25 +507,11 @@ async def main() -> None:
             # Создание/проверка сессии
             await adk.ensure_session(user_id=user_id, session_id=session_id)
             
-            # Загрузка истории из БД
-            history_raw = await store.get_history(int(user_id))
-            logger.debug(f"Загружено {len(history_raw)} сообщений из истории")
-
-            # Конвертируем в формат ADK/Gemini
-            history = [
-                {
-                    "role": msg["role"],
-                    "parts": [{"text": msg["content"]}]
-                }
-                for msg in history_raw
-            ]
-
-            # Отправка в агент С ИСТОРИЕЙ
+            # Отправка в агент
             answer, events = await adk.run(
                 user_id=user_id, 
                 session_id=session_id, 
-                text=user_text,
-                history=history  # Передаём историю
+                text=user_text
             )
             
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
@@ -622,20 +623,20 @@ async def main() -> None:
                     # Удаляем временный файл после отправки
                     try:
                         if file_path and file_path.exists():
-                            temp_filename = file_path.name  # ✅ Сохраняем имя перед удалением
+                            temp_filename = file_path.name
                             file_path.unlink()
                             logger.debug(f"🗑️ Удалён временный файл: {temp_filename}")
                     except Exception as e:
                         temp_filename = file_path.name if file_path else "unknown"
                         logger.warning(f"Не удалось удалить файл {temp_filename}: {e}")
-                                                                                    
+                                                                                
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
             await m.answer(
                 "😔 Произошла ошибка при обработке запроса.\n"
                 "Попробуйте позже или используйте /reset для сброса диалога."
             )
-    
+
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
         await callback.answer()
@@ -670,7 +671,7 @@ async def main() -> None:
             return
         doc_id = await get_document_id(path)
         if not doc_id:
-            url = f"{KB_MANAGER_URL}/api/filesystem/download?path={quote(path)}"
+            url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
             # await callback.answer("Документ не найден", show_alert=True)
             # return
         else:
