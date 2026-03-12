@@ -23,6 +23,13 @@ load_dotenv(override=True)
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
 from urllib.parse import quote
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+
+# Модель для запроса новостей
+class BroadcastRequest(BaseModel):
+    text: str
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -35,6 +42,9 @@ TITLE_START = """
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
+broadcast_app = FastAPI(title="Bot Broadcast API")
+# Хранилище подписчиков (можно использовать существующую БД)
+SUBSCRIBERS = set() # TODO занести к Виталию в postgres 
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -416,6 +426,7 @@ async def main() -> None:
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
+        SUBSCRIBERS.add(user_id)
 
         await m.answer(
            TITLE_START,
@@ -697,10 +708,60 @@ async def main() -> None:
 
         os.remove(tmp.name)
     
+    
+    @broadcast_app.post("/broadcast")
+    async def broadcast_news(request: BroadcastRequest):
+        """Получить новость от KB Manager и разослать всем подписчикам"""
+        if not request.text or not request.text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        # Отправка всем сохранённым user_id
+        sent_count = 0
+        failed_count = 0
+        
+        for user_id in SUBSCRIBERS:
+            try:
+                await bot.send_message(
+                    chat_id=int(user_id),
+                    text=request.text,
+                    parse_mode="HTML"
+                )
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send to {user_id}: {e}")
+                failed_count += 1
+        
+        return {
+            "status": "success",
+            "sent": sent_count,
+            "failed": failed_count,
+            "total": len(SUBSCRIBERS)
+        }
+
+    @broadcast_app.get("/health")
+    async def health_check():
+        return {"status": "healthy", "subscribers": len(SUBSCRIBERS)}
+
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
-        await dp.start_polling(bot)
+        # Запуск HTTP сервера в отдельной задаче
+        async def run_http_server():
+            config = uvicorn.Config(
+                broadcast_app,
+                host="0.0.0.0",
+                port=8001,
+                log_level="info"
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+    
+    # Запуск обоих серверов параллельно
+        await asyncio.gather(
+            dp.start_polling(bot),
+            run_http_server()
+        )
+        # await dp.start_polling(bot)
     finally:
         logger.info("Остановка бота...")
         await adk.close()
