@@ -87,7 +87,8 @@ faq_file_storage = FileStorageService(
     qdrant_service=qdrant_service,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
-    service_dir=Path("app")
+    service_dir=Path("app"),
+    ext_allowed=SUPPORTED_FAQ_EXTENSIONS
 )
 
 # Mount static files
@@ -350,6 +351,20 @@ async def collection_info():
     try:
         info = qdrant_service.get_collection_info()
         return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/collections/refresh_metadata")
+async def refresh_collection_metadata():
+    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
+    try:
+        result = qdrant_service.refresh_collection_metadata()
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
