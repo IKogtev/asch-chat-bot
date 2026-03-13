@@ -86,6 +86,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
+      - PLATFORM_VERSION=0.5.1
     networks:
       - aszh-bot-network
 
@@ -119,7 +120,7 @@ services:
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
-    
+      - PLATFORM_VERSION=0.5.1
     depends_on:
       - qdrant
     networks:
