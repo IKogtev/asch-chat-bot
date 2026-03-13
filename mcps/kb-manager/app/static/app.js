@@ -177,7 +177,7 @@ async function loadCollectionInfo() {
         const response = await fetch(`${API_BASE}/api/collections/info`);
         const data = await response.json();
         const isFAQ = currentCollectionType === 'faq';
-        
+
         document.getElementById('collection-info').innerHTML = 
             `Collection: <strong>${data.name}</strong> 
                 | ${isFAQ? "Documents": "Points"} 
@@ -185,9 +185,9 @@ async function loadCollectionInfo() {
                 | Platform Version
                 <strong>${data.platform_version || 0}</strong>
                 | Last Synchronization
-                <strong>${formatDate(data.last_sync) || "In process now"}</strong>
+                <strong>${data.last_sync? formatDate(data.last_sync): "In process now"}</strong>
                 | Next Synchronization
-                <strong>${formatDate(data.next_sync) || "Not set yet"}</strong>
+                <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
             `;
     } catch (error) {
         console.error('Error loading collection info:', error);
@@ -1239,5 +1239,6 @@ async function changeSyncInterval(){
 
     if(res.ok){
         loadSyncSettings()
+        loadCollectionInfo()
     }
 }

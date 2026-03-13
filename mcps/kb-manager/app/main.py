@@ -72,7 +72,6 @@ file_storage_service = FileStorageService(
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     service_dir=Path("app"),
-    # ext_allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
     ext_allowed = SUPPORTED_KB_EXTENSIONS
     
 )
@@ -187,19 +186,7 @@ async def auto_sync():
         now = datetime.now()
         next_sync = datetime.fromisoformat(sync_settings["next_sync"])
         sleep_time= max((next_sync-now).total_seconds(), 0)
-        logger.info(f"[AUTO SYNC] sleeping {sleep_time} sec")
-        # try:
-        #     if not sync_lock.locked():
-        #         logger.info("[AUTO SYNC] starting sync")
-        #         await run_sync_all_safe()
-        # except Exception as e:
-        #     logger.error(f"[AUTO SYNC] error {e}")
-        
-        # if sync_settings.get("interval_seconds"):
-        #     sleep_time = sync_settings["interval_seconds"]
-        # else:
-        #     sleep_time = sync_settings["interval_hours"] * 3600
-        # logger.info(f"[AUTO SYNC] next run in {sleep_time} seconds")    
+        logger.info(f"[AUTO SYNC] sleeping {sleep_time} sec")    
         try:
             await asyncio.wait_for(sync_update_event.wait(), timeout=sleep_time)
             logger.info("[AUTO SYNC] interval updated")
@@ -416,7 +403,6 @@ async def search_documents(request: SearchRequest):
     except Exception as e:
         logger.info(f"[SEARCH ERROR], {e}")
         return []
-        # raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/collections/info")
