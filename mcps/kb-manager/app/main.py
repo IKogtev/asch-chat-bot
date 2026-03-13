@@ -72,7 +72,6 @@ file_storage_service = FileStorageService(
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     service_dir=Path("app"),
-    # ext_allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
     ext_allowed = SUPPORTED_KB_EXTENSIONS
     
 )
@@ -91,6 +90,10 @@ sync_settings = {
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
+def get_interval_delta():
+    if sync_settings.get("interval_seconds"):
+        return timedelta(seconds=sync_settings["interval_seconds"])
+    return timedelta(hours=sync_settings["interval_hours"])
 
 async def run_sync_all_safe():
     if sync_lock.locked():
@@ -103,11 +106,7 @@ async def run_sync_all_safe():
         try:
             await run_sync_all_once()
             sync_settings["last_sync"] = datetime.now().isoformat()
-            if sync_settings.get("interval_seconds"):
-                delta = timedelta(seconds=sync_settings["interval_seconds"])
-            else:
-                delta = timedelta(hours=sync_settings["interval_hours"])
-            sync_settings["next_sync"] = (datetime.now()+delta).isoformat()
+            sync_settings["next_sync"] = (datetime.now()+get_interval_delta()).isoformat()
         finally:
             sync_settings["running"] = False
 
@@ -170,29 +169,33 @@ async def run_sync_all_once():
 async def startup_event():
     """Initialize Qdrant collection on startup"""
     qdrant_service.ensure_collection()
-    asyncio.create_task(auto_sync())
+    asyncio.create_task(run_sync_all_safe())
+    asyncio.create_task(start_scheduler())
+
+async def start_scheduler():
+    await asyncio.sleep(10)
+    await auto_sync()
 
 async def auto_sync():
     logger.info("[AUTO SYNC] loop started")
+    if not sync_settings["next_sync"]:
+        sync_settings["next_sync"] = (
+            datetime.now() + get_interval_delta()
+        ).isoformat()
     while True:
-        try:
-            if not sync_lock.locked():
-                logger.info("[AUTO SYNC] starting sync")
-                await run_sync_all_safe()
-        except Exception as e:
-            logger.error(f"[AUTO SYNC] error {e}")
-        
-        if sync_settings.get("interval_seconds"):
-            sleep_time = sync_settings["interval_seconds"]
-        else:
-            sleep_time = sync_settings["interval_hours"] * 3600
-        logger.info(f"[AUTO SYNC] next run in {sleep_time} seconds")    
+        now = datetime.now()
+        next_sync = datetime.fromisoformat(sync_settings["next_sync"])
+        sleep_time= max((next_sync-now).total_seconds(), 0)
+        logger.info(f"[AUTO SYNC] sleeping {sleep_time} sec")    
         try:
             await asyncio.wait_for(sync_update_event.wait(), timeout=sleep_time)
             logger.info("[AUTO SYNC] interval updated")
             sync_update_event.clear()
+            continue
         except asyncio.TimeoutError:
             pass
+        if not sync_lock.locked():
+            await run_sync_all_safe()
 
 @app.get("/api/sync/settings")
 async def get_sync_settings():
@@ -201,8 +204,10 @@ async def get_sync_settings():
 @app.post("/api/sync/settings")
 async def set_sync_settings(data: SyncInterval):
     sync_settings["interval_hours"] = data.hours
+    now = datetime.now()
+    sync_settings["next_sync"] = (now+get_interval_delta()).isoformat()
     sync_update_event.set()
-    return {"status": "updated", "interval": data.hours}
+    return {"status": "updated", "interval": data.hours, "next_sync": sync_settings["next_sync"]}
 
 @app.post("/api/filesystem/sync_all")
 async def manual_sync_all():
@@ -398,7 +403,6 @@ async def search_documents(request: SearchRequest):
     except Exception as e:
         logger.info(f"[SEARCH ERROR], {e}")
         return []
-        # raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/collections/info")
