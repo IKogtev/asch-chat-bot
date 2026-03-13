@@ -8,13 +8,14 @@ from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
     DocumentInfo, SearchRequest, SearchResult, SwitchCollectionRequest, 
-    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest
+    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
     )
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
 import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from urllib.parse import unquote
+from datetime import datetime, timedelta
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -48,6 +49,7 @@ embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
 SUPPORTED_FAQ_EXTENSIONS = {".md", ".csv", ".xls", ".xlsx", ".txt", ".pdf", ".docx"}
 SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx",".csv", ".xls", ".xlsx"}
+PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
 chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "50"))
@@ -74,18 +76,73 @@ file_storage_service = FileStorageService(
     ext_allowed = SUPPORTED_KB_EXTENSIONS
     
 )
+# sync settings
+sync_lock = asyncio.Lock()
+sync_update_event = asyncio.Event()
+sync_settings = {
+    "interval_hours": 3,
+    "interval_seconds": None,
+    "last_sync": None,
+    "next_sync":None,
+    "running": False
+}
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize Qdrant collection on startup"""
-    qdrant_service.ensure_collection()
-    asyncio.create_task(auto_sync())
+async def run_sync_all_safe():
+    if sync_lock.locked():
+        logger.info("SYNC alrady_running")
+        return {"status": "already_running"}
 
+    async with sync_lock:
+        logger.info("[SYNC] started")
+        sync_settings["running"] = True
+        try:
+            await run_sync_all_once()
+            sync_settings["last_sync"] = datetime.now().isoformat()
+            if sync_settings.get("interval_seconds"):
+                delta = timedelta(seconds=sync_settings["interval_seconds"])
+            else:
+                delta = timedelta(hours=sync_settings["interval_hours"])
+            sync_settings["next_sync"] = (datetime.now()+delta).isoformat()
+        finally:
+            sync_settings["running"] = False
+
+    return {"status": "completed"}
+
+
+#  TODO добавлять параллелизм или нет? У нас не вытянет, если добавлять то вот наброски кода: 
+# SEM = asyncio.Semaphore(3)
+# async def sync_kb(kb_id):
+
+#     async with SEM:
+
+#         loop = asyncio.get_running_loop()
+
+#         await loop.run_in_executor(
+#             None,
+#             lambda: file_storage_service.sync(
+#                 kb_id=kb_id,
+#                 collection_type="kb"
+#             )
+#         )
+# async def run_sync_all_once():
+
+#     if not KB_STORAGE_ROOT.exists():
+#         return
+
+#     tasks = []
+
+#     for folder in KB_STORAGE_ROOT.iterdir():
+#         if folder.is_dir():
+#             tasks.append(sync_kb(folder.name))
+
+#     await asyncio.gather(*tasks)
+
+#     logger.info("status success Sync completed")
 async def run_sync_all_once():
     if not KB_STORAGE_ROOT.exists():
         logger.info("status error storage root not found")
@@ -107,12 +164,45 @@ async def run_sync_all_once():
     return {
         "status": "success",
         "message": "SYNC completed"
-    }            
+    }     
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize Qdrant collection on startup"""
+    qdrant_service.ensure_collection()
+    asyncio.create_task(auto_sync())
 
 async def auto_sync():
+    logger.info("[AUTO SYNC] loop started")
     while True:
-        await run_sync_all_once()
-        await asyncio.sleep(86400)
+        try:
+            if not sync_lock.locked():
+                logger.info("[AUTO SYNC] starting sync")
+                await run_sync_all_safe()
+        except Exception as e:
+            logger.error(f"[AUTO SYNC] error {e}")
+        
+        if sync_settings.get("interval_seconds"):
+            sleep_time = sync_settings["interval_seconds"]
+        else:
+            sleep_time = sync_settings["interval_hours"] * 3600
+        logger.info(f"[AUTO SYNC] next run in {sleep_time} seconds")    
+        try:
+            await asyncio.wait_for(sync_update_event.wait(), timeout=sleep_time)
+            logger.info("[AUTO SYNC] interval updated")
+            sync_update_event.clear()
+        except asyncio.TimeoutError:
+            pass
+
+@app.get("/api/sync/settings")
+async def get_sync_settings():
+    return sync_settings
+
+@app.post("/api/sync/settings")
+async def set_sync_settings(data: SyncInterval):
+    sync_settings["interval_hours"] = data.hours
+    sync_update_event.set()
+    return {"status": "updated", "interval": data.hours}
 
 @app.post("/api/filesystem/sync_all")
 async def manual_sync_all():
@@ -120,7 +210,7 @@ async def manual_sync_all():
     Эндпоинт для ручной синхронизации по кнопке.
     Вызывает ту же логику, но один раз и сразу возвращает ответ.
     """
-    result = await run_sync_all_once()
+    result = await run_sync_all_safe()
     return result
 
 
@@ -316,6 +406,9 @@ async def collection_info():
     """Get collection information"""
     try:
         info = qdrant_service.get_collection_info()
+        info['platform_version'] = PLATFORM_VERSION
+        info['last_sync'] = sync_settings["last_sync"]
+        info['next_sync'] = sync_settings['next_sync']
         return info
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

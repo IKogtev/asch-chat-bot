@@ -59,3 +59,6 @@ class CollectionType(str, Enum):
 class SwitchAliasRequest(BaseModel):
     collection_name: str
     collection_type: CollectionType
+
+class SyncInterval(BaseModel):
+    hours: int
