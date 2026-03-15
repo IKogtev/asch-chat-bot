@@ -822,3 +822,136 @@ select:focus {
 .file {
     margin-left: 10px;
 }
+
+.prompt-container {
+    display: flex;
+    gap: 20px;
+    height: calc(100vh - 200px);
+}
+
+.prompt-sidebar {
+    width: 300px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.prompt-history {
+    margin-top: 10px;
+}
+
+.prompt-history-item {
+    padding: 10px;
+    margin: 5px 0;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.prompt-history-item:hover {
+    background: #e9ecef;
+    border-color: #007bff;
+}
+
+.prompt-history-item.active {
+    background: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+
+.prompt-history-item .name {
+    font-weight: bold;
+    font-size: 14px;
+}
+
+.prompt-history-item .meta {
+    font-size: 12px;
+    color: #666;
+    margin-top: 5px;
+}
+
+.prompt-history-item.active .meta {
+    color: #eee;
+}
+
+.prompt-editor-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.prompt-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.prompt-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.prompt-meta {
+    display: flex;
+    gap: 20px;
+    padding: 10px;
+    background: #e9ecef;
+    border-radius: 5px;
+    font-size: 14px;
+}
+
+.prompt-editor {
+    flex: 1;
+    width: 100%;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    resize: none;
+    line-height: 1.5;
+}
+
+.prompt-editor:focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 3px rgba(0,123,255,0.1);
+}
+
+.backup-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.backup-item .actions {
+    display: flex;
+    gap: 5px;
+}
+
+.btn-restore {
+    background: #28a745;
+    color: white;
+    border: none;
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.btn-delete {
+    background: #dc3545;
+    color: white;
+    border: none;
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+}
