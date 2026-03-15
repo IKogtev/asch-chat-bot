@@ -60,6 +60,7 @@ services:
       - KB_COLLECTION=${KB_COLLECTION}
     volumes:
       - ./agent:/app/agent
+      - ./prompts:/app/agent/prompts
     tmpfs:
       - /app/agent/.adk:size=100M
     networks:
@@ -110,6 +111,7 @@ services:
       - 5000:5000
     volumes:
       - ./kb_storage:/app/data/kb_documents
+      - ./prompts:/data/prompts
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -220,6 +222,7 @@ volumes:
   pg_data:
   pgadmin_data:
   qdrant-storage:
+  prompts_data:
 
 networks:
   aszh-bot-network:
