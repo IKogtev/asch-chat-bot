@@ -24,7 +24,7 @@ BOT_API = "http://bot:8001/broadcast"
 
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-ADK_AGENT_URL = os.getenv("ADK_AGENT_URL", "http://adk-agent:8000")
+ADK_AGENT_URL = os.getenv("ADK_AGENT_URL", "http://adk-agent:8010")
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -799,6 +799,22 @@ async def delete_prompt_file(filename: str):
     except Exception as e:
         logger.error(f"Error deleting file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+#  endpoint to reload agent
+@app.post("/api/prompts/reload-agent")
+async def reload_agent_prompt():
+    """Отправить команду перезагрузки промпта в adk-agent"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{ADK_AGENT_URL}/api/prompts/reload",
+                timeout=10
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to reload agent prompt: {e}")
+        raise HTTPException(status_code=502, detail="Agent service unavailable")
 
 if __name__ == "__main__":
     import uvicorn
