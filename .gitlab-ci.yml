@@ -1,6 +1,5 @@
 variables:
   # Yandex Container Registry configuration
-  YC_REGISTRY_HOST: "cr.yandex"
   YC_REPO: "cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot"
 
   # Docker image names (tagged on release tags)
@@ -36,8 +35,9 @@ workflow:
     - echo "Using VERSION=$VERSION"
     - mkdir -p /kaniko/.docker
     - |
+      YC_REGISTRY="${YC_REGISTRY:-${YC_REPO%/*}}"
       AUTH="$(printf '%s' "json_key:${YC_REGISTRY_KEY}" | base64 | tr -d '\n')"
-      printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${YC_REGISTRY_HOST}" "${AUTH}" > /kaniko/.docker/config.json
+      printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${YC_REGISTRY}" "${AUTH}" > /kaniko/.docker/config.json
   retry:
     max: 2
     when:
@@ -112,7 +112,7 @@ release:gitlab:
   stage: release
   image: registry.gitlab.com/gitlab-org/cli:latest
   tags:
-    - shared
+    - managed
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+.*$/'
   needs:
