@@ -29,6 +29,7 @@ logger = setup_logger('bot', 'bot.log')
 CALLBACK_MAP = {}
 TREE_CACHE = None
 TREE_TS = 0
+PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
@@ -421,6 +422,14 @@ async def main() -> None:
            TITLE_START,
            reply_markup=menu
         )
+    @dp.message(Command("version"))
+    async def version_info(m: Message) -> None:
+        user_id = m.from_user.id
+        logger.info(f"Команда /version от user_id={user_id}")
+        await m.answer(
+            f"Текущая версия бота: {PLATFORM_VERSION}"
+        )
+
     #домашняя страница
     @dp.callback_query(lambda c: c.data == "home")
     async def go_home(callback: CallbackQuery):
@@ -700,6 +709,7 @@ async def main() -> None:
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
+        logger.info(f"Текущая версия бота: {PLATFORM_VERSION}")
         await dp.start_polling(bot)
     finally:
         logger.info("Остановка бота...")
@@ -722,7 +732,7 @@ def store_path(path: str):
 async def get_tree_cached():
     global TREE_CACHE, TREE_TS
     # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
-    if time.time() - TREE_TS < 15:
+    if time.time() - TREE_TS < 60:
         return TREE_CACHE
 
     TREE_CACHE = await get_kb_tree()
