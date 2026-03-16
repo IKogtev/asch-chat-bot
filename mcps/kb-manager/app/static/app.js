@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCollectionInfo();
     loadDocuments();
     setupDragAndDrop();
+    loadSyncSettings();
 });
 
 // load active collections
@@ -182,9 +183,18 @@ async function loadCollectionInfo() {
         const response = await fetch(`${API_BASE}/api/collections/info`);
         const data = await response.json();
         const isFAQ = currentCollectionType === 'faq';
-        
+
         document.getElementById('collection-info').innerHTML = 
-            `Collection: <strong>${data.name}</strong> | ${isFAQ? "Documents": "Points"} <strong>${data.points_count-1 || 0}</strong>`;
+            `Collection: <strong>${data.name}</strong> 
+                | ${isFAQ? "Documents": "Points"} 
+                <strong>${data.points_count-1 || 0}</strong>
+                | Platform Version
+                <strong>${data.platform_version || 0}</strong>
+                | Last Synchronization
+                <strong>${data.last_sync? formatDate(data.last_sync): "In process now"}</strong>
+                | Next Synchronization
+                <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
+            `;
     } catch (error) {
         console.error('Error loading collection info:', error);
     }
@@ -1204,6 +1214,7 @@ document.addEventListener("click", function (e) {
 
 });
 
+<<<<<<< HEAD
 async function sendNews() {
 
     const text = document.getElementById("news-text").value;
@@ -1512,5 +1523,39 @@ async function reloadAgent() {
     } catch (err) {
         resultDiv.className = "result-message warning";
         resultDiv.innerHTML = `⚠️ Агент не доступен: ${err.message}<br>Промпт сохранён, но агент нужно перезапустить вручную.`;
+=======
+async function loadSyncSettings() {
+
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
+
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+
+async function loadSyncSettings() {
+
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
+
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+async function changeSyncInterval(){
+    const current = document.getElementById("sync-interval").innerText
+    const hours = prompt("Enter sync interval in hours", current)
+
+    if(!hours) return
+
+    const res = await fetch("/api/sync/settings", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({hours:parseInt(hours)})
+    })
+
+    if(res.ok){
+        loadSyncSettings()
+        loadCollectionInfo()
+>>>>>>> main
     }
 }
