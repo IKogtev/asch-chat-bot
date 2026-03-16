@@ -468,7 +468,7 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-
+    
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
@@ -508,6 +508,7 @@ async def main() -> None:
         username = m.from_user.username or "unknown"
         session_id = "default"
         user_text = (m.text or "").strip()
+        SUBSCRIBERS.add(user_id)
         
         if not user_text:
             return

@@ -9,6 +9,11 @@ from pathlib import Path
 import sys
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import threading
+from google.adk.tools import FunctionTool
+
+def get_prompt():
+    return root_agent.instruction
 
 class PromptManager(FileSystemEventHandler):
     def __init__(self, prompt_path: Path, agent):
@@ -104,6 +109,8 @@ else:
 if not tools:
     logger.warning("⚠ Агент создается без tools — функциональность ограничена")
 
+tools.append(FunctionTool(get_prompt))
+
 # === Создание агента ===
 root_agent = LlmAgent(
     name="local_llm_agent",
@@ -130,4 +137,4 @@ logger.info(f"  Подключено tools: {len(tools)}")
 event_handler = PromptManager(PROMPT_FILE, root_agent)
 observer = Observer()
 observer.schedule(event_handler, path=str(PROMPT_FILE.parent), recursive=False)
-observer.start()
+threading.Thread(target=observer.start, daemon=True).start()
