@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCollectionInfo();
     loadDocuments();
     setupDragAndDrop();
+    loadSyncSettings();
 });
 
 // load active collections
@@ -176,9 +177,18 @@ async function loadCollectionInfo() {
         const response = await fetch(`${API_BASE}/api/collections/info`);
         const data = await response.json();
         const isFAQ = currentCollectionType === 'faq';
-        
+
         document.getElementById('collection-info').innerHTML = 
-            `Collection: <strong>${data.name}</strong> | ${isFAQ? "Documents": "Points"} <strong>${data.points_count-1 || 0}</strong>`;
+            `Collection: <strong>${data.name}</strong> 
+                | ${isFAQ? "Documents": "Points"} 
+                <strong>${data.points_count-1 || 0}</strong>
+                | Platform Version
+                <strong>${data.platform_version || 0}</strong>
+                | Last Synchronization
+                <strong>${data.last_sync? formatDate(data.last_sync): "In process now"}</strong>
+                | Next Synchronization
+                <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
+            `;
     } catch (error) {
         console.error('Error loading collection info:', error);
     }
@@ -365,7 +375,8 @@ async function syncAll(btnElement) {
 async function loadDocuments() {
     const container = document.getElementById('documents-list');
     container.innerHTML = '<div class="loading">Loading knowledge bases...</div>';
-    
+    // Обновляем document_count в метаданных (для MCP kb-status)
+    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
     try {
         const response = await fetch(`${API_BASE}/api/knowledge-bases`);
         const knowledgeBases = await response.json();
@@ -1196,3 +1207,38 @@ document.addEventListener("click", function (e) {
     }
 
 });
+
+async function loadSyncSettings() {
+
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
+
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+
+async function loadSyncSettings() {
+
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
+
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+async function changeSyncInterval(){
+    const current = document.getElementById("sync-interval").innerText
+    const hours = prompt("Enter sync interval in hours", current)
+
+    if(!hours) return
+
+    const res = await fetch("/api/sync/settings", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({hours:parseInt(hours)})
+    })
+
+    if(res.ok){
+        loadSyncSettings()
+        loadCollectionInfo()
+    }
+}

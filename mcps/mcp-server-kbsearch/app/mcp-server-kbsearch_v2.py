@@ -6,8 +6,9 @@ from starlette.requests import Request
 from contextlib import asynccontextmanager
 
 # FastMCP
-from typing import Annotated, Dict
+from typing import Annotated, Dict, List
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
 # Утилиты
 import asyncio
 from pathlib import Path
@@ -15,6 +16,7 @@ from datetime import datetime
 import uvicorn
 from dotenv import load_dotenv
 import re
+import json
 import os, shutil
 
 # вынесенная работа с хранилищем, аналогичная с faq 
@@ -80,8 +82,13 @@ QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "kb_collection_active")
 # Дополнительные параметры индексации, не обязательные 
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
 MAP_TRUE = False
+
 # настраиваем логирование сервера
-logger = setup_logger("kbsearch_server", service_dir=KB_SERVICE_DIR)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+logger = setup_logger("kbsearch_server", service_dir=KB_SERVICE_DIR, log_level=LOG_LEVEL)
+
+logger.info(f"Logging level: {LOG_LEVEL}")
 #  создаем storage объект, отвечающий за всю работу с хранилищами
 storage = LocalStorage(documents_dir=KB_DOCUMENTS_DIR, service_dir=KB_SERVICE_DIR,
                        local_mount=KB_LOCAL_MOUNT if IN_DOCKER else None,
@@ -132,7 +139,7 @@ def get_kb_status() -> Dict:
         "initialized": kb_runtime.initialized,
         "index_exists": bool(kb_runtime.initialized),
         "points_count": metadata.get("points_count", 0),
-        "documents_count": metadata.get("documents_count", 0),
+        "document_count": metadata.get("document_count", 0),
         "metadata": metadata,
         "last_update": kb_runtime.last_update
     }
@@ -241,6 +248,16 @@ async def initialize_kb_on_startup() -> None:
         
     except Exception as e:
         logger.error(f"Критическая ошибка при инициализации KB: {e}", exc_info=True)
+        
+def get_file_link(file_name: Annotated[str, "Name of source file"], section_list: Annotated[List[str], "List of upper folders' name up to storage root folder"]) -> str:
+    """
+    Generates a direct download link for a file.
+    Using in kb_search function to form path relative to storage root and add it to response
+    """
+    file_path = "/".join(section_list) + "/" + file_name
+    # Очищаем путь от возможных начальных слешей
+    clean_path = file_path.lstrip("/")
+    return f"{clean_path}"
 
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
@@ -250,87 +267,154 @@ mcp = FastMCP("kbsearch")
 @mcp.tool()
 async def kb_search(
     query: Annotated[str, "Search phrase to match against the indexed files"],
-    collection: Annotated[str, "Target FAQ collection. Must be provided"],
+    collection: Annotated[str | None, "Target collection. If None, will be used active collection"]=None,
     filters: Annotated[dict | None,
         """
         Optional metadata filters.
         Example:
         {
-        "kb_id": "default_faq",
-        "category": "HR",
-        "section_path": "vacations"
+        "kb_id": "01_Маркетинговые материалы",
+        "section_relationships": "01_Маркетинговые материалы/02_Fort Knox"
         }
         """] = None,
     top_k: Annotated[int, "Number of results to return (default: 10)"] = SIMILARITY_TOP_K,
     include_metadata: Annotated[bool, "Include document metadata in the output"] = True,
-) -> Dict:
+):
     """
     Search over pre-indexed files in the internal knowledge base.
 
     The `query` text is searched EXACTLY as provided — no rewriting, expansion, or paraphrasing is applied.
     Use this tool when a user asks something that should be matched against the indexed documents.
-    `top_k` controls how many matching passages to return. 
+    `top_k` controls how many matching passages to return.
     Set `include_metadata=True` if document metadata is needed.
 
     Not for web search or database queries. Only searches the pre-indexed documents.
     """
-    logger.info(f"Поиск: '{query}' (top_k={top_k}), collection={collection},  filters={filters}")
-    
+    logger.info(f"Поиск: '{query}' (top_k={top_k}), collection={collection}, filters={filters}")
+
     async with kb_lock:
         if not kb_runtime.initialized or not indexer.retriever:
             logger.warning("KB не инициализирована")
-            return {
-                "success": False,
-                "error": "База знаний не инициализирована",
-                "results": []
-            }
-        if not indexer.cfg.use_qdrant and not kb_runtime.initialized:
-                return {"success": False, "error": "Локальный FAQ не инициализирован"}
+            res = ToolResult(
+            content="База знаний не инициализирована",
+            structured_content=None
+            )
+            res.isError = True
+            return res
+            
+        if not indexer.cfg.use_qdrant and not kb_runtime.initialized:            
+            res = ToolResult(
+                content="Локальный FAQ не инициализирован",
+                structured_content=None
+            )
+            res.isError = True
+            return res
+   
         try:
-            # Поиск ВНУТРИ блокировки - безопасно
             retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
             nodes = retriever.retrieve(query)
+
             if not nodes:
-                return {
-                    "success": False,
-                    "error": "Релевантные ответы не найдены"
-                }
+                res = ToolResult(
+                    content=f"Ошибка при поиске: {e}",
+                    structured_content=None
+                )
+                res.isError = True
+                return res
+
             results = []
-            for i, node in enumerate(nodes[:top_k], 1):
+            for i, node in enumerate(nodes[:top_k]):
                 result = {
                     "rank": i,
                     "score": node.score,
-                    "content": node.get_content()[:500],
+                    "content": node.get_content(),
                 }
-                
+
                 if include_metadata:
-                    result["metadata"] = node.metadata
-                
+                    result["metadata"] = node.metadata or {}
+
                 results.append(result)
-            
+
             logger.info(f"Найдено {len(results)} результатов")
-            
-            return {
-                "success": True,
-                "query": query,
-                "results_count": len(results),
-                "results": results
-            }
-            
+
+            for res in results:
+                metadata = res.get("metadata") or {}
+                metadata["relative_path"] = get_file_link(
+                    metadata.get("source", ""),
+                    metadata.get("section_path", [])
+                )
+                res["metadata"] = metadata
+
+            logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
+
+            def cleanup_label(text: str) -> str:
+                text = re.sub(r"^\d+[_\-\s]*", "", text)
+                return text.strip()
+
+            def make_title(metadata: dict) -> str:
+                section = metadata.get("section_path", [])
+                source = metadata.get("source", "")
+
+                cleaned = [cleanup_label(x) for x in section if x]
+
+                if len(cleaned) >= 2:
+                    return " — ".join(cleaned[-2:])
+                if cleaned:
+                    return cleaned[-1]
+                return source
+
+            def build_prompt(results: list[dict], question: str) -> str:
+                blocks = []
+
+                for i, item in enumerate(results):
+                    text = item["content"].strip()
+                    metadata = item.get("metadata", {})
+                    title = make_title(metadata)
+                    relative_path = metadata.get("relative_path", "")
+                    doc_id = metadata.get("document_id", "")
+
+                    block = f"""[{i}] {title}
+RELATIVE_PATH: {relative_path}
+
+DOCUMENT_ID: {doc_id}
+
+{text}
+"""
+                    blocks.append(block)
+
+                context = "\n---\n\n".join(blocks)
+
+                return f"""Используй только информацию из CONTEXT.
+Если ответа нет в контексте не придумывай сам.
+
+CONTEXT
+{context}
+
+QUESTION
+{question}
+"""
+            prompt = build_prompt(results, query)
+            res = ToolResult(
+            content=prompt,
+            structured_content=None,
+        )
+            res.isError = False
+            return res
+
         except Exception as e:
             logger.error(f"Ошибка при поиске: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-                "results": []
-            }
-
+            res = ToolResult(
+            content=f"Ошибка при поиске: {e}",
+            structured_content=None
+        )
+            res.isError = True
+            return res
 @mcp.tool()
 async def get_kb_info() -> Dict:
     """
     Get status of internal knowledge base.
     """
-    logger.debug("Запрос информации о KB")
+    logger.info("Запрос информации о KB")
     return get_kb_status()
 
 # ============================================================================
@@ -532,7 +616,7 @@ async def kb_collections_delete(request: Request) -> JSONResponse:
     """
     Endpoint to delete collection
     Usage:
-    "curl -X POST http://localhost:7001/kb/collections/delete -H "Content-Type: application/json" -d '{"collection":"faq_collection_v2"}'"
+    "curl -X POST http://localhost:7001/kb/collections/delete -H "Content-Type: application/json" -d '{"collection":"kb_collection"}'"
     """
     payload = await request.json()
     collection = payload.get("collection")

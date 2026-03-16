@@ -13,3 +13,8 @@ data/
 venv/
 
 .env
+agent/__pycache__/
+agent/agent/
+filebrowser_data/database.db
+filebrowser_data/settings.json
+filegator_data
