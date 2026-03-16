@@ -1000,3 +1000,27 @@ select:focus {
         max-height: 200px;
     }
 }
+
+.news-editor{
+    flex: 1;
+    width: 100%;
+    font-family: 'Courier New', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 15px;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    resize: none;
+    min-height: 300px;
+}
+
+.news-editor::focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 3px rgba(0,123,255,0.1);
+}
+
+.news-editor::disabled {
+    background: #f8f9fa;
+    cursor: not-allowed;
+}
