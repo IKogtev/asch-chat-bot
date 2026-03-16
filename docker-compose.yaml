@@ -60,7 +60,7 @@ services:
       - KB_COLLECTION=${KB_COLLECTION}
     volumes:
       - ./agent:/app/agent
-      - ./prompts:/app/agent/prompts
+      - prompts:/app/agent/prompts
     tmpfs:
       - /app/agent/.adk:size=100M
     networks:
@@ -111,7 +111,7 @@ services:
       - 5000:5000
     volumes:
       - ./kb_storage:/app/data/kb_documents
-      - ./prompts:/data/prompts
+      - prompts:/app/data/prompts
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -121,6 +121,8 @@ services:
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
+      - PROMPTS_STORAGE_ROOT=/app/data/prompts
+      - ADK_AGENT_URL=http://adk-agent:8000
     
     depends_on:
       - qdrant
@@ -222,7 +224,7 @@ volumes:
   pg_data:
   pgadmin_data:
   qdrant-storage:
-  prompts_data:
+  prompts:
 
 networks:
   aszh-bot-network:
