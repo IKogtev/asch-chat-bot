@@ -15,6 +15,7 @@ variables:
 
 stages:
   - build-images
+  - release
 
 workflow:
   rules:
@@ -102,3 +103,37 @@ build:image:kbsearch:
         --cache-repo=${KANIKO_CACHE_REPO} \
         --compressed-caching=false \
         --snapshot-mode=redo
+
+# ============================================================================
+# STAGE: Release (GitLab Release with Docker pull commands)
+# ============================================================================
+
+release:gitlab:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  tags:
+    - shared
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+.*$/'
+  needs:
+    - job: build:image:agent
+    - job: build:image:bot
+    - job: build:image:kb-manager
+    - job: build:image:kbsearch
+  script:
+    - echo "Creating GitLab release for ${CI_COMMIT_TAG}"
+    - |
+      cat > release_notes.md <<EOF
+      ## ASCH chat-bot ${CI_COMMIT_TAG}
+
+      ### Docker Images (Yandex Container Registry)
+
+          docker pull ${IMAGE_AGENT}:${CI_COMMIT_TAG}-amd64
+          docker pull ${IMAGE_BOT}:${CI_COMMIT_TAG}-amd64
+          docker pull ${IMAGE_KB_MANAGER}:${CI_COMMIT_TAG}-amd64
+          docker pull ${IMAGE_KBSEARCH}:${CI_COMMIT_TAG}-amd64
+      EOF
+  release:
+    tag_name: '${CI_COMMIT_TAG}'
+    name: 'Release ${CI_COMMIT_TAG}'
+    description: release_notes.md
