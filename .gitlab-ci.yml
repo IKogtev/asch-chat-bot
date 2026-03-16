@@ -1,0 +1,104 @@
+variables:
+  # Yandex Container Registry configuration
+  YC_REGISTRY_HOST: "cr.yandex"
+  YC_REPO: "cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot"
+
+  # Docker image names (tagged on release tags)
+  IMAGE_AGENT: "${YC_REPO}/adk-agent"
+  IMAGE_BOT: "${YC_REPO}/chatbot"
+  IMAGE_KB_MANAGER: "${YC_REPO}/kb-manager"
+  IMAGE_KBSEARCH: "${YC_REPO}/kbsearch"
+
+  # Kaniko cache
+  KANIKO_CACHE: "true"
+  KANIKO_CACHE_REPO: "${YC_REPO}/cache"
+
+stages:
+  - build-images
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+.*$/'
+    - when: never
+
+.kaniko-template: &kaniko-template
+  stage: build-images
+  image:
+    name: gcr.io/kaniko-project/executor:v1.19.0-debug
+    entrypoint: [""]
+  tags:
+    - managed
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+.*$/'
+  before_script:
+    - VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+    - echo "Using VERSION=$VERSION"
+    - mkdir -p /kaniko/.docker
+    - |
+      AUTH="$(printf '%s' "json_key:${YC_REGISTRY_KEY}" | base64 | tr -d '\n')"
+      printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${YC_REGISTRY_HOST}" "${AUTH}" > /kaniko/.docker/config.json
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+build:image:agent:
+  <<: *kaniko-template
+  script:
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile.agent" \
+        --destination "${IMAGE_AGENT}:${CI_COMMIT_TAG}-amd64" \
+        --destination "${IMAGE_AGENT}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${IMAGE_AGENT}:latest" \
+        --cache=${KANIKO_CACHE} \
+        --cache-repo=${KANIKO_CACHE_REPO} \
+        --compressed-caching=false \
+        --snapshot-mode=redo
+
+build:image:bot:
+  <<: *kaniko-template
+  script:
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile.bot" \
+        --destination "${IMAGE_BOT}:${CI_COMMIT_TAG}-amd64" \
+        --destination "${IMAGE_BOT}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${IMAGE_BOT}:latest" \
+        --cache=${KANIKO_CACHE} \
+        --cache-repo=${KANIKO_CACHE_REPO} \
+        --compressed-caching=false \
+        --snapshot-mode=redo
+
+build:image:kb-manager:
+  <<: *kaniko-template
+  script:
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/mcps/kb-manager" \
+        --dockerfile "${CI_PROJECT_DIR}/mcps/kb-manager/Dockerfile" \
+        --destination "${IMAGE_KB_MANAGER}:${CI_COMMIT_TAG}-amd64" \
+        --destination "${IMAGE_KB_MANAGER}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${IMAGE_KB_MANAGER}:latest" \
+        --cache=${KANIKO_CACHE} \
+        --cache-repo=${KANIKO_CACHE_REPO} \
+        --compressed-caching=false \
+        --snapshot-mode=redo
+
+build:image:kbsearch:
+  <<: *kaniko-template
+  script:
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/mcps/mcp-server-kbsearch" \
+        --dockerfile "${CI_PROJECT_DIR}/mcps/mcp-server-kbsearch/Dockerfile" \
+        --destination "${IMAGE_KBSEARCH}:${CI_COMMIT_TAG}-amd64" \
+        --destination "${IMAGE_KBSEARCH}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${IMAGE_KBSEARCH}:latest" \
+        --cache=${KANIKO_CACHE} \
+        --cache-repo=${KANIKO_CACHE_REPO} \
+        --compressed-caching=false \
+        --snapshot-mode=redo
