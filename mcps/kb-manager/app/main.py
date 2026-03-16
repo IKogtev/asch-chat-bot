@@ -15,11 +15,16 @@ import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
-import httpx, aiofiles
+import httpx
 from urllib.parse import unquote
+import aiofiles, shutil
 from datetime import datetime
 
 BOT_API = "http://bot:8001/broadcast"
+
+PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
+PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+ADK_AGENT_URL = os.getenv("ADK_AGENT_URL", "http://adk-agent:8000")
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -91,12 +96,6 @@ faq_file_storage = FileStorageService(
     service_dir=Path("app"),
     ext_allowed=SUPPORTED_FAQ_EXTENSIONS
 )
-PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/data/prompts"))
-PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-
-# URL для связи с adk-agent
-ADK_AGENT_URL = os.getenv("ADK_AGENT_URL", "http://adk-agent:8000")
-
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
@@ -593,33 +592,33 @@ async def send_news(data: dict):
             logger.error(f"Broadcast failed: {e}")
             raise HTTPException(status_code=502, detail="Bot service unvailable")
 
-
-# ============================================
-# PROMPT MANAGEMENT ENDPOINTS
-# ============================================
-
 @app.get("/api/prompts/list")
 async def list_prompts():
-    """Получить список всех промптов (кроме agent_prompt.md)"""
+    """Получить список всех файлов промптов"""
     try:
         prompts = []
         if PROMPTS_STORAGE_ROOT.exists():
             for file in PROMPTS_STORAGE_ROOT.iterdir():
-                if file.is_file() and file.name != "agent_prompt.md":
+                if file.is_file() and file.suffix == ".md":
                     stat = file.stat()
                     prompts.append({
                         "name": file.name,
                         "size": stat.st_size,
                         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "is_current": file.name == "agent_prompt.md",
                         "is_backup": file.name.startswith("agent_prompt_backup_")
                     })
         
-        # Сортировка: бэкапы в конце
-        prompts.sort(key=lambda x: (x["is_backup"], x["modified"]), reverse=True)
+        # Сортировка: текущий первый, потом бэкапы, потом остальные
+        prompts.sort(key=lambda x: (
+            not x["is_current"],  # текущий первым
+            not x["is_backup"],   # потом не бэкапы
+            x["modified"]         # по дате
+        ))
         
         return {
             "current": "agent_prompt.md",
-            "history": prompts
+            "files": prompts
         }
     except Exception as e:
         logger.error(f"Error listing prompts: {e}")
@@ -636,19 +635,20 @@ async def get_current_prompt():
         async with aiofiles.open(prompt_file, "r", encoding="utf-8") as f:
             content = await f.read()
         
+        stat = prompt_file.stat()
         return {
             "name": "agent_prompt.md",
             "content": content,
-            "size": prompt_file.stat().st_size,
-            "modified": datetime.fromtimestamp(prompt_file.stat().st_mtime).isoformat()
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
         }
     except Exception as e:
         logger.error(f"Error reading current prompt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/prompts/history/{filename}")
-async def get_prompt_history(filename: str):
-    """Получить содержимое файла из истории"""
+@app.get("/api/prompts/file/{filename}")
+async def get_prompt_file(filename: str):
+    """Получить содержимое конкретного файла промпта"""
     try:
         # Защита от path traversal
         if ".." in filename or filename.startswith("/"):
@@ -661,32 +661,30 @@ async def get_prompt_history(filename: str):
         async with aiofiles.open(prompt_file, "r", encoding="utf-8") as f:
             content = await f.read()
         
+        stat = prompt_file.stat()
         return {
             "name": filename,
             "content": content,
-            "size": prompt_file.stat().st_size,
-            "modified": datetime.fromtimestamp(prompt_file.stat().st_mtime).isoformat()
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
         }
     except Exception as e:
-        logger.error(f"Error reading prompt history: {e}")
+        logger.error(f"Error reading prompt file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.post("/api/prompts/backup")
 async def create_prompt_backup():
-    """Создать бэкап текущего промпта перед редактированием"""
+    """Создать бэкап текущего промпта"""
     try:
         prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
         
-        # Имя бэкапа с timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = f"agent_prompt_backup_{timestamp}.md"
         backup_file = PROMPTS_STORAGE_ROOT / backup_name
         
-        # Копирование файла
         shutil.copy2(prompt_file, backup_file)
-        
         logger.info(f"Created prompt backup: {backup_name}")
         
         return {
@@ -696,7 +694,7 @@ async def create_prompt_backup():
         }
     except Exception as e:
         logger.error(f"Error creating backup: {e}")
-        raise HTTPException(status_code=500, detail=str(e))    
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/prompts/save")
 async def save_prompt(data: dict):
@@ -708,7 +706,7 @@ async def save_prompt(data: dict):
         
         prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
         
-        # 1. Создать бэкап
+        # 1. Создать бэкап если файл существует
         if prompt_file.exists():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_name = f"agent_prompt_backup_{timestamp}.md"
@@ -746,7 +744,6 @@ async def save_prompt(data: dict):
 async def restore_prompt(filename: str):
     """Восстановить промпт из бэкапа"""
     try:
-        # Защита от path traversal
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
@@ -755,8 +752,6 @@ async def restore_prompt(filename: str):
             raise HTTPException(status_code=404, detail="Backup file not found")
         
         prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
-        
-        # Копирование бэкапа в текущий промпт
         shutil.copy2(backup_file, prompt_file)
         
         logger.info(f"Restored prompt from backup: {filename}")
@@ -780,8 +775,8 @@ async def restore_prompt(filename: str):
         logger.error(f"Error restoring prompt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/prompts/history/{filename}")
-async def delete_prompt_backup(filename: str):
+@app.delete("/api/prompts/file/{filename}")
+async def delete_prompt_file(filename: str):
     """Удалить файл бэкапа"""
     try:
         if ".." in filename or filename.startswith("/"):
@@ -795,14 +790,14 @@ async def delete_prompt_backup(filename: str):
             raise HTTPException(status_code=404, detail="File not found")
         
         backup_file.unlink()
-        logger.info(f"Deleted prompt backup: {filename}")
+        logger.info(f"Deleted prompt file: {filename}")
         
         return {
             "success": True,
             "message": f"Deleted {filename}"
         }
     except Exception as e:
-        logger.error(f"Error deleting backup: {e}")
+        logger.error(f"Error deleting file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+# Для всех файлов — оставить как есть (не конвертировать)
+* text=auto
+
+# Для конкретных файлов — всегда LF (Unix)
+*.json text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Для Windows-скриптов — CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
