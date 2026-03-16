@@ -52,7 +52,14 @@
                     Refresh
                 </button>
             </div>
-            
+            <div class="sync-settings">
+                Auto sync interval:
+                <strong id="sync-interval">loading...</strong> hours
+
+                <button onclick="changeSyncInterval()" class="btn btn-small">
+                    Change
+                </button>
+            </div>
             <div id="documents-list" class="documents-list">
                 <div class="loading">Loading documents...</div>
             </div>
