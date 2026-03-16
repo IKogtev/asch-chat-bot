@@ -47,6 +47,7 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+      - "8010:8010"
     env_file:
       - .env
     environment:
@@ -60,7 +61,6 @@ services:
       - KB_COLLECTION=${KB_COLLECTION}
     volumes:
       - ./agent:/app/agent
-      - prompts:/app/agent/prompts
     tmpfs:
       - /app/agent/.adk:size=100M
     networks:
@@ -111,7 +111,8 @@ services:
       - 5000:5000
     volumes:
       - ./kb_storage:/app/data/kb_documents
-      - prompts:/app/data/prompts
+      # - prompts:/app/data/prompts
+      - ./agent/prompts:/app/data/prompts
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -224,7 +225,7 @@ volumes:
   pg_data:
   pgadmin_data:
   qdrant-storage:
-  prompts:
+  # prompts:
 
 networks:
   aszh-bot-network:

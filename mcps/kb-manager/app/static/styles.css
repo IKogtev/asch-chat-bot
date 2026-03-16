@@ -827,54 +827,100 @@ select:focus {
     display: flex;
     gap: 20px;
     height: calc(100vh - 200px);
+    min-height: 500px;
 }
 
 .prompt-sidebar {
-    width: 300px;
+    width: 320px;
     background: #f8f9fa;
+    border: 1px solid #dee2e6;
     border-radius: 8px;
     padding: 15px;
     overflow-y: auto;
+    flex-shrink: 0;
 }
 
-.prompt-history {
-    margin-top: 10px;
+.prompt-sidebar h3 {
+    margin: 0 0 15px 0;
+    font-size: 16px;
+    color: #333;
 }
 
-.prompt-history-item {
-    padding: 10px;
-    margin: 5px 0;
+.prompt-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.prompt-file-item {
+    padding: 12px;
     background: white;
-    border: 1px solid #ddd;
-    border-radius: 5px;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
     cursor: pointer;
     transition: all 0.2s;
 }
 
-.prompt-history-item:hover {
+.prompt-file-item:hover {
     background: #e9ecef;
     border-color: #007bff;
 }
 
-.prompt-history-item.active {
+.prompt-file-item.active {
     background: #007bff;
     color: white;
     border-color: #007bff;
 }
 
-.prompt-history-item .name {
-    font-weight: bold;
+.prompt-file-item .file-name {
+    font-weight: 600;
     font-size: 14px;
+    margin-bottom: 5px;
+    word-break: break-all;
 }
 
-.prompt-history-item .meta {
+.prompt-file-item .file-meta {
     font-size: 12px;
     color: #666;
-    margin-top: 5px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
-.prompt-history-item.active .meta {
-    color: #eee;
+.prompt-file-item.active .file-meta {
+    color: #e9ecef;
+}
+
+.prompt-file-item.current-prompt {
+    border-left: 4px solid #28a745;
+}
+
+.prompt-file-item.backup-file {
+    border-left: 4px solid #ffc107;
+}
+
+.prompt-file-item .file-actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 5px;
+}
+
+.prompt-file-item .file-actions button {
+    padding: 3px 8px;
+    font-size: 11px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.btn-restore {
+    background: #28a745;
+    color: white;
+}
+
+.btn-delete {
+    background: #dc3545;
+    color: white;
 }
 
 .prompt-editor-panel {
@@ -882,41 +928,54 @@ select:focus {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    min-width: 0;
 }
 
 .prompt-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 10px;
+    padding: 10px 15px;
     background: #f8f9fa;
+    border: 1px solid #dee2e6;
     border-radius: 8px;
+}
+.prompt-header h3 {
+    margin: 0;
+    font-size: 16px;
 }
 
 .prompt-actions {
     display: flex;
-    gap: 10px;
+    gap: 8px;
 }
 
 .prompt-meta {
     display: flex;
     gap: 20px;
-    padding: 10px;
+    padding: 10px 15px;
     background: #e9ecef;
-    border-radius: 5px;
-    font-size: 14px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.prompt-meta span {
+    display: flex;
+    align-items: center;
+    gap: 5px;
 }
 
 .prompt-editor {
     flex: 1;
     width: 100%;
-    font-family: 'Courier New', monospace;
-    font-size: 14px;
+    font-family: 'Courier New', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.5;
     padding: 15px;
-    border: 1px solid #ddd;
+    border: 1px solid #dee2e6;
     border-radius: 8px;
     resize: none;
-    line-height: 1.5;
+    min-height: 300px;
 }
 
 .prompt-editor:focus {
@@ -925,33 +984,19 @@ select:focus {
     box-shadow: 0 0 0 3px rgba(0,123,255,0.1);
 }
 
-.backup-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+.prompt-editor:disabled {
+    background: #f8f9fa;
+    cursor: not-allowed;
 }
 
-.backup-item .actions {
-    display: flex;
-    gap: 5px;
-}
-
-.btn-restore {
-    background: #28a745;
-    color: white;
-    border: none;
-    padding: 3px 8px;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 12px;
-}
-
-.btn-delete {
-    background: #dc3545;
-    color: white;
-    border: none;
-    padding: 3px 8px;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 12px;
+/* Адаптивность */
+@media (max-width: 768px) {
+    .prompt-container {
+        flex-direction: column;
+    }
+    
+    .prompt-sidebar {
+        width: 100%;
+        max-height: 200px;
+    }
 }

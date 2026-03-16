@@ -38,6 +38,7 @@
             <button class="tab-button" onclick="showTab('upload')">Upload</button>
             <button class="tab-button" onclick="showTab('tree_files')">Tree Files</button>
             <button class="tab-button" onclick="showTab('news_send')">News</button>
+            <button class="tab-button" onclick="showTab('prompts')">Prompts</button>
         </div>
 
         <!-- Documents Tab -->
@@ -167,10 +168,55 @@
             <br><br>
 
             <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
-                Send News
+                📤 Отправить новость
             </button>
 
             <div id="news-result" class="result-message"></div>
+        </div>
+
+        <!-- Prompts tab -->
+        <div id="prompts-tab" class="tab-content">
+            <h2>📝 Управление промптами</h2>
+            
+            <div class="prompt-container">
+                <!-- Левая панель - история файлов -->
+                <div class="prompt-sidebar">
+                    <h3>📚 Файлы промптов</h3>
+                    <div id="prompt-files-list" class="prompt-files-list">
+                        <div class="loading">Загрузка...</div>
+                    </div>
+                </div>
+                
+                <!-- Правая панель - редактор -->
+                <div class="prompt-editor-panel">
+                    <div class="prompt-header">
+                        <h3>✏️ Редактор промпта</h3>
+                        <div class="prompt-actions">
+                            <button onclick="loadCurrentPrompt()" class="btn btn-secondary btn-small">
+                                🔄 Обновить
+                            </button>
+                            <button onclick="createBackup()" class="btn btn-warning btn-small">
+                                💾 Бэкап
+                            </button>
+                            <button onclick="savePrompt()" class="btn btn-primary btn-small">
+                                💾 Сохранить
+                            </button>
+                            <button onclick="reloadAgent()" class="btn btn-info btn-small">🔄 Перезагрузить агент</button>
+                        </div>
+                    </div>
+                    
+                    <div class="prompt-meta" id="prompt-meta">
+                        <span>Файл: <strong id="prompt-filename">-</strong></span>
+                        <span>Размер: <strong id="prompt-size">-</strong></span>
+                        <span>Изменён: <strong id="prompt-modified">-</strong></span>
+                    </div>
+                    
+                    <textarea id="prompt-editor" class="prompt-editor" 
+                            placeholder="Загрузка промпта..."></textarea>
+                    
+                    <div id="prompt-result" class="result-message" style="display:none;"></div>
+                </div>
+            </div>
         </div>
         
         <!-- Modal for viewing document chunks -->
