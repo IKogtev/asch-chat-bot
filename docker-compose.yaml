@@ -60,6 +60,8 @@ services:
       - KB_COLLECTION=${KB_COLLECTION}
     volumes:
       - ./agent:/app/agent
+    tmpfs:
+      - /app/agent/.adk:size=100M
     networks:
       - aszh-bot-network
 
@@ -74,6 +76,8 @@ services:
         condition: service_healthy
       adk-agent:
         condition: service_started
+      kb-manager:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -81,6 +85,8 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
+      - KB_MANAGER_URL=http://kb-manager:5000
+      - PLATFORM_VERSION=0.5.1
     networks:
       - aszh-bot-network
 
@@ -114,7 +120,7 @@ services:
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
-    
+      - PLATFORM_VERSION=0.5.1
     depends_on:
       - qdrant
     networks:
@@ -143,6 +149,7 @@ services:
       - MCP_TOKEN=${MCP_TOKEN:-REDACTED_EXAMPLE}
       - IN_DOCKER=true
       - LOG_TO_FILE=false
+      - LOG_LEVEL=${KB_LOG_LEVEL:-INFO}
       
       # Настройки удалённого эмбеддинга
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
@@ -161,9 +168,9 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
-    # depends_on:
-    #   kb-manager:
-    #     condition: service_healthy
+    depends_on:
+      kb-manager:
+        condition: service_healthy
     networks:
       - aszh-bot-network
     
@@ -187,20 +194,26 @@ services:
       - aszh-bot-network
     environment:
       - NODE_ENV=production
-
+      
   file-manager:
-    image: filebrowser/filebrowser:latest
+    image: filegator/filegator:latest
     container_name: kb-file-ui
-    user: "0:0"
+    user: "0:0" # Запускаем от рута, чтобы отработал chown в скрипте
     restart: unless-stopped
+    entrypoint: ["/filegator_init.sh"]
     ports:
-      - "8081:80"
+      - "8081:8080"
     volumes:
-      - ./kb_storage:/srv  # Монтируем ту же папку, что и у kb-manager
-      - ./filebrowser_data:/config
+      - ./kb_storage:/var/www/filegator/repository 
+      - ./filegator_data:/var/www/filegator/private
+      - ./filegator_init.sh:/filegator_init.sh:ro # Прокидываем наш скрипт
     environment:
-      - FB_DATABASE=/config/database.db
-      - FB_CONFIG=/config/settings.json
+      - TZ=Europe/Moscow
+      # username=admin
+      # если хотим изменить то меняем в filegator_init.sh на нужный нам, 
+      # только важно вставлять сразу хэш пароля, можно получить вот тут 
+      # хэш: https://bcrypt-generator.com/ 
+      # password=admin123 
     networks:
       - aszh-bot-network
 

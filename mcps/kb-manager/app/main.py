@@ -8,13 +8,14 @@ from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
     DocumentInfo, SearchRequest, SearchResult, SwitchCollectionRequest, 
-    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest
+    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
     )
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
 import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
-
+from urllib.parse import unquote
+from datetime import datetime, timedelta
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -48,6 +49,7 @@ embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
 SUPPORTED_FAQ_EXTENSIONS = {".md", ".csv", ".xls", ".xlsx", ".txt", ".pdf", ".docx"}
 SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx",".csv", ".xls", ".xlsx"}
+PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
 chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "50"))
@@ -69,28 +71,85 @@ file_storage_service = FileStorageService(
     qdrant_service=qdrant_service,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
-    service_dir=Path("app")
+    service_dir=Path("app"),
+    ext_allowed = SUPPORTED_KB_EXTENSIONS
+    
 )
+# sync settings
+sync_lock = asyncio.Lock()
+sync_update_event = asyncio.Event()
+sync_settings = {
+    "interval_hours": 3,
+    "interval_seconds": None,
+    "last_sync": None,
+    "next_sync":None,
+    "running": False
+}
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
+def get_interval_delta():
+    if sync_settings.get("interval_seconds"):
+        return timedelta(seconds=sync_settings["interval_seconds"])
+    return timedelta(hours=sync_settings["interval_hours"])
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize Qdrant collection on startup"""
-    qdrant_service.ensure_collection()
-    asyncio.create_task(auto_sync())
+async def run_sync_all_safe():
+    if sync_lock.locked():
+        logger.info("SYNC alrady_running")
+        return {"status": "already_running"}
 
+    async with sync_lock:
+        logger.info("[SYNC] started")
+        sync_settings["running"] = True
+        try:
+            await run_sync_all_once()
+            sync_settings["last_sync"] = datetime.now().isoformat()
+            sync_settings["next_sync"] = (datetime.now()+get_interval_delta()).isoformat()
+        finally:
+            sync_settings["running"] = False
+
+    return {"status": "completed"}
+
+
+#  TODO добавлять параллелизм или нет? У нас не вытянет, если добавлять то вот наброски кода: 
+# SEM = asyncio.Semaphore(3)
+# async def sync_kb(kb_id):
+
+#     async with SEM:
+
+#         loop = asyncio.get_running_loop()
+
+#         await loop.run_in_executor(
+#             None,
+#             lambda: file_storage_service.sync(
+#                 kb_id=kb_id,
+#                 collection_type="kb"
+#             )
+#         )
+# async def run_sync_all_once():
+
+#     if not KB_STORAGE_ROOT.exists():
+#         return
+
+#     tasks = []
+
+#     for folder in KB_STORAGE_ROOT.iterdir():
+#         if folder.is_dir():
+#             tasks.append(sync_kb(folder.name))
+
+#     await asyncio.gather(*tasks)
+
+#     logger.info("status success Sync completed")
 async def run_sync_all_once():
     if not KB_STORAGE_ROOT.exists():
+        logger.info("status error storage root not found")
         return {"status": "error", "message": "storage root not found"}
     for folder in KB_STORAGE_ROOT.iterdir():
         if folder.is_dir():
             kb_id = folder.name
             try:
-
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None, lambda kid=kb_id: file_storage_service.sync(
@@ -99,16 +158,56 @@ async def run_sync_all_once():
                     )
             except Exception as e:
                 logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
-
+    
+    logger.info("status success Sync completed")
     return {
         "status": "success",
         "message": "SYNC completed"
-    }            
+    }     
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize Qdrant collection on startup"""
+    qdrant_service.ensure_collection()
+    asyncio.create_task(run_sync_all_safe())
+    asyncio.create_task(start_scheduler())
+
+async def start_scheduler():
+    await asyncio.sleep(10)
+    await auto_sync()
 
 async def auto_sync():
+    logger.info("[AUTO SYNC] loop started")
+    if not sync_settings["next_sync"]:
+        sync_settings["next_sync"] = (
+            datetime.now() + get_interval_delta()
+        ).isoformat()
     while True:
-        await run_sync_all_once()
-        await asyncio.sleep(86400)
+        now = datetime.now()
+        next_sync = datetime.fromisoformat(sync_settings["next_sync"])
+        sleep_time= max((next_sync-now).total_seconds(), 0)
+        logger.info(f"[AUTO SYNC] sleeping {sleep_time} sec")    
+        try:
+            await asyncio.wait_for(sync_update_event.wait(), timeout=sleep_time)
+            logger.info("[AUTO SYNC] interval updated")
+            sync_update_event.clear()
+            continue
+        except asyncio.TimeoutError:
+            pass
+        if not sync_lock.locked():
+            await run_sync_all_safe()
+
+@app.get("/api/sync/settings")
+async def get_sync_settings():
+    return sync_settings
+
+@app.post("/api/sync/settings")
+async def set_sync_settings(data: SyncInterval):
+    sync_settings["interval_hours"] = data.hours
+    now = datetime.now()
+    sync_settings["next_sync"] = (now+get_interval_delta()).isoformat()
+    sync_update_event.set()
+    return {"status": "updated", "interval": data.hours, "next_sync": sync_settings["next_sync"]}
 
 @app.post("/api/filesystem/sync_all")
 async def manual_sync_all():
@@ -116,7 +215,7 @@ async def manual_sync_all():
     Эндпоинт для ручной синхронизации по кнопке.
     Вызывает ту же логику, но один раз и сразу возвращает ответ.
     """
-    result = await run_sync_all_once()
+    result = await run_sync_all_safe()
     return result
 
 
@@ -244,7 +343,7 @@ async def upload_document(
             "kb_id": kb_id,
             "source_name": filename,
             "source_type": ext.lstrip("."),
-            "documents_count": docs_count,
+            "document_count": docs_count,
             "points_count": points_count,
             "source_hash": source_hash,
             "message": "Document uploaded successfully",
@@ -304,7 +403,6 @@ async def search_documents(request: SearchRequest):
     except Exception as e:
         logger.info(f"[SEARCH ERROR], {e}")
         return []
-        # raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/collections/info")
@@ -312,7 +410,24 @@ async def collection_info():
     """Get collection information"""
     try:
         info = qdrant_service.get_collection_info()
+        info['platform_version'] = PLATFORM_VERSION
+        info['last_sync'] = sync_settings["last_sync"]
+        info['next_sync'] = sync_settings['next_sync']
         return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/collections/refresh_metadata")
+async def refresh_collection_metadata():
+    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
+    try:
+        result = qdrant_service.refresh_collection_metadata()
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -490,6 +605,24 @@ async def filesystem_sync(
 @app.get("/api/filesystem/folders")
 async def get_folders():
     return file_storage_service.build_tree()
+
+@app.get("/api/filesystem/download")
+async def download_filesystem_file(path: str):
+    path = unquote(path)
+    file_path = (KB_STORAGE_ROOT / path).resolve()
+
+    # защита от выхода из root
+    if not str(file_path).startswith(str(KB_STORAGE_ROOT)):
+        raise HTTPException(403, "Invalid path")
+
+    if not file_path.exists():
+        raise HTTPException(404, "File not found")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/octet-stream"
+    )
 
 if __name__ == "__main__":
     import uvicorn

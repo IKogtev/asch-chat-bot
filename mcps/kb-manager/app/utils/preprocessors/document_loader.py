@@ -68,6 +68,7 @@ class DocumentLoader:
                 self.logger.info("not stripped???")
                 continue        
             document_id = f"doc_{str(uuid.uuid4())}"
+            unique_documents.add(document_id)
             doc_hash = hash_file(path)
             # логика section_path из папок
             full_parts = Path(filepath).parts
@@ -81,11 +82,14 @@ class DocumentLoader:
 
                 # берём всё после kb_id до имени файла
                 section_path = list(full_parts[kb_index:-1])
-            # section_path = [p.name for p in path.relative_to(self.documents_dir).parents if p.name][::-1]
+            
+            # adding section_relationships
+            section_relationships = ["/".join(section_path[:i+1]) for i in range(len(section_path))]
+            # chunking
             chunks = splitter.split_text(text)
+            kb_id = kb_id if kb_id is not None else path.stem.lower()
+            content_hash = compute_chunk_hash(text=text, section_path=section_path,source_name=path.name)
             for i, chunk in enumerate(chunks):
-                kb_id = kb_id if kb_id is not None else path.stem.lower()
-                content_hash = compute_chunk_hash(text=chunk, section_path=section_path,source_name=path.name)
                 docs_texts.append({
                     "text": chunk,
                     "meta": {
@@ -101,13 +105,14 @@ class DocumentLoader:
                         "user_id": user_id,
                         "version": 1,           
                         "content_hash": content_hash,
-                        "relative_path": str(path.relative_to(self.documents_dir))
+                        "relative_path": str(path.relative_to(self.documents_dir)),
+                        "section_relationships": section_relationships,
                     }
                 })
         points_count = len(docs_texts)
-        documents_count = len(unique_documents)
+        document_count = len(unique_documents)
         
-        return docs_texts, {}, documents_count, points_count
+        return docs_texts, {}, document_count, points_count
 
     def extract_raw_text_from_tabular(self, path: Path) -> str:
         suffix = path.suffix.lower()
@@ -153,7 +158,8 @@ class DocumentLoader:
             # формируем текст документа
             doc_id = item.get("document_id", f"doc_{str(uuid.uuid4())}")
             chunk_id = f"{doc_id}#0"
-            doc_hash = item.get("hash")
+            # doc_hash = item.get("hash")
+            doc_hash = hash_file(filepath)
             source_name = item.get("source_file") 
             category = item.get('category', "-")
             section_path = [" / ".join(item.get('section_path', []))]
