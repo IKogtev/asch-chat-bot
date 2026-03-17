@@ -14,8 +14,20 @@ from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLo
 import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
+from pathlib import Path
+import httpx
 from urllib.parse import unquote
+import aiofiles, shutil
 from datetime import datetime, timedelta
+
+BOT_API = "http://bot:8001/broadcast"
+
+PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
+PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+ADK_AGENT_URL = os.getenv("ADK_AGENT_URL", "http://adk-agent:8010")
+# Путь к файлу стартового сообщения бота
+BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
+BOT_API_RELOAD = "http://bot:8001/api/reload-start-message"
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -38,6 +50,11 @@ app.add_middleware(
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))
 KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+# folders subdirs for faq and kb
+KB_ROOT = KB_STORAGE_ROOT / "kb"
+FAQ_ROOT = KB_STORAGE_ROOT / "faq"
+KB_ROOT.mkdir(parents=True, exist_ok=True)
+FAQ_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -66,14 +83,22 @@ qdrant_service = QdrantService(
     qdrant_host=QDRANT_HOST,
     qdrant_port=QDRANT_PORT
 )
-file_storage_service = FileStorageService(
-    root_path=KB_STORAGE_ROOT,
+kb_file_storage = FileStorageService(
+    root_path=KB_ROOT,
     qdrant_service=qdrant_service,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     service_dir=Path("app"),
     ext_allowed = SUPPORTED_KB_EXTENSIONS
-    
+)
+
+faq_file_storage = FileStorageService(
+    root_path=FAQ_ROOT,
+    qdrant_service=qdrant_service,
+    chunk_size=chunk_size,
+    chunk_overlap=chunk_overlap,
+    service_dir=Path("app"),
+    ext_allowed=SUPPORTED_FAQ_EXTENSIONS
 )
 # sync settings
 sync_lock = asyncio.Lock()
@@ -94,6 +119,30 @@ def get_interval_delta():
     if sync_settings.get("interval_seconds"):
         return timedelta(seconds=sync_settings["interval_seconds"])
     return timedelta(hours=sync_settings["interval_hours"])
+
+async def sync_function(iter_dir, storager, collection_type):
+    """
+    syncron function which takes params:
+        iter_dir - dir to itterate KB_ROOT, FAQ_ROOT
+        storager - prepared storager object,
+        collection_type - to work with collection of 1 type
+    """
+    for folder in iter_dir.iterdir():
+        if not folder.is_dir():
+            continue
+
+        kb_id = folder.name
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda kid=kb_id: storager.sync(
+                    kb_id=kid,
+                    collection_type=collection_type
+                )
+            )
+        except Exception as e:
+            logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
 
 async def run_sync_all_safe():
     if sync_lock.locked():
@@ -143,23 +192,13 @@ async def run_sync_all_safe():
 
 #     logger.info("status success Sync completed")
 async def run_sync_all_once():
-    if not KB_STORAGE_ROOT.exists():
-        logger.info("status error storage root not found")
-        return {"status": "error", "message": "storage root not found"}
-    for folder in KB_STORAGE_ROOT.iterdir():
-        if folder.is_dir():
-            kb_id = folder.name
-            try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None, lambda kid=kb_id: file_storage_service.sync(
-                        kb_id=kid, collection_type="kb"
-                        )
-                    )
-            except Exception as e:
-                logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
-    
-    logger.info("status success Sync completed")
+    logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
+    if qdrant_service.collection_type == CollectionType.FAQ:
+        await sync_function(FAQ_ROOT, faq_file_storage, "faq")
+    elif qdrant_service.collection_type== CollectionType.DOCUMENTS:
+        await sync_function(KB_ROOT, kb_file_storage, "kb")
+    else: 
+        logger.error(f"Something went wrong: {qdrant_service.collection_type}")
     return {
         "status": "success",
         "message": "SYNC completed"
@@ -278,13 +317,16 @@ async def upload_document(
     tmp_file = None
     try:
         # get type of collection:
-        # collection_type = qdrant_service.collection_type
         collection_type = collection_type
         filename = file.filename or "unknown"
         ext = Path(filename).suffix.lower()
         validate_extensions(ext, collection_type)
         tmp_file = await save_upload_to_tmp(file)
-        kb_dir = KB_STORAGE_ROOT/kb_id
+        logger.info(f"collection_type : {collection_type}")
+        if collection_type == CollectionType.FAQ:
+            kb_dir = FAQ_ROOT/kb_id
+        else: 
+            kb_dir = KB_ROOT/kb_id
         kb_dir.mkdir(parents=True, exist_ok=True)
         final_file_path = kb_dir/filename
         shutil.copy(tmp_file, final_file_path)
@@ -599,12 +641,16 @@ async def filesystem_sync(
     kb_id: str = Form("01_Маркетинговые материалы"),
     collection_type: str = Form("kb")
 ):
-    file_storage_service.sync(kb_id, collection_type)
+    if collection_type == CollectionType.FAQ:
+        faq_file_storage.sync(kb_id, collection_type)
+    elif collection_type== CollectionType.DOCUMENTS:
+        kb_file_storage.sync(kb_id, collection_type) 
     return {"status": "sync_completed"}
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
-    return file_storage_service.build_tree()
+    # meanwhile show only kb_tree 
+    return kb_file_storage.build_tree()
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
@@ -623,6 +669,313 @@ async def download_filesystem_file(path: str):
         filename=file_path.name,
         media_type="application/octet-stream"
     )
+
+@app.post("/api/news/send")
+async def send_news(data: dict):
+
+    text = data.get("text")
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.post(
+                BOT_API,
+                json={"text": text},
+                timeout=30
+            )
+            r.raise_for_status()
+
+            return r.json()
+        except httpx.HTTPError as e:
+            logger.error(f"Broadcast failed: {e}")
+            raise HTTPException(status_code=502, detail="Bot service unvailable")
+
+@app.get("/api/prompts/list")
+async def list_prompts():
+    """Получить список всех файлов промптов"""
+    try:
+        prompts = []
+        if PROMPTS_STORAGE_ROOT.exists():
+            for file in PROMPTS_STORAGE_ROOT.iterdir():
+                if file.is_file() and file.suffix == ".md":
+                    stat = file.stat()
+                    prompts.append({
+                        "name": file.name,
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "is_current": file.name == "agent_prompt.md",
+                        "is_backup": file.name.startswith("agent_prompt_backup_")
+                    })
+        
+        # Сортировка: текущий первый, потом бэкапы, потом остальные
+        prompts.sort(key=lambda x: (
+            not x["is_current"],  # текущий первым
+            not x["is_backup"],   # потом не бэкапы
+            x["modified"]         # по дате
+        ))
+        
+        return {
+            "current": "agent_prompt.md",
+            "files": prompts
+        }
+    except Exception as e:
+        logger.error(f"Error listing prompts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/prompts/current")
+async def get_current_prompt():
+    """Получить текущий промпт (agent_prompt.md)"""
+    try:
+        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        if not prompt_file.exists():
+            raise HTTPException(status_code=404, detail="Current prompt not found")
+        
+        async with aiofiles.open(prompt_file, "r", encoding="utf-8") as f:
+            content = await f.read()
+        
+        stat = prompt_file.stat()
+        return {
+            "name": "agent_prompt.md",
+            "content": content,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reading current prompt: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/prompts/file/{filename}")
+async def get_prompt_file(filename: str):
+    """Получить содержимое конкретного файла промпта"""
+    try:
+        # Защита от path traversal
+        if ".." in filename or filename.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        prompt_file = PROMPTS_STORAGE_ROOT / filename
+        if not prompt_file.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        async with aiofiles.open(prompt_file, "r", encoding="utf-8") as f:
+            content = await f.read()
+        
+        stat = prompt_file.stat()
+        return {
+            "name": filename,
+            "content": content,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reading prompt file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/prompts/backup")
+async def create_prompt_backup():
+    """Создать бэкап текущего промпта"""
+    try:
+        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        if not prompt_file.exists():
+            raise HTTPException(status_code=404, detail="Current prompt not found")
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"agent_prompt_backup_{timestamp}.md"
+        backup_file = PROMPTS_STORAGE_ROOT / backup_name
+        
+        shutil.copy2(prompt_file, backup_file)
+        logger.info(f"Created prompt backup: {backup_name}")
+        
+        return {
+            "success": True,
+            "backup_name": backup_name,
+            "created_at": timestamp
+        }
+    except Exception as e:
+        logger.error(f"Error creating backup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/prompts/save")
+async def save_prompt(data: dict):
+    """Сохранить новый промпт с созданием бэкапа"""
+    try:
+        content = data.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        
+        # 1. Создать бэкап если файл существует
+        if prompt_file.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"agent_prompt_backup_{timestamp}.md"
+            backup_file = PROMPTS_STORAGE_ROOT / backup_name
+            shutil.copy2(prompt_file, backup_file)
+            logger.info(f"Created backup before save: {backup_name}")
+        
+        # 2. Записать новый промпт
+        async with aiofiles.open(prompt_file, "w", encoding="utf-8") as f:
+            await f.write(content)
+        
+        logger.info("Prompt saved successfully")
+        
+        # 3. Уведомить adk-agent о перезагрузке (опционально)
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{ADK_AGENT_URL}/api/prompts/reload",
+                    timeout=5
+                )
+                logger.info("Notified adk-agent to reload prompts")
+        except Exception as e:
+            logger.warning(f"Could not notify adk-agent: {e}")
+        
+        return {
+            "success": True,
+            "message": "Prompt saved successfully",
+            "backup_created": True
+        }
+    except Exception as e:
+        logger.error(f"Error saving prompt: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/prompts/restore/{filename}")
+async def restore_prompt(filename: str):
+    """Восстановить промпт из бэкапа"""
+    try:
+        if ".." in filename or filename.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        backup_file = PROMPTS_STORAGE_ROOT / filename
+        if not backup_file.exists():
+            raise HTTPException(status_code=404, detail="Backup file not found")
+        
+        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        shutil.copy2(backup_file, prompt_file)
+        
+        logger.info(f"Restored prompt from backup: {filename}")
+        
+        # Уведомить adk-agent
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{ADK_AGENT_URL}/api/prompts/reload",
+                    timeout=5
+                )
+        except Exception as e:
+            logger.warning(f"Could not notify adk-agent: {e}")
+        
+        return {
+            "success": True,
+            "message": f"Restored from {filename}",
+            "restored_at": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error restoring prompt: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/prompts/file/{filename}")
+async def delete_prompt_file(filename: str):
+    """Удалить файл бэкапа"""
+    try:
+        if ".." in filename or filename.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        if filename == "agent_prompt.md":
+            raise HTTPException(status_code=400, detail="Cannot delete current prompt")
+        
+        backup_file = PROMPTS_STORAGE_ROOT / filename
+        if not backup_file.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        backup_file.unlink()
+        logger.info(f"Deleted prompt file: {filename}")
+        
+        return {
+            "success": True,
+            "message": f"Deleted {filename}"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+#  endpoint to reload agent
+@app.post("/api/prompts/reload-agent")
+async def reload_agent_prompt():
+    """Отправить команду перезагрузки промпта в adk-agent"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{ADK_AGENT_URL}/api/prompts/reload",
+                timeout=10
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to reload agent prompt: {e}")
+        raise HTTPException(status_code=502, detail="Agent service unavailable")
+
+@app.get("/api/prompts/bot-start")
+async def get_bot_start_message():
+    """Получить текущее стартовое сообщение бота"""
+    try:
+        if not BOT_START_MESSAGE_FILE.exists():
+            # Создаём файл с дефолтным сообщением если не существует
+            default_message = "👋 Привет! Я ваш помощник.\n\nЧем могу помочь?"
+            BOT_START_MESSAGE_FILE.write_text(default_message, encoding="utf-8")
+            return {
+                "success": True,
+                "content": default_message,
+                "exists": False,
+                "size": len(default_message),
+                "modified": datetime.now().isoformat()
+            }
+        
+        content = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
+        stat = BOT_START_MESSAGE_FILE.stat()
+        
+        return {
+            "success": True,
+            "content": content,
+            "exists": True,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reading bot start message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/prompts/bot-start")
+async def save_bot_start_message(data: dict):
+    """Сохранить стартовое сообщение бота"""
+    try:
+        content = data.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        # Сохраняем в файл
+        BOT_START_MESSAGE_FILE.write_text(content, encoding="utf-8")
+        
+        logger.info(f"Bot start message saved ({len(content)} symbols)")
+        bot_reload_success = False
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(BOT_API_RELOAD, timeout=5)
+                if r.status_code == 200:
+                    bot_reload_success = True
+                    logger.info("Bot notified to reload start message")
+        except Exception as e:
+            logger.warning(f"Could not notify bot: {e}")
+
+        return {
+            "success": True,
+            "message": "Bot start message saved successfully",
+            "length": len(content),
+            "bot_notified": bot_reload_success
+        }
+    except Exception as e:
+        logger.error(f"Error saving bot start message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

@@ -11,6 +11,9 @@ let activeCollections = {
 };
 let collectionsByType = {};
 let activeAliases = {};
+let currentPromptContent = "";
+let promptFiles = [];
+let botStartMessageContent = "";
 
 
 // Initialize on load
@@ -144,6 +147,12 @@ function showTab(tabName) {
         loadKnowledgeBasesForSearch();
     } else if (tabName === 'tree_files'){
         loadFilesystemTree();
+    } else if (tabName === 'news_send'){
+        // sendNews();
+    } else if (tabName === 'prompts'){
+        loadPromptsTab();
+    } else if (tabName === 'bot_settings'){
+        loadBotStartMessage();
     }
 }
 
@@ -1208,13 +1217,284 @@ document.addEventListener("click", function (e) {
 
 });
 
-async function loadSyncSettings() {
+async function sendNews() {
 
-    const res = await fetch("/api/sync/settings")
-    const data = await res.json()
+    const text = document.getElementById("news-text").value;
+    const resultDiv = document.getElementById("news-result");
+    const sendBtn = document.getElementById("news-send-btn");
 
-    document.getElementById("sync-interval").innerText =
-        data.interval_hours
+    if (!text) {
+        alert("Введите текст новости")
+        return
+    }
+    // Блокировка кнопки
+    sendBtn.disabled = true;
+    sendBtn.innerText = "⏳ Отправка...";
+    resultDiv.innerHTML = "";
+    try {
+        const res = await fetch("/api/news/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: text })
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.innerHTML = `
+                ✅ Отправлено!<br>
+                📬 Получателей: ${data.sent || 0}<br>
+                ❌ Ошибок: ${data.failed || 0}
+            `;
+            document.getElementById("news-text").value = "";
+        } else {
+            throw new Error(data.detail || "Ошибка отправки");
+        }
+    } catch (err) {
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    } finally {
+        sendBtn.disabled = false;
+        sendBtn.innerText = "📤 Отправить новость";
+    }
+}
+
+// Загрузка вкладки Prompts
+async function loadPromptsTab() {
+    await loadPromptFiles();
+    await loadCurrentPrompt();
+}
+
+// Загрузка списка файлов промптов
+async function loadPromptFiles() {
+    const filesList = document.getElementById("prompt-files-list");
+    filesList.innerHTML = '<div class="loading">Загрузка...</div>';
+    
+    try {
+        const res = await fetch("/api/prompts/list");
+        const data = await res.json();
+        promptFiles = data.files || [];
+        
+        if (promptFiles.length === 0) {
+            filesList.innerHTML = '<div class="empty-state">Нет файлов промптов</div>';
+            return;
+        }
+        
+        filesList.innerHTML = promptFiles.map(file => `
+            <div class="prompt-file-item ${file.is_current ? 'current-prompt' : ''} ${file.is_backup ? 'backup-file' : ''}" 
+                 onclick="loadPromptFile('${escapeHtml(file.name)}')">
+                <div class="file-name">📄 ${escapeHtml(file.name)}</div>
+                <div class="file-meta">
+                    <span>📦 ${(file.size / 1024).toFixed(1)} KB</span>
+                    <span>📅 ${formatDate(file.modified)}</span>
+                    ${file.is_current ? '<span>✅ Текущий</span>' : ''}
+                </div>
+                ${file.is_backup ? `
+                <div class="file-actions" onclick="event.stopPropagation()">
+                    <button class="btn-restore" onclick="restorePrompt('${escapeHtml(file.name)}')">
+                        ↩️ Восстановить
+                    </button>
+                    <button class="btn-delete" onclick="deletePromptFile('${escapeHtml(file.name)}')">
+                        🗑️ Удалить
+                    </button>
+                </div>
+                ` : ''}
+            </div>
+        `).join('');
+        
+    } catch (err) {
+        filesList.innerHTML = `<div class="result-message error">Ошибка: ${err.message}</div>`;
+        console.error("Error loading prompt files:", err);
+    }
+}
+
+// Загрузка текущего промпта
+async function loadCurrentPrompt() {
+    const editor = document.getElementById("prompt-editor");
+    const metaFilename = document.getElementById("prompt-filename");
+    const metaSize = document.getElementById("prompt-size");
+    const metaModified = document.getElementById("prompt-modified");
+    
+    editor.value = "Загрузка...";
+    editor.disabled = true;
+    
+    try {
+        const res = await fetch("/api/prompts/current");
+        const data = await res.json();
+        
+        currentPromptContent = data.content;
+        editor.value = currentPromptContent;
+        editor.disabled = false;
+        
+        metaFilename.textContent = data.name;
+        metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
+        metaModified.textContent = formatDate(data.modified);
+        
+        // Подсветка текущего файла в списке
+        document.querySelectorAll(".prompt-file-item").forEach(item => {
+            item.classList.remove("active");
+            const fileNameEl = item.querySelector(".file-name");
+            if (fileNameEl && fileNameEl.textContent.includes(data.name)) {
+                item.classList.add("active");
+            }
+            // if (item.querySelector(".file-name")?.textContent.includes(data.name)) {
+            //     item.classList.add("active");
+            // }
+        });
+        
+    } catch (err) {
+        editor.value = `Ошибка загрузки: ${err.message}`;
+        console.error("Error loading current prompt:", err);
+    }
+}
+
+// Загрузка конкретного файла промпта
+async function loadPromptFile(filename) {
+    const editor = document.getElementById("prompt-editor");
+    
+    try {
+        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}`);
+        const data = await res.json();
+        
+        editor.value = data.content;
+        currentPromptContent = data.content;
+        
+        // Обновление мета-информации
+        document.getElementById("prompt-filename").textContent = data.name;
+        document.getElementById("prompt-size").textContent = `${(data.size / 1024).toFixed(1)} KB`;
+        document.getElementById("prompt-modified").textContent = formatDate(data.modified);
+        
+        // Подсветка активного элемента
+        document.querySelectorAll(".prompt-file-item").forEach(item => {
+            item.classList.remove("active");
+            const fileNameEl = item.querySelector(".file-name");
+            if (fileNameEl && fileNameEl.textContent.includes(filename)){
+                item.classList.add("active");
+            }
+        });
+        // event.target.closest(".prompt-file-item")?.classList.add("active");
+        
+    } catch (err) {
+        alert(`Ошибка загрузки: ${err.message}`);
+        console.error("Error loading prompt file:", err);
+    }
+}
+
+// Создание бэкапа
+async function createBackup() {
+    const resultDiv = document.getElementById("prompt-result");
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⏳ Создание бэкапа...";
+    
+    try {
+        const res = await fetch("/api/prompts/backup", { method: "POST" });
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Бэкап создан: ${data.backup_name}`;
+            await loadPromptFiles();
+        } else {
+            throw new Error(data.detail || "Ошибка создания бэкапа");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message error";
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    }
+}
+
+// Сохранение промпта
+async function savePrompt() {
+    const editor = document.getElementById("prompt-editor");
+    const resultDiv = document.getElementById("prompt-result");
+    
+    const newContent = editor.value;
+    
+    if (!newContent.trim()) {
+        alert("Промпт не может быть пустым");
+        return;
+    }
+    
+    if (!confirm("Сохранить изменения? Будет создан автоматический бэкап.")) {
+        return;
+    }
+    
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⏳ Сохранение...";
+    
+    try {
+        const res = await fetch("/api/prompts/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: newContent })
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Промпт сохранён!<br>📦 Бэкап создан автоматически`;
+            currentPromptContent = newContent;
+            await loadPromptFiles();
+            await loadCurrentPrompt();
+        } else {
+            throw new Error(data.detail || "Ошибка сохранения");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message error";
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    }
+}
+
+// Восстановление из бэкапа
+async function restorePrompt(filename) {
+    if (!confirm(`Восстановить промпт из ${filename}?\n\nТекущий промпт будет заменён.`)) {
+        return;
+    }
+    
+    try {
+        const res = await fetch(`/api/prompts/restore/${encodeURIComponent(filename)}`, {
+            method: "POST"
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            alert(`✅ Восстановлено из ${filename}`);
+            await loadCurrentPrompt();
+            await loadPromptFiles();
+        } else {
+            throw new Error(data.detail || "Ошибка восстановления");
+        }
+    } catch (err) {
+        alert(`❌ Ошибка: ${err.message}`);
+        console.error("Error restoring prompt:", err);
+    }
+}
+
+// Удаление файла бэкапа
+async function deletePromptFile(filename) {
+    if (!confirm(`Удалить файл ${filename}?`)) {
+        return;
+    }
+    
+    try {
+        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}`, {
+            method: "DELETE"
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            await loadPromptFiles();
+        } else {
+            throw new Error(data.detail || "Ошибка удаления");
+        }
+    } catch (err) {
+        alert(`❌ Ошибка: ${err.message}`);
+        console.error("Error deleting prompt file:", err);
+    }
 }
 
 async function loadSyncSettings() {
@@ -1225,6 +1505,16 @@ async function loadSyncSettings() {
     document.getElementById("sync-interval").innerText =
         data.interval_hours
 }
+
+async function loadSyncSettings() {
+
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
+
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+
 async function changeSyncInterval(){
     const current = document.getElementById("sync-interval").innerText
     const hours = prompt("Enter sync interval in hours", current)
@@ -1240,5 +1530,72 @@ async function changeSyncInterval(){
     if(res.ok){
         loadSyncSettings()
         loadCollectionInfo()
+    }
+}
+
+
+async function loadBotStartMessage() {
+    const editor = document.getElementById("bot-start-editor");
+    const metaSize = document.getElementById("bot-start-size");
+    const metaModified = document.getElementById("bot-start-modified");
+    
+    if (!editor) return;
+    
+    editor.value = "Загрузка...";
+    editor.disabled = true;
+    
+    try {
+        const res = await fetch("/api/prompts/bot-start");
+        const data = await res.json();
+        
+        botStartMessageContent = data.content;
+        editor.value = botStartMessageContent;
+        editor.disabled = false;
+        
+        if (metaSize) metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
+        if (metaModified) metaModified.textContent = formatDate(data.modified);
+        
+    } catch (err) {
+        editor.value = `Ошибка загрузки: ${err.message}`;
+        console.error("Error loading bot start message:", err);
+    }
+}
+
+async function saveBotStartMessage() {
+    const editor = document.getElementById("bot-start-editor");
+    const resultDiv = document.getElementById("bot-start-result");
+    
+    if (!editor || !resultDiv) return;
+    
+    const newContent = editor.value;
+    
+    if (!newContent.trim()) {
+        alert("Стартовое сообщение не может быть пустым");
+        return;
+    }
+    
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⏳ Сохранение...";
+    
+    try {
+        const res = await fetch("/api/prompts/bot-start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: newContent })
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Стартовое сообщение сохранено!<br>📝 Символов: ${data.length || 0}`;
+            botStartMessageContent = newContent;
+        } else {
+            throw new Error(data.detail || "Ошибка сохранения");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message error";
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
