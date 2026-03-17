@@ -33,12 +33,13 @@
         </div>
 
         <div class="tabs">
-            <button class="tab-button active" onclick="showTab('documents')">Documents</button>
-            <button class="tab-button" onclick="showTab('search')">Search</button>
-            <button class="tab-button" onclick="showTab('upload')">Upload</button>
-            <button class="tab-button" onclick="showTab('tree_files')">Tree Files</button>
-            <button class="tab-button" onclick="showTab('news_send')">News</button>
-            <button class="tab-button" onclick="showTab('prompts')">Prompts</button>
+            <button class="tab-button active" onclick="showTab('documents')">📄 Documents</button>
+            <button class="tab-button" onclick="showTab('search')">🔍 Search</button>
+            <button class="tab-button" onclick="showTab('upload')">📤 Upload</button>
+            <button class="tab-button" onclick="showTab('tree_files')">📁 Tree Files</button>
+            <button class="tab-button" onclick="showTab('news_send')">📢 News</button>
+            <button class="tab-button" onclick="showTab('prompts')">📝 Prompts</button>
+            <button class="tab-button" onclick="showTab('bot_settings')">⚙️ Bot Settings</button>
         </div>
 
         <!-- Documents Tab -->
@@ -220,26 +221,36 @@
                     
                     <div id="prompt-result" class="result-message" style="display:none;"></div>
                 </div>
-                <!-- Разделитель -->
-                <hr style="margin: 20px 0; border: none; border-top: 2px solid #dee2e6;">
-                <!-- Редактор стартового сообщения бота -->
-                <div class="prompt-section">
-                    <div class="prompt-header">
-                        <h3>🤖 Стартовое сообщение бота (TITLE_START)</h3>
-                        <div class="prompt-actions">
+            </div>
+        </div>
+
+        <!-- Bot settings tab -->
+        <div id="bot_settings-tab" class="tab-content">
+            <h2>⚙️ Настройки бота</h2>
+            
+            <div class="bot-settings-container">
+                
+                <!-- Стартовое сообщение -->
+                <div class="setting-card">
+                    <div class="setting-header">
+                        <h3>💬 Стартовое сообщение (/start)</h3>
+                        <div class="setting-actions">
                             <button onclick="loadBotStartMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
                             <button onclick="saveBotStartMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
-                            <button onclick="notifyBot()" class="btn btn-info btn-small">🔔 Уведомить бота</button>
                         </div>
                     </div>
-                    <div class="prompt-meta" id="bot-start-meta">
-                        <span>Файл: <strong>bot_start_message.md</strong></span>
-                        <span>Размер: <strong id="bot-start-size">-</strong></span>
-                        <span>Изменён: <strong id="bot-start-modified">-</strong></span>
+                    
+                    <div class="setting-info">
+                        <span>📄 Файл: <strong>bot_start_message.md</strong></span>
+                        <span>📦 Размер: <strong id="bot-start-size">-</strong></span>
+                        <span>📅 Изменён: <strong id="bot-start-modified">-</strong></span>
                     </div>
-                    <textarea id="bot-start-editor" class="prompt-editor" placeholder="Загрузка стартового сообщения..." style="min-height: 150px;"></textarea>
+                    
+                    <textarea id="bot-start-editor" class="setting-editor" placeholder="Загрузка стартового сообщения..."></textarea>
+                    
                     <div id="bot-start-result" class="result-message" style="display:none;"></div>
                 </div>
+                
             </div>
         </div>
         

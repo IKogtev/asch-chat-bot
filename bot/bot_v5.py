@@ -39,7 +39,7 @@ TREE_CACHE = None
 TREE_TS = 0
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
-BOT_START_MESSAGE_FILE = Path("/data/prompts/bot_start_message.md")
+BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
