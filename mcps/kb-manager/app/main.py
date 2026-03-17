@@ -25,6 +25,9 @@ BOT_API = "http://bot:8001/broadcast"
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 ADK_AGENT_URL = os.getenv("ADK_AGENT_URL", "http://adk-agent:8010")
+# Путь к файлу стартового сообщения бота
+BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
+BOT_API_RELOAD = "http://bot:8001/api/reload-start-message"
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -911,6 +914,68 @@ async def reload_agent_prompt():
     except httpx.HTTPError as e:
         logger.error(f"Failed to reload agent prompt: {e}")
         raise HTTPException(status_code=502, detail="Agent service unavailable")
+
+@app.get("/api/prompts/bot-start")
+async def get_bot_start_message():
+    """Получить текущее стартовое сообщение бота"""
+    try:
+        if not BOT_START_MESSAGE_FILE.exists():
+            # Создаём файл с дефолтным сообщением если не существует
+            default_message = "👋 Привет! Я ваш помощник.\n\nЧем могу помочь?"
+            BOT_START_MESSAGE_FILE.write_text(default_message, encoding="utf-8")
+            return {
+                "success": True,
+                "content": default_message,
+                "exists": False,
+                "size": len(default_message),
+                "modified": datetime.now().isoformat()
+            }
+        
+        content = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
+        stat = BOT_START_MESSAGE_FILE.stat()
+        
+        return {
+            "success": True,
+            "content": content,
+            "exists": True,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reading bot start message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/prompts/bot-start")
+async def save_bot_start_message(data: dict):
+    """Сохранить стартовое сообщение бота"""
+    try:
+        content = data.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        # Сохраняем в файл
+        BOT_START_MESSAGE_FILE.write_text(content, encoding="utf-8")
+        
+        logger.info(f"Bot start message saved ({len(content)} symbols)")
+        bot_reload_success = False
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(BOT_API_RELOAD, timeout=5)
+                if r.status_code == 200:
+                    bot_reload_success = True
+                    logger.info("Bot notified to reload start message")
+        except Exception as e:
+            logger.warning(f"Could not notify bot: {e}")
+
+        return {
+            "success": True,
+            "message": "Bot start message saved successfully",
+            "length": len(content),
+            "bot_notified": bot_reload_success
+        }
+    except Exception as e:
+        logger.error(f"Error saving bot start message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

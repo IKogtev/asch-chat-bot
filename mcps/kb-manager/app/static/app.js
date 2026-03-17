@@ -151,6 +151,7 @@ function showTab(tabName) {
         // sendNews();
     } else if (tabName === 'prompts'){
         loadPromptsTab();
+    } else if (tabName === 'bot_settings'){
         loadBotStartMessage();
     }
 }
@@ -1590,38 +1591,11 @@ async function saveBotStartMessage() {
             resultDiv.className = "result-message success";
             resultDiv.innerHTML = `✅ Стартовое сообщение сохранено!<br>📝 Символов: ${data.length || 0}`;
             botStartMessageContent = newContent;
-            
-            // Авто-уведомление бота
-            await notifyBot();
         } else {
             throw new Error(data.detail || "Ошибка сохранения");
         }
     } catch (err) {
         resultDiv.className = "result-message error";
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
-    }
-}
-
-async function notifyBot() {
-    const resultDiv = document.getElementById("bot-start-result");
-    if (!resultDiv) return;
-    
-    resultDiv.className = "result-message";
-    resultDiv.style.display = "block";
-    resultDiv.innerHTML += "<br>⏳ Уведомление бота...";
-    
-    try {
-        const res = await fetch("/api/prompts/bot-start");  // Просто проверяем что файл есть
-        const data = await res.json();
-        
-        if (res.ok) {
-            resultDiv.className = "result-message success";
-            resultDiv.innerHTML = `✅ Бот уведомлён!<br>📝 Промпт обновлён`;
-        } else {
-            throw new Error("Бот не ответил");
-        }
-    } catch (err) {
-        resultDiv.className = "result-message warning";
-        resultDiv.innerHTML += `<br>⚠️ Бот не доступен: ${err.message}<br>Сообщение сохранено, но бот нужно перезапустить вручную.`;
     }
 }

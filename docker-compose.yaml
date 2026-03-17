@@ -81,6 +81,8 @@ services:
         condition: service_started
     env_file:
       - .env
+    volumes:
+      - ./bot/settings:/app/data/settings
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -112,8 +114,8 @@ services:
       - 5000:5000
     volumes:
       - ./kb_storage:/app/data/kb_documents
-      # - prompts:/app/data/prompts
       - ./agent/prompts:/app/data/prompts
+      - ./bot/settings:/app/data/settings
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
