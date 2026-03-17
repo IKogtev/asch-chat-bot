@@ -13,6 +13,7 @@ let collectionsByType = {};
 let activeAliases = {};
 let currentPromptContent = "";
 let promptFiles = [];
+let botStartMessageContent = "";
 
 
 // Initialize on load
@@ -150,6 +151,7 @@ function showTab(tabName) {
         // sendNews();
     } else if (tabName === 'prompts'){
         loadPromptsTab();
+        loadBotStartMessage();
     }
 }
 
@@ -1214,7 +1216,6 @@ document.addEventListener("click", function (e) {
 
 });
 
-<<<<<<< HEAD
 async function sendNews() {
 
     const text = document.getElementById("news-text").value;
@@ -1495,35 +1496,6 @@ async function deletePromptFile(filename) {
     }
 }
 
-async function reloadAgent() {
-    const resultDiv = document.getElementById("prompt-result");
-    if (!resultDiv) return;
-    
-    if (!confirm("Перезагрузить агент для применения нового промпта?\n\nЭто займёт несколько секунд.")) {
-        return;
-    }
-    
-    resultDiv.className = "result-message";
-    resultDiv.style.display = "block";
-    resultDiv.innerHTML = "⏳ Отправка команды перезагрузки...";
-    
-    try {
-        const res = await fetch("/api/prompts/reload-agent", {
-            method: "POST"
-        });
-        
-        const data = await res.json();
-        
-        if (res.ok) {
-            resultDiv.className = "result-message success";
-            resultDiv.innerHTML = `✅ Агент перезагружен!<br>📝 Промпт обновлён (${data.prompt_length || 0} символов)`;
-        } else {
-            throw new Error(data.detail || "Ошибка перезагрузки");
-        }
-    } catch (err) {
-        resultDiv.className = "result-message warning";
-        resultDiv.innerHTML = `⚠️ Агент не доступен: ${err.message}<br>Промпт сохранён, но агент нужно перезапустить вручную.`;
-=======
 async function loadSyncSettings() {
 
     const res = await fetch("/api/sync/settings")
@@ -1541,6 +1513,7 @@ async function loadSyncSettings() {
     document.getElementById("sync-interval").innerText =
         data.interval_hours
 }
+
 async function changeSyncInterval(){
     const current = document.getElementById("sync-interval").innerText
     const hours = prompt("Enter sync interval in hours", current)
@@ -1556,6 +1529,99 @@ async function changeSyncInterval(){
     if(res.ok){
         loadSyncSettings()
         loadCollectionInfo()
->>>>>>> main
+    }
+}
+
+
+async function loadBotStartMessage() {
+    const editor = document.getElementById("bot-start-editor");
+    const metaSize = document.getElementById("bot-start-size");
+    const metaModified = document.getElementById("bot-start-modified");
+    
+    if (!editor) return;
+    
+    editor.value = "Загрузка...";
+    editor.disabled = true;
+    
+    try {
+        const res = await fetch("/api/prompts/bot-start");
+        const data = await res.json();
+        
+        botStartMessageContent = data.content;
+        editor.value = botStartMessageContent;
+        editor.disabled = false;
+        
+        if (metaSize) metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
+        if (metaModified) metaModified.textContent = formatDate(data.modified);
+        
+    } catch (err) {
+        editor.value = `Ошибка загрузки: ${err.message}`;
+        console.error("Error loading bot start message:", err);
+    }
+}
+
+async function saveBotStartMessage() {
+    const editor = document.getElementById("bot-start-editor");
+    const resultDiv = document.getElementById("bot-start-result");
+    
+    if (!editor || !resultDiv) return;
+    
+    const newContent = editor.value;
+    
+    if (!newContent.trim()) {
+        alert("Стартовое сообщение не может быть пустым");
+        return;
+    }
+    
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⏳ Сохранение...";
+    
+    try {
+        const res = await fetch("/api/prompts/bot-start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: newContent })
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Стартовое сообщение сохранено!<br>📝 Символов: ${data.length || 0}`;
+            botStartMessageContent = newContent;
+            
+            // Авто-уведомление бота
+            await notifyBot();
+        } else {
+            throw new Error(data.detail || "Ошибка сохранения");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message error";
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    }
+}
+
+async function notifyBot() {
+    const resultDiv = document.getElementById("bot-start-result");
+    if (!resultDiv) return;
+    
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML += "<br>⏳ Уведомление бота...";
+    
+    try {
+        const res = await fetch("/api/prompts/bot-start");  // Просто проверяем что файл есть
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Бот уведомлён!<br>📝 Промпт обновлён`;
+        } else {
+            throw new Error("Бот не ответил");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message warning";
+        resultDiv.innerHTML += `<br>⚠️ Бот не доступен: ${err.message}<br>Сообщение сохранено, но бот нужно перезапустить вручную.`;
     }
 }
