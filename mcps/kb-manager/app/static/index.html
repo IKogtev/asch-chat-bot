@@ -220,6 +220,26 @@
                     
                     <div id="prompt-result" class="result-message" style="display:none;"></div>
                 </div>
+                <!-- Разделитель -->
+                <hr style="margin: 20px 0; border: none; border-top: 2px solid #dee2e6;">
+                <!-- Редактор стартового сообщения бота -->
+                <div class="prompt-section">
+                    <div class="prompt-header">
+                        <h3>🤖 Стартовое сообщение бота (TITLE_START)</h3>
+                        <div class="prompt-actions">
+                            <button onclick="loadBotStartMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
+                            <button onclick="saveBotStartMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
+                            <button onclick="notifyBot()" class="btn btn-info btn-small">🔔 Уведомить бота</button>
+                        </div>
+                    </div>
+                    <div class="prompt-meta" id="bot-start-meta">
+                        <span>Файл: <strong>bot_start_message.md</strong></span>
+                        <span>Размер: <strong id="bot-start-size">-</strong></span>
+                        <span>Изменён: <strong id="bot-start-modified">-</strong></span>
+                    </div>
+                    <textarea id="bot-start-editor" class="prompt-editor" placeholder="Загрузка стартового сообщения..." style="min-height: 150px;"></textarea>
+                    <div id="bot-start-result" class="result-message" style="display:none;"></div>
+                </div>
             </div>
         </div>
         

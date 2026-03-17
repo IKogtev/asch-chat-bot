@@ -25,7 +25,8 @@ from utils.document_handler import DocumentHandler
 from urllib.parse import quote
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import uvicorn
+import uvicorn, httpx
+from pathlib import Path
 
 # Модель для запроса новостей
 class BroadcastRequest(BaseModel):
@@ -38,6 +39,7 @@ TREE_CACHE = None
 TREE_TS = 0
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
+BOT_START_MESSAGE_FILE = Path("/data/prompts/bot_start_message.md")
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
@@ -46,6 +48,20 @@ TITLE_START = """
 broadcast_app = FastAPI(title="Bot Broadcast API")
 # Хранилище подписчиков (можно использовать существующую БД)
 SUBSCRIBERS = set() # TODO занести к Виталию в postgres 
+
+def load_bot_start_message():
+    """Load start message from file"""
+    global TITLE_START
+    try:
+        if BOT_START_MESSAGE_FILE.exists():
+            TITLE_START = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
+            logger.info(f"Start message loaded from file: {len(TITLE_START)} symbols")
+        else:
+            logger.warning(f"Start file not found using standart")
+    except Exception as e:
+        logger.error(f"Error loading starting message: {e}")
+
+load_bot_start_message()
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -751,6 +767,21 @@ async def main() -> None:
     @broadcast_app.get("/health")
     async def health_check():
         return {"status": "healthy", "subscribers": len(SUBSCRIBERS)}
+
+    @broadcast_app.post("/api/reload-start-message")
+    async def reload_start_message():
+        """Перезагрузить стартовое сообщение из файла"""
+        try:
+            load_bot_start_message()
+            return {
+                "success": True,
+                "message": "Start message reloaded",
+                "length": len(TITLE_START)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    
 
     # Запуск бота
     try:

@@ -1024,3 +1024,21 @@ select:focus {
     background: #f8f9fa;
     cursor: not-allowed;
 }
+
+.prompt-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.prompt-section hr {
+    margin: 20px 0;
+    border: none;
+    border-top: 2px solid #dee2e6;
+}
+
+#bot-start-editor {
+    min-height: 150px;
+    background: #fffbea;
+}

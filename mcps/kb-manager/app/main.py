@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 from urllib.parse import unquote
 import aiofiles, shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 
 BOT_API = "http://bot:8001/broadcast"
 
@@ -117,12 +117,6 @@ def get_interval_delta():
         return timedelta(seconds=sync_settings["interval_seconds"])
     return timedelta(hours=sync_settings["interval_hours"])
 
-async def run_sync_all_safe():
-    if sync_lock.locked():
-        logger.info("SYNC alrady_running")
-        return {"status": "already_running"}
-
-
 async def sync_function(iter_dir, storager, collection_type):
     """
     syncron function which takes params:
@@ -146,6 +140,11 @@ async def sync_function(iter_dir, storager, collection_type):
             )
         except Exception as e:
             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
+
+async def run_sync_all_safe():
+    if sync_lock.locked():
+        logger.info("SYNC alrady_running")
+        return {"status": "already_running"}
 
     async with sync_lock:
         logger.info("[SYNC] started")
