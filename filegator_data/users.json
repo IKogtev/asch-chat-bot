@@ -1,0 +1,17 @@
+{
+  "guest": {
+    "username": "guest",
+    "name": "Guest User",
+    "role": "guest",
+    "homedir": "/",
+    "permissions": "read"
+  },
+  "admin": {
+    "username": "admin",
+    "name": "Administrator",
+    "password": "$2a$12$DRCtREKjLohB1yqD0mcvPuSM/NylTs2DP77S50j51.tIIjm03kRNW",
+    "role": "admin",
+    "homedir": "/",
+    "permissions": "read|write|upload|download|batchdownload|zip"
+  }
+}

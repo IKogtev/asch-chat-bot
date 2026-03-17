@@ -15,3 +15,4 @@ pandas==2.3.3
 pdfplumber
 python-docx
 watchdog
+aiofiles

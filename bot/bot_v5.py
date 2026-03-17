@@ -23,6 +23,14 @@ load_dotenv(override=True)
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
 from urllib.parse import quote
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn, httpx
+from pathlib import Path
+
+# Модель для запроса новостей
+class BroadcastRequest(BaseModel):
+    text: str
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
@@ -31,11 +39,29 @@ TREE_CACHE = None
 TREE_TS = 0
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
+BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
+broadcast_app = FastAPI(title="Bot Broadcast API")
+# Хранилище подписчиков (можно использовать существующую БД)
+SUBSCRIBERS = set() # TODO занести к Виталию в postgres 
+
+def load_bot_start_message():
+    """Load start message from file"""
+    global TITLE_START
+    try:
+        if BOT_START_MESSAGE_FILE.exists():
+            TITLE_START = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
+            logger.info(f"Start message loaded from file: {len(TITLE_START)} symbols")
+        else:
+            logger.warning(f"Start file not found using standart")
+    except Exception as e:
+        logger.error(f"Error loading starting message: {e}")
+
+load_bot_start_message()
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -417,6 +443,7 @@ async def main() -> None:
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
+        SUBSCRIBERS.add(user_id)
 
         await m.answer(
            TITLE_START,
@@ -466,7 +493,7 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-
+    
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
@@ -506,6 +533,7 @@ async def main() -> None:
         username = m.from_user.username or "unknown"
         session_id = "default"
         user_text = (m.text or "").strip()
+        SUBSCRIBERS.add(user_id)
         
         if not user_text:
             return
@@ -706,11 +734,75 @@ async def main() -> None:
 
         os.remove(tmp.name)
     
+    
+    @broadcast_app.post("/broadcast")
+    async def broadcast_news(request: BroadcastRequest):
+        """Получить новость от KB Manager и разослать всем подписчикам"""
+        if not request.text or not request.text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        # Отправка всем сохранённым user_id
+        sent_count = 0
+        failed_count = 0
+        
+        for user_id in SUBSCRIBERS:
+            try:
+                await bot.send_message(
+                    chat_id=int(user_id),
+                    text=request.text,
+                    parse_mode="HTML"
+                )
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send to {user_id}: {e}")
+                failed_count += 1
+        
+        return {
+            "status": "success",
+            "sent": sent_count,
+            "failed": failed_count,
+            "total": len(SUBSCRIBERS)
+        }
+
+    @broadcast_app.get("/health")
+    async def health_check():
+        return {"status": "healthy", "subscribers": len(SUBSCRIBERS)}
+
+    @broadcast_app.post("/api/reload-start-message")
+    async def reload_start_message():
+        """Перезагрузить стартовое сообщение из файла"""
+        try:
+            load_bot_start_message()
+            return {
+                "success": True,
+                "message": "Start message reloaded",
+                "length": len(TITLE_START)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    
+
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
+        # Запуск HTTP сервера в отдельной задаче
+        async def run_http_server():
+            config = uvicorn.Config(
+                broadcast_app,
+                host="0.0.0.0",
+                port=8001,
+                log_level="info"
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+    
+    # Запуск обоих серверов параллельно
+        await asyncio.gather(
+            dp.start_polling(bot),
+            run_http_server()
+        )
         logger.info(f"Текущая версия бота: {PLATFORM_VERSION}")
-        await dp.start_polling(bot)
     finally:
         logger.info("Остановка бота...")
         await adk.close()
