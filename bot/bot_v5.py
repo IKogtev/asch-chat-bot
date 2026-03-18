@@ -11,7 +11,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import FSInputFile, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 import aiohttp
 import time
@@ -23,9 +23,10 @@ load_dotenv(override=True)
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
 from urllib.parse import quote
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from typing import List
 from pydantic import BaseModel
-import uvicorn, httpx
+import uvicorn
 from pathlib import Path
 
 # Модель для запроса новостей
@@ -46,9 +47,7 @@ TITLE_START = """
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
 broadcast_app = FastAPI(title="Bot Broadcast API")
-# Хранилище подписчиков (можно использовать существующую БД)
-SUBSCRIBERS = set() # TODO занести к Виталию в postgres 
-
+# делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
 def load_bot_start_message():
     """Load start message from file"""
     global TITLE_START
@@ -169,6 +168,42 @@ class PostgresChatStore:
         if self.pool:
             await self.pool.close()
             logger.info("Пул соединений PostgreSQL закрыт")
+
+# Хранилище пользователей отправлявших сообщения боту 
+class SubscriberStore:
+    def __init__(self, pool: asyncpg.Pool):
+        self.pool = pool
+    
+    async def ensure_schema(self):
+        """Создание таблицы если не существует"""
+        query = """
+        CREATE TABLE IF NOT EXISTS subscribers (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query)
+
+    async def add(self, user_id: int, username: str | None):
+        """добавление пользователя в таблицу"""
+        logger.info(f"Added a new user: {user_id}")
+        query = """
+        INSERT INTO subscribers (user_id, username)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id) DO NOTHING
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, user_id, username)
+
+    async def get_all(self) -> list[int]:
+        """Получение всех пользователей из таблицы"""
+        logger.info("Получаем пользователей")
+        query = "SELECT user_id FROM subscribers"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return [r["user_id"] for r in rows]
 
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
@@ -422,6 +457,9 @@ async def main() -> None:
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
+    # инициализируем хранилище пользователей
+    subscriber_store = SubscriberStore(store.pool)
+    await subscriber_store.ensure_schema()
     
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
@@ -440,10 +478,13 @@ async def main() -> None:
     async def start(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
+
+        # Добавление username в подписчиков
+        await subscriber_store.add(user_id, username)
+
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-        SUBSCRIBERS.add(user_id)
 
         await m.answer(
            TITLE_START,
@@ -531,9 +572,12 @@ async def main() -> None:
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
         username = m.from_user.username or "unknown"
+        
+        # Добавление username в подписчиков
+        await subscriber_store.add(int(user_id), username)
+
         session_id = "default"
         user_text = (m.text or "").strip()
-        SUBSCRIBERS.add(user_id)
         
         if not user_text:
             return
@@ -709,8 +753,6 @@ async def main() -> None:
         doc_id = await get_document_id(path)
         if not doc_id:
             url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
-            # await callback.answer("Документ не найден", show_alert=True)
-            # return
         else:
             url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
         filename = path.split("/")[-1]
@@ -736,33 +778,44 @@ async def main() -> None:
     
     
     @broadcast_app.post("/broadcast")
-    async def broadcast_news(request: BroadcastRequest):
-        """Получить новость от KB Manager и разослать всем подписчикам"""
-        if not request.text or not request.text.strip():
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        # Отправка всем сохранённым user_id
-        sent_count = 0
-        failed_count = 0
-        
-        for user_id in SUBSCRIBERS:
+    async def broadcast(
+        text: str = Form(...),
+        files: List[UploadFile] = File(default=[])
+    ):
+        sent = 0
+        file_data = []
+
+        for f in files:
+            content = await f.read()
+            file_data.append((f.filename, f.content_type, content))
+
+        users = await subscriber_store.get_all()
+        for user_id in users:
             try:
-                await bot.send_message(
-                    chat_id=int(user_id),
-                    text=request.text,
-                    parse_mode="HTML"
-                )
-                sent_count += 1
+                # отправка текста
+                if text:
+                    await bot.send_message(user_id, text)
+
+                # отправка файлов
+                for filename, content_type, content in file_data:
+
+                    if content_type.startswith("image"):
+                        await bot.send_photo(
+                            user_id,
+                            BufferedInputFile(content, filename=filename)
+                        )
+                    else:
+                        await bot.send_document(
+                            user_id, 
+                            BufferedInputFile(content, filename=filename)
+                        )
+
+                sent += 1
+
             except Exception as e:
-                logger.error(f"Failed to send to {user_id}: {e}")
-                failed_count += 1
-        
-        return {
-            "status": "success",
-            "sent": sent_count,
-            "failed": failed_count,
-            "total": len(SUBSCRIBERS)
-        }
+                logger.error(f"Broadcast error to {user_id}: {e}")
+
+        return {"sent": sent}
 
     @broadcast_app.get("/health")
     async def health_check():
