@@ -25,6 +25,27 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDocuments();
     setupDragAndDrop();
     loadSyncSettings();
+    const uploadBox = document.getElementById("news-upload-box");
+    const fileInput = document.getElementById("news-files");
+    const fileInfo = document.getElementById("news-file-info");
+    const fileName = document.getElementById("news-file-name");
+    const removeBtn = document.getElementById("news-file-remove");
+
+    if (!uploadBox || !fileInput) return;
+
+    uploadBox.addEventListener("click", () => fileInput.click());
+
+    fileInput.addEventListener("change", () => {
+        if (fileInput.files.length > 0) {
+            fileName.textContent = fileInput.files[0].name;
+            fileInfo.style.display = "flex";
+        }
+    });
+
+    removeBtn.addEventListener("click", () => {
+        fileInput.value = "";
+        fileInfo.style.display = "none";
+    });
 });
 
 // load active collections
@@ -1222,7 +1243,7 @@ async function sendNews() {
     const text = document.getElementById("news-text").value;
     const resultDiv = document.getElementById("news-result");
     const sendBtn = document.getElementById("news-send-btn");
-    const filesInput = document.getElementById("news-files");
+    const fileInput = document.getElementById("news-files");
     
     const formData = new FormData();
     if (!text) {
@@ -1230,9 +1251,8 @@ async function sendNews() {
         return
     }
     formData.append("text", text);
-
-    for (let file of filesInput.files) {
-        formData.append("files", file);
+    if (fileInput.files.length > 0) {
+        formData.append("files", fileInput.files[0]);
     }
     // Блокировка кнопки
     sendBtn.disabled = true;
@@ -1252,7 +1272,6 @@ async function sendNews() {
             resultDiv.innerHTML = `
                 ✅ Отправлено!<br>
                 📬 Получателей: ${data.sent || 0}<br>
-                ❌ Ошибок: ${data.failed || 0}
             `;
             document.getElementById("news-text").value = "";
         } else {

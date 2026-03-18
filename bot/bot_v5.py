@@ -4,7 +4,6 @@ from typing import Optional
 import json
 import html as html_module
 import re
-#from uuid import uuid4
 from urllib.parse import quote
 
 import asyncpg
