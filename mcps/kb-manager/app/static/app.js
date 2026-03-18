@@ -1222,10 +1222,17 @@ async function sendNews() {
     const text = document.getElementById("news-text").value;
     const resultDiv = document.getElementById("news-result");
     const sendBtn = document.getElementById("news-send-btn");
-
+    const filesInput = document.getElementById("news-files");
+    
+    const formData = new FormData();
     if (!text) {
         alert("Введите текст новости")
         return
+    }
+    formData.append("text", text);
+
+    for (let file of filesInput.files) {
+        formData.append("files", file);
     }
     // Блокировка кнопки
     sendBtn.disabled = true;
@@ -1234,8 +1241,9 @@ async function sendNews() {
     try {
         const res = await fetch("/api/news/send", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: text })
+            // headers: { "Content-Type": "application/json" },
+            // body: JSON.stringify({ text: text })
+            body: formData
         });
         
         const data = await res.json();

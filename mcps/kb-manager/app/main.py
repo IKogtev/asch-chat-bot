@@ -671,25 +671,53 @@ async def download_filesystem_file(path: str):
     )
 
 @app.post("/api/news/send")
-async def send_news(data: dict):
+# async def send_news(data: dict):
 
-    text = data.get("text")
-    if not text or not text.strip():
-        raise HTTPException(status_code=400, detail="Text is required")
+#     text = data.get("text")
+#     if not text or not text.strip():
+#         raise HTTPException(status_code=400, detail="Text is required")
     
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.post(
-                BOT_API,
-                json={"text": text},
-                timeout=30
-            )
-            r.raise_for_status()
+#     async with httpx.AsyncClient() as client:
+#         try:
+#             r = await client.post(
+#                 BOT_API,
+#                 json={"text": text},
+#                 timeout=30
+#             )
+#             r.raise_for_status()
 
-            return r.json()
-        except httpx.HTTPError as e:
-            logger.error(f"Broadcast failed: {e}")
-            raise HTTPException(status_code=502, detail="Bot service unvailable")
+#             return r.json()
+#         except httpx.HTTPError as e:
+#             logger.error(f"Broadcast failed: {e}")
+#             raise HTTPException(status_code=502, detail="Bot service unvailable")
+async def send_news(
+    text: str = Form(...),
+    files: List[UploadFile] = File(default=[])
+):
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            multipart_data = []
+
+            # текст
+            multipart_data.append(("text", (None, text)))
+
+            # файлы
+            for f in files:
+                content = await f.read()
+                multipart_data.append(
+                    ("files", (f.filename, content, f.content_type))
+                )
+
+            resp = await client.post(
+                BOT_API,
+                files=multipart_data
+            )
+
+        return {"status": "ok", "message": "News sent"}
+    
+    except Exception as e:
+        logger.error(f"News send error: {e}")
+        raise HTTPException(500, str(e))
 
 @app.get("/api/prompts/list")
 async def list_prompts():
