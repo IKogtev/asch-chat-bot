@@ -710,10 +710,14 @@ async def send_news(
 
             resp = await client.post(
                 BOT_API,
-                files=multipart_data
+                files=multipart_data, 
+                json={"text": text}
             )
+            resp.raise_for_status()
+            bot_response = resp.json()
 
-        return {"status": "ok", "message": "News sent"}
+        return bot_response
+        # return {"status": "ok", "message": "News sent", "sent": resp.json()}
     
     except Exception as e:
         logger.error(f"News send error: {e}")

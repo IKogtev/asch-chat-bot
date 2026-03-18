@@ -1187,3 +1187,36 @@ select:focus {
     background: #f8f9fa;
     cursor: not-allowed;
 }
+.news-upload-wrapper {
+    margin: 10px 0;
+}
+
+.news-upload-box {
+    border: 2px dashed #aaa;
+    padding: 12px;
+    text-align: center;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: 0.2s;
+    font-size: 14px;
+}
+
+.news-upload-box:hover {
+    border-color: #007bff;
+    background: #f8faff;
+}
+
+.news-file-info {
+    margin-top: 8px;
+    background: #f1f1f1;
+    padding: 6px 10px;
+    border-radius: 8px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+}
+
+.news-file-remove {
+    color: red;
+    cursor: pointer;
+}

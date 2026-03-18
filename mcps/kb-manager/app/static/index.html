@@ -170,7 +170,20 @@
             </div>
             <textarea id="news-text" class="news-editor" 
                 placeholder="Введите текст новости"></textarea>
-            <input type="file" id="news-files" multiple>
+            
+                <!-- <input type="file" id="news-files" multiple> -->
+            <div class="news-upload-wrapper">            
+                <div class="news-upload-box" id="news-upload-box">
+                    <span id="news-file-label">📎 Выбрать файл</span>
+                </div>
+
+                <input type="file" id="news-files" style="display: none;">
+
+            </div>
+            <div id="news-file-info" class="news-file-info" style="display: none;">
+                <span id="news-file-name"></span>
+                <span id="news-file-remove" class="news-file-remove">❌</span>
+            </div>
             <br><br>
 
             <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
