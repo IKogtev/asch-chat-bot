@@ -15,13 +15,13 @@ from dotenv import load_dotenv
 import aiohttp
 import time
 import tempfile
+from collections import OrderedDict
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
 
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
-from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from typing import List
 from pydantic import BaseModel
@@ -34,9 +34,13 @@ class BroadcastRequest(BaseModel):
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
-CALLBACK_MAP = {}
+# сохраняем пути папок в сортированном по времени словаре
+CALLBACK_MAP = OrderedDict()
+MAX_CALLBACK_ENTRIES = 5000
+# переменные для сохранения дерева папок в кэше
 TREE_CACHE = None
 TREE_TS = 0
+TIME_SET_WAIT = 120
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
 BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
@@ -482,6 +486,7 @@ async def main() -> None:
         await subscriber_store.add(user_id, username)
 
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
+        # строим меню для ответа
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
 
@@ -491,6 +496,7 @@ async def main() -> None:
         )
     @dp.message(Command("version"))
     async def version_info(m: Message) -> None:
+        """Команда для получения версии платформы/бота"""
         user_id = m.from_user.id
         logger.info(f"Команда /version от user_id={user_id}")
         await m.answer(
@@ -500,8 +506,9 @@ async def main() -> None:
     #домашняя страница
     @dp.callback_query(lambda c: c.data == "home")
     async def go_home(callback: CallbackQuery):
+        # обработчик перехода на главную страницу кнопка home
         await callback.answer()
-
+        # строим меню для ответа
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
 
@@ -719,6 +726,7 @@ async def main() -> None:
 
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
+        """Команда обработчик открытия папки"""
         await callback.answer()
         pid = callback.data.split(":")[1]
 
@@ -727,10 +735,11 @@ async def main() -> None:
         if path is None:
             await callback.answer("Кнопка устарела", show_alert=True)
             return
-
+        # делаем обращение к пути снова свежим
+        CALLBACK_MAP.move_to_end(pid)
         path_list = path.split("/") if path else []
         tree = await get_tree_cached()
-
+        # строим дерево папок относительно текущей папки
         menu = build_menu_from_tree(tree, path_list)
         title = "📁 /".join(path_list) or TITLE_START
         await callback.message.edit_text(
@@ -740,7 +749,7 @@ async def main() -> None:
 
     @dp.callback_query(F.data.startswith("f:"))
     async def send_file(callback: CallbackQuery):
-
+        """Обработчик отправки файлов через меню бота"""
         await callback.answer()
 
         pid = callback.data.split(":")[1]
@@ -749,6 +758,8 @@ async def main() -> None:
         if not path:
             await callback.answer("Файл не найден", show_alert=True)
             return
+        # делаем обращение к пути снова свежим
+        CALLBACK_MAP.move_to_end(pid)
         doc_id = await get_document_id(path)
         if not doc_id:
             url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
@@ -781,6 +792,7 @@ async def main() -> None:
         text: str = Form(...),
         files: List[UploadFile] = File(default=[])
     ):
+        """Функция стриминга новостей в бота"""
         sent = 0
         file_data = []
 
@@ -810,6 +822,8 @@ async def main() -> None:
                         )
 
                 sent += 1
+                # защита от Flood Limits 
+                await asyncio.sleep(0.05)
 
             except Exception as e:
                 logger.error(f"Broadcast error to {user_id}: {e}")
@@ -859,20 +873,28 @@ async def main() -> None:
         logger.info("Бот остановлен")
 
 # функция хранения пути
-def store_path(path: str):
-    pid = str(len(CALLBACK_MAP) + 1)
-    CALLBACK_MAP[pid] = path
-
-    if len(CALLBACK_MAP) > 5000:
-        CALLBACK_MAP.clear()
-
-    return pid
+def register_callback_path(path: str) -> str:
+    """Регистрирует путь и возвращает его короткий ID (хэш)"""
+    # path_id = str(hash(path))
+    path_id = str(len(CALLBACK_MAP) + 1)
+    
+    # Если ID уже есть, перемещаем его в конец (он теперь "свежий")
+    if path_id in CALLBACK_MAP:
+        CALLBACK_MAP.move_to_end(path_id)
+    
+    CALLBACK_MAP[path_id] = path
+    
+    # Если превысили лимит, удаляем самый старый элемент (из начала)
+    if len(CALLBACK_MAP) > MAX_CALLBACK_ENTRIES:
+        CALLBACK_MAP.popitem(last=False)
+        
+    return path_id
 
 # кэширование полученных путей 
 async def get_tree_cached():
     global TREE_CACHE, TREE_TS
     # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
-    if time.time() - TREE_TS < 60:
+    if time.time() - TREE_TS < TIME_SET_WAIT:
         return TREE_CACHE
 
     TREE_CACHE = await get_kb_tree()
@@ -882,6 +904,7 @@ async def get_tree_cached():
 
 #  построить меню на основе дерева папок из kb_manager
 def build_menu_from_tree(tree: dict, path: list[str]):
+    """Функция для строительства деревовидной структуры папок"""
     node = tree
 
     for p in path:
@@ -894,7 +917,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
         if key == "files":
             continue
         full_path = "/".join(path + [key])
-        pid = store_path(full_path)
+        pid = register_callback_path(full_path)
 
         buttons.append([
             InlineKeyboardButton(
@@ -907,7 +930,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
     for f in node.get("files", []):
         full_path = "/".join(path + [f])
 
-        pid = store_path(full_path)
+        pid = register_callback_path(full_path)
         buttons.append([
             InlineKeyboardButton(
                 text=f"📄 {f}",
@@ -918,7 +941,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
     nav_buttons = []
     if path:
         parent = "/".join(path[:-1])
-        pid = store_path(parent)
+        pid = register_callback_path(parent)
 
         nav_buttons.append(
             InlineKeyboardButton(
@@ -967,7 +990,6 @@ async def get_document_id(path: str) -> str | None:
             return doc.get("document_id")
 
     return None
-
 
 
 if __name__ == "__main__":
