@@ -817,10 +817,6 @@ async def main() -> None:
 
         return {"sent": sent}
 
-    @broadcast_app.get("/health")
-    async def health_check():
-        return {"status": "healthy", "subscribers": len(SUBSCRIBERS)}
-
     @broadcast_app.post("/api/reload-start-message")
     async def reload_start_message():
         """Перезагрузить стартовое сообщение из файла"""
