@@ -83,6 +83,7 @@ qdrant_service = QdrantService(
     qdrant_host=QDRANT_HOST,
     qdrant_port=QDRANT_PORT
 )
+# storage services для разных индексов, для kb и для faq 
 kb_file_storage = FileStorageService(
     root_path=KB_ROOT,
     qdrant_service=qdrant_service,
@@ -116,6 +117,7 @@ static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 def get_interval_delta():
+    """функция вычисления интервала между синхронизациями"""
     if sync_settings.get("interval_seconds"):
         return timedelta(seconds=sync_settings["interval_seconds"])
     return timedelta(hours=sync_settings["interval_hours"])
@@ -130,7 +132,7 @@ async def sync_function(iter_dir, storager, collection_type):
     for folder in iter_dir.iterdir():
         if not folder.is_dir():
             continue
-
+        # проходим по всем папкам переданного storager для построения индекса
         kb_id = folder.name
         try:
             loop = asyncio.get_running_loop()
@@ -145,6 +147,7 @@ async def sync_function(iter_dir, storager, collection_type):
             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
 
 async def run_sync_all_safe():
+    """безопасная синхронизация, чтобы нельзя было несколько вызвать одновременно"""
     if sync_lock.locked():
         logger.info("SYNC alrady_running")
         return {"status": "already_running"}
@@ -162,7 +165,7 @@ async def run_sync_all_safe():
     return {"status": "completed"}
 
 
-#  TODO добавлять параллелизм или нет? У нас не вытянет, если добавлять то вот наброски кода: 
+#  TODO добавлять параллелизм или нет? если добавлять то вот наброски кода: 
 # SEM = asyncio.Semaphore(3)
 # async def sync_kb(kb_id):
 
@@ -192,6 +195,10 @@ async def run_sync_all_safe():
 
 #     logger.info("status success Sync completed")
 async def run_sync_all_once():
+    """
+    функция для правильного вызова синхронизации от типа, 
+    в дальнейшем можно добавить другие типы коллекций если надо
+    """
     logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
     if qdrant_service.collection_type == CollectionType.FAQ:
         await sync_function(FAQ_ROOT, faq_file_storage, "faq")
@@ -208,10 +215,13 @@ async def run_sync_all_once():
 async def startup_event():
     """Initialize Qdrant collection on startup"""
     qdrant_service.ensure_collection()
+    # делаем синхронизацию при старте
     asyncio.create_task(run_sync_all_safe())
+    # запускаем расписание переиндексации
     asyncio.create_task(start_scheduler())
 
 async def start_scheduler():
+    # запускаем расписание автоматической синхроонизации
     await asyncio.sleep(10)
     await auto_sync()
 
@@ -281,6 +291,7 @@ async def list_documents():
         raise HTTPException(status_code=500, detail=str(e))
 
 async def save_upload_to_tmp(file: UploadFile) -> Path:
+    """Сохранение во временные файлы"""
     upload_id = uuid.uuid4().hex
     tmp_dir = Path("/tmp/uploads") / upload_id 
     tmp_dir.mkdir(parents=True, exist_ok=True)    
@@ -290,6 +301,7 @@ async def save_upload_to_tmp(file: UploadFile) -> Path:
     return tmp_file
 
 def validate_extensions(ext: str, collection_type: str):
+    """Проверка поддерживания расширения для индексации"""
     allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
     if ext not in allowed:
         raise HTTPException(
@@ -671,25 +683,6 @@ async def download_filesystem_file(path: str):
     )
 
 @app.post("/api/news/send")
-# async def send_news(data: dict):
-
-#     text = data.get("text")
-#     if not text or not text.strip():
-#         raise HTTPException(status_code=400, detail="Text is required")
-    
-#     async with httpx.AsyncClient() as client:
-#         try:
-#             r = await client.post(
-#                 BOT_API,
-#                 json={"text": text},
-#                 timeout=30
-#             )
-#             r.raise_for_status()
-
-#             return r.json()
-#         except httpx.HTTPError as e:
-#             logger.error(f"Broadcast failed: {e}")
-#             raise HTTPException(status_code=502, detail="Bot service unvailable")
 async def send_news(
     text: str = Form(...),
     files: List[UploadFile] = File(default=[])

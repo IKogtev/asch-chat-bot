@@ -39,6 +39,7 @@ docker compose up -d --build
 - `DELETE /api/documents/{id}` - удаление документа по id 
 - `POST /api/search` - выполнить поиск по доступным точкам текущей коллекции
 - `GET /api/collections/info` - получить информацию о текущей коллекции
+- `POST /api/collections/refresh_metadata` - пересчитать метаданные коллекции
 - `GET /api/collections` - получить информацию о существующих коллекциях
 - `POST /api/collections/switch` - переключатель между коллекциями, решает какая коллекция будет отображаться пользователю 
 - `GET /api/collections/active` - получить информацию какие коллекции являются текущими активными alias 
@@ -51,6 +52,21 @@ docker compose up -d --build
 - `POST /api/knowledge-bases/delete` - удалить базу знаний
 -  `GET /api/documents/download/{document_id}` - скачать файл документа на основе id 
 -  `GET /api/filesystem/download?path={path_to_file}` - скачать файл документа на основе пути к нему, временный формат
+-  `GET /api/sync/settings` - получить настройки синхронизации
+-  `POST /api/sync/settings` - настроить настройки синхронизации
+-  `POST /api/filesystem/sync_all` - запуск синхронизации 
+-  `POST /api/filesystem/sync` - запуск синхронизации по 1 kb
+-  `GET /api/filesystem/folders` - получить структуру папок
+-  `GET /api/news/send` - отправить новости от UI
+-  `GET /api/prompts/list` - получить список файлов системных промптов
+-  `GET /api/prompts/current` - получить текст текущего промпта
+-  `GET /api/prompts/file/{filename}` - получить содержимое конкретного файла промпта
+-  `POST /api/prompts/backup` - сделать бэкап текущего промпта
+-  `POST /api/prompts/save` - сохранение нового промпта и создание бэкапа
+-  `POST /api/prompts/restore/{filename}` - востановление из бэкапа
+-  `DELETE /api/prompts/file/{filename}` - удаление файла бэкапа
+-  `GET /api/prompts/bot-start` - получить стартовое сообщение бота, текущее
+-  `POST /api/prompts/bot-start` - сохранить стартовое сообщение бота
 
 ### Structure:
 KB-Manager UI:
