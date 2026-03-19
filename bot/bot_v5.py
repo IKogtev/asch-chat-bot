@@ -16,6 +16,7 @@ import aiohttp
 import time
 import tempfile
 from collections import OrderedDict
+from datetime import datetime, timezone
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
@@ -50,6 +51,9 @@ TITLE_START = """
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
 broadcast_app = FastAPI(title="Bot Broadcast API")
+# отложенные новости временно храним внутри списка потом в БД будут
+SCHEDULED_TASKS = []
+
 # делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
 def load_bot_start_message():
     """Load start message from file"""
@@ -786,21 +790,11 @@ async def main() -> None:
 
         os.remove(tmp.name)
     
-    
-    @broadcast_app.post("/broadcast")
-    async def broadcast(
-        text: str = Form(...),
-        files: List[UploadFile] = File(default=[])
-    ):
-        """Функция стриминга новостей в бота"""
+    async def send_now(text: str, file_data: List):
         sent = 0
-        file_data = []
-
-        for f in files:
-            content = await f.read()
-            file_data.append((f.filename, f.content_type, content))
 
         users = await subscriber_store.get_all()
+
         for user_id in users:
             try:
                 # отправка текста
@@ -830,6 +824,50 @@ async def main() -> None:
 
         return {"sent": sent}
 
+    async def scheduler_worker():
+        logger.info("🕒 Scheduler started")
+
+        while True:
+            now = datetime.now(timezone.utc)
+
+            for task in SCHEDULED_TASKS[:]:
+                if now >= task["run_at"]:
+                    logger.info(f"🚀 Выполняем отложенную задачу {task['run_at']}")
+                    
+                    await send_now(task['text'], task['files'])
+                    SCHEDULED_TASKS.remove(task)
+
+            await asyncio.sleep(5)
+    
+    @broadcast_app.post("/broadcast")
+    async def broadcast(
+        text: str = Form(...),
+        files: List[UploadFile] = File(default=[]),
+        schedule_time: Optional[str] = Form(None)
+    ):
+        """Функция стриминга новостей в бота"""
+        file_data = []
+        for f in files:
+            content = await f.read()
+            file_data.append((f.filename, f.content_type, content))
+        if schedule_time:
+            try:
+                run_at = datetime.fromisoformat(schedule_time)
+            except Exception:
+                raise HTTPException(400, "Invalid datetime format")
+
+            # сохраняем задачу
+            SCHEDULED_TASKS.append({
+                "text": text,
+                "files": file_data,
+                "run_at": run_at
+            })
+
+            logger.info(f"📅 Задача отложена на {run_at}")
+            return {"status": "scheduled"}
+
+        return await send_now(text, file_data)
+        
     @broadcast_app.post("/api/reload-start-message")
     async def reload_start_message():
         """Перезагрузить стартовое сообщение из файла"""
@@ -858,13 +896,14 @@ async def main() -> None:
             )
             server = uvicorn.Server(config)
             await server.serve()
-    
+        asyncio.create_task(scheduler_worker())
     # Запуск обоих серверов параллельно
         await asyncio.gather(
             dp.start_polling(bot),
             run_http_server()
         )
         logger.info(f"Текущая версия бота: {PLATFORM_VERSION}")
+        
     finally:
         logger.info("Остановка бота...")
         await adk.close()

@@ -337,7 +337,7 @@ document.addEventListener("click", async function (e) {
     
 });
 
-// 
+// функция для синхронизации по всем данным
 async function syncAll(btnElement) {
     // 1. Защита: если кнопка не передана, выходим
     if (!btnElement) {
@@ -410,7 +410,6 @@ async function loadDocuments() {
     try {
         const response = await fetch(`${API_BASE}/api/knowledge-bases`);
         const knowledgeBases = await response.json();
-        const isFAQ = currentCollectionType === 'faq';
         
         if (knowledgeBases.length === 0) {
             container.innerHTML = `
@@ -499,6 +498,7 @@ async function loadDocuments() {
     }
 }
 
+// удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Delete knowledge base "${kbId}"?\n\nAll documents will be permanently removed.`)) {
         return;
@@ -532,7 +532,7 @@ async function deleteKnowledgeBase(kbId) {
 }
 
 
-
+// функция разворачивания kb 
 function toggleKB(kbId) {
     const kbDocs = document.getElementById(`kb-${kbId}`);
     const icon = document.getElementById(`icon-${kbId}`);
@@ -546,6 +546,7 @@ function toggleKB(kbId) {
     }
 }
 
+// возможность открытия просмотра документа
 async function viewDocument(documentId, filename) {
     const modal = document.getElementById('chunks-modal');
     const modalTitle = document.getElementById('modal-title');
@@ -593,6 +594,7 @@ async function viewDocument(documentId, filename) {
     }
 }
 
+// удаление документа
 async function deleteDocument(documentId, filename) {
     if (!confirm(`Are you sure you want to delete "${filename}"?`)) {
         return;
@@ -621,6 +623,7 @@ function handleSearchKeypress(event) {
     }
 }
 
+// функция извлечения вопроса из FAQ
 function parseFaqQuestion(text) {
     if (!text) return "";
 
@@ -634,7 +637,7 @@ function parseFaqQuestion(text) {
 }
 
 
-
+// поиск внутри kb-manager
 async function performSearch() {
     const query = document.getElementById('search-query').value.trim();
     const limit = parseInt(document.getElementById('search-limit').value);
@@ -944,18 +947,17 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-
+// форматирование даты в стандарты
 function formatDate(dateString) {
     if (!dateString) return 'Unknown';
     const date = new Date(dateString);
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
 }
-
+// отправка уведомлений
 function showNotification(message, type) {
-    // Simple notification - you can enhance this
     alert(message);
 }
-
+// получение типа коллекции
 function getCollectionType(name) {
   if (name.startsWith("faq_")) return "faq";
   if (name.startsWith("kb_")) return "kb";
@@ -1033,7 +1035,7 @@ function closeCreateCollectionModal() {
     const modal = document.getElementById("create-collection-modal");
     modal.classList.remove("active");
 }
-
+// создание коллекции через модальное окно
 async function createCollection() {
     const version = document.getElementById("newCollectionVersion").value.trim();
     const type = document.getElementById("newCollectionType").value;
@@ -1076,7 +1078,7 @@ async function createCollection() {
     }
 }
 
-
+// загрузка алиасов по разным коллекциям
 async function loadAliasData() {
     const [collectionsRes, activeRes] = await Promise.all([
         fetch("/api/collections/by-type"),
@@ -1087,7 +1089,7 @@ async function loadAliasData() {
     activeAliases = await activeRes.json();
 }
 
-
+// модальность для переключения между активными alias 
 async function openSwitchCollectionModal() {
     document.getElementById("switch-collection-modal").classList.add("active");
      if (!collectionsByType.faq) {
@@ -1096,7 +1098,7 @@ async function openSwitchCollectionModal() {
 
     loadAliasCollections();
 }
-
+// загрузка алиасов для коллекций
 function loadAliasCollections() {
     const type = document.getElementById("switchCollectionType").value;
     const targetSelect = document.getElementById("switchCollectionTarget");
@@ -1174,7 +1176,6 @@ async function switchCollectionAlias() {
 
         // 🔄 обновляем UI
         await loadAliasData();
-        // await loadCollections();
         await loadActiveCollections();
 
         
@@ -1184,7 +1185,7 @@ async function switchCollectionAlias() {
         errorBox.classList.remove("hidden");
     }
 }
-
+// построение дерева файлов
 async function loadFilesystemTree() {
     const container = document.getElementById("filesystem-tree");
 
@@ -1201,7 +1202,7 @@ async function loadFilesystemTree() {
         console.error(err);
     }
 }
-
+// рендеринг дерева
 function renderTree(node) {
     let html = "<ul class='tree'>";
 
@@ -1237,11 +1238,13 @@ document.addEventListener("click", function (e) {
     }
 
 });
-
+// отправка новостей
 async function sendNews() {
 
     const text = document.getElementById("news-text").value;
     const resultDiv = document.getElementById("news-result");
+    const scheduleTimeEl = document.getElementById("news-schedule-time");
+    const scheduleTime = scheduleTimeEl.value;
     const sendBtn = document.getElementById("news-send-btn");
     const fileInput = document.getElementById("news-files");
     
@@ -1254,6 +1257,10 @@ async function sendNews() {
     if (fileInput.files.length > 0) {
         formData.append("files", fileInput.files[0]);
     }
+    if (scheduleTime) {
+        const utcTime = new Date(scheduleTime).toISOString();
+        formData.append("schedule_time", utcTime);
+    }
     // Блокировка кнопки
     sendBtn.disabled = true;
     sendBtn.innerText = "⏳ Отправка...";
@@ -1265,7 +1272,6 @@ async function sendNews() {
         });
         
         const data = await res.json();
-        
         if (res.ok) {
             resultDiv.innerHTML = `
                 ✅ Отправлено!<br>
@@ -1274,6 +1280,11 @@ async function sendNews() {
             document.getElementById("news-text").value = "";
         } else {
             throw new Error(data.detail || "Ошибка отправки");
+        }
+        if (scheduleTime){
+            alert("📅 Новость запланирована");
+        } else{
+            alert("📤 Отправлено сразу");
         }
     } catch (err) {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
@@ -1361,9 +1372,6 @@ async function loadCurrentPrompt() {
             if (fileNameEl && fileNameEl.textContent.includes(data.name)) {
                 item.classList.add("active");
             }
-            // if (item.querySelector(".file-name")?.textContent.includes(data.name)) {
-            //     item.classList.add("active");
-            // }
         });
         
     } catch (err) {
@@ -1396,8 +1404,6 @@ async function loadPromptFile(filename) {
                 item.classList.add("active");
             }
         });
-        // event.target.closest(".prompt-file-item")?.classList.add("active");
-        
     } catch (err) {
         alert(`Ошибка загрузки: ${err.message}`);
         console.error("Error loading prompt file:", err);
@@ -1521,7 +1527,7 @@ async function deletePromptFile(filename) {
         console.error("Error deleting prompt file:", err);
     }
 }
-
+// загрузка настроек синхронизации
 async function loadSyncSettings() {
 
     const res = await fetch("/api/sync/settings")
@@ -1530,16 +1536,7 @@ async function loadSyncSettings() {
     document.getElementById("sync-interval").innerText =
         data.interval_hours
 }
-
-async function loadSyncSettings() {
-
-    const res = await fetch("/api/sync/settings")
-    const data = await res.json()
-
-    document.getElementById("sync-interval").innerText =
-        data.interval_hours
-}
-
+// изменение интервала синхронизации
 async function changeSyncInterval(){
     const current = document.getElementById("sync-interval").innerText
     const hours = prompt("Enter sync interval in hours", current)
@@ -1558,7 +1555,7 @@ async function changeSyncInterval(){
     }
 }
 
-
+// загрузка стартового сообщения бота
 async function loadBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
     const metaSize = document.getElementById("bot-start-size");
@@ -1585,7 +1582,7 @@ async function loadBotStartMessage() {
         console.error("Error loading bot start message:", err);
     }
 }
-
+// сохранение нового стартового сообщения бота
 async function saveBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
     const resultDiv = document.getElementById("bot-start-result");
