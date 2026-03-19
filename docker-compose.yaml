@@ -90,7 +90,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.5.2
+      - PLATFORM_VERSION=0.5.3
     networks:
       - aszh-bot-network
 
@@ -127,7 +127,7 @@ services:
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.5.2
+      - PLATFORM_VERSION=0.5.3
       - BOT_TELEGRAM_API=http://bot:8001
     depends_on:
       - qdrant
