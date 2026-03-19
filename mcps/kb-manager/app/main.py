@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
@@ -685,12 +685,19 @@ async def download_filesystem_file(path: str):
 @app.post("/api/news/send")
 async def send_news(
     text: str = Form(...),
-    files: List[UploadFile] = File(default=[])
+    files: List[UploadFile] = File(default=[]),
+    schedule_time: Optional[str] = Form(None)
 ):
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             multipart_data = []
-
+            # откладываем время? 
+            if schedule_time:
+                multipart_data.append(("schedule_time", (None, schedule_time)))
+                logger.info("Сообщение могло быть отложено наверное надо в базу сохранять но пока ничего не происходит нужна встреча!!!")
+                logger.info(f"Отложено на: {schedule_time}")
+            else: 
+                logger.info("Без отложенной отправки")
             # текст
             multipart_data.append(("text", (None, text)))
 
