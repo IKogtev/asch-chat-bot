@@ -9,8 +9,11 @@ from urllib.parse import quote
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.types import FSInputFile, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, FSInputFile, BufferedInputFile, InlineKeyboardMarkup, 
+    InlineKeyboardButton, CallbackQuery, KeyboardButton, ReplyKeyboardMarkup, 
+    ReplyKeyboardRemove
+    )
 from dotenv import load_dotenv
 import aiohttp
 import time
@@ -187,30 +190,137 @@ class SubscriberStore:
         CREATE TABLE IF NOT EXISTS subscribers (
             user_id BIGINT PRIMARY KEY,
             username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            phone_number VARCHAR(20),
+            last_seen TIMESTAMP DEFAULT NOW(),
+            region TEXT,
+            manager_group BOOLEAN DEFAULT FALSE,
+            couch_group BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT NOW()
         );
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query)
 
-    async def add(self, user_id: int, username: str | None):
+    async def add(
+            self, 
+            user_id: int, 
+            username: str | None, 
+            first_name: str, 
+            last_name: str, 
+            last_seen: datetime,
+            phone_number: str | None=None):
         """добавление пользователя в таблицу"""
-        logger.info(f"Added a new user: {user_id}")
+        logger.info(f"Added a new user: {user_id} (@{username})")
         query = """
-        INSERT INTO subscribers (user_id, username)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id) DO NOTHING
+        INSERT INTO subscribers (
+            user_id, username, first_name, last_name, phone_number, 
+            last_seen, region, manager_group, couch_group
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (user_id) DO UPDATE SET
+            username = EXCLUDED.username,
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            phone_number = COALESCE(subscribers.phone_number, EXCLUDED.phone_number),
+            last_seen = EXCLUDED.last_seen
         """
         async with self.pool.acquire() as conn:
-            await conn.execute(query, user_id, username)
+            await conn.execute(
+                query, 
+                user_id, 
+                username, 
+                first_name, 
+                last_name,
+                phone_number,
+                last_seen,
+                None, # region
+                False, # manager_group
+                False # couch_group
+            )
+
+    async def get_phone(self, user_id: int) -> str | None:
+        """Проверить есть ли телефон у пользователя"""
+        query = "SELECT phone_number FROM subscribers WHERE user_id =$1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id)
+        return row["phone_number"] if row else None
+
+    async def update_phone(self, user_id: int, phone_number: str):
+        """Обновить номер телефона"""
+        query = """
+        UPDATE subscribers 
+        SET phone_number = $1, last_seen = NOW()
+        WHERE user_id = $2
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, phone_number, user_id)
+        logger.info(f"✓ Телефон обновлён для user_id={user_id}: {phone_number}")
 
     async def get_all(self) -> list[int]:
         """Получение всех пользователей из таблицы"""
         logger.info("Получаем пользователей")
-        query = "SELECT user_id FROM subscribers"
+        query = """
+        SELECT user_id, username, first_name, last_name, 
+               phone_number, last_seen, created_at
+        FROM subscribers
+        ORDER BY last_seen DESC
+        """
+        # async with self.pool.acquire() as conn:
+        #     rows = await conn.fetch(query)
+        # return [dict(row) for row in rows]
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [r["user_id"] for r in rows]
+
+class NewsStore:
+    def __init__(self, pool: asyncpg.Pool):
+        self.pool = pool
+    
+    async def ensure_schema(self):
+        """Создание таблицы если не существует"""
+        query = """
+        CREATE TABLE IF NOT EXISTS news (
+            id SERIAL PRIMARY KEY,
+            text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            scheduled_at TIMESTAMP,
+            file_id TEXT,
+            file_name TEXT,
+            status VARCHAR(20) DEFAULT 'pending', -- pending | sent
+            target_group VARCHAR(50) DEFAULT 'all'
+        );
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query)
+
+    async def create_news(self, text, scheduled_at=None, group="all"):
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO news (text, scheduled_at, target_group)
+                VALUES ($1, $2, $3)
+                RETURNING id
+            """, text, scheduled_at, group)
+            return row["id"]
+        
+    async def get_pending_news(self):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, text, scheduled_at
+                FROM news
+                WHERE status = 'pending'
+            """)
+            return rows
+
+    async def mark_sent(self, news_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE news
+                SET status = 'sent'
+                WHERE id = $1
+            """, news_id)
+    
+
 
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
@@ -431,7 +541,14 @@ async def main() -> None:
     logger.info("=" * 60)
     logger.info("Запуск Telegram бота")
     logger.info("=" * 60)
-    
+    # Клавиатура для запроса телефона (показывается только если телефона нет)
+    PHONE_KEYBOARD = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
     # Загрузка конфигурации
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not tg_token:
@@ -485,19 +602,61 @@ async def main() -> None:
     async def start(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
+        first_name = m.from_user.first_name
+        last_name = m.from_user.last_name
+        last_seen = datetime.now()
+        existing_phone = await subscriber_store.get_phone(user_id)
+        # Добавление в подписчиков
+        await subscriber_store.add(
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            last_seen=last_seen,
+            phone_number=None
+        )
+        if existing_phone:
+            logger.info(f"Команда /start от user_id={user_id} (@{username}) - телефон уже есть: {existing_phone}")
+            # строим меню для ответа
+            tree = await get_tree_cached()
+            menu = build_menu_from_tree(tree, [])
 
-        # Добавление username в подписчиков
-        await subscriber_store.add(user_id, username)
+            await m.answer(
+            TITLE_START,
+            reply_markup=menu
+            )
+        else: 
+            logger.info(f"Команда /start от user_id={user_id} (@{username}) — запрашиваем телефон")
+            # Запрашиваем телефон
+            await m.answer(
+                f"👋 Привет, {first_name}!\n\n"
+                f"Для связи с вами нам нужен ваш номер телефона.\n\n"
+                f"Пожалуйста, нажмите кнопку ниже чтобы поделиться номером.\n"
+                f"Это нужно только для уведомлений о важных обновлениях.",
+                reply_markup=PHONE_KEYBOARD
+            )
+        
+       
 
-        logger.info(f"Команда /start от user_id={user_id} (@{username})")
-        # строим меню для ответа
+    @dp.message(F.contact)
+    async def handle_contact(m: Message) -> None:
+        """Обработка полученного контакта"""
+        user_id = m.from_user.id
+        phone = m.contact.phone_number
+        
+        # Сохраняем телефон в БД
+        await subscriber_store.update_phone(user_id, phone)
+        
+        logger.info(f"✓ Получен телефон от user_id={user_id}: {phone}")
+        
+        # Показываем меню
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-
         await m.answer(
-           TITLE_START,
-           reply_markup=menu
-        )
+            TITLE_START,
+            reply_markup=menu
+            )
+
     @dp.message(Command("version"))
     async def version_info(m: Message) -> None:
         """Команда для получения версии платформы/бота"""
@@ -582,151 +741,171 @@ async def main() -> None:
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
         username = m.from_user.username or "unknown"
-        
-        # Добавление username в подписчиков
-        await subscriber_store.add(int(user_id), username)
-
-        session_id = "default"
-        user_text = (m.text or "").strip()
-        
-        if not user_text:
-            return
-        
-        logger.info(f"📨 Сообщение от user_id={user_id} (@{username}): {user_text[:100]}")
-        
-        try:
-            # Создание/проверка сессии
-            await adk.ensure_session(user_id=user_id, session_id=session_id)
-            
-            # Отправка в агент
-            answer, events = await adk.run(
-                user_id=user_id, 
-                session_id=session_id, 
-                text=user_text
-            )
-            
-            logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
-            
-            # Логируем метаданные только в DEBUG режиме
-            if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG" and events:
-                try:
-                    for event in events:
-                        if not isinstance(event, dict):
-                            continue
-                        
-                        # 1. Логируем usageMetadata (токены)
-                        if "usageMetadata" in event:
-                            usage = event["usageMetadata"]
-                            logger.debug(
-                                f"📊 Использование токенов: "
-                                f"prompt={usage.get('promptTokenCount', 0)}, "
-                                f"response={usage.get('candidatesTokenCount', 0)}, "
-                                f"total={usage.get('totalTokenCount', 0)}, "
-                                f"cached={usage.get('cachedContentTokenCount', 0)}"
-                            )
-                        
-                        # 2. Логируем actions (может содержать tool info)
-                        if "actions" in event and event["actions"]:
-                            actions = event["actions"]
-                            
-                            # Проверяем stateDelta
-                            if actions.get("stateDelta"):
-                                logger.debug(f"🔄 State delta: {json.dumps(actions['stateDelta'], indent=2, ensure_ascii=False)}")
-                            
-                            # Проверяем artifactDelta
-                            if actions.get("artifactDelta"):
-                                logger.debug(f"📦 Artifact delta: {json.dumps(actions['artifactDelta'], indent=2, ensure_ascii=False)}")
-                            
-                            # Проверяем requestedToolConfirmations
-                            if actions.get("requestedToolConfirmations"):
-                                logger.debug(f"🔧 Tool confirmations: {json.dumps(actions['requestedToolConfirmations'], indent=2, ensure_ascii=False)}")
-                        
-                        # 3. Логируем author и invocationId
-                        if "author" in event:
-                            logger.debug(f"👤 Author: {event['author']}")
-                        
-                        if "invocationId" in event:
-                            logger.debug(f"🆔 Invocation ID: {event['invocationId']}")
-                        
-                        # 4. Проверяем content.parts на tool_use/tool_response
-                        if "content" in event and isinstance(event["content"], dict):
-                            parts = event["content"].get("parts", [])
-                            for part in parts:
-                                if not isinstance(part, dict):
-                                    continue
-                                
-                                # Если есть tool_use
-                                if "tool_use" in part:
-                                    logger.debug(f"🔧 Tool use: {json.dumps(part['tool_use'], indent=2, ensure_ascii=False)}")
-                                
-                                # Если есть tool_response
-                                if "tool_response" in part:
-                                    logger.debug(f"📥 Tool response: {json.dumps(part['tool_response'], indent=2, ensure_ascii=False)}")
-                                
-                                # Если есть function_call (альтернативный формат)
-                                if "function_call" in part:
-                                    logger.debug(f"🔧 Function call: {json.dumps(part['function_call'], indent=2, ensure_ascii=False)}")
-                                
-                                # Если есть function_response
-                                if "function_response" in part:
-                                    logger.debug(f"📥 Function response: {json.dumps(part['function_response'], indent=2, ensure_ascii=False)}")
-                
-                except Exception as log_err:
-                    logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")            
-            
-            # Сохранение в БД
-            await store.append(int(user_id), "user", user_text)
-            await store.append(int(user_id), "model", answer)
-            
-            # Извлекаем document_id из ответа
-            doc_ids = doc_handler.extract_document_ids(answer)
-            
-            # Очищаем ответ от [document_id:...]
-            clean_answer = doc_handler.remove_document_ids(answer)
-            
-            # Отправляем текст только если он не пустой
-            if clean_answer.strip():
-                html_answer = markdown_to_safe_html(clean_answer)
-                await m.answer(html_answer, parse_mode="HTML")
-                            
-            # Если есть документы - скачиваем и отправляем
-            if doc_ids:
-                logger.info(f"📎 Найдено {len(doc_ids)} документов для отправки")
-                
-                for doc_id in doc_ids:
-                    try:
-                        file_path = await doc_handler.download_document(doc_id)
-                        
-                        if file_path and file_path.exists():
-                            # Используем оригинальное имя файла
-                            filename = file_path.name
-                            document = FSInputFile(str(file_path), filename=filename)
-                            await m.answer_document(document, caption=f"📄 {filename}")
-                            logger.info(f"✅ Документ '{filename}' (id: {doc_id}) отправлен user_id={user_id}")
-                        else:
-                            logger.warning(f"⚠️ Файл не найден для document_id: {doc_id}")
-                            await m.answer(f"⚠️ Не удалось загрузить документ")
-                            
-                    except Exception as doc_err:
-                        logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
-                        await m.answer(f"❌ Ошибка при загрузке документа")
-
-                    # Удаляем временный файл после отправки
-                    try:
-                        if file_path and file_path.exists():
-                            temp_filename = file_path.name
-                            file_path.unlink()
-                            logger.debug(f"🗑️ Удалён временный файл: {temp_filename}")
-                    except Exception as e:
-                        temp_filename = file_path.name if file_path else "unknown"
-                        logger.warning(f"Не удалось удалить файл {temp_filename}: {e}")
-                                                                                
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
+        first_name = m.from_user.first_name
+        last_name = m.from_user.last_name
+        last_seen = datetime.now()
+        existing_phone = await subscriber_store.get_phone(int(user_id))
+        # Добавление в подписчиков
+        await subscriber_store.add(
+            user_id=int(user_id),
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            last_seen=last_seen,
+            phone_number=None
+        )
+        if not existing_phone: 
+            logger.info(f"Команда /start от user_id={user_id} (@{username}) — запрашиваем телефон")
+            # Запрашиваем телефон
             await m.answer(
-                "😔 Произошла ошибка при обработке запроса.\n"
-                "Попробуйте позже или используйте /reset для сброса диалога."
+                f"👋 Привет, {first_name}!\n\n"
+                f"Для связи с вами нам нужен ваш номер телефона.\n\n"
+                f"Пожалуйста, нажмите кнопку ниже чтобы поделиться номером.\n"
+                f"Это нужно только для уведомлений о важных обновлениях.",
+                reply_markup=PHONE_KEYBOARD
             )
+        else: 
+            session_id = "default"
+            user_text = (m.text or "").strip()
+            
+            if not user_text:
+                return
+            
+            logger.info(f"📨 Сообщение от user_id={user_id} (@{username}): {user_text[:100]}")
+            
+            try:
+                # Создание/проверка сессии
+                await adk.ensure_session(user_id=user_id, session_id=session_id)
+                
+                # Отправка в агент
+                answer, events = await adk.run(
+                    user_id=user_id, 
+                    session_id=session_id, 
+                    text=user_text
+                )
+                
+                logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+                
+                # Логируем метаданные только в DEBUG режиме
+                if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG" and events:
+                    try:
+                        for event in events:
+                            if not isinstance(event, dict):
+                                continue
+                            
+                            # 1. Логируем usageMetadata (токены)
+                            if "usageMetadata" in event:
+                                usage = event["usageMetadata"]
+                                logger.debug(
+                                    f"📊 Использование токенов: "
+                                    f"prompt={usage.get('promptTokenCount', 0)}, "
+                                    f"response={usage.get('candidatesTokenCount', 0)}, "
+                                    f"total={usage.get('totalTokenCount', 0)}, "
+                                    f"cached={usage.get('cachedContentTokenCount', 0)}"
+                                )
+                            
+                            # 2. Логируем actions (может содержать tool info)
+                            if "actions" in event and event["actions"]:
+                                actions = event["actions"]
+                                
+                                # Проверяем stateDelta
+                                if actions.get("stateDelta"):
+                                    logger.debug(f"🔄 State delta: {json.dumps(actions['stateDelta'], indent=2, ensure_ascii=False)}")
+                                
+                                # Проверяем artifactDelta
+                                if actions.get("artifactDelta"):
+                                    logger.debug(f"📦 Artifact delta: {json.dumps(actions['artifactDelta'], indent=2, ensure_ascii=False)}")
+                                
+                                # Проверяем requestedToolConfirmations
+                                if actions.get("requestedToolConfirmations"):
+                                    logger.debug(f"🔧 Tool confirmations: {json.dumps(actions['requestedToolConfirmations'], indent=2, ensure_ascii=False)}")
+                            
+                            # 3. Логируем author и invocationId
+                            if "author" in event:
+                                logger.debug(f"👤 Author: {event['author']}")
+                            
+                            if "invocationId" in event:
+                                logger.debug(f"🆔 Invocation ID: {event['invocationId']}")
+                            
+                            # 4. Проверяем content.parts на tool_use/tool_response
+                            if "content" in event and isinstance(event["content"], dict):
+                                parts = event["content"].get("parts", [])
+                                for part in parts:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    
+                                    # Если есть tool_use
+                                    if "tool_use" in part:
+                                        logger.debug(f"🔧 Tool use: {json.dumps(part['tool_use'], indent=2, ensure_ascii=False)}")
+                                    
+                                    # Если есть tool_response
+                                    if "tool_response" in part:
+                                        logger.debug(f"📥 Tool response: {json.dumps(part['tool_response'], indent=2, ensure_ascii=False)}")
+                                    
+                                    # Если есть function_call (альтернативный формат)
+                                    if "function_call" in part:
+                                        logger.debug(f"🔧 Function call: {json.dumps(part['function_call'], indent=2, ensure_ascii=False)}")
+                                    
+                                    # Если есть function_response
+                                    if "function_response" in part:
+                                        logger.debug(f"📥 Function response: {json.dumps(part['function_response'], indent=2, ensure_ascii=False)}")
+                    
+                    except Exception as log_err:
+                        logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")            
+                
+                # Сохранение в БД
+                await store.append(int(user_id), "user", user_text)
+                await store.append(int(user_id), "model", answer)
+                
+                # Извлекаем document_id из ответа
+                doc_ids = doc_handler.extract_document_ids(answer)
+                
+                # Очищаем ответ от [document_id:...]
+                clean_answer = doc_handler.remove_document_ids(answer)
+                
+                # Отправляем текст только если он не пустой
+                if clean_answer.strip():
+                    html_answer = markdown_to_safe_html(clean_answer)
+                    await m.answer(html_answer, parse_mode="HTML")
+                                
+                # Если есть документы - скачиваем и отправляем
+                if doc_ids:
+                    logger.info(f"📎 Найдено {len(doc_ids)} документов для отправки")
+                    
+                    for doc_id in doc_ids:
+                        try:
+                            file_path = await doc_handler.download_document(doc_id)
+                            
+                            if file_path and file_path.exists():
+                                # Используем оригинальное имя файла
+                                filename = file_path.name
+                                document = FSInputFile(str(file_path), filename=filename)
+                                await m.answer_document(document, caption=f"📄 {filename}")
+                                logger.info(f"✅ Документ '{filename}' (id: {doc_id}) отправлен user_id={user_id}")
+                            else:
+                                logger.warning(f"⚠️ Файл не найден для document_id: {doc_id}")
+                                await m.answer(f"⚠️ Не удалось загрузить документ")
+                                
+                        except Exception as doc_err:
+                            logger.error(f"❌ Ошибка отправки документа {doc_id}: {doc_err}", exc_info=True)
+                            await m.answer(f"❌ Ошибка при загрузке документа")
+
+                        # Удаляем временный файл после отправки
+                        try:
+                            if file_path and file_path.exists():
+                                temp_filename = file_path.name
+                                file_path.unlink()
+                                logger.debug(f"🗑️ Удалён временный файл: {temp_filename}")
+                        except Exception as e:
+                            temp_filename = file_path.name if file_path else "unknown"
+                            logger.warning(f"Не удалось удалить файл {temp_filename}: {e}")
+                                                                                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
+                await m.answer(
+                    "😔 Произошла ошибка при обработке запроса.\n"
+                    "Попробуйте позже или используйте /reset для сброса диалога."
+                )
 
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
