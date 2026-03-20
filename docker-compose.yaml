@@ -37,8 +37,6 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
       - ./pgadmin_servers.json:/pgadmin_servers.json:ro
-    #   - ./pgadmin_init.sh:/pgadmin_init.sh:ro 
-    # entrypoint: ["/pgadmin_init.sh", "/usr/local/bin/docker-entrypoint.sh"]  # ← Запускаем скрипт перед стартом
     depends_on:
       - postgres
     networks:
@@ -88,7 +86,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./kb_storage/bot/settings:/app/data/settings
+      - ./kb_storage/bot/:/app/data
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}

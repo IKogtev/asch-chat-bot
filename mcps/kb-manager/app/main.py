@@ -710,8 +710,7 @@ async def send_news(
 
             resp = await client.post(
                 BOT_API,
-                files=multipart_data, 
-                json={"text": text}
+                files=multipart_data
             )
             resp.raise_for_status()
             bot_response = resp.json()
