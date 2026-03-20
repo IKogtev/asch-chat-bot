@@ -33,10 +33,13 @@
         </div>
 
         <div class="tabs">
-            <button class="tab-button active" onclick="showTab('documents')">Documents</button>
-            <button class="tab-button" onclick="showTab('search')">Search</button>
-            <button class="tab-button" onclick="showTab('upload')">Upload</button>
-            <button class="tab-button" onclick="showTab('tree_files')">Tree Files</button>
+            <button class="tab-button active" onclick="showTab('documents')">📄 Documents</button>
+            <button class="tab-button" onclick="showTab('search')">🔍 Search</button>
+            <button class="tab-button" onclick="showTab('upload')">📤 Upload</button>
+            <button class="tab-button" onclick="showTab('tree_files')">📁 Tree Files</button>
+            <button class="tab-button" onclick="showTab('news_send')">📢 News</button>
+            <button class="tab-button" onclick="showTab('prompts')">📝 Prompts</button>
+            <button class="tab-button" onclick="showTab('bot_settings')">⚙️ Bot Settings</button>
         </div>
 
         <!-- Documents Tab -->
@@ -160,6 +163,114 @@
             <div id="filesystem-tree"></div>
         </div>
 
+        <!-- News Tab -->
+        <div id="news_send-tab" class="tab-content">
+            <div class="section-header">
+                <h2>Send News</h2>
+            </div>
+            <textarea id="news-text" class="news-editor" 
+                placeholder="Введите текст новости"></textarea>
+            
+                <!-- <input type="file" id="news-files" multiple> -->
+            <div class="news-upload-wrapper">            
+                <div class="news-upload-box" id="news-upload-box">
+                    <span id="news-file-label">📎 Выбрать файл</span>
+                </div>
+
+                <input type="file" id="news-files" style="display: none;">
+
+            </div>
+            <div id="news-file-info" class="news-file-info" style="display: none;">
+                <span id="news-file-name"></span>
+                <span id="news-file-remove" class="news-file-remove">❌</span>
+            </div>
+            <div class="news-schedule">
+                <label>📅 Отложить отправку:</label>
+                <input type="datetime-local" id="news-schedule-time">
+            </div>
+            <br><br>
+
+            <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
+                📤 Отправить новость
+            </button>
+
+            <div id="news-result" class="result-message"></div>
+        </div>
+
+        <!-- Prompts tab -->
+        <div id="prompts-tab" class="tab-content">
+            <h2>📝 Управление промптами</h2>
+            
+            <div class="prompt-container">
+                <!-- Левая панель - история файлов -->
+                <div class="prompt-sidebar">
+                    <h3>📚 Файлы промптов</h3>
+                    <div id="prompt-files-list" class="prompt-files-list">
+                        <div class="loading">Загрузка...</div>
+                    </div>
+                </div>
+                
+                <!-- Правая панель - редактор -->
+                <div class="prompt-editor-panel">
+                    <div class="prompt-header">
+                        <h3>✏️ Редактор промпта</h3>
+                        <div class="prompt-actions">
+                            <button onclick="loadCurrentPrompt()" class="btn btn-secondary btn-small">
+                                🔄 Обновить
+                            </button>
+                            <button onclick="createBackup()" class="btn btn-warning btn-small">
+                                💾 Бэкап
+                            </button>
+                            <button onclick="savePrompt()" class="btn btn-primary btn-small">
+                                💾 Сохранить
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="prompt-meta" id="prompt-meta">
+                        <span>Файл: <strong id="prompt-filename">-</strong></span>
+                        <span>Размер: <strong id="prompt-size">-</strong></span>
+                        <span>Изменён: <strong id="prompt-modified">-</strong></span>
+                    </div>
+                    
+                    <textarea id="prompt-editor" class="prompt-editor" 
+                            placeholder="Загрузка промпта..."></textarea>
+                    
+                    <div id="prompt-result" class="result-message" style="display:none;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bot settings tab -->
+        <div id="bot_settings-tab" class="tab-content">
+            <h2>⚙️ Настройки бота</h2>
+            
+            <div class="bot-settings-container">
+                
+                <!-- Стартовое сообщение -->
+                <div class="setting-card">
+                    <div class="setting-header">
+                        <h3>💬 Стартовое сообщение (/start)</h3>
+                        <div class="setting-actions">
+                            <button onclick="loadBotStartMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
+                            <button onclick="saveBotStartMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
+                        </div>
+                    </div>
+                    
+                    <div class="setting-info">
+                        <span>📄 Файл: <strong>bot_start_message.md</strong></span>
+                        <span>📦 Размер: <strong id="bot-start-size">-</strong></span>
+                        <span>📅 Изменён: <strong id="bot-start-modified">-</strong></span>
+                    </div>
+                    
+                    <textarea id="bot-start-editor" class="setting-editor" placeholder="Загрузка стартового сообщения..."></textarea>
+                    
+                    <div id="bot-start-result" class="result-message" style="display:none;"></div>
+                </div>
+                
+            </div>
+        </div>
+        
         <!-- Modal for viewing document chunks -->
         <div id="chunks-modal" class="modal">
             <div class="modal-content">

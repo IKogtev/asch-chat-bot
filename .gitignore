@@ -8,7 +8,8 @@ kb_service/
 kb_default/
 kb_data/
 logs/
-kb_storage/
+kb_storage/kb
+kb_storage/faq
 data/
 venv/
 

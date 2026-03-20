@@ -444,7 +444,7 @@ class QdrantService:
             return {"document_count": actual_doc_count, "points_count": points_count}
         except Exception as e:
             return {"error": str(e)}
-        
+    
     def list_collections(self) -> Dict:
         try:
             result = self.qdrant_client.get_collections()

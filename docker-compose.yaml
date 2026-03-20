@@ -59,7 +59,7 @@ services:
       - MCP_TOKEN=${MCP_TOKEN}
       - KB_COLLECTION=${KB_COLLECTION}
     volumes:
-      - ./agent:/app/agent
+      - ./kb_storage/prompts:/app/agent/prompts
     tmpfs:
       - /app/agent/.adk:size=100M
     networks:
@@ -78,15 +78,19 @@ services:
         condition: service_started
       kb-manager:
         condition: service_started
+    ports:
+      - 8001:8001
     env_file:
       - .env
+    volumes:
+      - ./kb_storage/bot/settings:/app/data/settings
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.5.1
+      - PLATFORM_VERSION=0.5.3
     networks:
       - aszh-bot-network
 
@@ -111,6 +115,8 @@ services:
       - 5000:5000
     volumes:
       - ./kb_storage:/app/data/kb_documents
+      - ./kb_storage/prompts:/app/data/prompts
+      - ./kb_storage/bot/settings:/app/data/settings
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -120,7 +126,9 @@ services:
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
-      - PLATFORM_VERSION=0.5.1
+      - PROMPTS_STORAGE_ROOT=/app/data/prompts
+      - PLATFORM_VERSION=0.5.3
+      - BOT_TELEGRAM_API=http://bot:8001
     depends_on:
       - qdrant
     networks:

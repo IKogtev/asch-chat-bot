@@ -1,19 +1,53 @@
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-
 # MCP (штатно через ADK)
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-
 from dotenv import load_dotenv
 import os
 from pathlib import Path
 import sys
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import threading
+from google.adk.tools import FunctionTool
+
+def get_prompt():
+    """
+    Специальная функция tool  
+    для модели чтобы получать системный промпт
+    """
+    return root_agent.instruction
+
+# Handler для того чтобы подхватывать изменения промпта
+class PromptManager(FileSystemEventHandler):
+    def __init__(self, prompt_path: Path, agent):
+        self.prompt_path = prompt_path
+        self.agent = agent
+        self._load_prompt()
+
+    def _load_prompt(self):
+        """Внутренний метод для чтения файла"""
+        try:
+            new_content = self.prompt_path.read_text(encoding="utf-8")
+            # Обновляем инструкцию в самом объекте агента
+            self.agent.instruction = new_content
+            # В некоторых версиях ADK нужно обновить и внутренний атрибут
+            if hasattr(self.agent, '_instruction'):
+                self.agent._instruction = new_content
+                
+            logger.info(f"🔄 Промпт успешно обновлен из файла: {self.prompt_path.name}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при автоматической загрузке промпта: {e}")
+
+    def on_modified(self, event):
+        # Проверяем, что изменился именно наш файл промпта
+        if not event.is_directory and Path(event.src_path).resolve() == self.prompt_path.resolve():
+            self._load_prompt()
 
 # Добавляем путь к utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.logger import setup_logger
-
 load_dotenv(override=True)
 
 logger = setup_logger("agent", "agent.log")
@@ -37,13 +71,20 @@ logger.info(f"API URL: {API_URL}")
 logger.info(f"KB Search defaults: collection={KB_DEFAULT_COLLECTION}, top_k={KB_SIMILARITY_TOP_K}")
 
 # === Системный промпт ===
-prompt_path = Path(__file__).parent / "prompts" / "agent_prompt.md"
-try:
-    system_prompt = prompt_path.read_text(encoding="utf-8")
-    logger.info(f"Системный промпт загружен из {prompt_path}")
-except Exception as e:
-    logger.error(f"Ошибка загрузки промпта: {e}")
-    system_prompt = "Ты полезный ассистент в Telegram."
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+PROMPT_FILE = PROMPTS_DIR / "agent_prompt.md"
+
+def load_system_prompt():
+    """Загрузить системный промпт из файла"""
+    try:
+        system_prompt = PROMPT_FILE.read_text(encoding="utf-8")
+        logger.info(f"Системный промпт загружен из {PROMPT_FILE}")
+        return system_prompt
+    except Exception as e:
+        logger.error(f"Ошибка загрузки промпта: {e}")
+        return "Ты полезный ассистент в Telegram."
+
+system_prompt = load_system_prompt()
 
 # === Инициализация Tools ===
 tools = []
@@ -73,6 +114,8 @@ else:
 if not tools:
     logger.warning("⚠ Агент создается без tools — функциональность ограничена")
 
+tools.append(FunctionTool(get_prompt))
+
 # === Создание агента ===
 root_agent = LlmAgent(
     name="local_llm_agent",
@@ -95,3 +138,9 @@ root_agent = LlmAgent(
 
 logger.info("✓ Агент успешно инициализирован")
 logger.info(f"  Подключено tools: {len(tools)}")
+# 2. Запускаем слежку за файлом, чтобы если изменился промпт он сразу подхватывался
+# но из-за того что это агент google срабатывает только при reset команде
+event_handler = PromptManager(PROMPT_FILE, root_agent)
+observer = Observer()
+observer.schedule(event_handler, path=str(PROMPT_FILE.parent), recursive=False)
+threading.Thread(target=observer.start, daemon=True).start()

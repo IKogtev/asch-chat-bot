@@ -4,38 +4,70 @@ from typing import Optional
 import json
 import html as html_module
 import re
-#from uuid import uuid4
 from urllib.parse import quote
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import FSInputFile, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 import aiohttp
 import time
 import tempfile
+from collections import OrderedDict
+from datetime import datetime, timezone
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
 
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
-from urllib.parse import quote
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from typing import List
+from pydantic import BaseModel
+import uvicorn
+from pathlib import Path
+
+# Модель для запроса новостей
+class BroadcastRequest(BaseModel):
+    text: str
 
 # Настройка логгера
 logger = setup_logger('bot', 'bot.log')
-CALLBACK_MAP = {}
+# сохраняем пути папок в сортированном по времени словаре
+CALLBACK_MAP = OrderedDict()
+MAX_CALLBACK_ENTRIES = 5000
+# переменные для сохранения дерева папок в кэше
 TREE_CACHE = None
 TREE_TS = 0
+TIME_SET_WAIT = 120
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
+BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
+broadcast_app = FastAPI(title="Bot Broadcast API")
+# отложенные новости временно храним внутри списка потом в БД будут
+SCHEDULED_TASKS = []
+
+# делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
+def load_bot_start_message():
+    """Load start message from file"""
+    global TITLE_START
+    try:
+        if BOT_START_MESSAGE_FILE.exists():
+            TITLE_START = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
+            logger.info(f"Start message loaded from file: {len(TITLE_START)} symbols")
+        else:
+            logger.warning(f"Start file not found using standart")
+    except Exception as e:
+        logger.error(f"Error loading starting message: {e}")
+
+load_bot_start_message()
 
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
@@ -143,6 +175,42 @@ class PostgresChatStore:
         if self.pool:
             await self.pool.close()
             logger.info("Пул соединений PostgreSQL закрыт")
+
+# Хранилище пользователей отправлявших сообщения боту 
+class SubscriberStore:
+    def __init__(self, pool: asyncpg.Pool):
+        self.pool = pool
+    
+    async def ensure_schema(self):
+        """Создание таблицы если не существует"""
+        query = """
+        CREATE TABLE IF NOT EXISTS subscribers (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query)
+
+    async def add(self, user_id: int, username: str | None):
+        """добавление пользователя в таблицу"""
+        logger.info(f"Added a new user: {user_id}")
+        query = """
+        INSERT INTO subscribers (user_id, username)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id) DO NOTHING
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, user_id, username)
+
+    async def get_all(self) -> list[int]:
+        """Получение всех пользователей из таблицы"""
+        logger.info("Получаем пользователей")
+        query = "SELECT user_id FROM subscribers"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return [r["user_id"] for r in rows]
 
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
@@ -396,6 +464,9 @@ async def main() -> None:
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
+    # инициализируем хранилище пользователей
+    subscriber_store = SubscriberStore(store.pool)
+    await subscriber_store.ensure_schema()
     
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
@@ -414,7 +485,12 @@ async def main() -> None:
     async def start(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
+
+        # Добавление username в подписчиков
+        await subscriber_store.add(user_id, username)
+
         logger.info(f"Команда /start от user_id={user_id} (@{username})")
+        # строим меню для ответа
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
 
@@ -424,6 +500,7 @@ async def main() -> None:
         )
     @dp.message(Command("version"))
     async def version_info(m: Message) -> None:
+        """Команда для получения версии платформы/бота"""
         user_id = m.from_user.id
         logger.info(f"Команда /version от user_id={user_id}")
         await m.answer(
@@ -433,8 +510,9 @@ async def main() -> None:
     #домашняя страница
     @dp.callback_query(lambda c: c.data == "home")
     async def go_home(callback: CallbackQuery):
+        # обработчик перехода на главную страницу кнопка home
         await callback.answer()
-
+        # строим меню для ответа
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
 
@@ -466,7 +544,7 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-
+    
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
@@ -504,6 +582,10 @@ async def main() -> None:
     async def on_text(m: Message) -> None:
         user_id = str(m.from_user.id)
         username = m.from_user.username or "unknown"
+        
+        # Добавление username в подписчиков
+        await subscriber_store.add(int(user_id), username)
+
         session_id = "default"
         user_text = (m.text or "").strip()
         
@@ -648,6 +730,7 @@ async def main() -> None:
 
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
+        """Команда обработчик открытия папки"""
         await callback.answer()
         pid = callback.data.split(":")[1]
 
@@ -656,10 +739,11 @@ async def main() -> None:
         if path is None:
             await callback.answer("Кнопка устарела", show_alert=True)
             return
-
+        # делаем обращение к пути снова свежим
+        CALLBACK_MAP.move_to_end(pid)
         path_list = path.split("/") if path else []
         tree = await get_tree_cached()
-
+        # строим дерево папок относительно текущей папки
         menu = build_menu_from_tree(tree, path_list)
         title = "📁 /".join(path_list) or TITLE_START
         await callback.message.edit_text(
@@ -669,7 +753,7 @@ async def main() -> None:
 
     @dp.callback_query(F.data.startswith("f:"))
     async def send_file(callback: CallbackQuery):
-
+        """Обработчик отправки файлов через меню бота"""
         await callback.answer()
 
         pid = callback.data.split(":")[1]
@@ -678,11 +762,11 @@ async def main() -> None:
         if not path:
             await callback.answer("Файл не найден", show_alert=True)
             return
+        # делаем обращение к пути снова свежим
+        CALLBACK_MAP.move_to_end(pid)
         doc_id = await get_document_id(path)
         if not doc_id:
             url = f"{KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
-            # await callback.answer("Документ не найден", show_alert=True)
-            # return
         else:
             url = f"{KB_MANAGER_URL}/api/documents/download/{doc_id}"
         filename = path.split("/")[-1]
@@ -706,11 +790,120 @@ async def main() -> None:
 
         os.remove(tmp.name)
     
+    async def send_now(text: str, file_data: List):
+        sent = 0
+
+        users = await subscriber_store.get_all()
+
+        for user_id in users:
+            try:
+                # отправка текста
+                if text:
+                    await bot.send_message(user_id, text)
+
+                # отправка файлов
+                for filename, content_type, content in file_data:
+
+                    if content_type.startswith("image"):
+                        await bot.send_photo(
+                            user_id,
+                            BufferedInputFile(content, filename=filename)
+                        )
+                    else:
+                        await bot.send_document(
+                            user_id, 
+                            BufferedInputFile(content, filename=filename)
+                        )
+
+                sent += 1
+                # защита от Flood Limits 
+                await asyncio.sleep(0.05)
+
+            except Exception as e:
+                logger.error(f"Broadcast error to {user_id}: {e}")
+
+        return {"sent": sent}
+
+    async def scheduler_worker():
+        logger.info("🕒 Scheduler started")
+
+        while True:
+            now = datetime.now(timezone.utc)
+
+            for task in SCHEDULED_TASKS[:]:
+                if now >= task["run_at"]:
+                    logger.info(f"🚀 Выполняем отложенную задачу {task['run_at']}")
+                    
+                    await send_now(task['text'], task['files'])
+                    SCHEDULED_TASKS.remove(task)
+
+            await asyncio.sleep(5)
+    
+    @broadcast_app.post("/broadcast")
+    async def broadcast(
+        text: str = Form(...),
+        files: List[UploadFile] = File(default=[]),
+        schedule_time: Optional[str] = Form(None)
+    ):
+        """Функция стриминга новостей в бота"""
+        file_data = []
+        for f in files:
+            content = await f.read()
+            file_data.append((f.filename, f.content_type, content))
+        if schedule_time:
+            try:
+                run_at = datetime.fromisoformat(schedule_time)
+            except Exception:
+                raise HTTPException(400, "Invalid datetime format")
+
+            # сохраняем задачу
+            SCHEDULED_TASKS.append({
+                "text": text,
+                "files": file_data,
+                "run_at": run_at
+            })
+
+            logger.info(f"📅 Задача отложена на {run_at}")
+            return {"status": "scheduled"}
+
+        return await send_now(text, file_data)
+        
+    @broadcast_app.post("/api/reload-start-message")
+    async def reload_start_message():
+        """Перезагрузить стартовое сообщение из файла"""
+        try:
+            load_bot_start_message()
+            return {
+                "success": True,
+                "message": "Start message reloaded",
+                "length": len(TITLE_START)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    
+
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
+        # Запуск HTTP сервера в отдельной задаче
+        async def run_http_server():
+            config = uvicorn.Config(
+                broadcast_app,
+                host="0.0.0.0",
+                port=8001,
+                log_level="info"
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+        asyncio.create_task(scheduler_worker())
+    # Запуск обоих серверов параллельно
+        await asyncio.gather(
+            dp.start_polling(bot),
+            run_http_server()
+        )
         logger.info(f"Текущая версия бота: {PLATFORM_VERSION}")
-        await dp.start_polling(bot)
+        
     finally:
         logger.info("Остановка бота...")
         await adk.close()
@@ -719,20 +912,28 @@ async def main() -> None:
         logger.info("Бот остановлен")
 
 # функция хранения пути
-def store_path(path: str):
-    pid = str(len(CALLBACK_MAP) + 1)
-    CALLBACK_MAP[pid] = path
-
-    if len(CALLBACK_MAP) > 5000:
-        CALLBACK_MAP.clear()
-
-    return pid
+def register_callback_path(path: str) -> str:
+    """Регистрирует путь и возвращает его короткий ID (хэш)"""
+    # path_id = str(hash(path))
+    path_id = str(len(CALLBACK_MAP) + 1)
+    
+    # Если ID уже есть, перемещаем его в конец (он теперь "свежий")
+    if path_id in CALLBACK_MAP:
+        CALLBACK_MAP.move_to_end(path_id)
+    
+    CALLBACK_MAP[path_id] = path
+    
+    # Если превысили лимит, удаляем самый старый элемент (из начала)
+    if len(CALLBACK_MAP) > MAX_CALLBACK_ENTRIES:
+        CALLBACK_MAP.popitem(last=False)
+        
+    return path_id
 
 # кэширование полученных путей 
 async def get_tree_cached():
     global TREE_CACHE, TREE_TS
     # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
-    if time.time() - TREE_TS < 60:
+    if time.time() - TREE_TS < TIME_SET_WAIT:
         return TREE_CACHE
 
     TREE_CACHE = await get_kb_tree()
@@ -742,6 +943,7 @@ async def get_tree_cached():
 
 #  построить меню на основе дерева папок из kb_manager
 def build_menu_from_tree(tree: dict, path: list[str]):
+    """Функция для строительства деревовидной структуры папок"""
     node = tree
 
     for p in path:
@@ -754,7 +956,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
         if key == "files":
             continue
         full_path = "/".join(path + [key])
-        pid = store_path(full_path)
+        pid = register_callback_path(full_path)
 
         buttons.append([
             InlineKeyboardButton(
@@ -767,7 +969,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
     for f in node.get("files", []):
         full_path = "/".join(path + [f])
 
-        pid = store_path(full_path)
+        pid = register_callback_path(full_path)
         buttons.append([
             InlineKeyboardButton(
                 text=f"📄 {f}",
@@ -778,7 +980,7 @@ def build_menu_from_tree(tree: dict, path: list[str]):
     nav_buttons = []
     if path:
         parent = "/".join(path[:-1])
-        pid = store_path(parent)
+        pid = register_callback_path(parent)
 
         nav_buttons.append(
             InlineKeyboardButton(
@@ -827,7 +1029,6 @@ async def get_document_id(path: str) -> str | None:
             return doc.get("document_id")
 
     return None
-
 
 
 if __name__ == "__main__":
