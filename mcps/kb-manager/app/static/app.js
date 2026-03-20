@@ -950,8 +950,19 @@ function escapeHtml(text) {
 // форматирование даты в стандарты
 function formatDate(dateString) {
     if (!dateString) return 'Unknown';
-    const date = new Date(dateString);
-    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+    const utcString = dateString.endsWith('Z') ? dateString : dateString + 'Z';
+    const date = new Date(utcString);
+    // return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+    return date.toLocaleString('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
 }
 // отправка уведомлений
 function showNotification(message, type) {
@@ -1259,6 +1270,11 @@ async function sendNews() {
     }
     if (scheduleTime) {
         const utcTime = new Date(scheduleTime).toISOString();
+        const now = new Date().toISOString();
+        if (utcTime <= now){
+            alert("❌ Нельзя выбрать прошедшее время");
+            return;
+        }
         formData.append("schedule_time", utcTime);
     }
     // Блокировка кнопки

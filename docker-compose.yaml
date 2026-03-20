@@ -30,10 +30,15 @@ services:
       PGADMIN_DEFAULT_EMAIL: vitaly.kogtev@nstdata.ru
       PGADMIN_DEFAULT_PASSWORD: vitaly.kogtev@nstdata.ru
       PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+      PGADMIN_SERVER_JSON_FILE: /pgadmin_servers.json
     ports:
       - "5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin_servers.json:/pgadmin_servers.json:ro
+    #   - ./pgadmin_init.sh:/pgadmin_init.sh:ro 
+    # entrypoint: ["/pgadmin_init.sh", "/usr/local/bin/docker-entrypoint.sh"]  # ← Запускаем скрипт перед стартом
     depends_on:
       - postgres
     networks:
