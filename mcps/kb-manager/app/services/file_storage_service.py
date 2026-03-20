@@ -36,6 +36,7 @@ class FileStorageService:
         self._sync_lock=False
         self.ignore_folders = {".git", "__pycache__", "_prepared"}
         self.allowed_ext = ext_allowed
+        
 
     # -------------------------------------------------
     # SCAN FILESYSTEM
@@ -68,6 +69,7 @@ class FileStorageService:
             if path.suffix.lower() not in self.allowed_ext:
                 self.logger.debug(f"Skipping unsupported file: {path.name} (suffix: {path.suffix})")
                 continue
+
 
             files.append({
                 "absolute_path": path,
