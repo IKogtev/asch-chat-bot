@@ -48,6 +48,8 @@ TIME_SET_WAIT = 120
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 KB_MANAGER_URL = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000")
 BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
+UPLOAD_NEWS = Path("/app/data/upload")
+UPLOAD_NEWS.mkdir(parents=True, exist_ok=True)
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
@@ -284,9 +286,8 @@ class NewsStore:
             id SERIAL PRIMARY KEY,
             text TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT NOW(),
-            scheduled_at TIMESTAMP,
-            file_id TEXT,
-            file_name TEXT,
+            scheduled_at TIMESTAMPTZ,
+            files JSONB,
             status VARCHAR(20) DEFAULT 'pending', -- pending | sent
             target_group VARCHAR(50) DEFAULT 'all'
         );
@@ -294,31 +295,44 @@ class NewsStore:
         async with self.pool.acquire() as conn:
             await conn.execute(query)
 
-    async def create_news(self, text, scheduled_at=None, group="all"):
+    async def create_news(self, text, scheduled_at=None, group="all", files=None):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
-                INSERT INTO news (text, scheduled_at, target_group)
-                VALUES ($1, $2, $3)
+                INSERT INTO news (text, scheduled_at, target_group, files)
+                VALUES ($1, $2, $3, $4)
                 RETURNING id
-            """, text, scheduled_at, group)
+            """, text, scheduled_at, group, json.dumps(files or []))
             return row["id"]
         
     async def get_pending_news(self):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, text, scheduled_at
-                FROM news
+                SELECT * FROM news
                 WHERE status = 'pending'
             """)
-            return rows
+            return [dict(r) for r in rows]
+            # return rows
 
     async def mark_sent(self, news_id: int):
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                UPDATE news
-                SET status = 'sent'
+                UPDATE news SET status = 'sent'
                 WHERE id = $1
             """, news_id)
+
+    async def get_all(self):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM news ORDER BY created_at DESC
+            """)
+            return [dict(r) for r in rows]
+
+    async def get_by_id(self, news_id: int):
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM news WHERE id = $1
+            """, news_id)
+            return dict(row) if row else None
     
 
 
@@ -584,6 +598,9 @@ async def main() -> None:
     # инициализируем хранилище пользователей
     subscriber_store = SubscriberStore(store.pool)
     await subscriber_store.ensure_schema()
+    # инициализируем хранилище новостей
+    news_store = NewsStore(store.pool)
+    await news_store.ensure_schema()
     
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
@@ -1003,20 +1020,32 @@ async def main() -> None:
 
         return {"sent": sent}
 
-    async def scheduler_worker():
+    async def news_scheduler():
         logger.info("🕒 Scheduler started")
-
         while True:
-            now = datetime.now(timezone.utc)
+            try:
+                pending = await news_store.get_pending_news()
+                now = datetime.now(timezone.utc)
 
-            for task in SCHEDULED_TASKS[:]:
-                if now >= task["run_at"]:
-                    logger.info(f"🚀 Выполняем отложенную задачу {task['run_at']}")
-                    
-                    await send_now(task['text'], task['files'])
-                    SCHEDULED_TASKS.remove(task)
+                for news in pending:
+                    if news["scheduled_at"] is None or now >= news["scheduled_at"]:
+                        logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
+                        files = json.loads(news.get("files") or "[]")
+                        file_data = []
+                        for f in files:
+                            try: 
+                                with open(f["path"], "rb") as fp:
+                                    content = fp.read()
+                                    file_data.append((f["name"], f["type"], content))
+                            except Exception as e:
+                                logger.error(f"File read error: {e}")
 
-            await asyncio.sleep(5)
+                        await send_now(news['text'], file_data)
+                        await news_store.mark_sent(news["id"])
+
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error during news_scheduler like this {e}")
     
     @broadcast_app.post("/broadcast")
     async def broadcast(
@@ -1025,27 +1054,36 @@ async def main() -> None:
         schedule_time: Optional[str] = Form(None)
     ):
         """Функция стриминга новостей в бота"""
-        file_data = []
-        for f in files:
-            content = await f.read()
-            file_data.append((f.filename, f.content_type, content))
-        if schedule_time:
+        try: 
+            
+            file_paths = []
+
+            for f in files:
+                content = await f.read()
+                file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
+                
+                with open(file_path, "wb") as out:
+                    out.write(content)
+
+                file_paths.append({
+                    "path": file_path,
+                    "type": f.content_type,
+                    "name": f.filename
+                })
+            schedule_dt = None
             try:
-                run_at = datetime.fromisoformat(schedule_time)
-            except Exception:
-                raise HTTPException(400, "Invalid datetime format")
-
-            # сохраняем задачу
-            SCHEDULED_TASKS.append({
-                "text": text,
-                "files": file_data,
-                "run_at": run_at
-            })
-
-            logger.info(f"📅 Задача отложена на {run_at}")
-            return {"status": "scheduled"}
-
-        return await send_now(text, file_data)
+                if schedule_time:
+                    schedule_dt = datetime.fromisoformat(schedule_time)
+                    schedule_dt = schedule_dt.astimezone(timezone.utc)
+                    logger.info(f"📅 Задача отложена на {schedule_dt}")
+                news_id = await news_store.create_news(text, schedule_dt, files=file_paths)
+                return {"status": "ok", "news_send": news_id}
+            except Exception as e:
+                logger.error(f"Error while broadcast inside shecdule and news: {e}")
+                raise HTTPException(400, str(e))
+        except Exception as e:
+            logger.error(f"Error while broadcast all: {e}")
+            raise HTTPException(400, str(e))
         
     @broadcast_app.post("/api/reload-start-message")
     async def reload_start_message():
@@ -1059,8 +1097,6 @@ async def main() -> None:
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-    
-    
 
     # Запуск бота
     try:
@@ -1075,7 +1111,7 @@ async def main() -> None:
             )
             server = uvicorn.Server(config)
             await server.serve()
-        asyncio.create_task(scheduler_worker())
+        asyncio.create_task(news_scheduler())
     # Запуск обоих серверов параллельно
         await asyncio.gather(
             dp.start_polling(bot),
