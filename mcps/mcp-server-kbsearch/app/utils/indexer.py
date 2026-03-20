@@ -37,8 +37,8 @@ class IndexerConfig:
     # Chunking
     chunk_size: int = 512
     chunk_overlap: int = 50
-    similarity_top_k: int = field(default_factory=lambda: int(os.getenv("FAQ_SIMILARITY_TOP_K", 5)))
-    similarity_cutoff: float = field(default_factory=lambda: float(os.getenv("FAQ_SIMILARITY_CUTOFF", 0.0)))
+    similarity_top_k: int = field(default_factory=lambda: int(os.getenv("KB_SIMILARITY_TOP_K", 15)))
+    similarity_cutoff: float = field(default_factory=lambda: float(os.getenv("KB_SIMILARITY_CUTOFF", 0.0)))
     
     # Qdrant
     use_qdrant: bool = True
