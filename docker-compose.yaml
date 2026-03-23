@@ -94,6 +94,8 @@ services:
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
       - PLATFORM_VERSION=0.5.3
+      - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
+      - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
     networks:
       - aszh-bot-network
 
@@ -170,7 +172,7 @@ services:
       # Настройки эмбеддинга и индексирования
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
-      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-10}
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-15}
       - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.5}
 
       # Qdrant
