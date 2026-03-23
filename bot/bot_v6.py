@@ -960,9 +960,9 @@ async def main() -> None:
             
         shown = offset + len(items)
         if shown < total:
-            text = "Вот самые релевантные документы, которые удалось найти:"
+            text = "Вот самые релевантные документы, которые удалось найти:\n"
         else:
-            text = "Вот документы, которые удалось найти:"
+            text = "Вот документы, которые удалось найти:\n"
         lines = []
         for i, item in enumerate(items, start=offset + 1):
             title = html_module.escape(item["source_name"])
@@ -979,7 +979,7 @@ async def main() -> None:
         text += "\n\n".join(lines)
 
         if shown < total:
-            text += f"\n\nПоказано {shown} из {total}. Хотите получить весь список? Напишите <b>ещё</b>, <b>покажи все</b> или <b>да</b>.\nИли напишите номер документа, чтобы скачать его."
+            text += f"\n\nПоказано {shown} из {total}. Хотите получить весь список? Напишите <b>ещё</b>, чтобы получить следующую порцию документов; <b>все</b>, <b>покажи все</b> или <b>да</b>, чтобы получить весь список.\nИли напишите номер документа, чтобы скачать его."
         else:
             text += "\n\nНапишите номер документа, чтобы скачать его."
 
@@ -1598,14 +1598,14 @@ async def main() -> None:
                 if contract:
                     reranked_items = normalize_contract_results(contract)
 
-                await store.save_search_results(
-                    user_id=user_id,
-                    session_id=session_id,
-                    query=user_text,
-                    items=reranked_items,
-                    shown_count=min(SHOW_MAX, len(reranked_items)),
-                )
-                logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
+                    await store.save_search_results(
+                        user_id=user_id,
+                        session_id=session_id,
+                        query=user_text,
+                        items=reranked_items,
+                        shown_count=min(SHOW_MAX, len(reranked_items)),
+                    )
+                    logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
 
                 if reranked_items:
                     top_items = reranked_items[:SHOW_MAX]
@@ -1615,26 +1615,6 @@ async def main() -> None:
                     await m.answer("Не нашёл релевантных файлов по запросу.")
 
                     return
-
-                # 7. fallback: старая логика через events
-                extracted_items = extract_search_results_from_events(events)
-                if extracted_items:
-                    await store.save_search_results(
-                        user_id=user_id,
-                        session_id=session_id,
-                        query=user_text,
-                        items=extracted_items,
-                        shown_count=min(8, len(extracted_items)),
-                    )
-                    logger.info(f"💾 Сохранён search-state: {len(extracted_items)} документов для user_id={user_id}")
-                else:
-                    logger.info("ℹ️ Из events не удалось извлечь search-state")
-
-                # 8. answer пользователю — старый путь
-                clean_answer = doc_handler.remove_document_ids(answer)
-                if clean_answer.strip():
-                    html_answer = markdown_to_safe_html(clean_answer)
-                    await m.answer(html_answer, parse_mode="HTML")
 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
