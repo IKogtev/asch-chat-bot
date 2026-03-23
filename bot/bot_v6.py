@@ -507,7 +507,25 @@ class NewsStore:
             row = await conn.fetchrow("""
                 SELECT * FROM news WHERE id = $1
             """, news_id)
-            return dict(row) if row else None
+            # return dict(row) if row else None
+            if not row:
+                return None
+                
+            news = dict(row)
+            files = news.get("files")
+            if files is None:
+                news["files"] = []
+            elif isinstance(files, str):
+                try:
+                    news["files"] = json.loads(files)
+                except Exception:
+                    news["files"] = []
+            elif isinstance(files, list):
+                news["files"] = files
+            else:
+                news["files"] = []
+            
+            return news
 
 
 class AdkApiClient:
@@ -1765,26 +1783,36 @@ async def main() -> None:
     async def broadcast(
         text: str = Form(...),
         files: List[UploadFile] = File(default=[]),
-        schedule_time: Optional[str] = Form(None)
+        schedule_time: Optional[str] = Form(None),
+        reuse_file_path: Optional[str] = Form(None)
     ):
         """Функция стриминга новостей в бота"""
         try: 
             
             file_paths = []
-
-            for f in files:
-                content = await f.read()
-                # file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
-                file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
-                
-                with open(file_path, "wb") as out:
-                    out.write(content)
-
+            if reuse_file_path and Path(reuse_file_path).exists():
+                file_path = reuse_file_path
                 file_paths.append({
                     "path": file_path,
-                    "type": f.content_type,
-                    "name": f.filename
+                    "type": "application/octet-stream",
+                    "name": Path(file_path).name
                 })
+                logger.info(f"Reusing file: {file_path}")
+            
+            elif files:
+                for f in files:
+                    content = await f.read()
+                    # file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
+                    file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
+                    
+                    with open(file_path, "wb") as out:
+                        out.write(content)
+
+                    file_paths.append({
+                        "path": file_path,
+                        "type": f.content_type,
+                        "name": f.filename
+                    })
             schedule_dt = None
             try:
                 if schedule_time:

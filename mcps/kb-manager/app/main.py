@@ -671,27 +671,51 @@ async def get_news_file(name: str):
             raise HTTPException(404, f"File not found: {file_path}")
 
         content_type, _ = mimetypes.guess_type(file_path)
+        text_extensions = {'.md', '.txt', '.json', '.csv', '.xml', '.html', '.htm'}
+        is_text_file = file_path.suffix.lower() in text_extensions
+        if is_text_file or (content_type and content_type.startswith("text")):
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Пробуем другие кодировки для кириллицы
+                for enc in ["cp1251", "utf-8-sig", "koi8-r"]:
+                    try:
+                        content = file_path.read_text(encoding=enc)
+                        logger.info(f"File read with encoding: {enc}")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
 
-        # безопасное чтение текста
-        if content_type and content_type.startswith("text"):
+            # 👈 НЕТ Content-Disposition - браузер покажет текст, а не скачает
+            return PlainTextResponse(
+                content, 
+                media_type="text/plain; charset=utf-8"
+            )
+
+        # 👇 Для PDF и изображений - FileResponse с inline (показывает в модалке)
+        if content_type and (
+            content_type.startswith("image") or 
+            content_type == "application/pdf"
+        ):
             return FileResponse(
                 path=str(file_path),
-                media_type=content_type or "text/plain; charset=utf-8",
-                filename=filename.encode('utf-8').decode('latin-1'),  # 👈 RFC 5987 encoding для кириллицы
+                media_type=content_type,
                 headers={
                     "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"
                 }
             )
-
-        # бинарники
+        
         return FileResponse(
             path=str(file_path),
             media_type=content_type or "application/octet-stream",
-            filename=filename.encode('utf-8').decode('latin-1'),  # 👈 кодирование имени
+            filename=filename.encode('utf-8').decode('latin-1'),
             headers={
-                "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
             }
         )
+        
 
     except Exception as e:
         logger.error(f"Проблема говорит: {e}")
@@ -711,7 +735,8 @@ async def get_news_by_id(news_id: int):
 async def send_news(
     text: str = Form(...),
     files: List[UploadFile] = File(default=[]),
-    schedule_time: Optional[str] = Form(None)
+    schedule_time: Optional[str] = Form(None),
+    reuse_file_path: Optional[str] = Form(None)
 ):
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -725,14 +750,21 @@ async def send_news(
                 logger.info("Без отложенной отправки")
             # текст
             multipart_data.append(("text", (None, text)))
-
+            # переиспользование старого файла
+            if reuse_file_path:
+                logger.info(f"Reusing file from path: {reuse_file_path}")
+                multipart_data.append(("reuse_file_path", (None, reuse_file_path)))
+            
             # файлы
-            for f in files:
-                content = await f.read()
-                multipart_data.append(
-                    ("files", (f.filename, content, f.content_type))
-                )
-
+            if not reuse_file_path:
+                for f in files:
+                    content = await f.read()
+                    multipart_data.append(
+                        ("files", (f.filename, content, f.content_type))
+                    )
+            else:
+                logger.info("Using reused file, skipping new upload")
+                
             resp = await client.post(
                 f"{TELEGRAM_BOT_API}/broadcast",
                 files=multipart_data
