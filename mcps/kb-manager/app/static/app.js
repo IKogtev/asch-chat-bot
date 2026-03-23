@@ -1282,11 +1282,12 @@ async function sendNews() {
         alert("Введите текст новости")
         return
     }
-    if (reusePath) {
+     if (reusePath && reusePath.trim() !== "") {
         formData.append("reuse_file_path", reusePath);
+        console.log("Reusing file:", reusePath);
     }
     formData.append("text", text);
-    if (fileInput.files.length > 0) {
+    if (fileInput.files.length > 0 && !reusePath) {
         formData.append("files", fileInput.files[0]);
     }
     if (scheduleTime) {
@@ -1754,40 +1755,44 @@ async function viewNewsFile(name) {
 
         const contentType = res.headers.get("content-type") || "";
 
-        // 👉 текст / markdown / json
-        if (
-            contentType.includes("text") ||
-            contentType.includes("json") ||
-            contentType.includes("markdown")
-        ) {
+        const fileExt = name.split('.').pop().toLowerCase();
+        const textExtensions = ['md', 'txt', 'json', 'csv', 'xml', 'html', 'htm'];
+        const isTextFile = textExtensions.includes(fileExt);
+
+        // 👉 текст / markdown / json - показываем в модалке
+        if (isTextFile || contentType.includes("text")) {
             const text = await res.text();
 
+            // 👇 Сохраняем форматирование с помощью white-space: pre-wrap
             document.getElementById("file-content").innerHTML = `
-                <div style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; max-height: 600px; overflow-y: auto;">
+                <div style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; max-height: 600px; overflow-y: auto; background: #f5f5f5; padding: 15px; border-radius: 5px;">
                     ${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
                 </div>
             `;
             document.getElementById("file-modal").style.display = "block";
-
         } 
         // 👉 pdf / изображения — тоже в модалку
-        else if (
-            contentType.includes("pdf") ||
-            contentType.includes("image")
-        ) {
+        else if (contentType.includes("pdf") || contentType.includes("image")) {
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
 
             document.getElementById("file-content").innerHTML = `
-                <iframe src="${url}" style="width:100%; height:600px;"></iframe>
+                <iframe src="${url}" style="width:100%; height:600px; border:none;"></iframe>
             `;
             document.getElementById("file-modal").style.display = "block";
         }
         else {
-            // fallback
+            // 👇 Остальные файлы - скачиваем
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
-            window.open(url, "_blank");
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
     } catch (e) {
@@ -1810,24 +1815,30 @@ function reuseNews(news) {
     const fileInfo = document.getElementById("news-file-info");
     const fileName = document.getElementById("news-file-name");
 
-    if (news.files && news.files.length > 0) {
+    if (news.files && Array.isArray(news.files) && news.files.length > 0) {
         const f = news.files[0];
 
-        // ❗ ВАЖНО: input[type=file] нельзя программно заполнить
+        // input[type=file] нельзя программно заполнить
         // поэтому просто показываем UI
-
-        fileName.textContent = f.name + " (reuse)";
-        fileInfo.style.display = "flex";
-
-        // сохраняем путь для отправки (костыль, но рабочий)
-        fileInput.dataset.reusePath = f.path;
+        if (f && f.name) {
+            fileName.textContent = f.name + " (reuse)";
+            fileInfo.style.display = "flex";
+            
+            // сохраняем путь для отправки
+            fileInput.dataset.reusePath = f.path || "";
+        } else {
+            // файл есть но имя не указано
+            fileName.textContent = "Файл (reuse)";
+            fileInfo.style.display = "flex";
+            fileInput.dataset.reusePath = f.path || "";
+        }
     } else {
         fileInput.value = "";
         fileInfo.style.display = "none";
         delete fileInput.dataset.reusePath;
     }
 
-    alert("Новость загружена как шаблон");
+    showNotification("Новость загружена как шаблон", "success");
 }
 
 function closeFileModal() {
