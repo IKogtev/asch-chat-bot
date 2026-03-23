@@ -170,6 +170,7 @@ function showTab(tabName) {
         loadFilesystemTree();
     } else if (tabName === 'news_send'){
         // sendNews();
+        loadNewsHistory();
     } else if (tabName === 'prompts'){
         loadPromptsTab();
     } else if (tabName === 'bot_settings'){
@@ -950,19 +951,35 @@ function escapeHtml(text) {
 // форматирование даты в стандарты
 function formatDate(dateString) {
     if (!dateString) return 'Unknown';
-    const utcString = dateString.endsWith('Z') ? dateString : dateString + 'Z';
-    const date = new Date(utcString);
-    // return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-    return date.toLocaleString('ru-RU', {
-        timeZone: 'Europe/Moscow',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    });
+    try {
+        let normalized = dateString;
+
+        // 1. Заменяем пробел на T
+        normalized = normalized.replace(' ', 'T');
+
+        // 2. Фиксим timezone +03 → +03:00
+        normalized = normalized.replace(/([+-]\d{2})$/, '$1:00');
+
+        const date = new Date(normalized);
+
+        if (isNaN(date.getTime())) {
+            return 'Invalid date';
+        }
+
+        return date.toLocaleString('ru-RU', {
+            timeZone: 'Europe/Moscow',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        });
+
+    } catch (e) {
+        return 'Invalid date';
+    }
 }
 // отправка уведомлений
 function showNotification(message, type) {
@@ -1258,11 +1275,15 @@ async function sendNews() {
     const scheduleTime = scheduleTimeEl.value;
     const sendBtn = document.getElementById("news-send-btn");
     const fileInput = document.getElementById("news-files");
+    const reusePath = fileInput.dataset.reusePath;
     
     const formData = new FormData();
     if (!text) {
         alert("Введите текст новости")
         return
+    }
+    if (reusePath) {
+        formData.append("reuse_file_path", reusePath);
     }
     formData.append("text", text);
     if (fileInput.files.length > 0) {
@@ -1307,6 +1328,7 @@ async function sendNews() {
     } finally {
         sendBtn.disabled = false;
         sendBtn.innerText = "📤 Отправить новость";
+        loadNewsHistory();
     }
 }
 
@@ -1636,4 +1658,182 @@ async function saveBotStartMessage() {
         resultDiv.className = "result-message error";
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
+}
+
+
+async function loadNewsHistory() {
+    const container = document.getElementById("news-history");
+    container.innerHTML = '<div class="loading">Загрузка...</div>';
+
+    try {
+        const res = await fetch("/api/news");
+        if (!res.ok) {
+            throw new Error("Failed to load news");
+        }
+
+        const data = await res.json();
+
+        if (!data || data.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Нет новостей</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = data.map(n =>{
+            const files = n.files || [];
+            const filesHtml = files.length > 0
+                ? files.map(f => `
+                    <div style="margin-top:5px;">
+                        📎 ${escapeHtml(f.name)}
+                        <button 
+                            class="btn btn-small btn-secondary"
+                            onclick="viewNewsFile('${f.name}')">
+                            View File 👁
+                        </button>
+                    </div>
+                `).join("")
+                : '<div style="color:#999;">Без файлов</div>';
+            return `
+                <div class="document-card">
+                    <div class="document-header">
+                        <div class="document-title">
+                            📰 ID: ${n.id}
+                        </div>
+                        <button 
+                            class="btn btn-primary btn-small"
+                            onclick="reuseNewsById(${n.id})">
+                            📋 Использовать
+                        </button>
+                    </div>
+                    
+                    <div class="document-meta">
+                        <div class="meta-item">
+                            📅 ${formatDate(n.created_at)}
+                        </div>
+                        <div class="meta-item">
+                            ⏰ ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}
+                        </div>
+                        <div class="meta-item">
+                            📊 ${n.status}
+                        </div>
+                        <div class="meta-item">
+                            👥 ${n.target_group || "all"}
+                        </div>
+                    </div>
+
+                    <div class="result-text" style="margin-top:10px;">
+                        ${escapeHtml(n.text || "")}
+                    </div>
+                    <div style="margin-top:10px;">
+                        ${filesHtml}
+                    </div>
+                </div>
+            `; 
+        }).join("");
+
+    } catch (e) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки: ${e.message}
+            </div>
+        `;
+    }
+}
+
+async function viewNewsFile(name) {
+    try {
+        const res = await fetch(`/api/local-file-news?name=${encodeURIComponent(name)}`);
+
+        if (!res.ok) {
+            throw new Error("Ошибка загрузки файла");
+        }
+
+        const contentType = res.headers.get("content-type") || "";
+
+        // 👉 текст / markdown / json
+        if (
+            contentType.includes("text") ||
+            contentType.includes("json") ||
+            contentType.includes("markdown")
+        ) {
+            const text = await res.text();
+
+            document.getElementById("file-content").innerHTML = `
+                <div style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; max-height: 600px; overflow-y: auto;">
+                    ${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+                </div>
+            `;
+            document.getElementById("file-modal").style.display = "block";
+
+        } 
+        // 👉 pdf / изображения — тоже в модалку
+        else if (
+            contentType.includes("pdf") ||
+            contentType.includes("image")
+        ) {
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+
+            document.getElementById("file-content").innerHTML = `
+                <iframe src="${url}" style="width:100%; height:600px;"></iframe>
+            `;
+            document.getElementById("file-modal").style.display = "block";
+        }
+        else {
+            // fallback
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            window.open(url, "_blank");
+        }
+
+    } catch (e) {
+        alert("Ошибка: " + e.message);
+    }
+}
+
+async function reuseNewsById(id) {
+    const res = await fetch(`/api/news/${id}`);
+    const news = await res.json();
+    reuseNews(news);
+}
+
+function reuseNews(news) {
+    // 1. текст
+    document.getElementById("news-text").value = news.text || "";
+
+    // 2. файл
+    const fileInput = document.getElementById("news-files");
+    const fileInfo = document.getElementById("news-file-info");
+    const fileName = document.getElementById("news-file-name");
+
+    if (news.files && news.files.length > 0) {
+        const f = news.files[0];
+
+        // ❗ ВАЖНО: input[type=file] нельзя программно заполнить
+        // поэтому просто показываем UI
+
+        fileName.textContent = f.name + " (reuse)";
+        fileInfo.style.display = "flex";
+
+        // сохраняем путь для отправки (костыль, но рабочий)
+        fileInput.dataset.reusePath = f.path;
+    } else {
+        fileInput.value = "";
+        fileInfo.style.display = "none";
+        delete fileInput.dataset.reusePath;
+    }
+
+    alert("Новость загружена как шаблон");
+}
+
+function closeFileModal() {
+    const modal = document.getElementById("file-modal");
+    modal.style.display = "none";
+
+    // 👇 чистим контент
+    document.getElementById("file-content").innerHTML = "";
 }

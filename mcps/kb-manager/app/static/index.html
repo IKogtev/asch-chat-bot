@@ -197,6 +197,18 @@
             </button>
 
             <div id="news-result" class="result-message"></div>
+
+            <hr>
+            <div class="section-header">
+                <h3>📚 История новостей</h3>
+                <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
+                    🔄 Обновить
+                </button>
+            </div>
+
+            <div id="news-history" class="documents-list">
+                <div class="loading">История не загружена</div>
+            </div>
         </div>
 
         <!-- Prompts tab -->
@@ -345,8 +357,15 @@
                 </div>
             </div>
         </div>
-    </div>
+        <!-- Modal for viewing file content-->
+        <div id="file-modal" class="modal" style="display:none;">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeFileModal()">✖</span>
+                <pre id="file-content" style="white-space: pre-wrap;"></pre>
+            </div>
+        </div>
 
+    </div>
     <script src="/static/app.js?v=15" defer></script>
 </body>
 </html>
