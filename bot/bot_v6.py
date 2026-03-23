@@ -418,18 +418,36 @@ class SubscriberStore:
             await conn.execute(query, phone_number, user_id)
         logger.info(f"✓ Телефон обновлён для user_id={user_id}: {phone_number}")
 
-    async def get_all(self) -> list[int]:
-        """Получение всех пользователей из таблицы"""
-        logger.info("Получаем пользователей")
+    async def get_all_with_groups(self) -> list[dict]:
+        """Получение всех пользователей с информацией с группами"""
+        logger.info("Получаем пользователей с группами")
         query = """
         SELECT user_id, username, first_name, last_name, 
-               phone_number, last_seen, created_at
+               phone_number, last_seen, created_at,
+               manager_group, couch_group
         FROM subscribers
         ORDER BY last_seen DESC
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
-        return [r["user_id"] for r in rows]
+        # return [r["user_id"] for r in rows]
+        return [dict(r) for r in rows]
+    
+    async def update_user_group(self, user_id: int, group: str, value: bool):
+        """Обновление принадлежности пользователя к группе"""
+        if group not in ("manager_group", "couch_group"):
+            raise ValueError(f"Invalid group: {group}")
+        
+        query = f"""
+        UPDATE subscribers 
+        SET {group} = $1, last_seen = NOW()
+        WHERE user_id = $2
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, value, user_id)
+        
+        logger.info(f"✓ Группа {group} обновлена для user_id={user_id}: {value}")
+
 
 class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
@@ -496,6 +514,10 @@ class NewsStore:
                         d["files"] = files
                     else:
                         d["files"] = []
+                    
+                    if "target_group" not in d:
+                        d["target_group"] = "all"
+    
                     result.append(d)
             except Exception as e:
                 logger.error(f"Ошибка во время получения всех новостей: {e}")
@@ -525,6 +547,9 @@ class NewsStore:
             else:
                 news["files"] = []
             
+            if "target_group" not in news:
+                news["target_group"] = "all"
+
             return news
 
 
@@ -1717,12 +1742,25 @@ async def main() -> None:
 
         os.remove(tmp.name)
     
-    async def send_now(text: str, file_data: List):
+    async def send_now(text: str, file_data: List, target_group: str="all"):
+        """Отправка новости с фильтрацией по группе"""
         sent = 0
 
-        users = await subscriber_store.get_all()
+        all_users = await subscriber_store.get_all_with_groups()
 
-        for user_id in users:
+        filtered_users = []
+        for user in all_users:
+            user_id = user["user_id"]
+            if target_group == "all":
+                filtered_users.append(user_id)
+            elif target_group == "manager_group" and user.get("manager_group"):
+                filtered_users.append(user_id)
+            elif target_group == "couch_group" and user.get("couch_group"):
+                filtered_users.append(user_id)
+
+        logger.info(f"📬 Отправка новости: {len(filtered_users)} из {len(all_users)} пользователей (группа: {target_group})")        
+        
+        for user_id in filtered_users:
             try:
                 # отправка текста
                 if text:
@@ -1771,8 +1809,8 @@ async def main() -> None:
                                     file_data.append((f["name"], f["type"], content))
                             except Exception as e:
                                 logger.error(f"File read error: {e}")
-
-                        await send_now(news['text'], file_data)
+                        target_group = news.get("target_group", "all")
+                        await send_now(news['text'], file_data, target_group)
                         await news_store.mark_sent(news["id"])
 
                 await asyncio.sleep(5)
@@ -1784,7 +1822,8 @@ async def main() -> None:
         text: str = Form(...),
         files: List[UploadFile] = File(default=[]),
         schedule_time: Optional[str] = Form(None),
-        reuse_file_path: Optional[str] = Form(None)
+        reuse_file_path: Optional[str] = Form(None),
+        target_group: str = Form("all")
     ):
         """Функция стриминга новостей в бота"""
         try: 
@@ -1819,7 +1858,7 @@ async def main() -> None:
                     schedule_dt = datetime.fromisoformat(schedule_time)
                     schedule_dt = schedule_dt.astimezone(timezone.utc)
                     logger.info(f"📅 Задача отложена на {schedule_dt}")
-                news_id = await news_store.create_news(text, schedule_dt, files=file_paths)
+                news_id = await news_store.create_news(text, schedule_dt, files=file_paths, group=target_group)
                 return {"status": "ok", "news_send": news_id}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")
@@ -1854,7 +1893,32 @@ async def main() -> None:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    
+    @broadcast_app.get("/api/subscribers")
+    async def get_subscribers():
+        """Получить всех подписчиков с группами"""
+        try:
+            subscribers = await subscriber_store.get_all_with_groups()
+            return subscribers
+        except Exception as e:
+            logger.error(f"Error getting subscribers: {e}")
+            raise HTTPException(500, str(e))
+
+    @broadcast_app.post("/api/subscribers/group")
+    async def update_subscriber_group(data: dict):
+        """Обновить группу пользователя"""
+        try:
+            user_id = int(data.get("user_id"))
+            group = data.get("group")
+            value = bool(data.get("value"))
+            
+            if group not in ("manager_group", "couch_group"):
+                raise HTTPException(400, "Invalid group")
+            
+            await subscriber_store.update_user_group(user_id, group, value)
+            
+            return {"status": "ok", "user_id": user_id, "group": group, "value": value}
+        except Exception as e:
+            raise HTTPException(400, str(e))
 
     # Запуск бота
     try:
