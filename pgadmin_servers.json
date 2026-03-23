@@ -1,0 +1,15 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "aszh-bot-db",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "aszh-bot",
+      "Username": "aszh-bot",
+      "Password": "aszh-bot",
+      "SSLMode": "prefer",
+      "ConnectNow": true
+    }
+  }
+}

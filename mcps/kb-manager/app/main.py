@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pathlib import Path
@@ -15,19 +15,18 @@ import hashlib, os, uuid, shutil, asyncio
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
-import httpx
-from urllib.parse import unquote
+import httpx, mimetypes
+from urllib.parse import unquote, quote
 import aiofiles, shutil
 from datetime import datetime, timedelta
 
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
-BOT_API = f"{TELEGRAM_BOT_API}/broadcast"
 
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
-BOT_START_MESSAGE_FILE = Path("/app/data/settings/bot_start_message.md")
-BOT_API_RELOAD = f"{TELEGRAM_BOT_API}/api/reload-start-message"
+BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
+BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
 
 logger = setup_logger(name="Test", service_dir="App")
 
@@ -164,36 +163,6 @@ async def run_sync_all_safe():
 
     return {"status": "completed"}
 
-
-#  TODO добавлять параллелизм или нет? если добавлять то вот наброски кода: 
-# SEM = asyncio.Semaphore(3)
-# async def sync_kb(kb_id):
-
-#     async with SEM:
-
-#         loop = asyncio.get_running_loop()
-
-#         await loop.run_in_executor(
-#             None,
-#             lambda: file_storage_service.sync(
-#                 kb_id=kb_id,
-#                 collection_type="kb"
-#             )
-#         )
-# async def run_sync_all_once():
-
-#     if not KB_STORAGE_ROOT.exists():
-#         return
-
-#     tasks = []
-
-#     for folder in KB_STORAGE_ROOT.iterdir():
-#         if folder.is_dir():
-#             tasks.append(sync_kb(folder.name))
-
-#     await asyncio.gather(*tasks)
-
-#     logger.info("status success Sync completed")
 async def run_sync_all_once():
     """
     функция для правильного вызова синхронизации от типа, 
@@ -682,6 +651,62 @@ async def download_filesystem_file(path: str):
         media_type="application/octet-stream"
     )
 
+@app.get("/api/news")
+async def get_news():
+    """Получить все новости из бота"""
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(f"{TELEGRAM_BOT_API}/api/news")
+        resp.raise_for_status()
+    return resp.json()
+
+@app.get("/api/local-file-news")
+async def get_news_file(name: str):
+    """Отправка файла"""
+    try:
+        filename = Path(name).name
+        file_path = BOT_UPLOAD_DIR / filename
+        # собираем реальный путь
+        logger.info(f"Путь который вышел: {file_path}")
+        if not file_path.exists():
+            raise HTTPException(404, f"File not found: {file_path}")
+
+        content_type, _ = mimetypes.guess_type(file_path)
+
+        # безопасное чтение текста
+        if content_type and content_type.startswith("text"):
+            return FileResponse(
+                path=str(file_path),
+                media_type=content_type or "text/plain; charset=utf-8",
+                filename=filename.encode('utf-8').decode('latin-1'),  # 👈 RFC 5987 encoding для кириллицы
+                headers={
+                    "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"
+                }
+            )
+
+        # бинарники
+        return FileResponse(
+            path=str(file_path),
+            media_type=content_type or "application/octet-stream",
+            filename=filename.encode('utf-8').decode('latin-1'),  # 👈 кодирование имени
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Проблема говорит: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/news/{news_id}")
+async def get_news_by_id(news_id: int):
+    """Получить новость по ID из бота"""
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
+        resp.raise_for_status()
+    return resp.json()
+
+
 @app.post("/api/news/send")
 async def send_news(
     text: str = Form(...),
@@ -709,9 +734,8 @@ async def send_news(
                 )
 
             resp = await client.post(
-                BOT_API,
-                files=multipart_data, 
-                json={"text": text}
+                f"{TELEGRAM_BOT_API}/broadcast",
+                files=multipart_data
             )
             resp.raise_for_status()
             bot_response = resp.json()
@@ -955,7 +979,7 @@ async def save_bot_start_message(data: dict):
         bot_reload_success = False
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.post(BOT_API_RELOAD, timeout=5)
+                r = await client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
                 if r.status_code == 200:
                     bot_reload_success = True
                     logger.info("Bot notified to reload start message")

@@ -10,6 +10,8 @@ kb_data/
 logs/
 kb_storage/kb
 kb_storage/faq
+kb_storage/wait
+kb_storage/bot/upload
 data/
 venv/
 

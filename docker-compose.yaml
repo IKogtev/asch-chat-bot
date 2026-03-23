@@ -30,10 +30,13 @@ services:
       PGADMIN_DEFAULT_EMAIL: vitaly.kogtev@nstdata.ru
       PGADMIN_DEFAULT_PASSWORD: vitaly.kogtev@nstdata.ru
       PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+      PGADMIN_SERVER_JSON_FILE: /pgadmin_servers.json
     ports:
       - "5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin_servers.json:/pgadmin_servers.json:ro
     depends_on:
       - postgres
     networks:
@@ -83,7 +86,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./kb_storage/bot/settings:/app/data/settings
+      - ./kb_storage/bot/:/app/data
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -118,7 +121,7 @@ services:
     volumes:
       - ./kb_storage:/app/data/kb_documents
       - ./kb_storage/prompts:/app/data/prompts
-      - ./kb_storage/bot/settings:/app/data/settings
+      - ./kb_storage/bot:/app/data/bot
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
