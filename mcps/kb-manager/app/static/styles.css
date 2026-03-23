@@ -1220,3 +1220,46 @@ select:focus {
     color: red;
     cursor: pointer;
 }
+
+.file-content-modal{
+    background:white; 
+    margin:50px auto; 
+    padding:20px; 
+    width:80%; 
+    max-width:800px; 
+    border-radius:8px; 
+    position:relative;
+}
+
+/* Стили для вкладки Groups */
+#user-groups-list table {
+    font-size: 14px;
+}
+
+#user-groups-list table tr:hover {
+    background-color: #f9f9f9;
+}
+
+#user-groups-list input[type="checkbox"] {
+    cursor: pointer;
+}
+
+#user-groups-stats {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#user-groups-stats > div {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+/* Адаптивность для мобильных */
+@media (max-width: 768px) {
+    #user-groups-list table {
+        font-size: 12px;
+    }
+    
+    #user-groups-list table th,
+    #user-groups-list table td {
+        padding: 8px 5px;
+    }
+}

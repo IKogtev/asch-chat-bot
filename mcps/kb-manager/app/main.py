@@ -170,11 +170,35 @@ async def run_sync_all_once():
     """
     logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
     if qdrant_service.collection_type == CollectionType.FAQ:
-        await sync_function(FAQ_ROOT, faq_file_storage, "faq")
+        # await sync_function(FAQ_ROOT, faq_file_storage, "faq")
+        root = FAQ_ROOT
+        storager = faq_file_storage
+        collection_type = "faq"
     elif qdrant_service.collection_type== CollectionType.DOCUMENTS:
-        await sync_function(KB_ROOT, kb_file_storage, "kb")
+        # await sync_function(KB_ROOT, kb_file_storage, "kb")
+        root = KB_ROOT
+        storager = kb_file_storage
+        collection_type = "kb"
     else: 
         logger.error(f"Something went wrong: {qdrant_service.collection_type}")
+        return
+    disk_kb_ids = {
+        folder.name for folder in root.iterdir() if folder.is_dir()
+    }
+    qdrant_kbs = qdrant_service.list_knowledge_bases()
+    qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
+    deleted_kbs = qdrant_kb_ids - disk_kb_ids
+
+    for kb_id in deleted_kbs:
+        logger.info(f"[SYNC] KB DELETED: {kb_id}")
+        try:
+            qdrant_service.delete_kb(
+                kb_id=kb_id,
+                collection_name=qdrant_service.collection_name
+            )
+        except Exception as e:
+            logger.error(f"[SYNC] Failed to delete KB {kb_id}: {e}")
+    await sync_function(root, storager, collection_type)        
     return {
         "status": "success",
         "message": "SYNC completed"
@@ -736,12 +760,13 @@ async def send_news(
     text: str = Form(...),
     files: List[UploadFile] = File(default=[]),
     schedule_time: Optional[str] = Form(None),
-    reuse_file_path: Optional[str] = Form(None)
+    reuse_file_path: Optional[str] = Form(None), 
+    target_group: str = Form("all")
 ):
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             multipart_data = []
-            # откладываем время? 
+            # откладываем время 
             if schedule_time:
                 multipart_data.append(("schedule_time", (None, schedule_time)))
                 logger.info("Сообщение могло быть отложено наверное надо в базу сохранять но пока ничего не происходит нужна встреча!!!")
@@ -750,6 +775,9 @@ async def send_news(
                 logger.info("Без отложенной отправки")
             # текст
             multipart_data.append(("text", (None, text)))
+            # группа получателей
+            multipart_data.append(("target_group", (None, target_group)))
+            logger.info(f"Группа получателей: {target_group}")
             # переиспользование старого файла
             if reuse_file_path:
                 logger.info(f"Reusing file from path: {reuse_file_path}")
@@ -764,7 +792,7 @@ async def send_news(
                     )
             else:
                 logger.info("Using reused file, skipping new upload")
-                
+
             resp = await client.post(
                 f"{TELEGRAM_BOT_API}/broadcast",
                 files=multipart_data
@@ -778,6 +806,47 @@ async def send_news(
     except Exception as e:
         logger.error(f"News send error: {e}")
         raise HTTPException(500, str(e))
+
+@app.get("/api/subscribers")
+async def get_subscribers():
+    """Получить всех подписчиков с информацией о группах"""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Error getting subscribers: {e}")
+        raise HTTPException(500, f"Failed to get subscribers: {str(e)}")
+    
+@app.post("/api/subscribers/group")
+async def update_subscriber_group(data: dict):
+    """Обновить группу пользователя"""
+    try:
+        user_id = int(data.get("user_id"))
+        group = data.get("group")
+        value = bool(data.get("value"))
+        
+        if group not in ("manager_group", "couch_group"):
+            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'couch_group'")
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{TELEGRAM_BOT_API}/api/subscribers/group",
+                json={
+                    "user_id": user_id,
+                    "group": group,
+                    "value": value
+                }
+            )
+            resp.raise_for_status()
+            return resp.json()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating subscriber group: {e}")
+        raise HTTPException(500, f"Failed to update group: {str(e)}")
 
 @app.get("/api/prompts/list")
 async def list_prompts():

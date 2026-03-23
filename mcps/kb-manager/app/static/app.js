@@ -47,6 +47,9 @@ document.addEventListener('DOMContentLoaded', () => {
         fileInfo.style.display = "none";
     });
 });
+// #############################
+// MENU FOR ALL PAGES INSIDE UI 
+// #############################
 
 // load active collections
 async function loadActiveCollections() {
@@ -54,8 +57,6 @@ async function loadActiveCollections() {
     const data = await res.json();
     activeCollections = data;
 }
-
-
 // collection load
 async function loadCollections() {
     const activeEl = document.getElementById('current-collection');
@@ -104,7 +105,6 @@ async function loadCollections() {
         console.error(e);
     }
 }
-
 // Switch collection
 async function switchCollection(collectionName, collectionType) {
     if (!collectionName) return;
@@ -145,8 +145,247 @@ async function switchCollection(collectionName, collectionType) {
         alert(`Failed to switch collection: ${e.message}`);
     }
 }
+// Collection Info
+async function loadCollectionInfo() {
+    try {
+        const response = await fetch(`${API_BASE}/api/collections/info`);
+        const data = await response.json();
+        const isFAQ = currentCollectionType === 'faq';
+
+        document.getElementById('collection-info').innerHTML = 
+            `Collection: <strong>${data.name}</strong> 
+                | ${isFAQ? "Documents": "Points"} 
+                <strong>${data.points_count-1 || 0}</strong>
+                | Platform Version
+                <strong>${data.platform_version || 0}</strong>
+                | Last Synchronization
+                <strong>${data.last_sync? formatDate(data.last_sync): "In process now"}</strong>
+                | Next Synchronization
+                <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
+            `;
+    } catch (error) {
+        console.error('Error loading collection info:', error);
+    }
+}
+// кнопка удаления коллекции
+document
+  .getElementById("delete-collection-btn")
+  .addEventListener("click", async () => {
+    const select = document.getElementById("collection-select");
+    const deletedCollection = select.value;
+
+    if (!deletedCollection) {
+      alert("No collection selected");
+      return;
+    }
+
+    const confirmed = confirm(
+      `Are you sure you want to delete collection "${deletedCollection}"?\n\nThis action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    const deletedType = getCollectionType(deletedCollection);
+
+    try {
+      const res = await fetch("/api/collections/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({collection: deletedCollection }),
+      });
+      
+      const data = await res.json();
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+
+      
+      alert(`Collection "${data.deleted_collection}" deleted`);
+
+      // обновляем список коллекций
+      
+      await loadAliasData();
+      await loadCollections();
+      await loadActiveCollections();
+      
+      //   переключаем UI на активную alias-коллекцию
+      if (deletedType && activeCollections?.[deletedType]?.collection) {
+        const nextCollection = activeCollections[deletedType].collection;
+        select.value = nextCollection;
+        select.dispatchEvent(new Event("change"));
+      } else {
+        // fallback на первую доступную
+        select.selectedIndex = 0;
+        select.dispatchEvent(new Event("change"));
+      }
 
 
+    } catch (err) {
+      alert(`Failed to delete collection: It's active collection`); 
+      console.error(err);
+    }
+  });
+// кнопка модальности создания коллекции
+function openCreateCollectionModal() {
+    const modal = document.getElementById("create-collection-modal");
+    modal.classList.add("active");
+}
+// закрытие модальности создания коллекции
+function closeCreateCollectionModal() {
+    const modal = document.getElementById("create-collection-modal");
+    modal.classList.remove("active");
+}
+// создание коллекции через модальное окно
+async function createCollection() {
+    const version = document.getElementById("newCollectionVersion").value.trim();
+    const type = document.getElementById("newCollectionType").value;
+    const errorBox = document.getElementById("create-collection-error");
+
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+
+    if (!version) {
+        errorBox.textContent = "Version is required";
+        errorBox.classList.remove("hidden");
+        return;
+    }
+    const collectionName = `${type}_collection_v${version}`;
+    try {
+        const res = await fetch("/api/collections/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version, type })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.error || "Failed to create collection");
+        }
+
+        closeCreateCollectionModal();
+        await loadAliasData();
+        await loadCollections();
+        await loadActiveCollections();
+
+        const select = document.getElementById("collection-select");
+        select.value = collectionName;
+        select.dispatchEvent(new Event("change"));
+
+    } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.classList.remove("hidden");
+    }
+}
+// загрузка алиасов по разным коллекциям
+async function loadAliasData() {
+    const [collectionsRes, activeRes] = await Promise.all([
+        fetch("/api/collections/by-type"),
+        fetch("/api/collections/active")
+    ]);
+
+    collectionsByType = await collectionsRes.json();
+    activeAliases = await activeRes.json();
+}
+// модальность для переключения между активными alias 
+async function openSwitchCollectionModal() {
+    document.getElementById("switch-collection-modal").classList.add("active");
+     if (!collectionsByType.faq) {
+        await loadAliasData();
+    }
+
+    loadAliasCollections();
+}
+// загрузка алиасов для коллекций
+function loadAliasCollections() {
+    const type = document.getElementById("switchCollectionType").value;
+    const targetSelect = document.getElementById("switchCollectionTarget");
+
+    const activeCollection = activeAliases[type]?.collection;
+    const collections = collectionsByType[type] || [];
+
+    targetSelect.innerHTML = "";
+
+    collections.forEach(name => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+
+        if (name === activeCollection) {
+            option.disabled = true;
+            option.textContent += " (active)";
+        }
+
+        targetSelect.appendChild(option);
+    });
+}
+// 
+function closeSwitchCollectionModal() {
+    document.getElementById("switch-collection-modal").classList.remove("active");
+}
+// 
+async function switchCollectionAlias() {
+    const type = document.getElementById("switchCollectionType").value;
+    const collection = document.getElementById("switchCollectionTarget").value;
+    const errorBox = document.getElementById("switch-collection-error");
+
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+
+    if (!collection) {
+        errorBox.textContent = "Select a collection";
+        errorBox.classList.remove("hidden");
+        return;
+    }
+
+
+    try {
+        const res = await fetch("/api/collections/switch-alias", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                collection_name: collection,
+                collection_type: type
+            })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.detail || "Failed to switch alias");
+        }
+
+        const current = document.getElementById("collection-select").value;
+
+        if (current.startsWith(`${type}_`) && current !== collection) {
+            const confirmSwitch = confirm(
+                `Alias switched to "${collection}".\n\nSwitch UI to this collection?`
+            );
+
+            if (confirmSwitch) {
+                const select = document.getElementById("collection-select");
+                select.value = collection;
+                select.dispatchEvent(new Event("change"));
+            }
+        }
+
+        closeSwitchCollectionModal();
+
+        // 🔄 обновляем UI
+        await loadAliasData();
+        await loadActiveCollections();
+
+        
+
+    } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.classList.remove("hidden");
+    }
+}
 // Tab Management
 function showTab(tabName) {
     // Hide all tabs
@@ -175,9 +414,111 @@ function showTab(tabName) {
         loadPromptsTab();
     } else if (tabName === 'bot_settings'){
         loadBotStartMessage();
+    } else if (tabName === 'user_groups'){
+        loadUserGroups();
     }
 }
 
+// #############################
+// DOCUMENTS TAB LOGIC
+// #############################
+
+// Documents Management
+async function loadDocuments() {
+    const container = document.getElementById('documents-list');
+    container.innerHTML = '<div class="loading">Loading knowledge bases...</div>';
+    // Обновляем document_count в метаданных (для MCP kb-status)
+    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
+    try {
+        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
+        const knowledgeBases = await response.json();
+        
+        if (knowledgeBases.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>No documents found. Upload your first document to get started!</p>
+                </div>
+            `;
+            loadCollectionInfo();
+            return;
+        }
+                                
+        container.innerHTML = knowledgeBases.map(kb => `
+            <div class="kb-section">
+                <div class="kb-header" onclick="toggleKB('${escapeHtml(kb.kb_id)}')">
+                    <div class="kb-title">
+                        <span class="kb-icon" id="icon-${escapeHtml(kb.kb_id)}">▼</span>
+                        <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
+                    </div>
+                    <div class="kb-stats">
+                        <button
+                            class="sync-kb-btn btn btn-primary btn-small"
+                            data-kb-id="${escapeHtml(kb.kb_id)}">
+                            🔄 Sync KB
+                        </button>
+                        <span class="badge badge-primary">${kb.document_count} documents</span>
+                        <span class="badge badge-secondary">${kb.total_chunks} chunks</span>
+                        <button
+                            class="btn btn-danger btn-small"
+                            title="Delete knowledge base"
+                            onclick="event.stopPropagation(); deleteKnowledgeBase('${escapeHtml(kb.kb_id)}')"
+                        >
+                            🗑️ Delete
+                        </button>
+                    </div>
+                </div>
+                <div class="kb-documents" id="kb-${escapeHtml(kb.kb_id)}" style="display: block;">
+                    ${kb.documents.map(doc => `
+                        <div class="document-card">
+                            <div class="document-header">
+                                <div class="document-title">📄 ${getDocumentTitle(doc)}</div>
+                                <div class="document-actions">
+                                    <button 
+                                        class="view-doc-btn btn btn-secondary btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
+                                        👁️ View
+                                    </button>
+                                    <button 
+                                        class="delete-doc-btn btn btn-danger btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
+                                        🗑️ Delete
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="document-meta">
+                                <div class="meta-item">
+                                    <span class="badge badge-primary">${doc.chunks_count ?? doc.total_chunks ?? '?'} chunks</span>
+                                </div>
+                                <div class="meta-item">
+                                    <span class="badge badge-success">${doc.source_type || 'chunk'}</span>
+                                </div>
+                                <div class="meta-item">
+                                    👤 ${escapeHtml(doc.user_id || 'robot')}
+                                </div>
+                                <div class="meta-item">
+                                    v${doc.version || 1}
+                                </div>
+                                <div class="meta-item">
+                                    🕒 ${formatDate(doc.created_at || null)}
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `).join('');
+        loadCollectionInfo();
+    } catch (error) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Error loading documents: ${error.message}
+            </div>
+        `;
+    }
+}
 // Load knowledge bases for search filter
 async function loadKnowledgeBasesForSearch() {
     try {
@@ -186,8 +527,6 @@ async function loadKnowledgeBasesForSearch() {
         
         const kbSelect = document.getElementById('search-kb');
         const currentValue = kbSelect.value;
-        
-        // Keep "All Knowledge Bases" option and add individual KBs
         kbSelect.innerHTML = '<option value="">All Knowledge Bases</option>' + 
             knowledgeBases.map(kb => 
                 `<option value="${escapeHtml(kb.kb_id)}">${escapeHtml(kb.kb_id)} (${kb.document_count} docs)</option>`
@@ -202,29 +541,8 @@ async function loadKnowledgeBasesForSearch() {
     }
 }
 
-// Collection Info
-async function loadCollectionInfo() {
-    try {
-        const response = await fetch(`${API_BASE}/api/collections/info`);
-        const data = await response.json();
-        const isFAQ = currentCollectionType === 'faq';
 
-        document.getElementById('collection-info').innerHTML = 
-            `Collection: <strong>${data.name}</strong> 
-                | ${isFAQ? "Documents": "Points"} 
-                <strong>${data.points_count-1 || 0}</strong>
-                | Platform Version
-                <strong>${data.platform_version || 0}</strong>
-                | Last Synchronization
-                <strong>${data.last_sync? formatDate(data.last_sync): "In process now"}</strong>
-                | Next Synchronization
-                <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
-            `;
-    } catch (error) {
-        console.error('Error loading collection info:', error);
-    }
-}
-
+// Function to get title for faq or kb
 function getDocumentTitle(doc) {
     // FAQ
     const question =
@@ -235,8 +553,6 @@ function getDocumentTitle(doc) {
     if (question) {
         return escapeHtml(extractQuestionFromText(question));
     }
-
-     
     // иначе KB
     const baseTitle =
         doc.source_name ||
@@ -280,12 +596,14 @@ function getDocumentTitle(doc) {
 }
 
 document.addEventListener("click", function (e) {
+    // function to view Document 
     if (e.target.classList.contains("view-doc-btn")) {
         const docId = e.target.dataset.docId;
         const docName = e.target.dataset.docName;
         viewDocument(docId, docName);
     }
     if (e.target.classList.contains("delete-doc-btn")) {
+        // to delete document
         const docId = e.target.dataset.docId;
         const docName = e.target.dataset.docName;
         deleteDocument(docId, docName);
@@ -402,102 +720,7 @@ async function syncAll(btnElement) {
     }
 }
 
-// Documents Management
-async function loadDocuments() {
-    const container = document.getElementById('documents-list');
-    container.innerHTML = '<div class="loading">Loading knowledge bases...</div>';
-    // Обновляем document_count в метаданных (для MCP kb-status)
-    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
-    try {
-        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
-        const knowledgeBases = await response.json();
-        
-        if (knowledgeBases.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>No documents found. Upload your first document to get started!</p>
-                </div>
-            `;
-            loadCollectionInfo();
-            return;
-        }
-                                
-        container.innerHTML = knowledgeBases.map(kb => `
-            <div class="kb-section">
-                <div class="kb-header" onclick="toggleKB('${escapeHtml(kb.kb_id)}')">
-                    <div class="kb-title">
-                        <span class="kb-icon" id="icon-${escapeHtml(kb.kb_id)}">▼</span>
-                        <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
-                    </div>
-                    <div class="kb-stats">
-                        <button
-                            class="sync-kb-btn btn btn-primary btn-small"
-                            data-kb-id="${escapeHtml(kb.kb_id)}">
-                            🔄 Sync KB
-                        </button>
-                        <span class="badge badge-primary">${kb.document_count} documents</span>
-                        <span class="badge badge-secondary">${kb.total_chunks} chunks</span>
-                        <button
-                            class="btn btn-danger btn-small"
-                            title="Delete knowledge base"
-                            onclick="event.stopPropagation(); deleteKnowledgeBase('${escapeHtml(kb.kb_id)}')"
-                        >
-                            🗑️ Delete
-                        </button>
-                    </div>
-                </div>
-                <div class="kb-documents" id="kb-${escapeHtml(kb.kb_id)}" style="display: block;">
-                    ${kb.documents.map(doc => `
-                        <div class="document-card">
-                            <div class="document-header">
-                                <div class="document-title">📄 ${getDocumentTitle(doc)}</div>
-                                <div class="document-actions">
-                                    <button 
-                                        class="view-doc-btn btn btn-secondary btn-small"
-                                        data-doc-id="${doc.document_id}"
-                                        data-doc-name="${doc.source_name || doc.source}">
-                                        👁️ View
-                                    </button>
-                                    <button 
-                                        class="delete-doc-btn btn btn-danger btn-small"
-                                        data-doc-id="${doc.document_id}"
-                                        data-doc-name="${doc.source_name || doc.source}">
-                                        🗑️ Delete
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="document-meta">
-                                <div class="meta-item">
-                                    <span class="badge badge-primary">${doc.chunks_count ?? doc.total_chunks ?? '?'} chunks</span>
-                                </div>
-                                <div class="meta-item">
-                                    <span class="badge badge-success">${doc.source_type || 'chunk'}</span>
-                                </div>
-                                <div class="meta-item">
-                                    👤 ${escapeHtml(doc.user_id || 'robot')}
-                                </div>
-                                <div class="meta-item">
-                                    v${doc.version || 1}
-                                </div>
-                                <div class="meta-item">
-                                    🕒 ${formatDate(doc.created_at || null)}
-                                </div>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-        `).join('');
-        loadCollectionInfo();
-    } catch (error) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Error loading documents: ${error.message}
-            </div>
-        `;
-    }
-}
+
 
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
@@ -992,227 +1215,9 @@ function getCollectionType(name) {
   return null;
 }
 
-document
-  .getElementById("delete-collection-btn")
-  .addEventListener("click", async () => {
-    const select = document.getElementById("collection-select");
-    const deletedCollection = select.value;
-
-    if (!deletedCollection) {
-      alert("No collection selected");
-      return;
-    }
-
-    const confirmed = confirm(
-      `Are you sure you want to delete collection "${deletedCollection}"?\n\nThis action cannot be undone.`
-    );
-
-    if (!confirmed) return;
-
-    const deletedType = getCollectionType(deletedCollection);
-
-    try {
-      const res = await fetch("/api/collections/delete", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({collection: deletedCollection }),
-      });
-      
-      const data = await res.json();
-
-      if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err);
-      }
-
-      
-      alert(`Collection "${data.deleted_collection}" deleted`);
-
-      // обновляем список коллекций
-      
-      await loadAliasData();
-      await loadCollections();
-      await loadActiveCollections();
-      
-      //   переключаем UI на активную alias-коллекцию
-      if (deletedType && activeCollections?.[deletedType]?.collection) {
-        const nextCollection = activeCollections[deletedType].collection;
-        select.value = nextCollection;
-        select.dispatchEvent(new Event("change"));
-      } else {
-        // fallback на первую доступную
-        select.selectedIndex = 0;
-        select.dispatchEvent(new Event("change"));
-      }
 
 
-    } catch (err) {
-      alert(`Failed to delete collection: It's active collection`); 
-      console.error(err);
-    }
-  });
 
-function openCreateCollectionModal() {
-    const modal = document.getElementById("create-collection-modal");
-    modal.classList.add("active");
-}
-
-function closeCreateCollectionModal() {
-    const modal = document.getElementById("create-collection-modal");
-    modal.classList.remove("active");
-}
-// создание коллекции через модальное окно
-async function createCollection() {
-    const version = document.getElementById("newCollectionVersion").value.trim();
-    const type = document.getElementById("newCollectionType").value;
-    const errorBox = document.getElementById("create-collection-error");
-
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
-
-    if (!version) {
-        errorBox.textContent = "Version is required";
-        errorBox.classList.remove("hidden");
-        return;
-    }
-    const collectionName = `${type}_collection_v${version}`;
-    try {
-        const res = await fetch("/api/collections/create", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ version, type })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-            throw new Error(data.error || "Failed to create collection");
-        }
-
-        closeCreateCollectionModal();
-        await loadAliasData();
-        await loadCollections();
-        await loadActiveCollections();
-
-        const select = document.getElementById("collection-select");
-        select.value = collectionName;
-        select.dispatchEvent(new Event("change"));
-
-    } catch (err) {
-        errorBox.textContent = err.message;
-        errorBox.classList.remove("hidden");
-    }
-}
-
-// загрузка алиасов по разным коллекциям
-async function loadAliasData() {
-    const [collectionsRes, activeRes] = await Promise.all([
-        fetch("/api/collections/by-type"),
-        fetch("/api/collections/active")
-    ]);
-
-    collectionsByType = await collectionsRes.json();
-    activeAliases = await activeRes.json();
-}
-
-// модальность для переключения между активными alias 
-async function openSwitchCollectionModal() {
-    document.getElementById("switch-collection-modal").classList.add("active");
-     if (!collectionsByType.faq) {
-        await loadAliasData();
-    }
-
-    loadAliasCollections();
-}
-// загрузка алиасов для коллекций
-function loadAliasCollections() {
-    const type = document.getElementById("switchCollectionType").value;
-    const targetSelect = document.getElementById("switchCollectionTarget");
-
-    const activeCollection = activeAliases[type]?.collection;
-    const collections = collectionsByType[type] || [];
-
-    targetSelect.innerHTML = "";
-
-    collections.forEach(name => {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-
-        if (name === activeCollection) {
-            option.disabled = true;
-            option.textContent += " (active)";
-        }
-
-        targetSelect.appendChild(option);
-    });
-}
-
-
-function closeSwitchCollectionModal() {
-    document.getElementById("switch-collection-modal").classList.remove("active");
-}
-
-async function switchCollectionAlias() {
-    const type = document.getElementById("switchCollectionType").value;
-    const collection = document.getElementById("switchCollectionTarget").value;
-    const errorBox = document.getElementById("switch-collection-error");
-
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
-
-    if (!collection) {
-        errorBox.textContent = "Select a collection";
-        errorBox.classList.remove("hidden");
-        return;
-    }
-
-
-    try {
-        const res = await fetch("/api/collections/switch-alias", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                collection_name: collection,
-                collection_type: type
-            })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-            throw new Error(data.detail || "Failed to switch alias");
-        }
-
-        const current = document.getElementById("collection-select").value;
-
-        if (current.startsWith(`${type}_`) && current !== collection) {
-            const confirmSwitch = confirm(
-                `Alias switched to "${collection}".\n\nSwitch UI to this collection?`
-            );
-
-            if (confirmSwitch) {
-                const select = document.getElementById("collection-select");
-                select.value = collection;
-                select.dispatchEvent(new Event("change"));
-            }
-        }
-
-        closeSwitchCollectionModal();
-
-        // 🔄 обновляем UI
-        await loadAliasData();
-        await loadActiveCollections();
-
-        
-
-    } catch (err) {
-        errorBox.textContent = err.message;
-        errorBox.classList.remove("hidden");
-    }
-}
 // построение дерева файлов
 async function loadFilesystemTree() {
     const container = document.getElementById("filesystem-tree");
@@ -1276,6 +1281,9 @@ async function sendNews() {
     const sendBtn = document.getElementById("news-send-btn");
     const fileInput = document.getElementById("news-files");
     const reusePath = fileInput.dataset.reusePath;
+    // выбранная группа получателей
+    const targetGroupEl = document.querySelector('input[name="news-target-group"]:checked');
+    const targetGroup = targetGroupEl ? targetGroupEl.value : "all";
     
     const formData = new FormData();
     if (!text) {
@@ -1287,6 +1295,8 @@ async function sendNews() {
         console.log("Reusing file:", reusePath);
     }
     formData.append("text", text);
+    formData.append("target_group", targetGroup);
+
     if (fileInput.files.length > 0 && !reusePath) {
         formData.append("files", fileInput.files[0]);
     }
@@ -1314,8 +1324,13 @@ async function sendNews() {
             resultDiv.innerHTML = `
                 ✅ Отправлено!<br>
                 📬 Получателей: ${data.sent || 0}<br>
+                👥 Группа: ${getTargetGroupName(targetGroup)}
             `;
             document.getElementById("news-text").value = "";
+            // Очищаем форму
+            fileInput.value = "";
+            document.getElementById("news-file-info").style.display = "none";
+            delete fileInput.dataset.reusePath;
         } else {
             throw new Error(data.detail || "Ошибка отправки");
         }
@@ -1331,6 +1346,15 @@ async function sendNews() {
         sendBtn.innerText = "📤 Отправить новость";
         loadNewsHistory();
     }
+}
+// отображение групп пользователей
+function getTargetGroupName(group) {
+    const names = {
+        "all": "Все пользователи",
+        "manager_group": "👔 Менеджеры",
+        "couch_group": "🎓 Коучи"
+    };
+    return names[group] || group;
 }
 
 // Загрузка вкладки Prompts
@@ -1686,6 +1710,12 @@ async function loadNewsHistory() {
 
         container.innerHTML = data.map(n =>{
             const files = n.files || [];
+            const targetGroup = n.target_group || "all";
+            const groupNames = {
+                "all": "Все пользователи",
+                "manager_group": "👔 Менеджеры",
+                "couch_group": "🎓 Коучи"
+            };
             const filesHtml = files.length > 0
                 ? files.map(f => `
                     <div style="margin-top:5px;">
@@ -1722,7 +1752,7 @@ async function loadNewsHistory() {
                             📊 ${n.status}
                         </div>
                         <div class="meta-item">
-                            👥 ${n.target_group || "all"}
+                            👥 ${groupNames[targetGroup] || n.target_group || "all"}
                         </div>
                     </div>
 
@@ -1809,6 +1839,12 @@ async function reuseNewsById(id) {
 function reuseNews(news) {
     // 1. текст
     document.getElementById("news-text").value = news.text || "";
+    // востанавливаем группу получателей
+    const targetGroup = news.target_group || "all";
+    const groupRadio = document.querySelector(`input[name="news-target-group"][value="${targetGroup}"]`);
+    if (groupRadio) {
+        groupRadio.checked = true;
+    }
 
     // 2. файл
     const fileInput = document.getElementById("news-files");
@@ -1847,4 +1883,211 @@ function closeFileModal() {
 
     // 👇 чистим контент
     document.getElementById("file-content").innerHTML = "";
+}
+
+// Загрузка списка пользователей с группами
+async function loadUserGroups() {
+    const container = document.getElementById("user-groups-list");
+    const searchQuery = document.getElementById("user-search")?.value || "";
+    const groupFilter = document.getElementById("group-filter")?.value || "all";
+    if (!container) return;
+
+    container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
+    try {
+        const res = await fetch("/api/subscribers");  
+        if (!res.ok) {
+            throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
+        }
+        const users = await res.json();
+        
+        // Фильтрация по поиску
+        let filtered = users.filter(u => {
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            return (
+                String(u.user_id).includes(q) ||
+                (u.username && u.username.toLowerCase().includes(q)) ||
+                (u.first_name && u.first_name.toLowerCase().includes(q)) ||
+                (u.last_name && u.last_name.toLowerCase().includes(q))
+            );
+        });
+        
+        // Фильтрация по группе
+        if (groupFilter === "manager_group") {
+            filtered = filtered.filter(u => u.manager_group);
+        } else if (groupFilter === "couch_group") {
+            filtered = filtered.filter(u => u.couch_group);
+        } else if (groupFilter === "no_groups") {
+            filtered = filtered.filter(u => !u.manager_group && !u.couch_group);
+        }
+        
+        // Обновление статистики
+        updateGroupStats(users);
+        if (filtered.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Пользователи не найдены</p>
+                </div>
+            `;
+            return;
+        }
+        
+        container.innerHTML = `
+            <table style="width:100%; border-collapse: collapse; background: white;">
+                <thead>
+                    <tr style="background:#f5f5f5; border-bottom: 2px solid #ddd;">
+                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">User ID</th>
+                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Username</th>
+                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Имя</th>
+                        <th style="padding:12px; text-align:center; border:1px solid #ddd;">👔 Менеджер</th>
+                        <th style="padding:12px; text-align:center; border:1px solid #ddd;">🎓 Коуч</th>
+                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Телефон</th>
+                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Последний вход</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${filtered.map(u => `
+                        <tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding:10px; border:1px solid #ddd; font-family: monospace;">${u.user_id}</td>
+                            <td style="padding:10px; border:1px solid #ddd;">${escapeHtml(u.username || '-')}</td>
+                            <td style="padding:10px; border:1px solid #ddd;">
+                                ${escapeHtml(u.first_name || '')} ${escapeHtml(u.last_name || '')}
+                            </td>
+                            <td style="padding:10px; border:1px solid #ddd; text-align:center;">
+                                <input type="checkbox" 
+                                       ${u.manager_group ? 'checked' : ''} 
+                                       onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)"
+                                       style="width: 18px; height: 18px; cursor: pointer;">
+                            </td>
+                            <td style="padding:10px; border:1px solid #ddd; text-align:center;">
+                                <input type="checkbox" 
+                                       ${u.couch_group ? 'checked' : ''} 
+                                       onchange="toggleUserGroup(${u.user_id}, 'couch_group', this.checked)"
+                                       style="width: 18px; height: 18px; cursor: pointer;">
+                            </td>
+                            <td style="padding:10px; border:1px solid #ddd;">${escapeHtml(u.phone_number || '-')}</td>
+                            <td style="padding:10px; border:1px solid #ddd;">${formatDate(u.last_seen)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+        
+    } catch (e) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки: ${e.message}
+            </div>
+        `;
+        console.error("Error loading user groups:", e);
+    }
+}
+
+// Обновление статистики по группам
+function updateGroupStats(users) {
+    const statsDiv = document.getElementById("user-groups-stats");
+    if (!statsDiv) return;
+    
+    const total = users.length;
+    const managers = users.filter(u => u.manager_group).length;
+    const couchs = users.filter(u => u.couch_group).length;
+    const both = users.filter(u => u.manager_group && u.couch_group).length;
+    const noGroups = users.filter(u => !u.manager_group && !u.couch_group).length;
+    
+    statsDiv.innerHTML = `
+        <h3 style="margin-top: 0;">📊 Статистика пользователей</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #2196F3;">${total}</div>
+                <div style="color: #666;">Всего пользователей</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #4CAF50;">${managers}</div>
+                <div style="color: #666;">👔 Менеджеры</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #FF9800;">${couchs}</div>
+                <div style="color: #666;">🎓 Коучи</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #9C27B0;">${both}</div>
+                <div style="color: #666;">В обеих группах</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #757575;">${noGroups}</div>
+                <div style="color: #666;">Без групп</div>
+            </div>
+        </div>
+    `;
+}
+
+// Переключение группы пользователя
+async function toggleUserGroup(userId, group, value) {
+    try {
+        const res = await fetch("/api/subscribers/group", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                user_id: userId,
+                group: group,
+                value: value
+            })
+        });
+        
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Ошибка ${res.status}`);
+        }
+        const groupName = group === "manager_group" ? "👔 Менеджер" : "🎓 Коуч";
+        const action = value ? "добавлен в" : "удалён из";
+        
+        showNotification(`Пользователь ${userId} ${action} группы "${groupName}"`, "success");
+        
+        // Перезагружаем список для обновления статистики
+        await loadUserGroups();
+        
+    } catch (e) {
+        alert(`Ошибка обновления группы: ${e.message}`);
+        // Возвращаем чекбокс в исходное состояние
+        await loadUserGroups();
+    }
+}
+
+// Экспорт пользователей в CSV
+function exportUsers() {
+    const table = document.querySelector("#user-groups-list table");
+    if (!table) {
+        alert("Нет данных для экспорта");
+        return;
+    }
+    
+    let csv = [];
+    const rows = table.querySelectorAll("tr");
+    
+    rows.forEach(row => {
+        const cols = row.querySelectorAll("th, td");
+        const rowData = [];
+        
+        cols.forEach((col, index) => {
+            // Для чекбоксов берём состояние
+            const checkbox = col.querySelector("input[type='checkbox']");
+            if (checkbox) {
+                rowData.push(`"${checkbox.checked ? 'Yes' : 'No'}"`);
+            } else {
+                rowData.push(`"${col.textContent.trim().replace(/"/g, '""')}"`);
+            }
+        });
+        
+        csv.push(rowData.join(","));
+    });
+    
+    const csvContent = csv.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `users_groups_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    
+    showNotification("Экспорт выполнен успешно", "success");
 }
