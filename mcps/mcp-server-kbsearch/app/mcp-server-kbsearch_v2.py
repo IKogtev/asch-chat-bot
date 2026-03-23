@@ -482,7 +482,7 @@ async def kb_search(
                 )
                 res["metadata"] = metadata
 
-            logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
+            
 
             def cleanup_label(text: str) -> str:
                 text = re.sub(r"^\d+[_\-\s]*", "", text)
@@ -499,18 +499,27 @@ async def kb_search(
                 if cleaned:
                     return cleaned[-1]
                 return source
-
+            
             def build_prompt(results: list[dict], question: str) -> str:
                 blocks = []
-
-                for i, item in enumerate(results):
+                doc_res = {}
+                for item in results:
+                    doc_id = item["metadata"]["document_id"]
+                    if not doc_id in doc_res.keys():
+                        doc_res.update({doc_id:item})
+                    else:
+                        doc_res[doc_id]["content"] += "\n..." + item["content"]
+                        doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+                        
+                logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
+                
+                for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
                     text = item["content"].strip()
                     metadata = item.get("metadata", {})
                     title = make_title(metadata)
                     relative_path = metadata.get("relative_path", "")
-                    doc_id = metadata.get("document_id", "")
 
-                    block = f"""[{i}] {title}
+                    block = f"""rank [{i+1}] {title}
 RELATIVE_PATH: {relative_path}
 
 DOCUMENT_ID: {doc_id}
@@ -533,19 +542,7 @@ QUESTION
             prompt = build_prompt(results, query)
             res = ToolResult(
                             content=prompt,
-                            structured_content={
-                                                "query": query,
-                                                "results": [
-                                                            {
-                                                                "rank": r["rank"],
-                                                                "score": r["score"],
-                                                                "document_id": r["metadata"].get("document_id"),
-                                                                "source_name": r["metadata"].get("source"),
-                                                                "relative_path": r["metadata"].get("relative_path"),
-                                                            }
-                                                            for r in results
-                                                            ]
-                                                }
+                            structured_content=None
                                             )
             res.isError = False
             return res
