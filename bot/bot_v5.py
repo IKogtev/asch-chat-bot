@@ -268,9 +268,6 @@ class SubscriberStore:
         FROM subscribers
         ORDER BY last_seen DESC
         """
-        # async with self.pool.acquire() as conn:
-        #     rows = await conn.fetch(query)
-        # return [dict(row) for row in rows]
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [r["user_id"] for r in rows]
@@ -311,7 +308,6 @@ class NewsStore:
                 WHERE status = 'pending'
             """)
             return [dict(r) for r in rows]
-            # return rows
 
     async def mark_sent(self, news_id: int):
         async with self.pool.acquire() as conn:
@@ -325,7 +321,27 @@ class NewsStore:
             rows = await conn.fetch("""
                 SELECT * FROM news ORDER BY created_at DESC
             """)
-            return [dict(r) for r in rows]
+            result = []
+            try: 
+                for r in rows:
+                    d = dict(r)
+                    files = d.get("files")
+                    if files is None:
+                        d["files"] = []
+                    elif isinstance(files, str):
+                        try:
+                            d["files"] = json.loads(files)
+                        except Exception:
+                            d["files"] = []
+                    elif isinstance(files, list):
+                        d["files"] = files
+                    else:
+                        d["files"] = []
+                    result.append(d)
+            except Exception as e:
+                logger.error(f"Ошибка во время получения всех новостей: {e}")
+
+            return result
 
     async def get_by_id(self, news_id: int):
         async with self.pool.acquire() as conn:
@@ -1060,7 +1076,8 @@ async def main() -> None:
 
             for f in files:
                 content = await f.read()
-                file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
+                # file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
+                file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
                 
                 with open(file_path, "wb") as out:
                     out.write(content)
@@ -1084,7 +1101,23 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Error while broadcast all: {e}")
             raise HTTPException(400, str(e))
+
+    @broadcast_app.get("/api/news")
+    async def get_news():
+        """Получить все новости"""
+        return await news_store.get_all()
+
+    @broadcast_app.get("/api/news/{news_id}")
+    async def get_news_id(news_id: int):
+        """Получить новость по ID"""
+        news = await news_store.get_by_id(news_id)
+        if not news:
+            raise HTTPException(status_code=404, detail="News not found")
+        return news
+    
+    
         
+
     @broadcast_app.post("/api/reload-start-message")
     async def reload_start_message():
         """Перезагрузить стартовое сообщение из файла"""

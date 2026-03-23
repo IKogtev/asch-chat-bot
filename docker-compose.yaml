@@ -119,7 +119,7 @@ services:
     volumes:
       - ./kb_storage:/app/data/kb_documents
       - ./kb_storage/prompts:/app/data/prompts
-      - ./kb_storage/bot/settings:/app/data/settings
+      - ./kb_storage/bot:/app/data/bot
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
