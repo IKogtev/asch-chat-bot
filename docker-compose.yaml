@@ -91,6 +91,8 @@ services:
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
       - PLATFORM_VERSION=0.5.3
+      - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
+      - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
     networks:
       - aszh-bot-network
 
