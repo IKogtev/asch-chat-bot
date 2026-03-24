@@ -1742,10 +1742,7 @@ async def main() -> None:
 
         os.remove(tmp.name)
     
-    async def send_now(text: str, file_data: List, target_group: str="all"):
-        """Отправка новости с фильтрацией по группе"""
-        sent = 0
-
+    async def get_filtered_users(target_group: str = "all"):
         all_users = await subscriber_store.get_all_with_groups()
 
         filtered_users = []
@@ -1757,10 +1754,18 @@ async def main() -> None:
                 filtered_users.append(user_id)
             elif target_group == "couch_group" and user.get("couch_group"):
                 filtered_users.append(user_id)
+        return filtered_users, len(all_users)
 
-        logger.info(f"📬 Отправка новости: {len(filtered_users)} из {len(all_users)} пользователей (группа: {target_group})")        
+    async def send_now(text: str, file_data: List, target_group: str="all"):
+        """Отправка новости с фильтрацией по группе"""
+        sent = 0
+
+        users, all_count = await get_filtered_users(target_group)
+        count = len(users)
+
+        logger.info(f"📬 Отправка новости: {count} из {all_count} пользователей (группа: {target_group})")        
         
-        for user_id in filtered_users:
+        for user_id in users:
             try:
                 # отправка текста
                 if text:
@@ -1841,7 +1846,6 @@ async def main() -> None:
             elif files:
                 for f in files:
                     content = await f.read()
-                    # file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
                     file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
                     
                     with open(file_path, "wb") as out:
@@ -1858,8 +1862,9 @@ async def main() -> None:
                     schedule_dt = datetime.fromisoformat(schedule_time)
                     schedule_dt = schedule_dt.astimezone(timezone.utc)
                     logger.info(f"📅 Задача отложена на {schedule_dt}")
+                users, _ = await get_filtered_users(target_group)    
                 news_id = await news_store.create_news(text, schedule_dt, files=file_paths, group=target_group)
-                return {"status": "ok", "news_send": news_id}
+                return {"status": "ok", "news_send": news_id, "sent": len(users)}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")
                 raise HTTPException(400, str(e))

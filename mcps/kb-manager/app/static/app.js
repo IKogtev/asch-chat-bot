@@ -202,8 +202,6 @@ document
         const err = await res.text();
         throw new Error(err);
       }
-
-      
       alert(`Collection "${data.deleted_collection}" deleted`);
 
       // обновляем список коллекций
@@ -323,11 +321,11 @@ function loadAliasCollections() {
         targetSelect.appendChild(option);
     });
 }
-// 
+// закрытие модальности переключения коллекций
 function closeSwitchCollectionModal() {
     document.getElementById("switch-collection-modal").classList.remove("active");
 }
-// 
+// переключение alias между коллекциями 
 async function switchCollectionAlias() {
     const type = document.getElementById("switchCollectionType").value;
     const collection = document.getElementById("switchCollectionTarget").value;
@@ -408,7 +406,6 @@ function showTab(tabName) {
     } else if (tabName === 'tree_files'){
         loadFilesystemTree();
     } else if (tabName === 'news_send'){
-        // sendNews();
         loadNewsHistory();
     } else if (tabName === 'prompts'){
         loadPromptsTab();
@@ -419,6 +416,180 @@ function showTab(tabName) {
     }
 }
 
+// #############################
+// Utilities subsystem
+// #############################
+// extract question from text
+function extractQuestionFromText(text){
+    if (!text) return '';
+    // search question
+    const match = text.match(/Question:\s*(.+?)(?:\n|context:|$)/i);
+    if (!match) return text;
+
+    // Убираем возможный "**Вопрос:**"
+    return match[1]
+        .replace(/\*\*Вопрос:\*\*/gi, '')
+        .replace(/\*\*/g, '')
+        .trim();
+}
+// create div format
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+// форматирование даты в стандарты
+function formatDate(dateString) {
+    if (!dateString) return 'Unknown';
+    try {
+        let normalized = dateString;
+        // 1. Заменяем пробел на T
+        normalized = normalized.replace(' ', 'T');
+        // 2. Фиксим timezone +03 → +03:00
+        normalized = normalized.replace(/([+-]\d{2})$/, '$1:00');
+        const date = new Date(normalized);
+        if (isNaN(date.getTime())) {
+            return 'Invalid date';
+        }
+        return date.toLocaleString('ru-RU', {
+            timeZone: 'Europe/Moscow',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        });
+
+    } catch (e) {
+        return 'Invalid date';
+    }
+}
+// отправка уведомлений
+function showNotification(message, type) {
+    alert(message);
+}
+// получение типа коллекции
+function getCollectionType(name) {
+  if (name.startsWith("faq_")) return "faq";
+  if (name.startsWith("kb_")) return "kb";
+  return null;
+}
+// Function to get title for faq or kb
+function getDocumentTitle(doc) {
+    // FAQ
+    const question =
+        doc.question_preview ||
+        doc.question ||
+        doc.payload?.question;
+
+    if (question) {
+        return escapeHtml(extractQuestionFromText(question));
+    }
+    // иначе KB
+    const baseTitle =
+        doc.source_name ||
+        doc.payload?.source_name ||
+        doc.source ||
+        doc.filename ||
+        'Document';
+
+    let sectionPath = doc.section_path || doc.payload?.section_path;
+
+    if (!sectionPath) {
+        return escapeHtml(baseTitle);
+    }
+    if (typeof sectionPath === "string") {
+        // поддержка разных форматов
+        if (sectionPath.includes(",")) {
+            sectionPath = sectionPath.split(",").map(s => s.trim());
+        } else if (sectionPath.includes("/")) {
+            sectionPath = sectionPath.split("/").map(s => s.trim());
+        } else {
+            sectionPath = [sectionPath];
+        }
+    }
+
+    // Если это массив
+    if (Array.isArray(sectionPath)) {
+        const cleaned = sectionPath
+            .map(s => s.trim())
+            .filter(Boolean);
+        
+        const withoutFirst = cleaned.slice(1);
+
+        if (withoutFirst.length > 0) {
+            return escapeHtml(
+                withoutFirst.join("/") + "/" + baseTitle
+            );
+        }
+    }
+
+    return escapeHtml(baseTitle);
+}
+
+// загрузка настроек синхронизации
+async function loadSyncSettings() {
+
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
+
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+// изменение интервала синхронизации
+async function changeSyncInterval(){
+    const current = document.getElementById("sync-interval").innerText
+    const hours = prompt("Enter sync interval in hours", current)
+
+    if(!hours) return
+
+    const res = await fetch("/api/sync/settings", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({hours:parseInt(hours)})
+    })
+
+    if(res.ok){
+        loadSyncSettings()
+        loadCollectionInfo()
+    }
+}
+// функция разворачивания kb 
+function toggleKB(kbId) {
+    const kbDocs = document.getElementById(`kb-${kbId}`);
+    const icon = document.getElementById(`icon-${kbId}`);
+    
+    if (kbDocs.style.display === 'none') {
+        kbDocs.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        kbDocs.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+// функция извлечения вопроса из FAQ
+function parseFaqQuestion(text) {
+    if (!text) return "";
+
+    // убираем "Question:"
+    let q = text.replace(/^Question:\s*/i, "");
+
+    // отрезаем всё после context:
+    q = q.split(/\ncontext:/i)[0];
+
+    return q.trim();
+}
+// отображение групп пользователей
+function getTargetGroupName(group) {
+    const names = {
+        "all": "Все пользователи",
+        "manager_group": "👔 Менеджеры",
+        "couch_group": "🎓 Коучи"
+    };
+    return names[group] || group;
+}
 // #############################
 // DOCUMENTS TAB LOGIC
 // #############################
@@ -519,82 +690,7 @@ async function loadDocuments() {
         `;
     }
 }
-// Load knowledge bases for search filter
-async function loadKnowledgeBasesForSearch() {
-    try {
-        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
-        const knowledgeBases = await response.json();
-        
-        const kbSelect = document.getElementById('search-kb');
-        const currentValue = kbSelect.value;
-        kbSelect.innerHTML = '<option value="">All Knowledge Bases</option>' + 
-            knowledgeBases.map(kb => 
-                `<option value="${escapeHtml(kb.kb_id)}">${escapeHtml(kb.kb_id)} (${kb.document_count} docs)</option>`
-            ).join('');
-        
-        // Restore previous selection if it still exists
-        if (currentValue) {
-            kbSelect.value = currentValue;
-        }
-    } catch (error) {
-        console.error('Error loading knowledge bases:', error);
-    }
-}
-
-
-// Function to get title for faq or kb
-function getDocumentTitle(doc) {
-    // FAQ
-    const question =
-        doc.question_preview ||
-        doc.question ||
-        doc.payload?.question;
-
-    if (question) {
-        return escapeHtml(extractQuestionFromText(question));
-    }
-    // иначе KB
-    const baseTitle =
-        doc.source_name ||
-        doc.payload?.source_name ||
-        doc.source ||
-        doc.filename ||
-        'Document';
-
-    let sectionPath = doc.section_path || doc.payload?.section_path;
-
-    if (!sectionPath) {
-        return escapeHtml(baseTitle);
-    }
-    if (typeof sectionPath === "string") {
-        // поддержка разных форматов
-        if (sectionPath.includes(",")) {
-            sectionPath = sectionPath.split(",").map(s => s.trim());
-        } else if (sectionPath.includes("/")) {
-            sectionPath = sectionPath.split("/").map(s => s.trim());
-        } else {
-            sectionPath = [sectionPath];
-        }
-    }
-
-    // Если это массив
-    if (Array.isArray(sectionPath)) {
-        const cleaned = sectionPath
-            .map(s => s.trim())
-            .filter(Boolean);
-        
-        const withoutFirst = cleaned.slice(1);
-
-        if (withoutFirst.length > 0) {
-            return escapeHtml(
-                withoutFirst.join("/") + "/" + baseTitle
-            );
-        }
-    }
-
-    return escapeHtml(baseTitle);
-}
-
+// вызовы функций, чтобы не ломались на плохих названиях 
 document.addEventListener("click", function (e) {
     // function to view Document 
     if (e.target.classList.contains("view-doc-btn")) {
@@ -609,7 +705,7 @@ document.addEventListener("click", function (e) {
         deleteDocument(docId, docName);
     }
 });
-
+// функция для синхронизации рялом с kb конкретным
 document.addEventListener("click", async function (e) {
 
     if (e.target.classList.contains("sync-kb-btn")) {
@@ -720,8 +816,6 @@ async function syncAll(btnElement) {
     }
 }
 
-
-
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Delete knowledge base "${kbId}"?\n\nAll documents will be permanently removed.`)) {
@@ -752,21 +846,6 @@ async function deleteKnowledgeBase(kbId) {
        
     } catch (err) {
         alert(`Error deleting knowledge base: ${err.message}`);
-    }
-}
-
-
-// функция разворачивания kb 
-function toggleKB(kbId) {
-    const kbDocs = document.getElementById(`kb-${kbId}`);
-    const icon = document.getElementById(`icon-${kbId}`);
-    
-    if (kbDocs.style.display === 'none') {
-        kbDocs.style.display = 'block';
-        icon.textContent = '▼';
-    } else {
-        kbDocs.style.display = 'none';
-        icon.textContent = '▶';
     }
 }
 
@@ -839,28 +918,49 @@ async function deleteDocument(documentId, filename) {
         showNotification(`Error deleting document: ${error.message}`, 'error');
     }
 }
+// Modal для просмотра чанков файла
+function closeModal() {
+    document.getElementById('chunks-modal').classList.remove('active');
+}
 
+// Close modal on outside click
+document.getElementById('chunks-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'chunks-modal') {
+        closeModal();
+    }
+});
+
+// #############################
+// SEARCH TAB LOGIC
+// #############################
+
+// Load knowledge bases for search filter
+async function loadKnowledgeBasesForSearch() {
+    try {
+        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
+        const knowledgeBases = await response.json();
+        
+        const kbSelect = document.getElementById('search-kb');
+        const currentValue = kbSelect.value;
+        kbSelect.innerHTML = '<option value="">All Knowledge Bases</option>' + 
+            knowledgeBases.map(kb => 
+                `<option value="${escapeHtml(kb.kb_id)}">${escapeHtml(kb.kb_id)} (${kb.document_count} docs)</option>`
+            ).join('');
+        
+        // Restore previous selection if it still exists
+        if (currentValue) {
+            kbSelect.value = currentValue;
+        }
+    } catch (error) {
+        console.error('Error loading knowledge bases:', error);
+    }
+}
 // Search
 function handleSearchKeypress(event) {
     if (event.key === 'Enter') {
         performSearch();
     }
 }
-
-// функция извлечения вопроса из FAQ
-function parseFaqQuestion(text) {
-    if (!text) return "";
-
-    // убираем "Question:"
-    let q = text.replace(/^Question:\s*/i, "");
-
-    // отрезаем всё после context:
-    q = q.split(/\ncontext:/i)[0];
-
-    return q.trim();
-}
-
-
 // поиск внутри kb-manager
 async function performSearch() {
     const query = document.getElementById('search-query').value.trim();
@@ -958,7 +1058,11 @@ async function performSearch() {
     }
 }
 
-// Upload
+// #############################
+// UPLOAD TAB LOGIC
+// #############################
+
+// Настройка возможности drag and drop
 function setupDragAndDrop() {
     const uploadBox = document.getElementById('upload-box');
     
@@ -988,14 +1092,14 @@ function setupDragAndDrop() {
         }
     });
 }
-
+// отображение выбранного файла
 function handleFileSelect(event) {
     const file = event.target.files[0];
     if (file) {
         handleFile(file);
     }
 }
-
+// передача файла
 function handleFile(file) {
     selectedFile = file;
     
@@ -1005,7 +1109,7 @@ function handleFile(file) {
     document.getElementById('upload-result').className = 'result-message';
     document.getElementById('upload-result').style.display = 'none';
 }
-
+// загрузка документа
 async function uploadDocument(uploadMode = 'check') {
     if (!selectedFile) {
         return;
@@ -1085,7 +1189,7 @@ async function uploadDocument(uploadMode = 'check') {
         uploadBtn.disabled = false;
     }
 }
-
+// разрешение конфликта файлов
 function handleUploadConflict(conflictData) {
     const resultDiv = document.getElementById('upload-result');
     
@@ -1128,7 +1232,7 @@ function handleUploadConflict(conflictData) {
         `;
     }
 }
-
+// отмена загрузки
 function cancelUpload() {
     const resultDiv = document.getElementById('upload-result');
     resultDiv.style.display = 'none';
@@ -1140,83 +1244,9 @@ function cancelUpload() {
     document.getElementById('upload-btn').disabled = true;
 }
 
-// Modal
-function closeModal() {
-    document.getElementById('chunks-modal').classList.remove('active');
-}
-
-// Close modal on outside click
-document.getElementById('chunks-modal').addEventListener('click', (e) => {
-    if (e.target.id === 'chunks-modal') {
-        closeModal();
-    }
-});
-
-// Utilities
-function extractQuestionFromText(text){
-    if (!text) return '';
-    // search question
-    const match = text.match(/Question:\s*(.+?)(?:\n|context:|$)/i);
-    if (!match) return text;
-
-    // Убираем возможный "**Вопрос:**"
-    return match[1]
-        .replace(/\*\*Вопрос:\*\*/gi, '')
-        .replace(/\*\*/g, '')
-        .trim();
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-// форматирование даты в стандарты
-function formatDate(dateString) {
-    if (!dateString) return 'Unknown';
-    try {
-        let normalized = dateString;
-
-        // 1. Заменяем пробел на T
-        normalized = normalized.replace(' ', 'T');
-
-        // 2. Фиксим timezone +03 → +03:00
-        normalized = normalized.replace(/([+-]\d{2})$/, '$1:00');
-
-        const date = new Date(normalized);
-
-        if (isNaN(date.getTime())) {
-            return 'Invalid date';
-        }
-
-        return date.toLocaleString('ru-RU', {
-            timeZone: 'Europe/Moscow',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false
-        });
-
-    } catch (e) {
-        return 'Invalid date';
-    }
-}
-// отправка уведомлений
-function showNotification(message, type) {
-    alert(message);
-}
-// получение типа коллекции
-function getCollectionType(name) {
-  if (name.startsWith("faq_")) return "faq";
-  if (name.startsWith("kb_")) return "kb";
-  return null;
-}
-
-
-
+// #############################
+// TREE TAB LOGIC
+// #############################
 
 // построение дерева файлов
 async function loadFilesystemTree() {
@@ -1262,7 +1292,7 @@ function renderTree(node) {
     html += "</ul>";
     return html;
 }
-
+// открытие папок внутри дерева
 document.addEventListener("click", function (e) {
 
     if (e.target.classList.contains("folder-toggle")) {
@@ -1271,6 +1301,12 @@ document.addEventListener("click", function (e) {
     }
 
 });
+
+// #############################
+// NEWS TAB LOGIC
+// #############################
+
+
 // отправка новостей
 async function sendNews() {
 
@@ -1320,10 +1356,11 @@ async function sendNews() {
         });
         
         const data = await res.json();
+        const recipients = data.count ?? data.sent ?? 0;
         if (res.ok) {
             resultDiv.innerHTML = `
                 ✅ Отправлено!<br>
-                📬 Получателей: ${data.sent || 0}<br>
+                📬 Получателей: ${recipients}<br>
                 👥 Группа: ${getTargetGroupName(targetGroup)}
             `;
             document.getElementById("news-text").value = "";
@@ -1335,9 +1372,9 @@ async function sendNews() {
             throw new Error(data.detail || "Ошибка отправки");
         }
         if (scheduleTime){
-            alert("📅 Новость запланирована");
+            alert(`📅 Новость запланирована \n📬 Получателей: ${recipients}`);
         } else{
-            alert("📤 Отправлено сразу");
+            alert(`📤 Отправлено сразу \n📬 Получателей: ${recipients}`);
         }
     } catch (err) {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
@@ -1347,15 +1384,7 @@ async function sendNews() {
         loadNewsHistory();
     }
 }
-// отображение групп пользователей
-function getTargetGroupName(group) {
-    const names = {
-        "all": "Все пользователи",
-        "manager_group": "👔 Менеджеры",
-        "couch_group": "🎓 Коучи"
-    };
-    return names[group] || group;
-}
+
 
 // Загрузка вкладки Prompts
 async function loadPromptsTab() {
@@ -1590,33 +1619,7 @@ async function deletePromptFile(filename) {
         console.error("Error deleting prompt file:", err);
     }
 }
-// загрузка настроек синхронизации
-async function loadSyncSettings() {
 
-    const res = await fetch("/api/sync/settings")
-    const data = await res.json()
-
-    document.getElementById("sync-interval").innerText =
-        data.interval_hours
-}
-// изменение интервала синхронизации
-async function changeSyncInterval(){
-    const current = document.getElementById("sync-interval").innerText
-    const hours = prompt("Enter sync interval in hours", current)
-
-    if(!hours) return
-
-    const res = await fetch("/api/sync/settings", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({hours:parseInt(hours)})
-    })
-
-    if(res.ok){
-        loadSyncSettings()
-        loadCollectionInfo()
-    }
-}
 
 // загрузка стартового сообщения бота
 async function loadBotStartMessage() {
