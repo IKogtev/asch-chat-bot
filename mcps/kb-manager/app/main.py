@@ -769,7 +769,6 @@ async def send_news(
             # откладываем время 
             if schedule_time:
                 multipart_data.append(("schedule_time", (None, schedule_time)))
-                logger.info("Сообщение могло быть отложено наверное надо в базу сохранять но пока ничего не происходит нужна встреча!!!")
                 logger.info(f"Отложено на: {schedule_time}")
             else: 
                 logger.info("Без отложенной отправки")
@@ -799,6 +798,7 @@ async def send_news(
             )
             resp.raise_for_status()
             bot_response = resp.json()
+            logger.info(f"А что бот возвращает? {bot_response}")
 
         return bot_response
         # return {"status": "ok", "message": "News sent", "sent": resp.json()}
