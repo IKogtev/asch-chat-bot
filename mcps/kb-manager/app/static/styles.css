@@ -1287,3 +1287,420 @@ select:focus {
 .news-preview a {
     color: #3b82f6;
 }
+/* ============================================
+   📰 NEWS EDITOR & FORM STYLES
+   ============================================ */
+.news-editor-container {
+    height: 300px;
+}
+
+.news-form-section {
+    margin: 15px 0;
+}
+
+.news-form-label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.news-form-group {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.news-form-option {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+
+.news-form-option:hover {
+    color: var(--text-primary);
+}
+
+.news-schedule {
+    margin: 15px 0;
+}
+
+.news-schedule label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.news-schedule-input {
+    width: 100%;
+    max-width: 300px;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.news-schedule-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.news-schedule-hint {
+    display: block;
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ============================================
+   👥 GROUPS TAB STYLES
+   ============================================ */
+.groups-tab-header {
+    margin-bottom: 20px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.groups-search-input {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    width: 300px;
+    font-size: 14px;
+}
+
+.groups-search-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.groups-stats-container {
+    margin-top: 20px;
+    padding: 15px;
+    background: var(--bg-color);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+}
+
+.groups-stats-container h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: var(--text-primary);
+}
+
+.groups-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 15px;
+}
+
+.groups-stat-card {
+    background: var(--card-bg);
+    padding: 15px;
+    border-radius: 8px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    transition: transform 0.2s;
+}
+
+.groups-stat-card:hover {
+    transform: translateY(-2px);
+}
+
+.groups-stat-number {
+    font-size: 24px;
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.groups-stat-label {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.groups-stat-total .groups-stat-number { color: #2196F3; }
+.groups-stat-managers .groups-stat-number { color: #4CAF50; }
+.groups-stat-couchs .groups-stat-number { color: #FF9800; }
+.groups-stat-both .groups-stat-number { color: #9C27B0; }
+.groups-stat-none .groups-stat-number { color: #757575; }
+
+/* ============================================
+   📁 GENERAL FORM STYLES
+   ============================================ */
+.form-input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 1rem;
+    transition: all 0.2s;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.form-group {
+    margin: 15px 0;
+}
+
+.form-options {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.form-option {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+
+.form-option:hover {
+    color: var(--text-primary);
+}
+
+.form-option input[type="radio"],
+.form-option input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+/* ============================================
+   📊 TABLE STYLES (for Groups tab)
+   ============================================ */
+.user-groups-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card-bg);
+    font-size: 14px;
+    box-shadow: var(--shadow);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.user-groups-table thead {
+    background: var(--bg-color);
+}
+
+.user-groups-table th,
+.user-groups-table td {
+    padding: 12px;
+    text-align: left;
+    border: 1px solid var(--border-color);
+}
+
+.user-groups-table th {
+    font-weight: 600;
+    color: var(--text-primary);
+    background: #f5f5f5;
+}
+
+.user-groups-table tbody tr {
+    border-bottom: 1px solid #eee;
+}
+
+.user-groups-table tbody tr:hover {
+    background-color: #f9f9f9;
+}
+
+.user-groups-table .text-center {
+    text-align: center;
+}
+
+.user-groups-table .font-monospace {
+    font-family: monospace;
+}
+
+.user-groups-table input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+/* ============================================
+   📱 RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+    .groups-search-input {
+        width: 100%;
+    }
+    
+    .groups-stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .news-schedule-input {
+        max-width: 100%;
+    }
+    
+    .user-groups-table {
+        font-size: 12px;
+    }
+    
+    .user-groups-table th,
+    .user-groups-table td {
+        padding: 8px 5px;
+    }
+}
+
+/* ============================================
+   📄 FILE MODAL - Content Display
+   ============================================ */
+.file-content-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: monospace;
+    max-height: 600px;
+    overflow-y: auto;
+    background: #f5f5f5;
+    padding: 15px;
+    border-radius: 5px;
+}
+
+.file-content-iframe {
+    width: 100%;
+    height: 600px;
+    border: none;
+}
+
+/* ============================================
+   👥 USER GROUPS TABLE
+   ============================================ */
+.user-groups-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    font-size: 14px;
+    box-shadow: var(--shadow);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.user-groups-table thead tr {
+    background: #f5f5f5;
+    border-bottom: 2px solid #ddd;
+}
+
+.user-groups-table th,
+.user-groups-table td {
+    padding: 12px;
+    text-align: left;
+    border: 1px solid #ddd;
+}
+
+.user-groups-table th {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.user-groups-table tbody tr {
+    border-bottom: 1px solid #eee;
+}
+
+.user-groups-table tbody tr:hover {
+    background-color: #f9f9f9;
+}
+
+.user-groups-table .text-center {
+    text-align: center;
+}
+
+.user-groups-table .font-monospace {
+    font-family: monospace;
+}
+
+.user-groups-table input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+/* ============================================
+   📊 USER GROUPS STATISTICS
+   ============================================ */
+.groups-stats-container {
+    margin-top: 20px;
+    padding: 15px;
+    background: #f5f5f5;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.groups-stats-container h3 {
+    margin-top: 0;
+    color: var(--text-primary);
+}
+
+.groups-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 15px;
+}
+
+.groups-stat-card {
+    background: white;
+    padding: 15px;
+    border-radius: 8px;
+    text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    transition: transform 0.2s;
+}
+
+.groups-stat-card:hover {
+    transform: translateY(-2px);
+}
+
+.groups-stat-number {
+    font-size: 24px;
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.groups-stat-label {
+    color: #666;
+    font-size: 14px;
+}
+
+.groups-stat-total .groups-stat-number { color: #2196F3; }
+.groups-stat-managers .groups-stat-number { color: #4CAF50; }
+.groups-stat-couchs .groups-stat-number { color: #FF9800; }
+.groups-stat-both .groups-stat-number { color: #9C27B0; }
+.groups-stat-none .groups-stat-number { color: #757575; }
+
+/* ============================================
+   📱 RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+    .user-groups-table {
+        font-size: 12px;
+    }
+    
+    .user-groups-table th,
+    .user-groups-table td {
+        padding: 8px 5px;
+    }
+    
+    .groups-stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

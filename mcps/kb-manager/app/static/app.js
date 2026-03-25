@@ -759,11 +759,11 @@ document.addEventListener("click", async function (e) {
                 method: "POST",
                 body: formData
             });
-
+            const data = await response.json();
             if (!response.ok) {
                 throw new Error("Sync failed");
             }
-
+            alert(`✅ KB "${kbId}" synced`);
             button.innerText = "✅ Synced";
 
             setTimeout(() => {
@@ -772,7 +772,8 @@ document.addEventListener("click", async function (e) {
             }, 1500);
 
             if (button.innerText==="✅ Synced"){
-                loadDocuments()
+                await loadDocuments();
+                await loadCollectionInfo();
             }
 
         } catch (err) {
@@ -1355,20 +1356,24 @@ async function sendNews() {
     // выбранная группа получателей
     const targetGroupEl = document.querySelector('input[name="news-target-group"]:checked');
     const targetGroup = targetGroupEl ? targetGroupEl.value : "all";
-    
     const formData = new FormData();
-     if (reusePath && reusePath.trim() !== "") {
+    if (fileInput.files.length > 0) {
+        // пользователь выбрал новый файл → ПЕРЕЗАТИРАЕМ reuse
+        formData.append("files", fileInput.files[0]);
+        console.log("Using NEW file");
+
+    } else if (reusePath && reusePath.trim() !== "") {
+        // если новый не выбран → используем старый
         formData.append("reuse_file_path", reusePath);
-        console.log("Reusing file:", reusePath);
+        console.log("Reusing OLD file");
+
+    } else {
+        console.log("No file attached");
     }
-    // formData.append("text", text);
     formData.append("text", html);
     formData.append("html", html);
     formData.append("target_group", targetGroup);
 
-    if (fileInput.files.length > 0 && !reusePath) {
-        formData.append("files", fileInput.files[0]);
-    }
     if (scheduleTime) {
         const utcTime = new Date(scheduleTime).toISOString();
         const now = new Date().toISOString();
@@ -1417,6 +1422,37 @@ async function sendNews() {
         loadNewsHistory();
     }
 }
+
+document.getElementById("news-file-remove").onclick = () => {
+    const fileInput = document.getElementById("news-files");
+
+    // удаляем reuse
+    delete fileInput.dataset.reusePath;
+
+    // чистим input
+    fileInput.value = "";
+
+    // скрываем UI
+    document.getElementById("news-file-info").style.display = "none";
+
+    console.log("File removed (reuse cleared)");
+};
+
+document.getElementById("news-files").addEventListener("change", (e) => {
+    const fileInput = e.target;
+
+    if (fileInput.files.length > 0) {
+        // пользователь выбрал новый файл → убираем reuse
+        delete fileInput.dataset.reusePath;
+
+        const file = fileInput.files[0];
+
+        document.getElementById("news-file-name").textContent = file.name;
+        document.getElementById("news-file-info").style.display = "flex";
+
+        console.log("New file selected, reuse cleared");
+    }
+});
 
 // загрузка истории новостей
 async function loadNewsHistory() {
@@ -1556,7 +1592,7 @@ async function viewNewsFile(name) {
 
             // Сохраняем форматирование с помощью white-space: pre-wrap
             document.getElementById("file-content").innerHTML = `
-                <div style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; max-height: 600px; overflow-y: auto; background: #f5f5f5; padding: 15px; border-radius: 5px;">
+                <div class="file-content-text">
                     ${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
                 </div>
             `;
@@ -1568,7 +1604,7 @@ async function viewNewsFile(name) {
             const url = URL.createObjectURL(blob);
 
             document.getElementById("file-content").innerHTML = `
-                <iframe src="${url}" style="width:100%; height:600px; border:none;"></iframe>
+                <iframe src="${url}" class="file-content-iframe"></iframe>
             `;
             document.getElementById("file-modal").style.display = "block";
         }
@@ -1617,21 +1653,14 @@ function reuseNews(news) {
 
     if (news.files && Array.isArray(news.files) && news.files.length > 0) {
         const f = news.files[0];
+        fileName.textContent = f.name + " (reuse)";
+        fileInfo.style.display = "flex";
 
-        // input[type=file] нельзя программно заполнить
-        // поэтому просто показываем UI
-        if (f && f.name) {
-            fileName.textContent = f.name + " (reuse)";
-            fileInfo.style.display = "flex";
-            
-            // сохраняем путь для отправки
-            fileInput.dataset.reusePath = f.path || "";
-        } else {
-            // файл есть но имя не указано
-            fileName.textContent = "Файл (reuse)";
-            fileInfo.style.display = "flex";
-            fileInput.dataset.reusePath = f.path || "";
-        }
+        // сохраняем путь
+        fileInput.dataset.reusePath = f.path || "";
+
+        // очищаем input (на всякий)
+        fileInput.value = "";
     } else {
         fileInput.value = "";
         fileInfo.style.display = "none";
@@ -2004,40 +2033,36 @@ async function loadUserGroups() {
         }
         
         container.innerHTML = `
-            <table style="width:100%; border-collapse: collapse; background: white;">
+            <table class="user-groups-table">
                 <thead>
-                    <tr style="background:#f5f5f5; border-bottom: 2px solid #ddd;">
-                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">User ID</th>
-                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Username</th>
-                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Имя</th>
-                        <th style="padding:12px; text-align:center; border:1px solid #ddd;">👔 Менеджер</th>
-                        <th style="padding:12px; text-align:center; border:1px solid #ddd;">🎓 Коуч</th>
-                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Телефон</th>
-                        <th style="padding:12px; text-align:left; border:1px solid #ddd;">Последний вход</th>
+                    <tr>
+                        <th>User ID</th>
+                        <th>Username</th>
+                        <th>Имя</th>
+                        <th class="text-center">👔 Менеджер</th>
+                        <th class="text-center">🎓 Коуч</th>
+                        <th>Телефон</th>
+                        <th>Последний вход</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${filtered.map(u => `
-                        <tr style="border-bottom: 1px solid #eee;">
-                            <td style="padding:10px; border:1px solid #ddd; font-family: monospace;">${u.user_id}</td>
-                            <td style="padding:10px; border:1px solid #ddd;">${escapeHtml(u.username || '-')}</td>
-                            <td style="padding:10px; border:1px solid #ddd;">
-                                ${escapeHtml(u.first_name || '')} ${escapeHtml(u.last_name || '')}
-                            </td>
-                            <td style="padding:10px; border:1px solid #ddd; text-align:center;">
+                        <tr>
+                            <td class="font-monospace">${u.user_id}</td>
+                            <td>${escapeHtml(u.username || '-')}</td>
+                            <td>${escapeHtml(u.first_name || '')} ${escapeHtml(u.last_name || '')}</td>
+                            <td class="text-center">
                                 <input type="checkbox" 
-                                       ${u.manager_group ? 'checked' : ''} 
-                                       onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)"
-                                       style="width: 18px; height: 18px; cursor: pointer;">
+                                      ${u.manager_group ? 'checked' : ''} 
+                                      onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
                             </td>
-                            <td style="padding:10px; border:1px solid #ddd; text-align:center;">
+                            <td class="text-center">
                                 <input type="checkbox" 
-                                       ${u.couch_group ? 'checked' : ''} 
-                                       onchange="toggleUserGroup(${u.user_id}, 'couch_group', this.checked)"
-                                       style="width: 18px; height: 18px; cursor: pointer;">
+                                      ${u.couch_group ? 'checked' : ''} 
+                                      onchange="toggleUserGroup(${u.user_id}, 'couch_group', this.checked)">
                             </td>
-                            <td style="padding:10px; border:1px solid #ddd;">${escapeHtml(u.phone_number || '-')}</td>
-                            <td style="padding:10px; border:1px solid #ddd;">${formatDate(u.last_seen)}</td>
+                            <td>${escapeHtml(u.phone_number || '-')}</td>
+                            <td>${formatDate(u.last_seen)}</td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -2065,27 +2090,27 @@ function updateGroupStats(users) {
     const noGroups = users.filter(u => !u.manager_group && !u.couch_group).length;
     
     statsDiv.innerHTML = `
-        <h3 style="margin-top: 0;">📊 Статистика пользователей</h3>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
-            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: bold; color: #2196F3;">${total}</div>
-                <div style="color: #666;">Всего пользователей</div>
+        <h3>📊 Статистика пользователей</h3>
+        <div class="groups-stats-grid">
+            <div class="groups-stat-card groups-stat-total">
+                <div class="groups-stat-number">${total}</div>
+                <div class="groups-stat-label">Всего пользователей</div>
             </div>
-            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: bold; color: #4CAF50;">${managers}</div>
-                <div style="color: #666;">👔 Менеджеры</div>
+            <div class="groups-stat-card groups-stat-managers">
+                <div class="groups-stat-number">${managers}</div>
+                <div class="groups-stat-label">👔 Менеджеры</div>
             </div>
-            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: bold; color: #FF9800;">${couchs}</div>
-                <div style="color: #666;">🎓 Коучи</div>
+            <div class="groups-stat-card groups-stat-couchs">
+                <div class="groups-stat-number">${couchs}</div>
+                <div class="groups-stat-label">🎓 Коучи</div>
             </div>
-            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: bold; color: #9C27B0;">${both}</div>
-                <div style="color: #666;">В обеих группах</div>
+            <div class="groups-stat-card groups-stat-both">
+                <div class="groups-stat-number">${both}</div>
+                <div class="groups-stat-label">В обеих группах</div>
             </div>
-            <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: bold; color: #757575;">${noGroups}</div>
-                <div style="color: #666;">Без групп</div>
+            <div class="groups-stat-card groups-stat-none">
+                <div class="groups-stat-number">${noGroups}</div>
+                <div class="groups-stat-label">Без групп</div>
             </div>
         </div>
     `;
