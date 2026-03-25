@@ -14,6 +14,7 @@ let activeAliases = {};
 let currentPromptContent = "";
 let promptFiles = [];
 let botStartMessageContent = "";
+let newsEditor = null;
 
 
 // Initialize on load
@@ -46,6 +47,16 @@ document.addEventListener('DOMContentLoaded', () => {
         fileInput.value = "";
         fileInfo.style.display = "none";
     });
+    // Инициализация Quill редактора новостей
+    if (document.getElementById("news-editor")) {
+        newsEditor = new Quill('#news-editor', {
+            theme: 'snow',
+            modules: {
+                toolbar: '#news-toolbar'
+            },
+            placeholder: "Напишите новость..."
+        });
+    }
 });
 // #############################
 // MENU FOR ALL PAGES INSIDE UI 
@@ -245,7 +256,11 @@ async function createCollection() {
 
     errorBox.classList.add("hidden");
     errorBox.textContent = "";
-
+    if (!version || !/^\d+(\.\d+)?$/.test(version)) {
+        errorBox.textContent = "Version must be a number (e.g., 1 or 1.2)";
+        errorBox.classList.remove("hidden");
+        return;
+    }
     if (!version) {
         errorBox.textContent = "Version is required";
         errorBox.classList.remove("hidden");
@@ -442,16 +457,24 @@ function escapeHtml(text) {
 function formatDate(dateString) {
     if (!dateString) return 'Unknown';
     try {
-        let normalized = dateString;
-        // 1. Заменяем пробел на T
-        normalized = normalized.replace(' ', 'T');
-        // 2. Фиксим timezone +03 → +03:00
-        normalized = normalized.replace(/([+-]\d{2})$/, '$1:00');
-        const date = new Date(normalized);
+        let iso = dateString.trim();
+
+        // если нет timezone → считаем UTC
+        if (!iso.endsWith('Z') && !iso.match(/[+-]\d{2}(:\d{2})?$/)) {
+            iso = iso.replace(' ', 'T') + 'Z';
+        } else {
+            iso = iso.replace(' ', 'T');
+        }
+
+        const date = new Date(iso);
+
         if (isNaN(date.getTime())) {
+            console.error("Invalid date:", dateString);
             return 'Invalid date';
         }
-        return date.toLocaleString('ru-RU', {
+
+        // ВСЕГДА приводим к Москве
+        return new Intl.DateTimeFormat('ru-RU', {
             timeZone: 'Europe/Moscow',
             year: 'numeric',
             month: '2-digit',
@@ -460,7 +483,7 @@ function formatDate(dateString) {
             minute: '2-digit',
             second: '2-digit',
             hour12: false
-        });
+        }).format(date);
 
     } catch (e) {
         return 'Invalid date';
@@ -528,7 +551,6 @@ function getDocumentTitle(doc) {
 
     return escapeHtml(baseTitle);
 }
-
 // загрузка настроек синхронизации
 async function loadSyncSettings() {
 
@@ -542,8 +564,13 @@ async function loadSyncSettings() {
 async function changeSyncInterval(){
     const current = document.getElementById("sync-interval").innerText
     const hours = prompt("Enter sync interval in hours", current)
+    if(!hours) return;
 
-    if(!hours) return
+    const parsedHours = parseInt(hours, 10);
+    if (isNaN(parsedHours) || parsedHours <= 0) {
+        alert("Please enter a valid positive number.");
+        return;
+    }
 
     const res = await fetch("/api/sync/settings", {
         method:"POST",
@@ -600,6 +627,11 @@ async function loadDocuments() {
     container.innerHTML = '<div class="loading">Loading knowledge bases...</div>';
     // Обновляем document_count в метаданных (для MCP kb-status)
     fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
+    try {
+        await fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' });
+    } catch (e) {
+        console.warn("Metadata refresh failed, continuing...", e);
+    }
     try {
         const response = await fetch(`${API_BASE}/api/knowledge-bases`);
         const knowledgeBases = await response.json();
@@ -815,7 +847,6 @@ async function syncAll(btnElement) {
         }, 2000);
     }
 }
-
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Delete knowledge base "${kbId}"?\n\nAll documents will be permanently removed.`)) {
@@ -840,15 +871,12 @@ async function deleteKnowledgeBase(kbId) {
         if (res.ok) {
             showNotification('Knowledge base deleted successfully', 'success');
             loadDocuments();
-        } else {
-            throw new Error('Failed to delete KB');
         }
        
     } catch (err) {
         alert(`Error deleting knowledge base: ${err.message}`);
     }
 }
-
 // возможность открытия просмотра документа
 async function viewDocument(documentId, filename) {
     const modal = document.getElementById('chunks-modal');
@@ -870,6 +898,16 @@ async function viewDocument(documentId, filename) {
             const chunkIndex = chunk.chunk_index ?? (chunk.chunk_id ? parseInt(chunk.chunk_id.split('#')[1]): 0);
             const answer = chunk.answer
             const question = extractQuestionFromText(chunk.text);
+            const cleanMeta = {
+                source_name: meta.source_name || meta.source || 'unknown',
+                kb_id: meta.kb_id || 'N/A',
+                user_id: meta.user_id || 'N/A',
+                source_type: meta.source_type || 'N/A',
+                version: meta.version || 1,
+                document_id: meta.document_id || '',
+                created_at: meta.created_at || 'Unknown',
+                section_path: meta.section_path || []
+            };
             return `
             <div class="chunk-item-compact">
                 <div class="chunk-header-compact">
@@ -877,14 +915,7 @@ async function viewDocument(documentId, filename) {
                 </div>
                 <div class="result-text">${escapeHtml(isFAQ? question+" - "+ answer : chunk.text)}</div>
                 <div class="chunk-metadata-json">
-                    { "source_name": "${escapeHtml(meta.source_name || meta.source || 'unknown')}",
-                      "kb_id": "${escapeHtml(meta.kb_id || 'N/A')}", 
-                      "user_id": "${escapeHtml(meta.user_id || 'N/A')}", 
-                      "source_type": "${escapeHtml(meta.source_type || 'N/A')}", 
-                      "version": ${meta.version || 1}, 
-                      "document_id": "${escapeHtml(meta.document_id || '')}", 
-                      "created_at": "${meta.created_at || 'Unknown'}",
-                      "section_path": "[${meta.section_path || '[]'}]" }
+                    <pre>${escapeHtml(JSON.stringify(cleanMeta, null, 2))}</pre>
                 </div>
             </div>
         `}).join('');
@@ -896,7 +927,6 @@ async function viewDocument(documentId, filename) {
         `;
     }
 }
-
 // удаление документа
 async function deleteDocument(documentId, filename) {
     if (!confirm(`Are you sure you want to delete "${filename}"?`)) {
@@ -922,7 +952,6 @@ async function deleteDocument(documentId, filename) {
 function closeModal() {
     document.getElementById('chunks-modal').classList.remove('active');
 }
-
 // Close modal on outside click
 document.getElementById('chunks-modal').addEventListener('click', (e) => {
     if (e.target.id === 'chunks-modal') {
@@ -1021,6 +1050,15 @@ async function performSearch() {
             const answer = isFAQ? (r.answer || ''): "";
             const title = `${isFAQ? question || 'FAQ': r.source_name || r.source || 'Unknown'}`;
             const text = isFAQ ? `${question}${answer ? "\n\n"+answer: ""}` : r.text || '';
+            const cleanMeta = {
+                source_name: r.source_name || 'unknown',
+                kb_id: r.kb_id || 'N/A',
+                user_id: r.user_id || 'N/A',
+                source_type: r.source_type || 'N/A',
+                document_id: r.document_id || '',
+                created_at: r.created_at || 'Unknown',
+                score: score
+            }
             return `
                 <div class="chunk-item-compact">
                     <div class="chunk-header-compact">
@@ -1035,15 +1073,7 @@ async function performSearch() {
                     </div>
 
                     <div class="chunk-metadata-json">
-                        { 
-                          "source_name": "${escapeHtml(r.source_name || 'unknown')}",
-                          "kb_id": "${escapeHtml(r.kb_id || 'N/A')}",
-                          "user_id": "${escapeHtml(r.user_id || 'N/A')}",
-                          "source_type": "${escapeHtml(r.source_type || 'N/A')}",
-                          "document_id": "${escapeHtml(r.document_id || '')}",
-                          "created_at": "${r.created_at || 'Unknown'}",
-                          "score": ${score}
-                        }
+                        <pre>${escapeHtml(JSON.stringify(cleanMeta, null, 2))}</pre>
                     </div>
                 </div>
             `;
@@ -1306,11 +1336,16 @@ document.addEventListener("click", function (e) {
 // NEWS TAB LOGIC
 // #############################
 
-
 // отправка новостей
 async function sendNews() {
 
-    const text = document.getElementById("news-text").value;
+    const html = newsEditor.root.innerHTML.trim();
+
+    // Проверка что не пусто
+    if (!html || html === "<p><br></p>") {
+        alert("Введите текст новости");
+        return;
+    }
     const resultDiv = document.getElementById("news-result");
     const scheduleTimeEl = document.getElementById("news-schedule-time");
     const scheduleTime = scheduleTimeEl.value;
@@ -1322,15 +1357,13 @@ async function sendNews() {
     const targetGroup = targetGroupEl ? targetGroupEl.value : "all";
     
     const formData = new FormData();
-    if (!text) {
-        alert("Введите текст новости")
-        return
-    }
      if (reusePath && reusePath.trim() !== "") {
         formData.append("reuse_file_path", reusePath);
         console.log("Reusing file:", reusePath);
     }
-    formData.append("text", text);
+    // formData.append("text", text);
+    formData.append("text", html);
+    formData.append("html", html);
     formData.append("target_group", targetGroup);
 
     if (fileInput.files.length > 0 && !reusePath) {
@@ -1363,7 +1396,7 @@ async function sendNews() {
                 📬 Получателей: ${recipients}<br>
                 👥 Группа: ${getTargetGroupName(targetGroup)}
             `;
-            document.getElementById("news-text").value = "";
+            newsEditor.setText("");
             // Очищаем форму
             fileInput.value = "";
             document.getElementById("news-file-info").style.display = "none";
@@ -1385,13 +1418,246 @@ async function sendNews() {
     }
 }
 
+// загрузка истории новостей
+async function loadNewsHistory() {
+    const container = document.getElementById("news-history");
+    container.innerHTML = '<div class="loading">Загрузка...</div>';
+
+    try {
+        const res = await fetch("/api/news");
+        if (!res.ok) {
+            throw new Error("Failed to load news");
+        }
+
+        const data = await res.json();
+
+        if (!data || data.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Нет новостей</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = data.map(n =>{
+            const files = n.files || [];
+            const targetGroup = n.target_group || "all";
+            const filesHtml = files.length > 0
+                ? files.map(f => `
+                    <div style="margin-top:5px;">
+                        📎 ${escapeHtml(f.name)}
+                        <button 
+                            class="btn btn-small btn-secondary"
+                            onclick="viewNewsFile('${f.name}')">
+                            View File 👁
+                        </button>
+                    </div>
+                `).join("")
+                : '<div style="color:#999;">Без файлов</div>';
+            return `
+                <div class="document-card">
+                    <div class="document-header">
+                        <div class="document-title">
+                            📰 ID: ${n.id}
+                        </div>
+                        <button 
+                            class="btn btn-primary btn-small"
+                            onclick="reuseNewsById(${n.id})">
+                            📋 Использовать
+                        </button>
+                        <button 
+                            class="btn btn-primary btn-danger btn-small"
+                            onclick="deleteNews(${n.id})">
+                            🗑️ Удалить
+                        </button>
+                    </div>
+                    
+                    <div class="document-meta">
+                        <div class="meta-item">
+                            📅 ${formatDate(n.created_at)}
+                        </div>
+                        <div class="meta-item">
+                            ⏰ ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}
+                        </div>
+                        <div class="meta-item">
+                            📊 ${n.status}
+                        </div>
+                        <div class="meta-item">
+                            👥 ${getTargetGroupName(targetGroup) || n.target_group || "all"}
+                        </div>
+                    </div>
+
+                    <div class="result-text" style="margin-top:10px;">
+                        <div class="news-preview">
+                            ${n.text || ""}
+                        </div>
+                    </div>
+                    <div style="margin-top:10px;">
+                        ${filesHtml}
+                    </div>
+                </div>
+            `; 
+        }).join("");
+
+    } catch (e) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки: ${e.message}
+            </div>
+        `;
+    }
+}
+
+// функция удаления новости из истории
+async function deleteNews(id) {
+    const confirmDelete = confirm("Удалить новость из истории?");
+    if (!confirmDelete) return;
+
+    try {
+        const res = await fetch(`/api/news/${id}`, {
+            method: "DELETE"
+        });
+
+        if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.detail || "Ошибка удаления");
+        }
+
+        showNotification("Новость удалена", "success");
+
+        // перезагрузка списка
+        loadNewsHistory();
+
+    } catch (e) {
+        alert("Ошибка: " + e.message);
+    }
+}
+                        
+// просмотр файла новости
+async function viewNewsFile(name) {
+    try {
+        const res = await fetch(`/api/local-file-news?name=${encodeURIComponent(name)}`);
+
+        if (!res.ok) {
+            throw new Error("Ошибка загрузки файла");
+        }
+
+        const contentType = res.headers.get("content-type") || "";
+
+        const fileExt = name.split('.').pop().toLowerCase();
+        const textExtensions = ['md', 'txt', 'json', 'csv', 'xml', 'html', 'htm'];
+        const isTextFile = textExtensions.includes(fileExt);
+
+        // текст / markdown / json - показываем в модалке
+        if (isTextFile || contentType.includes("text")) {
+            const text = await res.text();
+
+            // Сохраняем форматирование с помощью white-space: pre-wrap
+            document.getElementById("file-content").innerHTML = `
+                <div style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; max-height: 600px; overflow-y: auto; background: #f5f5f5; padding: 15px; border-radius: 5px;">
+                    ${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+                </div>
+            `;
+            document.getElementById("file-modal").style.display = "block";
+        } 
+        // pdf / изображения — тоже в модалку
+        else if (contentType.includes("pdf") || contentType.includes("image")) {
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+
+            document.getElementById("file-content").innerHTML = `
+                <iframe src="${url}" style="width:100%; height:600px; border:none;"></iframe>
+            `;
+            document.getElementById("file-modal").style.display = "block";
+        }
+        else {
+            // Остальные файлы - скачиваем
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+    } catch (e) {
+        alert("Ошибка: " + e.message);
+    }
+}
+// переиспользование новости по id
+async function reuseNewsById(id) {
+    const res = await fetch(`/api/news/${id}`);
+    const news = await res.json();
+    reuseNews(news);
+}
+// функция переиспользования новости
+function reuseNews(news) {
+    // 1. текст
+    if (newsEditor && news.text) {
+        newsEditor.setText(""); // очистка 
+        newsEditor.clipboard.dangerouslyPasteHTML(news.text);
+    }
+    // востанавливаем группу получателей
+    const targetGroup = news.target_group || "all";
+    const groupRadio = document.querySelector(`input[name="news-target-group"][value="${targetGroup}"]`);
+    if (groupRadio) {
+        groupRadio.checked = true;
+    }
+
+    // 2. файл
+    const fileInput = document.getElementById("news-files");
+    const fileInfo = document.getElementById("news-file-info");
+    const fileName = document.getElementById("news-file-name");
+
+    if (news.files && Array.isArray(news.files) && news.files.length > 0) {
+        const f = news.files[0];
+
+        // input[type=file] нельзя программно заполнить
+        // поэтому просто показываем UI
+        if (f && f.name) {
+            fileName.textContent = f.name + " (reuse)";
+            fileInfo.style.display = "flex";
+            
+            // сохраняем путь для отправки
+            fileInput.dataset.reusePath = f.path || "";
+        } else {
+            // файл есть но имя не указано
+            fileName.textContent = "Файл (reuse)";
+            fileInfo.style.display = "flex";
+            fileInput.dataset.reusePath = f.path || "";
+        }
+    } else {
+        fileInput.value = "";
+        fileInfo.style.display = "none";
+        delete fileInput.dataset.reusePath;
+    }
+
+    showNotification("Новость загружена как шаблон", "success");
+}
+// закрытие модальности просмотра новости
+function closeFileModal() {
+    const modal = document.getElementById("file-modal");
+    modal.style.display = "none";
+
+    // чистим контент
+    document.getElementById("file-content").innerHTML = "";
+}
+
+// #############################
+// PROMPTS TAB LOGIC
+// #############################
 
 // Загрузка вкладки Prompts
 async function loadPromptsTab() {
     await loadPromptFiles();
     await loadCurrentPrompt();
 }
-
 // Загрузка списка файлов промптов
 async function loadPromptFiles() {
     const filesList = document.getElementById("prompt-files-list");
@@ -1434,7 +1700,6 @@ async function loadPromptFiles() {
         console.error("Error loading prompt files:", err);
     }
 }
-
 // Загрузка текущего промпта
 async function loadCurrentPrompt() {
     const editor = document.getElementById("prompt-editor");
@@ -1471,7 +1736,6 @@ async function loadCurrentPrompt() {
         console.error("Error loading current prompt:", err);
     }
 }
-
 // Загрузка конкретного файла промпта
 async function loadPromptFile(filename) {
     const editor = document.getElementById("prompt-editor");
@@ -1501,7 +1765,6 @@ async function loadPromptFile(filename) {
         console.error("Error loading prompt file:", err);
     }
 }
-
 // Создание бэкапа
 async function createBackup() {
     const resultDiv = document.getElementById("prompt-result");
@@ -1525,7 +1788,6 @@ async function createBackup() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
-
 // Сохранение промпта
 async function savePrompt() {
     const editor = document.getElementById("prompt-editor");
@@ -1569,7 +1831,6 @@ async function savePrompt() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
-
 // Восстановление из бэкапа
 async function restorePrompt(filename) {
     if (!confirm(`Восстановить промпт из ${filename}?\n\nТекущий промпт будет заменён.`)) {
@@ -1595,7 +1856,6 @@ async function restorePrompt(filename) {
         console.error("Error restoring prompt:", err);
     }
 }
-
 // Удаление файла бэкапа
 async function deletePromptFile(filename) {
     if (!confirm(`Удалить файл ${filename}?`)) {
@@ -1620,6 +1880,9 @@ async function deletePromptFile(filename) {
     }
 }
 
+// #############################
+// BOT SETTINGS TAB LOGIC
+// #############################
 
 // загрузка стартового сообщения бота
 async function loadBotStartMessage() {
@@ -1688,205 +1951,9 @@ async function saveBotStartMessage() {
     }
 }
 
-
-async function loadNewsHistory() {
-    const container = document.getElementById("news-history");
-    container.innerHTML = '<div class="loading">Загрузка...</div>';
-
-    try {
-        const res = await fetch("/api/news");
-        if (!res.ok) {
-            throw new Error("Failed to load news");
-        }
-
-        const data = await res.json();
-
-        if (!data || data.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>Нет новостей</p>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = data.map(n =>{
-            const files = n.files || [];
-            const targetGroup = n.target_group || "all";
-            const groupNames = {
-                "all": "Все пользователи",
-                "manager_group": "👔 Менеджеры",
-                "couch_group": "🎓 Коучи"
-            };
-            const filesHtml = files.length > 0
-                ? files.map(f => `
-                    <div style="margin-top:5px;">
-                        📎 ${escapeHtml(f.name)}
-                        <button 
-                            class="btn btn-small btn-secondary"
-                            onclick="viewNewsFile('${f.name}')">
-                            View File 👁
-                        </button>
-                    </div>
-                `).join("")
-                : '<div style="color:#999;">Без файлов</div>';
-            return `
-                <div class="document-card">
-                    <div class="document-header">
-                        <div class="document-title">
-                            📰 ID: ${n.id}
-                        </div>
-                        <button 
-                            class="btn btn-primary btn-small"
-                            onclick="reuseNewsById(${n.id})">
-                            📋 Использовать
-                        </button>
-                    </div>
-                    
-                    <div class="document-meta">
-                        <div class="meta-item">
-                            📅 ${formatDate(n.created_at)}
-                        </div>
-                        <div class="meta-item">
-                            ⏰ ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}
-                        </div>
-                        <div class="meta-item">
-                            📊 ${n.status}
-                        </div>
-                        <div class="meta-item">
-                            👥 ${groupNames[targetGroup] || n.target_group || "all"}
-                        </div>
-                    </div>
-
-                    <div class="result-text" style="margin-top:10px;">
-                        ${escapeHtml(n.text || "")}
-                    </div>
-                    <div style="margin-top:10px;">
-                        ${filesHtml}
-                    </div>
-                </div>
-            `; 
-        }).join("");
-
-    } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
-            </div>
-        `;
-    }
-}
-
-async function viewNewsFile(name) {
-    try {
-        const res = await fetch(`/api/local-file-news?name=${encodeURIComponent(name)}`);
-
-        if (!res.ok) {
-            throw new Error("Ошибка загрузки файла");
-        }
-
-        const contentType = res.headers.get("content-type") || "";
-
-        const fileExt = name.split('.').pop().toLowerCase();
-        const textExtensions = ['md', 'txt', 'json', 'csv', 'xml', 'html', 'htm'];
-        const isTextFile = textExtensions.includes(fileExt);
-
-        // 👉 текст / markdown / json - показываем в модалке
-        if (isTextFile || contentType.includes("text")) {
-            const text = await res.text();
-
-            // 👇 Сохраняем форматирование с помощью white-space: pre-wrap
-            document.getElementById("file-content").innerHTML = `
-                <div style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; max-height: 600px; overflow-y: auto; background: #f5f5f5; padding: 15px; border-radius: 5px;">
-                    ${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
-                </div>
-            `;
-            document.getElementById("file-modal").style.display = "block";
-        } 
-        // 👉 pdf / изображения — тоже в модалку
-        else if (contentType.includes("pdf") || contentType.includes("image")) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-
-            document.getElementById("file-content").innerHTML = `
-                <iframe src="${url}" style="width:100%; height:600px; border:none;"></iframe>
-            `;
-            document.getElementById("file-modal").style.display = "block";
-        }
-        else {
-            // 👇 Остальные файлы - скачиваем
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = name;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        }
-
-    } catch (e) {
-        alert("Ошибка: " + e.message);
-    }
-}
-
-async function reuseNewsById(id) {
-    const res = await fetch(`/api/news/${id}`);
-    const news = await res.json();
-    reuseNews(news);
-}
-
-function reuseNews(news) {
-    // 1. текст
-    document.getElementById("news-text").value = news.text || "";
-    // востанавливаем группу получателей
-    const targetGroup = news.target_group || "all";
-    const groupRadio = document.querySelector(`input[name="news-target-group"][value="${targetGroup}"]`);
-    if (groupRadio) {
-        groupRadio.checked = true;
-    }
-
-    // 2. файл
-    const fileInput = document.getElementById("news-files");
-    const fileInfo = document.getElementById("news-file-info");
-    const fileName = document.getElementById("news-file-name");
-
-    if (news.files && Array.isArray(news.files) && news.files.length > 0) {
-        const f = news.files[0];
-
-        // input[type=file] нельзя программно заполнить
-        // поэтому просто показываем UI
-        if (f && f.name) {
-            fileName.textContent = f.name + " (reuse)";
-            fileInfo.style.display = "flex";
-            
-            // сохраняем путь для отправки
-            fileInput.dataset.reusePath = f.path || "";
-        } else {
-            // файл есть но имя не указано
-            fileName.textContent = "Файл (reuse)";
-            fileInfo.style.display = "flex";
-            fileInput.dataset.reusePath = f.path || "";
-        }
-    } else {
-        fileInput.value = "";
-        fileInfo.style.display = "none";
-        delete fileInput.dataset.reusePath;
-    }
-
-    showNotification("Новость загружена как шаблон", "success");
-}
-
-function closeFileModal() {
-    const modal = document.getElementById("file-modal");
-    modal.style.display = "none";
-
-    // 👇 чистим контент
-    document.getElementById("file-content").innerHTML = "";
-}
+// #############################
+// GROUPS TAB LOGIC
+// #############################
 
 // Загрузка списка пользователей с группами
 async function loadUserGroups() {
@@ -1986,7 +2053,6 @@ async function loadUserGroups() {
         console.error("Error loading user groups:", e);
     }
 }
-
 // Обновление статистики по группам
 function updateGroupStats(users) {
     const statsDiv = document.getElementById("user-groups-stats");
@@ -2024,7 +2090,6 @@ function updateGroupStats(users) {
         </div>
     `;
 }
-
 // Переключение группы пользователя
 async function toggleUserGroup(userId, group, value) {
     try {
@@ -2056,7 +2121,6 @@ async function toggleUserGroup(userId, group, value) {
         await loadUserGroups();
     }
 }
-
 // Экспорт пользователей в CSV
 function exportUsers() {
     const table = document.querySelector("#user-groups-list table");
