@@ -1655,14 +1655,16 @@ async def main() -> None:
                     )
                     logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
 
-                if reranked_items:
-                    top_items = reranked_items[:SHOW_MAX]
-                    text = render_results(top_items, total=len(reranked_items), offset=0)
-                    await m.answer(text, parse_mode="HTML")
+                    if reranked_items:
+                        top_items = reranked_items[:SHOW_MAX]
+                        text = render_results(top_items, total=len(reranked_items), offset=0)
+                        await m.answer(text, parse_mode="HTML")
+                    else:
+                        await m.answer("Не нашёл релевантных файлов по запросу.")
                 else:
-                    await m.answer("Не нашёл релевантных файлов по запросу.")
+                    await m.answer(answer, parse_mode="HTML") 
 
-                    return
+                return
 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
