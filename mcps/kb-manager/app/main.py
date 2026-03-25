@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pathlib import Path
@@ -111,6 +111,8 @@ sync_settings = {
     "next_sync":None,
     "running": False
 }
+# очередь событий
+subscribers = []
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
@@ -121,6 +123,21 @@ def get_interval_delta():
     if sync_settings.get("interval_seconds"):
         return timedelta(seconds=sync_settings["interval_seconds"])
     return timedelta(hours=sync_settings["interval_hours"])
+
+# создаем функцию очереди событий чтобы отслеживать автоматические обновления
+async def event_generator():
+    queue = asyncio.Queue()
+    subscribers.append(queue)
+    try:
+        while True:
+            data = await queue.get()
+            yield f"data: {data}\n\n"
+    finally:
+        subscribers.remove(queue)
+
+@app.get("/api/filesystem/sync_events")
+async def sync_events():
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 async def sync_function(iter_dir, storager, collection_type):
     """
@@ -163,6 +180,8 @@ async def run_sync_all_safe():
             sync_settings["running"] = False
             logger.info("[SYNC] finished")
             kb_file_storage.build_tree()
+            for q in subscribers:
+                await q.put("sync_completed")
 
     return {"status": "completed"}
 
