@@ -26,13 +26,14 @@ PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
 BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
+# папка загрузки файлов
 BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
 
 logger = setup_logger(name="Test", service_dir="App")
 
 load_dotenv()
 app = FastAPI(
-    title="Qdrant Document Manager",
+    title="UI Manager for Anastasia",
 )
 
 # CORS middleware
@@ -160,6 +161,7 @@ async def run_sync_all_safe():
             sync_settings["next_sync"] = (datetime.now()+get_interval_delta()).isoformat()
         finally:
             sync_settings["running"] = False
+            logger.info("[SYNC] finished")
 
     return {"status": "completed"}
 
@@ -170,12 +172,10 @@ async def run_sync_all_once():
     """
     logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
     if qdrant_service.collection_type == CollectionType.FAQ:
-        # await sync_function(FAQ_ROOT, faq_file_storage, "faq")
         root = FAQ_ROOT
         storager = faq_file_storage
         collection_type = "faq"
     elif qdrant_service.collection_type== CollectionType.DOCUMENTS:
-        # await sync_function(KB_ROOT, kb_file_storage, "kb")
         root = KB_ROOT
         storager = kb_file_storage
         collection_type = "kb"
@@ -187,6 +187,7 @@ async def run_sync_all_once():
     }
     qdrant_kbs = qdrant_service.list_knowledge_bases()
     qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
+    # функционал удаления kb_id если удалили папку, то удалять и в qdrant
     deleted_kbs = qdrant_kb_ids - disk_kb_ids
 
     for kb_id in deleted_kbs:
@@ -198,6 +199,7 @@ async def run_sync_all_once():
             )
         except Exception as e:
             logger.error(f"[SYNC] Failed to delete KB {kb_id}: {e}")
+    # синхронизация существующих папок
     await sync_function(root, storager, collection_type)        
     return {
         "status": "success",
@@ -219,6 +221,7 @@ async def start_scheduler():
     await auto_sync()
 
 async def auto_sync():
+    """Функция автоматической синхронизации по времени"""
     logger.info("[AUTO SYNC] loop started")
     if not sync_settings["next_sync"]:
         sync_settings["next_sync"] = (
@@ -241,10 +244,12 @@ async def auto_sync():
 
 @app.get("/api/sync/settings")
 async def get_sync_settings():
+    """получить текущие настройки синхронизации"""
     return sync_settings
 
 @app.post("/api/sync/settings")
 async def set_sync_settings(data: SyncInterval):
+    """Установить новые настройки синхронизации"""
     sync_settings["interval_hours"] = data.hours
     now = datetime.now()
     sync_settings["next_sync"] = (now+get_interval_delta()).isoformat()
@@ -490,12 +495,12 @@ async def list_knowledge_bases():
 
 @app.post("/api/knowledge-bases/delete")
 def delete_knowledge_base(req: DeleteKBRequest):
+    """удаление kb из qdrant"""
     try:
         qdrant_service.delete_kb(
             kb_id=req.kb_id,
             collection_name=req.collection_name
         )
-
         return {
             "status": "ok",
             "kb_id": req.kb_id
@@ -507,6 +512,7 @@ def delete_knowledge_base(req: DeleteKBRequest):
 
 @app.get("/api/collections")
 def get_collections():
+    """получение коллекций"""
     try: 
         info =qdrant_service.list_collections()
         return info
@@ -517,6 +523,7 @@ def get_collections():
 
 @app.post("/api/collections/switch")
 def switch_collection(req: SwitchCollectionRequest):
+    """переключение между коллекциями"""
     try:
         qdrant_service.switch_collection(
             req.collection_name,
@@ -533,6 +540,7 @@ def switch_collection(req: SwitchCollectionRequest):
 
 @app.post("/api/collections/delete")
 async def delete_collection(req: DeleteCollectionRequest):
+    """Удаление коллекции"""
     active = qdrant_service.get_active_collections()
     collection = req.collection
     if not collection:
@@ -553,6 +561,7 @@ async def delete_collection(req: DeleteCollectionRequest):
 
 @app.post("/api/collections/create")
 async def create_collection(request: Request):
+    """endpoint для создания коллекций"""
     payload = await request.json()
 
     version = payload.get("version")
@@ -581,10 +590,12 @@ async def create_collection(request: Request):
 
 @app.get("/api/collections/active")
 def get_active_collections():
+    """получение активных коллекций"""
     return qdrant_service.get_active_collections()
 
 @app.post("/api/collections/switch-alias")
 def switch_collection_alias(req: SwitchAliasRequest):
+    """переключение алиаса между коллекциями"""
     try:
         qdrant_service.switch_alias(
             collection_name=req.collection_name,
@@ -596,39 +607,32 @@ def switch_collection_alias(req: SwitchAliasRequest):
 
 @app.get("/api/collections/by-type")
 def get_collections_by_type():
+    """получение коллекций по типам"""
     collections = qdrant_service.qdrant_client.get_collections().collections
-
     result = {
         "faq": [],
         "kb": []
     }
-
     for c in collections:
         if c.name.startswith("faq_"):
             result["faq"].append(c.name)
         elif c.name.startswith("kb_"):
             result["kb"].append(c.name)
-
     return result
 
 @app.get("/api/documents/download/{document_id}")
 async def download_document(document_id: str):
+    """скачивание документа по id"""
     chunks = qdrant_service.get_document_chunks(document_id)
     if not chunks:
         raise HTTPException(404, "Document not found")
 
     raw_path = chunks[0]["metadata"].get("file_path")
 
-    print("RAW PATH:", repr(raw_path))
-
     if not raw_path:
         raise HTTPException(404, "No file_path in metadata")
 
     file_path = Path(raw_path.strip())
-
-    print("CHECKING:", file_path)
-    print("EXISTS:", file_path.exists())
-
     if not file_path.exists():
         raise HTTPException(
             404,
@@ -646,24 +650,44 @@ async def filesystem_sync(
     kb_id: str = Form("01_Маркетинговые материалы"),
     collection_type: str = Form("kb")
 ):
+    logger.info(f"[SYNC ONE] kb_id={kb_id}, type={collection_type}")
+    loop = asyncio.get_running_loop()
+    """синхронизация для kb отдельно, чтобы не делать для всех"""
     if collection_type == CollectionType.FAQ:
-        faq_file_storage.sync(kb_id, collection_type)
-    elif collection_type== CollectionType.DOCUMENTS:
-        kb_file_storage.sync(kb_id, collection_type) 
+        storager = faq_file_storage
+    elif collection_type == CollectionType.DOCUMENTS or collection_type=="kb":
+        storager = kb_file_storage
+    else:
+        return {"status": "error", "message": "Invalid collection type"}
+
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: storager.sync(
+                kb_id=kb_id,
+                collection_type=collection_type
+            )
+        )
+    except Exception as e:
+        logger.error(f"[SYNC KB] Error: {e}")
+        return {"status": "error", "message": str(e)}
+
     return {"status": "sync_completed"}
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
+    """Показывает дерево файлов, сейчас пока ориентируемся на kb коллекцию только"""
     # meanwhile show only kb_tree 
     return kb_file_storage.build_tree()
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
+    """Скачивает файл из нашего источника, пока только для kb коллекции документов"""
     path = unquote(path)
-    file_path = (KB_STORAGE_ROOT / path).resolve()
+    file_path = (KB_ROOT / path).resolve()
 
     # защита от выхода из root
-    if not str(file_path).startswith(str(KB_STORAGE_ROOT)):
+    if not str(file_path).startswith(str(KB_ROOT)):
         raise HTTPException(403, "Invalid path")
 
     if not file_path.exists():
@@ -674,6 +698,10 @@ async def download_filesystem_file(path: str):
         filename=file_path.name,
         media_type="application/octet-stream"
     )
+
+##################################
+# Работа с новостями
+##################################
 
 @app.get("/api/news")
 async def get_news():
@@ -712,13 +740,13 @@ async def get_news_file(name: str):
                 else:
                     content = file_path.read_text(encoding="utf-8", errors="replace")
 
-            # 👈 НЕТ Content-Disposition - браузер покажет текст, а не скачает
+            # НЕТ Content-Disposition - браузер покажет текст, а не скачает
             return PlainTextResponse(
                 content, 
                 media_type="text/plain; charset=utf-8"
             )
 
-        # 👇 Для PDF и изображений - FileResponse с inline (показывает в модалке)
+        # Для PDF и изображений - FileResponse с inline (показывает в модалке)
         if content_type and (
             content_type.startswith("image") or 
             content_type == "application/pdf"
@@ -739,12 +767,10 @@ async def get_news_file(name: str):
                 "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
             }
         )
-        
 
     except Exception as e:
         logger.error(f"Проблема говорит: {e}")
         raise HTTPException(500, str(e))
-
 
 @app.get("/api/news/{news_id}")
 async def get_news_by_id(news_id: int):
@@ -756,6 +782,7 @@ async def get_news_by_id(news_id: int):
 
 @app.delete("/api/news/{news_id}")
 async def delete_news(news_id: int):
+    """удалить новость из истории бд"""
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.delete(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
         resp.raise_for_status()
@@ -763,13 +790,13 @@ async def delete_news(news_id: int):
 
 @app.post("/api/news/send")
 async def send_news(
-    # text: str = Form(...),
     html: str = Form(...),
     files: List[UploadFile] = File(default=[]),
     schedule_time: Optional[str] = Form(None),
     reuse_file_path: Optional[str] = Form(None), 
     target_group: str = Form("all")
 ):
+    """отправить новость"""
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             multipart_data = []
@@ -779,8 +806,6 @@ async def send_news(
                 logger.info(f"Отложено на: {schedule_time}")
             else: 
                 logger.info("Без отложенной отправки")
-            # текст
-            # multipart_data.append(("text", (None, text)))
             multipart_data.append(("html", (None, html)))
             logger.info(f"HTML length: {len(html)}")
             # группа получателей
@@ -814,46 +839,9 @@ async def send_news(
         logger.error(f"News send error: {e}")
         raise HTTPException(500, str(e))
 
-@app.get("/api/subscribers")
-async def get_subscribers():
-    """Получить всех подписчиков с информацией о группах"""
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        logger.error(f"Error getting subscribers: {e}")
-        raise HTTPException(500, f"Failed to get subscribers: {str(e)}")
-    
-@app.post("/api/subscribers/group")
-async def update_subscriber_group(data: dict):
-    """Обновить группу пользователя"""
-    try:
-        user_id = int(data.get("user_id"))
-        group = data.get("group")
-        value = bool(data.get("value"))
-        
-        if group not in ("manager_group", "couch_group"):
-            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'couch_group'")
-        
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{TELEGRAM_BOT_API}/api/subscribers/group",
-                json={
-                    "user_id": user_id,
-                    "group": group,
-                    "value": value
-                }
-            )
-            resp.raise_for_status()
-            return resp.json()
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating subscriber group: {e}")
-        raise HTTPException(500, f"Failed to update group: {str(e)}")
+###############################
+# Работа с промптами ADK Agent 
+###############################
 
 @app.get("/api/prompts/list")
 async def list_prompts():
@@ -875,7 +863,7 @@ async def list_prompts():
         # Сортировка: текущий первый, потом бэкапы, потом остальные
         prompts.sort(key=lambda x: (
             not x["is_current"],  # текущий первым
-            not x["is_backup"],   # потом не бэкапы
+            not x["is_backup"],   # потом бэкапы
             x["modified"]         # по дате
         ))
         
@@ -1042,6 +1030,9 @@ async def delete_prompt_file(filename: str):
         logger.error(f"Error deleting file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+############################
+# Работа с настройками бота 
+############################
 @app.get("/api/prompts/bot-start")
 async def get_bot_start_message():
     """Получить текущее стартовое сообщение бота"""
@@ -1103,6 +1094,52 @@ async def save_bot_start_message(data: dict):
     except Exception as e:
         logger.error(f"Error saving bot start message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+##################################
+# Работа с группами пользователей
+##################################
+
+@app.get("/api/subscribers")
+async def get_subscribers():
+    """Получить всех подписчиков с информацией о группах"""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Error getting subscribers: {e}")
+        raise HTTPException(500, f"Failed to get subscribers: {str(e)}")
+    
+@app.post("/api/subscribers/group")
+async def update_subscriber_group(data: dict):
+    """Обновить группу пользователя"""
+    try:
+        user_id = int(data.get("user_id"))
+        group = data.get("group")
+        value = bool(data.get("value"))
+        
+        if group not in ("manager_group", "couch_group"):
+            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'couch_group'")
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{TELEGRAM_BOT_API}/api/subscribers/group",
+                json={
+                    "user_id": user_id,
+                    "group": group,
+                    "value": value
+                }
+            )
+            resp.raise_for_status()
+            return resp.json()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating subscriber group: {e}")
+        raise HTTPException(500, f"Failed to update group: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn

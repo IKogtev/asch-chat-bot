@@ -23,3 +23,8 @@ agent/agent/
 filebrowser_data/database.db
 filebrowser_data/settings.json
 filegator_data
+# Test cases for ui
+node_modules/
+package-lock.json
+package.json
+tests/

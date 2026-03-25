@@ -128,6 +128,7 @@ class FileStorageService:
         """
         if self._sync_lock:
             self.logger.info("Sync already running")
+            self.logger.info(f"[SYNC BLOCKED], kb_id={kb_id}")
             return
         self._sync_lock = True
         self.logger.info("Starting filesystem sync")  
