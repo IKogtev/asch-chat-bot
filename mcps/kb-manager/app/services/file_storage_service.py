@@ -5,6 +5,7 @@ from datetime import datetime
 from app.utils.utillites import hash_file
 from app.utils.preprocessors.document_loader import DocumentLoader
 from app.utils.logger import setup_logger
+import time
 
 
 class FileStorageService:
@@ -36,7 +37,9 @@ class FileStorageService:
         self._sync_lock=False
         self.ignore_folders = {".git", "__pycache__", "_prepared"}
         self.allowed_ext = ext_allowed
-        
+        self._tree_cache = None
+        self._tree_ts = 0
+        self._tree_ttl = 60 # seconds of cash
 
     # -------------------------------------------------
     # SCAN FILESYSTEM
@@ -96,6 +99,9 @@ class FileStorageService:
             }
         }
         """
+        # cache tree for time of cache
+        if self._tree_cache and (time.time() - self._tree_ts < self._tree_ttl):
+            return self._tree_cache
 
         tree = {}
         for path in self.root.rglob("*"):
@@ -108,11 +114,10 @@ class FileStorageService:
 
             if path.is_file():
                 current.setdefault("files", []).append(parts[-1])
-                # current.setdefault("files", []).append({
-                #     "name": parts[-1],
-                #     "path": str(rel)
-                # })
 
+        self._tree_cache = tree
+        self._tree_ts = time.time()
+        self.logger.info("Build tree")
         return tree
 
     # -------------------------------------------------

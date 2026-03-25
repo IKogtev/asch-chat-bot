@@ -1286,51 +1286,63 @@ async function loadFilesystemTree() {
     container.innerHTML = "⏳ Loading...";
 
     try {
-        const response = await fetch("/api/filesystem/folders");
-        const tree = await response.json();
+        const res = await fetch("/api/filesystem/node?path=");
+        const data = await res.json();
 
-        container.innerHTML = renderTree(tree);
+        container.innerHTML = renderNode("", data);
 
     } catch (err) {
         container.innerHTML = "❌ Error loading tree";
-        console.error(err);
     }
 }
 // рендеринг дерева
-function renderTree(node) {
+function renderNode(path, data) {
     let html = "<ul class='tree'>";
 
-    for (const key in node) {
+    data.folders.forEach(folder => {
+        const newPath = path ? `${path}/${folder}` : folder;
 
-        if (key === "files") {
-            node[key].forEach(file => {
-                html += `<li class="file">📄 ${escapeHtml(file)}</li>`;
-            });
-        }
+        html += `
+            <li class="folder">
+                <span class="folder-toggle" data-path="${newPath}" data-loaded="false">
+                    📁 ${escapeHtml(folder)}
+                </span>
+                <div class="folder-content"></div>
+            </li>
+        `;
+    });
 
-        else if (typeof node[key] === "object") {
-            html += `
-                <li class="folder">
-                    <span class="folder-toggle">📁 ${escapeHtml(key)}</span>
-                    <div class="folder-content">
-                        ${renderTree(node[key])}
-                    </div>
-                </li>
-            `;
-        }
-    }
+    data.files.forEach(file => {
+        html += `<li class="file">📄 ${escapeHtml(file)}</li>`;
+    });
 
     html += "</ul>";
     return html;
 }
 // открытие папок внутри дерева
-document.addEventListener("click", function (e) {
+document.addEventListener("click", async function (e) {
+    if (!e.target.classList.contains("folder-toggle")) return;
 
-    if (e.target.classList.contains("folder-toggle")) {
-        const content = e.target.nextElementSibling;
-        content.classList.toggle("open");
+    const toggle = e.target;
+    const content = toggle.nextElementSibling;
+    const path = toggle.dataset.path;
+
+    if (toggle.dataset.loaded === "false") {
+        try {
+            content.innerHTML = "⏳ Loading...";
+
+            const res = await fetch(`/api/filesystem/node?path=${encodeURIComponent(path)}`);
+            const data = await res.json();
+
+            content.innerHTML = renderNode(path, data);
+            toggle.dataset.loaded = "true";
+
+        } catch (err) {
+            content.innerHTML = "❌ Error";
+        }
     }
 
+    content.classList.toggle("open");
 });
 
 // #############################

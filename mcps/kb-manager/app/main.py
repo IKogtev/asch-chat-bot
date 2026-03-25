@@ -162,6 +162,7 @@ async def run_sync_all_safe():
         finally:
             sync_settings["running"] = False
             logger.info("[SYNC] finished")
+            kb_file_storage.build_tree()
 
     return {"status": "completed"}
 
@@ -210,6 +211,8 @@ async def run_sync_all_once():
 async def startup_event():
     """Initialize Qdrant collection on startup"""
     qdrant_service.ensure_collection()
+    # строим дерево кэш изначально
+    kb_file_storage.build_tree()
     # делаем синхронизацию при старте
     asyncio.create_task(run_sync_all_safe())
     # запускаем расписание переиндексации
@@ -679,6 +682,29 @@ async def get_folders():
     """Показывает дерево файлов, сейчас пока ориентируемся на kb коллекцию только"""
     # meanwhile show only kb_tree 
     return kb_file_storage.build_tree()
+
+@app.get("/api/filesystem/node")
+async def get_node(path: str = ""):
+    """строим узлы дерева чтобы ускорить отработку"""
+    base = KB_ROOT
+    target = (base / path).resolve()
+
+    # защита
+    if not str(target).startswith(str(base.resolve())):
+        return {"error": "invalid path"}
+
+    result = {
+        "folders": [],
+        "files": []
+    }
+
+    for item in target.iterdir():
+        if item.is_dir():
+            result["folders"].append(item.name)
+        else:
+            result["files"].append(item.name)
+
+    return result
 
 @app.get("/api/filesystem/download")
 async def download_filesystem_file(path: str):
