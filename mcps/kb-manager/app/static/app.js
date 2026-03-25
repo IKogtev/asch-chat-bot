@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDocuments();
     setupDragAndDrop();
     loadSyncSettings();
+    subscribeToSync();
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
     const fileInfo = document.getElementById("news-file-info");
@@ -784,6 +785,25 @@ document.addEventListener("click", async function (e) {
     }
     
 });
+// подписка на очередь событий для отслеживания автоматического обновления 
+// при синхронизации атомарной
+function subscribeToSync() {
+    const eventSource = new EventSource("/api/filesystem/sync_events");
+
+    eventSource.onmessage = function (event) {
+        if (event.data === "sync_completed") {
+            console.log("🔄 Sync completed → refreshing UI");
+            loadDocuments();
+            loadFilesystemTree();
+        }
+    };
+
+    eventSource.onerror = function () {
+        console.error("SSE error");
+        eventSource.close();
+    };
+}
+
 
 // функция для синхронизации по всем данным
 async function syncAll(btnElement) {
@@ -1862,7 +1882,7 @@ async function savePrompt() {
             resultDiv.innerHTML = `✅ Промпт сохранён!<br>📦 Бэкап создан автоматически`;
             currentPromptContent = newContent;
             await loadPromptFiles();
-            await loadCurrentPrompt();
+            // await loadCurrentPrompt();
         } else {
             throw new Error(data.detail || "Ошибка сохранения");
         }
