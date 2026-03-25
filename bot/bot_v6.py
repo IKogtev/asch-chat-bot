@@ -45,6 +45,7 @@ CALLBACK_MAP = OrderedDict()
 MAX_CALLBACK_ENTRIES = 5000
 # переменные для сохранения дерева папок в кэше
 TREE_CACHE = None
+TREE_LOADING = None
 TREE_TS = 0
 TIME_SET_WAIT = 120
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
@@ -2045,7 +2046,7 @@ def register_callback_path(path: str) -> str:
 async def get_tree_cached():
     global TREE_CACHE, TREE_TS
     # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
-    if time.time() - TREE_TS < TIME_SET_WAIT:
+    if TREE_CACHE and time.time() - TREE_TS < TIME_SET_WAIT:
         return TREE_CACHE
 
     TREE_CACHE = await get_kb_tree()
