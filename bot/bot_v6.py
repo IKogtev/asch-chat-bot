@@ -354,11 +354,11 @@ class SubscriberStore:
             first_name TEXT,
             last_name TEXT,
             phone_number VARCHAR(20),
-            last_seen TIMESTAMP DEFAULT NOW(),
+            last_seen TIMESTAMPTZ DEFAULT NOW(),
             region TEXT,
             manager_group BOOLEAN DEFAULT FALSE,
             couch_group BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );
         """
         async with self.pool.acquire() as conn:
@@ -459,7 +459,7 @@ class NewsStore:
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
             text TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
             scheduled_at TIMESTAMPTZ,
             files JSONB,
             status VARCHAR(20) DEFAULT 'pending', -- pending | sent
@@ -551,7 +551,12 @@ class NewsStore:
                 news["target_group"] = "all"
 
             return news
-
+        
+    async def delete_news(self, news_id: int):
+        query = "DELETE FROM news WHERE id=$1"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(query, news_id)
 
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
@@ -1756,6 +1761,9 @@ async def main() -> None:
                 filtered_users.append(user_id)
         return filtered_users, len(all_users)
 
+    def split_message(text: str, limit: int = 4000):
+        return [text[i:i+limit] for i in range(0, len(text), limit)]
+
     async def send_now(text: str, file_data: List, target_group: str="all"):
         """Отправка новости с фильтрацией по группе"""
         sent = 0
@@ -1769,7 +1777,15 @@ async def main() -> None:
             try:
                 # отправка текста
                 if text:
-                    await bot.send_message(user_id, text)
+                    # защита от слишком больших новостей, чтобы Telegram не обрезал их
+                    parts = split_message(text)
+                    for part in parts:
+                        try:
+                            # await bot.send_message(user_id, text)
+                            await bot.send_message(user_id, part, parse_mode="HTML")
+                        except Exception as e:
+                            logger.error(f"HTML send error, fallback to plain: {e}")
+                            await bot.send_message(user_id, part)
 
                 # отправка файлов
                 for filename, content_type, content in file_data:
@@ -1815,16 +1831,72 @@ async def main() -> None:
                             except Exception as e:
                                 logger.error(f"File read error: {e}")
                         target_group = news.get("target_group", "all")
-                        await send_now(news['text'], file_data, target_group)
+                        safe_html = html_to_telegram(news['text'])
+                        # await send_now(news['text'], file_data, target_group)
+                        await send_now(safe_html, file_data, target_group)
                         await news_store.mark_sent(news["id"])
 
                 await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"Error during news_scheduler like this {e}")
     
+    def html_to_telegram(html: str) -> str:
+        if not html:
+            return ""
+
+        # переносы строк
+        html = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+
+        # параграфы
+        html = re.sub(r"<p[^>]*>", "", html)
+        html = html.replace("</p>", "\n")
+
+        # заголовки → bold
+        html = re.sub(r"<h[1-6][^>]*>", "<b>", html)
+        html = re.sub(r"</h[1-6]>", "</b>\n", html)
+
+        # списки
+        html = html.replace("<ul>", "").replace("</ul>", "")
+        html = html.replace("<ol>", "").replace("</ol>", "")
+        html = re.sub(r"<li[^>]*>", "• ", html)
+        html = html.replace("</li>", "\n")
+
+        # bold / italic
+        html = html.replace("<strong>", "<b>").replace("</strong>", "</b>")
+        html = html.replace("<em>", "<i>").replace("</em>", "</i>")
+
+        # underline / strike
+        html = html.replace("<u>", "<u>").replace("</u>", "</u>")
+        html = html.replace("<s>", "<s>").replace("</s>", "</s>")
+
+        # code block
+        html = re.sub(r'<pre.*?>', '<pre>', html)
+        html = re.sub(r'</pre>', '</pre>\n', html)
+
+        # удалить ВСЕ лишние теги (очень важно)
+        allowed_tags = ["b", "i", "u", "s", "a", "code", "pre"]
+
+        def clean_tags(match):
+            tag = match.group(1)
+            if tag.split()[0].lower() in allowed_tags:
+                return match.group(0)
+            return ""
+
+        html = re.sub(r"</?([^>\s]+)[^>]*>", clean_tags, html)
+
+        # HTML entities
+        html = html.replace("&nbsp;", " ")
+        html = html.replace("&amp;", "&")
+
+        # лишние переносы
+        html = re.sub(r"\n{3,}", "\n\n", html)
+
+        return html.strip()
+
     @broadcast_app.post("/broadcast")
     async def broadcast(
-        text: str = Form(...),
+        # text: str = Form(...),
+        html: str = Form(...),
         files: List[UploadFile] = File(default=[]),
         schedule_time: Optional[str] = Form(None),
         reuse_file_path: Optional[str] = Form(None),
@@ -1832,7 +1904,7 @@ async def main() -> None:
     ):
         """Функция стриминга новостей в бота"""
         try: 
-            
+            safe_html = html_to_telegram(html)
             file_paths = []
             if reuse_file_path and Path(reuse_file_path).exists():
                 file_path = reuse_file_path
@@ -1863,7 +1935,9 @@ async def main() -> None:
                     schedule_dt = schedule_dt.astimezone(timezone.utc)
                     logger.info(f"📅 Задача отложена на {schedule_dt}")
                 users, _ = await get_filtered_users(target_group)    
-                news_id = await news_store.create_news(text, schedule_dt, files=file_paths, group=target_group)
+                # news_id = await news_store.create_news(text, schedule_dt, files=file_paths, group=target_group)
+                # news_id = await news_store.create_news(safe_html, schedule_dt, files=file_paths, group=target_group)
+                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group)
                 return {"status": "ok", "news_send": news_id, "sent": len(users)}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")
@@ -1884,6 +1958,14 @@ async def main() -> None:
         if not news:
             raise HTTPException(status_code=404, detail="News not found")
         return news
+    @broadcast_app.delete("/api/news/{news_id}")
+    async def delete_news(news_id: int):
+        try: 
+            await news_store.delete_news(news_id)
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Delete news error: {e}")
+            raise HTTPException(500, str(e))
 
     @broadcast_app.post("/api/reload-start-message")
     async def reload_start_message():

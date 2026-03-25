@@ -754,10 +754,17 @@ async def get_news_by_id(news_id: int):
         resp.raise_for_status()
     return resp.json()
 
+@app.delete("/api/news/{news_id}")
+async def delete_news(news_id: int):
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.delete(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
+        resp.raise_for_status()
+    return resp.json()
 
 @app.post("/api/news/send")
 async def send_news(
-    text: str = Form(...),
+    # text: str = Form(...),
+    html: str = Form(...),
     files: List[UploadFile] = File(default=[]),
     schedule_time: Optional[str] = Form(None),
     reuse_file_path: Optional[str] = Form(None), 
@@ -773,7 +780,9 @@ async def send_news(
             else: 
                 logger.info("Без отложенной отправки")
             # текст
-            multipart_data.append(("text", (None, text)))
+            # multipart_data.append(("text", (None, text)))
+            multipart_data.append(("html", (None, html)))
+            logger.info(f"HTML length: {len(html)}")
             # группа получателей
             multipart_data.append(("target_group", (None, target_group)))
             logger.info(f"Группа получателей: {target_group}")
@@ -798,10 +807,8 @@ async def send_news(
             )
             resp.raise_for_status()
             bot_response = resp.json()
-            logger.info(f"А что бот возвращает? {bot_response}")
 
         return bot_response
-        # return {"status": "ok", "message": "News sent", "sent": resp.json()}
     
     except Exception as e:
         logger.error(f"News send error: {e}")

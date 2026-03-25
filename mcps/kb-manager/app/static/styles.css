@@ -1263,3 +1263,27 @@ select:focus {
         padding: 8px 5px;
     }
 }
+
+.news-preview {
+    line-height: 1.5;
+    font-size: 14px;
+}
+
+.news-preview b {
+    font-weight: 600;
+}
+
+.news-preview i {
+    font-style: italic;
+}
+
+.news-preview pre {
+    background: #f5f5f5;
+    padding: 10px;
+    border-radius: 6px;
+    overflow-x: auto;
+}
+
+.news-preview a {
+    color: #3b82f6;
+}
