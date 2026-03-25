@@ -1370,7 +1370,6 @@ async function sendNews() {
     } else {
         console.log("No file attached");
     }
-    formData.append("text", html);
     formData.append("html", html);
     formData.append("target_group", targetGroup);
 
