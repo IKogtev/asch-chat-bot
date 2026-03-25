@@ -319,19 +319,19 @@ class PostgresChatStore:
             await conn.execute(query, user_id, session_id, shown_count)
 
 
-    async def reset_search_state(self, user_id: int, session_id: str) -> None:
+    async def reset_search_state(self, user_id: int) -> None:
         if not self.pool:
             return
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "DELETE FROM search_results WHERE user_id = $1 AND session_id = $2",
-                    user_id, session_id
+                    "DELETE FROM search_results WHERE user_id = $1",
+                    user_id
                 )
                 await conn.execute(
-                    "DELETE FROM search_meta WHERE user_id = $1 AND session_id = $2",
-                    user_id, session_id
+                    "DELETE FROM search_meta WHERE user_id = $1",
+                    user_id
                 )
     
     async def close(self) -> None:
@@ -936,7 +936,7 @@ async def main() -> None:
             await store.reset(user_id)
             
             # Удаляем состояние результатов поиска
-            await store.reset_search_state(user_id, session_id)
+            await store.reset_search_state(user_id)
             
             await m.answer("✅ История диалога и сессия сброшены")
             logger.info(f"История и сессия сброшены для user_id={user_id}")
@@ -1005,7 +1005,12 @@ async def main() -> None:
     def render_results(items: list[dict], total: int, offset: int = 0) -> str:
         if not items:
             return "Ничего не нашёл."
-
+            
+        shown = offset + len(items)
+        if shown < total:
+            text = "Вот самые релевантные документы, которые удалось найти:\n"
+        else:
+            text = "Вот документы, которые удалось найти:\n"
         lines = []
         for i, item in enumerate(items, start=offset + 1):
             title = html_module.escape(item["source_name"])
@@ -1019,11 +1024,10 @@ async def main() -> None:
                 block += f"\n{snippet}"
             lines.append(block)
 
-        text = "\n\n".join(lines)
+        text += "\n\n".join(lines)
 
-        shown = offset + len(items)
         if shown < total:
-            text += f"\n\nПоказано {shown} из {total}. Напишите <b>ещё</b> или <b>покажи все</b>."
+            text += f"\n\nПоказано {shown} из {total}. Хотите получить весь список? Напишите <b>ещё</b>, чтобы получить следующую порцию документов; <b>все</b>, <b>покажи все</b> или <b>да</b>, чтобы получить весь список.\nИли напишите номер документа, чтобы скачать его."
         else:
             text += "\n\nНапишите номер документа, чтобы скачать его."
 
@@ -1032,12 +1036,14 @@ async def main() -> None:
     def extract_bot_contract(answer: str) -> dict | None:
         if not answer:
             return None
-
+               
         m = re.search(
             r"<bot_contract>\s*(\{.*?\})\s*</bot_contract>",
             answer,
             flags=re.DOTALL,
         )
+        
+        logger.debug(f"RegExp {m}")
         if not m:
             return None
 
@@ -1645,38 +1651,18 @@ async def main() -> None:
                         session_id=session_id,
                         query=user_text,
                         items=reranked_items,
-                        shown_count=min(8, len(reranked_items)),
+                        shown_count=min(SHOW_MAX, len(reranked_items)),
                     )
                     logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
 
-                    if reranked_items:
-                        top_items = reranked_items[:8]
-                        text = render_results(top_items, total=len(reranked_items), offset=0)
-                        await m.answer(text, parse_mode="HTML")
-                    else:
-                        await m.answer("Не нашёл релевантных файлов по запросу.")
+                if reranked_items:
+                    top_items = reranked_items[:SHOW_MAX]
+                    text = render_results(top_items, total=len(reranked_items), offset=0)
+                    await m.answer(text, parse_mode="HTML")
+                else:
+                    await m.answer("Не нашёл релевантных файлов по запросу.")
 
                     return
-
-                # 7. fallback: старая логика через events
-                extracted_items = extract_search_results_from_events(events)
-                if extracted_items:
-                    await store.save_search_results(
-                        user_id=user_id,
-                        session_id=session_id,
-                        query=user_text,
-                        items=extracted_items,
-                        shown_count=min(8, len(extracted_items)),
-                    )
-                    logger.info(f"💾 Сохранён search-state: {len(extracted_items)} документов для user_id={user_id}")
-                else:
-                    logger.info("ℹ️ Из events не удалось извлечь search-state")
-
-                # 8. answer пользователю — старый путь
-                clean_answer = doc_handler.remove_document_ids(answer)
-                if clean_answer.strip():
-                    html_answer = markdown_to_safe_html(clean_answer)
-                    await m.answer(html_answer, parse_mode="HTML")
 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
