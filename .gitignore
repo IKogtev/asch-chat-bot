@@ -31,3 +31,4 @@ tests/
 
 # Adk agent tester
 *.xlsx
+*.png
