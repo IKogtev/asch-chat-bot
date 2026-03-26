@@ -23,8 +23,8 @@ pipeline {
     choice(
       name: 'ADK_API_BASE',
       choices: [
-        'http://adk-agent.chatbot-dev.svc.cluster.local:8000',
-        'http://adk-agent.chatbot-test1.svc.cluster.local:8000',
+        'chatbot-dev',
+        'chatbot-test1',
         // 'https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru',
         // 'https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru',
       ],
@@ -62,7 +62,7 @@ pipeline {
 
       environment {
         // ADK runtime (ingress)
-        ADK_API_BASE = "${params.ADK_API_BASE}"
+        ADK_API_BASE = "http://adk-agent.${params.ADK_API_BASE}:8000"
         ADK_APP_NAME = "agent"
 
         // Evaluator LLM
