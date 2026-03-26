@@ -71,7 +71,7 @@ pipeline {
         withCredentials([
           string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
         ]) {
-          container('tester') {
+          container('adk-agent-tester') {
             sh '''
               set -euo pipefail
 
