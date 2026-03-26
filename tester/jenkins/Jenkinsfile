@@ -23,7 +23,9 @@ pipeline {
     choice(
       name: 'ADK_API_BASE',
       choices: [
+        'http://adk-agent.chatbot-dev.svc.cluster.local:8000',
         'https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru',
+        'http://adk-agent.chatbot-test1.svc.cluster.local:8000',
         'https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru',
       ],
       description: 'ADK agent base host (ingress)'
@@ -41,6 +43,9 @@ pipeline {
           yaml """
             apiVersion: v1
             kind: Pod
+            metadata:
+              labels:
+                app: adk-agent-tester
             spec:
               restartPolicy: Never
               imagePullPolicy: IfNotPresent
