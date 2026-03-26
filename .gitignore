@@ -28,3 +28,6 @@ node_modules/
 package-lock.json
 package.json
 tests/
+
+# Adk agent tester
+*.xlsx
