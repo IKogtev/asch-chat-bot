@@ -30,10 +30,13 @@ services:
       PGADMIN_DEFAULT_EMAIL: vitaly.kogtev@nstdata.ru
       PGADMIN_DEFAULT_PASSWORD: vitaly.kogtev@nstdata.ru
       PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+      PGADMIN_SERVER_JSON_FILE: /pgadmin_servers.json
     ports:
       - "5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin_servers.json:/pgadmin_servers.json:ro
     depends_on:
       - postgres
     networks:
@@ -78,17 +81,21 @@ services:
         condition: service_started
       kb-manager:
         condition: service_started
+    ports:
+      - 8001:8001
     env_file:
       - .env
     volumes:
-      - ./kb_storage/bot/settings:/app/data/settings
+      - ./kb_storage/bot/:/app/data
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.5.2
+      - PLATFORM_VERSION=0.5.3
+      - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
+      - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
     networks:
       - aszh-bot-network
 
@@ -114,7 +121,7 @@ services:
     volumes:
       - ./kb_storage:/app/data/kb_documents
       - ./kb_storage/prompts:/app/data/prompts
-      - ./kb_storage/bot/settings:/app/data/settings
+      - ./kb_storage/bot:/app/data/bot
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -125,8 +132,8 @@ services:
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - ADK_AGENT_URL=http://adk-agent:8000
-      - PLATFORM_VERSION=0.5.2
+      - PLATFORM_VERSION=0.5.3
+      - BOT_TELEGRAM_API=http://bot:8001
     depends_on:
       - qdrant
     networks:
@@ -165,7 +172,7 @@ services:
       # Настройки эмбеддинга и индексирования
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
-      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-10}
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-15}
       - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.5}
 
       # Qdrant

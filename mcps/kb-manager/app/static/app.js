@@ -14,6 +14,7 @@ let activeAliases = {};
 let currentPromptContent = "";
 let promptFiles = [];
 let botStartMessageContent = "";
+let newsEditor = null;
 
 
 // Initialize on load
@@ -25,7 +26,42 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDocuments();
     setupDragAndDrop();
     loadSyncSettings();
+    subscribeToSync();
+    const uploadBox = document.getElementById("news-upload-box");
+    const fileInput = document.getElementById("news-files");
+    const fileInfo = document.getElementById("news-file-info");
+    const fileName = document.getElementById("news-file-name");
+    const removeBtn = document.getElementById("news-file-remove");
+
+    if (!uploadBox || !fileInput) return;
+
+    uploadBox.addEventListener("click", () => fileInput.click());
+
+    fileInput.addEventListener("change", () => {
+        if (fileInput.files.length > 0) {
+            fileName.textContent = fileInput.files[0].name;
+            fileInfo.style.display = "flex";
+        }
+    });
+
+    removeBtn.addEventListener("click", () => {
+        fileInput.value = "";
+        fileInfo.style.display = "none";
+    });
+    // Инициализация Quill редактора новостей
+    if (document.getElementById("news-editor")) {
+        newsEditor = new Quill('#news-editor', {
+            theme: 'snow',
+            modules: {
+                toolbar: '#news-toolbar'
+            },
+            placeholder: "Напишите новость..."
+        });
+    }
 });
+// #############################
+// MENU FOR ALL PAGES INSIDE UI 
+// #############################
 
 // load active collections
 async function loadActiveCollections() {
@@ -33,8 +69,6 @@ async function loadActiveCollections() {
     const data = await res.json();
     activeCollections = data;
 }
-
-
 // collection load
 async function loadCollections() {
     const activeEl = document.getElementById('current-collection');
@@ -83,7 +117,6 @@ async function loadCollections() {
         console.error(e);
     }
 }
-
 // Switch collection
 async function switchCollection(collectionName, collectionType) {
     if (!collectionName) return;
@@ -124,62 +157,6 @@ async function switchCollection(collectionName, collectionType) {
         alert(`Failed to switch collection: ${e.message}`);
     }
 }
-
-
-// Tab Management
-function showTab(tabName) {
-    // Hide all tabs
-    document.querySelectorAll('.tab-content').forEach(tab => {
-        tab.classList.remove('active');
-    });
-    document.querySelectorAll('.tab-button').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    
-    // Show selected tab
-    document.getElementById(`${tabName}-tab`).classList.add('active');
-    event.target.classList.add('active');
-    
-    // Load data if needed
-    if (tabName === 'documents') {
-        loadDocuments();
-    } else if (tabName === 'search') {
-        loadKnowledgeBasesForSearch();
-    } else if (tabName === 'tree_files'){
-        loadFilesystemTree();
-    } else if (tabName === 'news_send'){
-        // sendNews();
-    } else if (tabName === 'prompts'){
-        loadPromptsTab();
-    } else if (tabName === 'bot_settings'){
-        loadBotStartMessage();
-    }
-}
-
-// Load knowledge bases for search filter
-async function loadKnowledgeBasesForSearch() {
-    try {
-        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
-        const knowledgeBases = await response.json();
-        
-        const kbSelect = document.getElementById('search-kb');
-        const currentValue = kbSelect.value;
-        
-        // Keep "All Knowledge Bases" option and add individual KBs
-        kbSelect.innerHTML = '<option value="">All Knowledge Bases</option>' + 
-            knowledgeBases.map(kb => 
-                `<option value="${escapeHtml(kb.kb_id)}">${escapeHtml(kb.kb_id)} (${kb.document_count} docs)</option>`
-            ).join('');
-        
-        // Restore previous selection if it still exists
-        if (currentValue) {
-            kbSelect.value = currentValue;
-        }
-    } catch (error) {
-        console.error('Error loading knowledge bases:', error);
-    }
-}
-
 // Collection Info
 async function loadCollectionInfo() {
     try {
@@ -202,7 +179,328 @@ async function loadCollectionInfo() {
         console.error('Error loading collection info:', error);
     }
 }
+// кнопка удаления коллекции
+document
+  .getElementById("delete-collection-btn")
+  .addEventListener("click", async () => {
+    const select = document.getElementById("collection-select");
+    const deletedCollection = select.value;
 
+    if (!deletedCollection) {
+      alert("No collection selected");
+      return;
+    }
+
+    const confirmed = confirm(
+      `Are you sure you want to delete collection "${deletedCollection}"?\n\nThis action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    const deletedType = getCollectionType(deletedCollection);
+
+    try {
+      const res = await fetch("/api/collections/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({collection: deletedCollection }),
+      });
+      
+      const data = await res.json();
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      alert(`Collection "${data.deleted_collection}" deleted`);
+
+      // обновляем список коллекций
+      
+      await loadAliasData();
+      await loadCollections();
+      await loadActiveCollections();
+      
+      //   переключаем UI на активную alias-коллекцию
+      if (deletedType && activeCollections?.[deletedType]?.collection) {
+        const nextCollection = activeCollections[deletedType].collection;
+        select.value = nextCollection;
+        select.dispatchEvent(new Event("change"));
+      } else {
+        // fallback на первую доступную
+        select.selectedIndex = 0;
+        select.dispatchEvent(new Event("change"));
+      }
+
+
+    } catch (err) {
+      alert(`Failed to delete collection: It's active collection`); 
+      console.error(err);
+    }
+  });
+// кнопка модальности создания коллекции
+function openCreateCollectionModal() {
+    const modal = document.getElementById("create-collection-modal");
+    modal.classList.add("active");
+}
+// закрытие модальности создания коллекции
+function closeCreateCollectionModal() {
+    const modal = document.getElementById("create-collection-modal");
+    modal.classList.remove("active");
+}
+// создание коллекции через модальное окно
+async function createCollection() {
+    const version = document.getElementById("newCollectionVersion").value.trim();
+    const type = document.getElementById("newCollectionType").value;
+    const errorBox = document.getElementById("create-collection-error");
+
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+    if (!version || !/^\d+(\.\d+)?$/.test(version)) {
+        errorBox.textContent = "Version must be a number (e.g., 1 or 1.2)";
+        errorBox.classList.remove("hidden");
+        return;
+    }
+    if (!version) {
+        errorBox.textContent = "Version is required";
+        errorBox.classList.remove("hidden");
+        return;
+    }
+    const collectionName = `${type}_collection_v${version}`;
+    try {
+        const res = await fetch("/api/collections/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version, type })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.error || "Failed to create collection");
+        }
+
+        closeCreateCollectionModal();
+        await loadAliasData();
+        await loadCollections();
+        await loadActiveCollections();
+
+        const select = document.getElementById("collection-select");
+        select.value = collectionName;
+        select.dispatchEvent(new Event("change"));
+
+    } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.classList.remove("hidden");
+    }
+}
+// загрузка алиасов по разным коллекциям
+async function loadAliasData() {
+    const [collectionsRes, activeRes] = await Promise.all([
+        fetch("/api/collections/by-type"),
+        fetch("/api/collections/active")
+    ]);
+
+    collectionsByType = await collectionsRes.json();
+    activeAliases = await activeRes.json();
+}
+// модальность для переключения между активными alias 
+async function openSwitchCollectionModal() {
+    document.getElementById("switch-collection-modal").classList.add("active");
+     if (!collectionsByType.faq) {
+        await loadAliasData();
+    }
+
+    loadAliasCollections();
+}
+// загрузка алиасов для коллекций
+function loadAliasCollections() {
+    const type = document.getElementById("switchCollectionType").value;
+    const targetSelect = document.getElementById("switchCollectionTarget");
+
+    const activeCollection = activeAliases[type]?.collection;
+    const collections = collectionsByType[type] || [];
+
+    targetSelect.innerHTML = "";
+
+    collections.forEach(name => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+
+        if (name === activeCollection) {
+            option.disabled = true;
+            option.textContent += " (active)";
+        }
+
+        targetSelect.appendChild(option);
+    });
+}
+// закрытие модальности переключения коллекций
+function closeSwitchCollectionModal() {
+    document.getElementById("switch-collection-modal").classList.remove("active");
+}
+// переключение alias между коллекциями 
+async function switchCollectionAlias() {
+    const type = document.getElementById("switchCollectionType").value;
+    const collection = document.getElementById("switchCollectionTarget").value;
+    const errorBox = document.getElementById("switch-collection-error");
+
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+
+    if (!collection) {
+        errorBox.textContent = "Select a collection";
+        errorBox.classList.remove("hidden");
+        return;
+    }
+
+
+    try {
+        const res = await fetch("/api/collections/switch-alias", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                collection_name: collection,
+                collection_type: type
+            })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.detail || "Failed to switch alias");
+        }
+
+        const current = document.getElementById("collection-select").value;
+
+        if (current.startsWith(`${type}_`) && current !== collection) {
+            const confirmSwitch = confirm(
+                `Alias switched to "${collection}".\n\nSwitch UI to this collection?`
+            );
+
+            if (confirmSwitch) {
+                const select = document.getElementById("collection-select");
+                select.value = collection;
+                select.dispatchEvent(new Event("change"));
+            }
+        }
+
+        closeSwitchCollectionModal();
+
+        // 🔄 обновляем UI
+        await loadAliasData();
+        await loadActiveCollections();
+
+        
+
+    } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.classList.remove("hidden");
+    }
+}
+// Tab Management
+function showTab(tabName) {
+    // Hide all tabs
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // Show selected tab
+    document.getElementById(`${tabName}-tab`).classList.add('active');
+    event.target.classList.add('active');
+    
+    // Load data if needed
+    if (tabName === 'documents') {
+        loadDocuments();
+    } else if (tabName === 'search') {
+        loadKnowledgeBasesForSearch();
+    } else if (tabName === 'tree_files'){
+        loadFilesystemTree();
+    } else if (tabName === 'news_send'){
+        loadNewsHistory();
+    } else if (tabName === 'prompts'){
+        loadPromptsTab();
+    } else if (tabName === 'bot_settings'){
+        loadBotStartMessage();
+    } else if (tabName === 'user_groups'){
+        loadUserGroups();
+    }
+}
+
+// #############################
+// Utilities subsystem
+// #############################
+// extract question from text
+function extractQuestionFromText(text){
+    if (!text) return '';
+    // search question
+    const match = text.match(/Question:\s*(.+?)(?:\n|context:|$)/i);
+    if (!match) return text;
+
+    // Убираем возможный "**Вопрос:**"
+    return match[1]
+        .replace(/\*\*Вопрос:\*\*/gi, '')
+        .replace(/\*\*/g, '')
+        .trim();
+}
+// create div format
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+// форматирование даты в стандарты
+function formatDate(dateString) {
+    if (!dateString) return 'Unknown';
+    try {
+        let iso = dateString.trim();
+
+        // если нет timezone → считаем UTC
+        if (!iso.endsWith('Z') && !iso.match(/[+-]\d{2}(:\d{2})?$/)) {
+            iso = iso.replace(' ', 'T') + 'Z';
+        } else {
+            iso = iso.replace(' ', 'T');
+        }
+
+        const date = new Date(iso);
+
+        if (isNaN(date.getTime())) {
+            console.error("Invalid date:", dateString);
+            return 'Invalid date';
+        }
+
+        // ВСЕГДА приводим к Москве
+        return new Intl.DateTimeFormat('ru-RU', {
+            timeZone: 'Europe/Moscow',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).format(date);
+
+    } catch (e) {
+        return 'Invalid date';
+    }
+}
+// отправка уведомлений
+function showNotification(message, type) {
+    alert(message);
+}
+// получение типа коллекции
+function getCollectionType(name) {
+  if (name.startsWith("faq_")) return "faq";
+  if (name.startsWith("kb_")) return "kb";
+  return null;
+}
+// Function to get title for faq or kb
 function getDocumentTitle(doc) {
     // FAQ
     const question =
@@ -213,8 +511,6 @@ function getDocumentTitle(doc) {
     if (question) {
         return escapeHtml(extractQuestionFromText(question));
     }
-
-     
     // иначе KB
     const baseTitle =
         doc.source_name ||
@@ -256,129 +552,75 @@ function getDocumentTitle(doc) {
 
     return escapeHtml(baseTitle);
 }
+// загрузка настроек синхронизации
+async function loadSyncSettings() {
 
-document.addEventListener("click", function (e) {
-    if (e.target.classList.contains("view-doc-btn")) {
-        const docId = e.target.dataset.docId;
-        const docName = e.target.dataset.docName;
-        viewDocument(docId, docName);
-    }
-    if (e.target.classList.contains("delete-doc-btn")) {
-        const docId = e.target.dataset.docId;
-        const docName = e.target.dataset.docName;
-        deleteDocument(docId, docName);
-    }
-});
+    const res = await fetch("/api/sync/settings")
+    const data = await res.json()
 
-document.addEventListener("click", async function (e) {
+    document.getElementById("sync-interval").innerText =
+        data.interval_hours
+}
+// изменение интервала синхронизации
+async function changeSyncInterval(){
+    const current = document.getElementById("sync-interval").innerText
+    const hours = prompt("Enter sync interval in hours", current)
+    if(!hours) return;
 
-    if (e.target.classList.contains("sync-kb-btn")) {
-
-        e.stopPropagation(); // чтобы не сработал toggleKB
-
-        const button = e.target;
-        const kbId = button.dataset.kbId;
-
-        button.disabled = true;
-        button.innerText = "⏳ Syncing...";
-
-        const formData = new FormData();
-        formData.append("kb_id", kbId);
-        formData.append("collection_type", "kb");
-
-        try {
-            const response = await fetch("/api/filesystem/sync", {
-                method: "POST",
-                body: formData
-            });
-
-            if (!response.ok) {
-                throw new Error("Sync failed");
-            }
-
-            button.innerText = "✅ Synced";
-
-            setTimeout(() => {
-                button.innerText = "🔄 Sync KB";
-                button.disabled = false;
-            }, 1500);
-
-            if (button.innerText==="✅ Synced"){
-                loadDocuments()
-            }
-
-        } catch (err) {
-            console.error(err);
-            button.innerText = "❌ Error";
-            button.disabled = false;
-        }
-    }
-    
-});
-
-// 
-async function syncAll(btnElement) {
-    // 1. Защита: если кнопка не передана, выходим
-    if (!btnElement) {
-        console.error("Кнопка не передана в функцию syncAll!");
+    const parsedHours = parseInt(hours, 10);
+    if (isNaN(parsedHours) || parsedHours <= 0) {
+        alert("Please enter a valid positive number.");
         return;
     }
 
-    // Сохраняем оригинальный текст и состояние
-    const originalText = btnElement.innerText;
-    
-    try {
-        // 2. Блокируем кнопку визуально и функционально
-        btnElement.disabled = true;
-        btnElement.innerText = "⏳ Синхронизация...";
-        btnElement.style.opacity = "0.7"; // Визуальный эффект
+    const res = await fetch("/api/sync/settings", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({hours:parseInt(hours)})
+    })
 
-        console.log("Отправка запроса на /api/filesystem/sync_all...");
-
-        // 3. Делаем запрос
-        const response = await fetch("/api/filesystem/sync_all", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            }
-        });
-
-        // 4. Проверяем статус ответа
-        if (!response.ok) {
-            // Пытаемся получить текст ошибки от сервера
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || `Ошибка сервера: ${response.status}`);
-        }
-
-        const result = await response.json();
-        console.log("Успех!", result);
-
-        // 5. Показываем успех
-        btnElement.innerText = "✅ Готово";
-        btnElement.style.backgroundColor = "#28a745"; // Зеленый цвет (если используете Bootstrap)
-
-        // 6. Обновляем список документов (если функция существует)
-        if (typeof loadDocuments === 'function') {
-            await loadDocuments();
-        } else {
-            console.warn("Функция loadDocuments не найдена, список не обновлен.");
-        }
-
-    } catch (error) {
-        console.error("Ошибка синхронизации:", error);
-        btnElement.innerText = "❌ Ошибка";
-        btnElement.style.backgroundColor = "#dc3545"; // Красный цвет
-        alert("Не удалось синхронизировать: " + error.message);
-    } finally {
-        // 7. Возвращаем кнопку в исходное состояние через 2 секунды
-        setTimeout(() => {
-            btnElement.disabled = false;
-            btnElement.innerText = originalText;
-            btnElement.style.opacity = "1";
-            btnElement.style.backgroundColor = ""; // Сброс цвета
-        }, 2000);
+    if(res.ok){
+        loadSyncSettings()
+        loadCollectionInfo()
     }
 }
+// функция разворачивания kb 
+function toggleKB(kbId) {
+    const kbDocs = document.getElementById(`kb-${kbId}`);
+    const icon = document.getElementById(`icon-${kbId}`);
+    
+    if (kbDocs.style.display === 'none') {
+        kbDocs.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        kbDocs.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+// функция извлечения вопроса из FAQ
+function parseFaqQuestion(text) {
+    if (!text) return "";
+
+    // убираем "Question:"
+    let q = text.replace(/^Question:\s*/i, "");
+
+    // отрезаем всё после context:
+    q = q.split(/\ncontext:/i)[0];
+
+    return q.trim();
+}
+// отображение групп пользователей
+function getTargetGroupName(group) {
+    const names = {
+        "all": "Все пользователи",
+        "manager_group": "👔 Менеджеры",
+        "couch_group": "🎓 Коучи"
+    };
+    return names[group] || group;
+}
+// #############################
+// DOCUMENTS TAB LOGIC
+// #############################
 
 // Documents Management
 async function loadDocuments() {
@@ -387,9 +629,13 @@ async function loadDocuments() {
     // Обновляем document_count в метаданных (для MCP kb-status)
     fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
     try {
+        await fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' });
+    } catch (e) {
+        console.warn("Metadata refresh failed, continuing...", e);
+    }
+    try {
         const response = await fetch(`${API_BASE}/api/knowledge-bases`);
         const knowledgeBases = await response.json();
-        const isFAQ = currentCollectionType === 'faq';
         
         if (knowledgeBases.length === 0) {
             container.innerHTML = `
@@ -477,7 +723,152 @@ async function loadDocuments() {
         `;
     }
 }
+// вызовы функций, чтобы не ломались на плохих названиях 
+document.addEventListener("click", function (e) {
+    // function to view Document 
+    if (e.target.classList.contains("view-doc-btn")) {
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        viewDocument(docId, docName);
+    }
+    if (e.target.classList.contains("delete-doc-btn")) {
+        // to delete document
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        deleteDocument(docId, docName);
+    }
+});
+// функция для синхронизации рялом с kb конкретным
+document.addEventListener("click", async function (e) {
 
+    if (e.target.classList.contains("sync-kb-btn")) {
+
+        e.stopPropagation(); // чтобы не сработал toggleKB
+
+        const button = e.target;
+        const kbId = button.dataset.kbId;
+
+        button.disabled = true;
+        button.innerText = "⏳ Syncing...";
+
+        const formData = new FormData();
+        formData.append("kb_id", kbId);
+        formData.append("collection_type", "kb");
+
+        try {
+            const response = await fetch("/api/filesystem/sync", {
+                method: "POST",
+                body: formData
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error("Sync failed");
+            }
+            alert(`✅ KB "${kbId}" synced`);
+            button.innerText = "✅ Synced";
+
+            setTimeout(() => {
+                button.innerText = "🔄 Sync KB";
+                button.disabled = false;
+            }, 1500);
+
+            if (button.innerText==="✅ Synced"){
+                await loadDocuments();
+                await loadCollectionInfo();
+            }
+
+        } catch (err) {
+            console.error(err);
+            button.innerText = "❌ Error";
+            button.disabled = false;
+        }
+    }
+    
+});
+// подписка на очередь событий для отслеживания автоматического обновления 
+// при синхронизации атомарной
+function subscribeToSync() {
+    const eventSource = new EventSource("/api/filesystem/sync_events");
+
+    eventSource.onmessage = function (event) {
+        if (event.data === "sync_completed") {
+            console.log("🔄 Sync completed → refreshing UI");
+            loadDocuments();
+            loadFilesystemTree();
+        }
+    };
+
+    eventSource.onerror = function () {
+        console.error("SSE error");
+        eventSource.close();
+    };
+}
+
+
+// функция для синхронизации по всем данным
+async function syncAll(btnElement) {
+    // 1. Защита: если кнопка не передана, выходим
+    if (!btnElement) {
+        console.error("Кнопка не передана в функцию syncAll!");
+        return;
+    }
+
+    // Сохраняем оригинальный текст и состояние
+    const originalText = btnElement.innerText;
+    
+    try {
+        // 2. Блокируем кнопку визуально и функционально
+        btnElement.disabled = true;
+        btnElement.innerText = "⏳ Синхронизация...";
+        btnElement.style.opacity = "0.7"; // Визуальный эффект
+
+        console.log("Отправка запроса на /api/filesystem/sync_all...");
+
+        // 3. Делаем запрос
+        const response = await fetch("/api/filesystem/sync_all", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            }
+        });
+
+        // 4. Проверяем статус ответа
+        if (!response.ok) {
+            // Пытаемся получить текст ошибки от сервера
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Ошибка сервера: ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log("Успех!", result);
+
+        // 5. Показываем успех
+        btnElement.innerText = "✅ Готово";
+        btnElement.style.backgroundColor = "#28a745"; // Зеленый цвет (если используете Bootstrap)
+
+        // 6. Обновляем список документов (если функция существует)
+        if (typeof loadDocuments === 'function') {
+            await loadDocuments();
+        } else {
+            console.warn("Функция loadDocuments не найдена, список не обновлен.");
+        }
+
+    } catch (error) {
+        console.error("Ошибка синхронизации:", error);
+        btnElement.innerText = "❌ Ошибка";
+        btnElement.style.backgroundColor = "#dc3545"; // Красный цвет
+        alert("Не удалось синхронизировать: " + error.message);
+    } finally {
+        // 7. Возвращаем кнопку в исходное состояние через 2 секунды
+        setTimeout(() => {
+            btnElement.disabled = false;
+            btnElement.innerText = originalText;
+            btnElement.style.opacity = "1";
+            btnElement.style.backgroundColor = ""; // Сброс цвета
+        }, 2000);
+    }
+}
+// удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Delete knowledge base "${kbId}"?\n\nAll documents will be permanently removed.`)) {
         return;
@@ -501,30 +892,13 @@ async function deleteKnowledgeBase(kbId) {
         if (res.ok) {
             showNotification('Knowledge base deleted successfully', 'success');
             loadDocuments();
-        } else {
-            throw new Error('Failed to delete KB');
         }
        
     } catch (err) {
         alert(`Error deleting knowledge base: ${err.message}`);
     }
 }
-
-
-
-function toggleKB(kbId) {
-    const kbDocs = document.getElementById(`kb-${kbId}`);
-    const icon = document.getElementById(`icon-${kbId}`);
-    
-    if (kbDocs.style.display === 'none') {
-        kbDocs.style.display = 'block';
-        icon.textContent = '▼';
-    } else {
-        kbDocs.style.display = 'none';
-        icon.textContent = '▶';
-    }
-}
-
+// возможность открытия просмотра документа
 async function viewDocument(documentId, filename) {
     const modal = document.getElementById('chunks-modal');
     const modalTitle = document.getElementById('modal-title');
@@ -545,6 +919,16 @@ async function viewDocument(documentId, filename) {
             const chunkIndex = chunk.chunk_index ?? (chunk.chunk_id ? parseInt(chunk.chunk_id.split('#')[1]): 0);
             const answer = chunk.answer
             const question = extractQuestionFromText(chunk.text);
+            const cleanMeta = {
+                source_name: meta.source_name || meta.source || 'unknown',
+                kb_id: meta.kb_id || 'N/A',
+                user_id: meta.user_id || 'N/A',
+                source_type: meta.source_type || 'N/A',
+                version: meta.version || 1,
+                document_id: meta.document_id || '',
+                created_at: meta.created_at || 'Unknown',
+                section_path: meta.section_path || []
+            };
             return `
             <div class="chunk-item-compact">
                 <div class="chunk-header-compact">
@@ -552,14 +936,7 @@ async function viewDocument(documentId, filename) {
                 </div>
                 <div class="result-text">${escapeHtml(isFAQ? question+" - "+ answer : chunk.text)}</div>
                 <div class="chunk-metadata-json">
-                    { "source_name": "${escapeHtml(meta.source_name || meta.source || 'unknown')}",
-                      "kb_id": "${escapeHtml(meta.kb_id || 'N/A')}", 
-                      "user_id": "${escapeHtml(meta.user_id || 'N/A')}", 
-                      "source_type": "${escapeHtml(meta.source_type || 'N/A')}", 
-                      "version": ${meta.version || 1}, 
-                      "document_id": "${escapeHtml(meta.document_id || '')}", 
-                      "created_at": "${meta.created_at || 'Unknown'}",
-                      "section_path": "[${meta.section_path || '[]'}]" }
+                    <pre>${escapeHtml(JSON.stringify(cleanMeta, null, 2))}</pre>
                 </div>
             </div>
         `}).join('');
@@ -571,7 +948,7 @@ async function viewDocument(documentId, filename) {
         `;
     }
 }
-
+// удаление документа
 async function deleteDocument(documentId, filename) {
     if (!confirm(`Are you sure you want to delete "${filename}"?`)) {
         return;
@@ -592,28 +969,49 @@ async function deleteDocument(documentId, filename) {
         showNotification(`Error deleting document: ${error.message}`, 'error');
     }
 }
+// Modal для просмотра чанков файла
+function closeModal() {
+    document.getElementById('chunks-modal').classList.remove('active');
+}
+// Close modal on outside click
+document.getElementById('chunks-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'chunks-modal') {
+        closeModal();
+    }
+});
 
+// #############################
+// SEARCH TAB LOGIC
+// #############################
+
+// Load knowledge bases for search filter
+async function loadKnowledgeBasesForSearch() {
+    try {
+        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
+        const knowledgeBases = await response.json();
+        
+        const kbSelect = document.getElementById('search-kb');
+        const currentValue = kbSelect.value;
+        kbSelect.innerHTML = '<option value="">All Knowledge Bases</option>' + 
+            knowledgeBases.map(kb => 
+                `<option value="${escapeHtml(kb.kb_id)}">${escapeHtml(kb.kb_id)} (${kb.document_count} docs)</option>`
+            ).join('');
+        
+        // Restore previous selection if it still exists
+        if (currentValue) {
+            kbSelect.value = currentValue;
+        }
+    } catch (error) {
+        console.error('Error loading knowledge bases:', error);
+    }
+}
 // Search
 function handleSearchKeypress(event) {
     if (event.key === 'Enter') {
         performSearch();
     }
 }
-
-function parseFaqQuestion(text) {
-    if (!text) return "";
-
-    // убираем "Question:"
-    let q = text.replace(/^Question:\s*/i, "");
-
-    // отрезаем всё после context:
-    q = q.split(/\ncontext:/i)[0];
-
-    return q.trim();
-}
-
-
-
+// поиск внутри kb-manager
 async function performSearch() {
     const query = document.getElementById('search-query').value.trim();
     const limit = parseInt(document.getElementById('search-limit').value);
@@ -673,6 +1071,15 @@ async function performSearch() {
             const answer = isFAQ? (r.answer || ''): "";
             const title = `${isFAQ? question || 'FAQ': r.source_name || r.source || 'Unknown'}`;
             const text = isFAQ ? `${question}${answer ? "\n\n"+answer: ""}` : r.text || '';
+            const cleanMeta = {
+                source_name: r.source_name || 'unknown',
+                kb_id: r.kb_id || 'N/A',
+                user_id: r.user_id || 'N/A',
+                source_type: r.source_type || 'N/A',
+                document_id: r.document_id || '',
+                created_at: r.created_at || 'Unknown',
+                score: score
+            }
             return `
                 <div class="chunk-item-compact">
                     <div class="chunk-header-compact">
@@ -687,15 +1094,7 @@ async function performSearch() {
                     </div>
 
                     <div class="chunk-metadata-json">
-                        { 
-                          "source_name": "${escapeHtml(r.source_name || 'unknown')}",
-                          "kb_id": "${escapeHtml(r.kb_id || 'N/A')}",
-                          "user_id": "${escapeHtml(r.user_id || 'N/A')}",
-                          "source_type": "${escapeHtml(r.source_type || 'N/A')}",
-                          "document_id": "${escapeHtml(r.document_id || '')}",
-                          "created_at": "${r.created_at || 'Unknown'}",
-                          "score": ${score}
-                        }
+                        <pre>${escapeHtml(JSON.stringify(cleanMeta, null, 2))}</pre>
                     </div>
                 </div>
             `;
@@ -710,7 +1109,11 @@ async function performSearch() {
     }
 }
 
-// Upload
+// #############################
+// UPLOAD TAB LOGIC
+// #############################
+
+// Настройка возможности drag and drop
 function setupDragAndDrop() {
     const uploadBox = document.getElementById('upload-box');
     
@@ -740,14 +1143,14 @@ function setupDragAndDrop() {
         }
     });
 }
-
+// отображение выбранного файла
 function handleFileSelect(event) {
     const file = event.target.files[0];
     if (file) {
         handleFile(file);
     }
 }
-
+// передача файла
 function handleFile(file) {
     selectedFile = file;
     
@@ -757,7 +1160,7 @@ function handleFile(file) {
     document.getElementById('upload-result').className = 'result-message';
     document.getElementById('upload-result').style.display = 'none';
 }
-
+// загрузка документа
 async function uploadDocument(uploadMode = 'check') {
     if (!selectedFile) {
         return;
@@ -837,7 +1240,7 @@ async function uploadDocument(uploadMode = 'check') {
         uploadBtn.disabled = false;
     }
 }
-
+// разрешение конфликта файлов
 function handleUploadConflict(conflictData) {
     const resultDiv = document.getElementById('upload-result');
     
@@ -880,7 +1283,7 @@ function handleUploadConflict(conflictData) {
         `;
     }
 }
-
+// отмена загрузки
 function cancelUpload() {
     const resultDiv = document.getElementById('upload-result');
     resultDiv.style.display = 'none';
@@ -892,340 +1295,124 @@ function cancelUpload() {
     document.getElementById('upload-btn').disabled = true;
 }
 
-// Modal
-function closeModal() {
-    document.getElementById('chunks-modal').classList.remove('active');
-}
+// #############################
+// TREE TAB LOGIC
+// #############################
 
-// Close modal on outside click
-document.getElementById('chunks-modal').addEventListener('click', (e) => {
-    if (e.target.id === 'chunks-modal') {
-        closeModal();
-    }
-});
-
-// Utilities
-function extractQuestionFromText(text){
-    if (!text) return '';
-    // search question
-    const match = text.match(/Question:\s*(.+?)(?:\n|context:|$)/i);
-    if (!match) return text;
-
-    // Убираем возможный "**Вопрос:**"
-    return match[1]
-        .replace(/\*\*Вопрос:\*\*/gi, '')
-        .replace(/\*\*/g, '')
-        .trim();
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-function formatDate(dateString) {
-    if (!dateString) return 'Unknown';
-    const date = new Date(dateString);
-    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-}
-
-function showNotification(message, type) {
-    // Simple notification - you can enhance this
-    alert(message);
-}
-
-function getCollectionType(name) {
-  if (name.startsWith("faq_")) return "faq";
-  if (name.startsWith("kb_")) return "kb";
-  return null;
-}
-
-document
-  .getElementById("delete-collection-btn")
-  .addEventListener("click", async () => {
-    const select = document.getElementById("collection-select");
-    const deletedCollection = select.value;
-
-    if (!deletedCollection) {
-      alert("No collection selected");
-      return;
-    }
-
-    const confirmed = confirm(
-      `Are you sure you want to delete collection "${deletedCollection}"?\n\nThis action cannot be undone.`
-    );
-
-    if (!confirmed) return;
-
-    const deletedType = getCollectionType(deletedCollection);
-
-    try {
-      const res = await fetch("/api/collections/delete", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({collection: deletedCollection }),
-      });
-      
-      const data = await res.json();
-
-      if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err);
-      }
-
-      
-      alert(`Collection "${data.deleted_collection}" deleted`);
-
-      // обновляем список коллекций
-      
-      await loadAliasData();
-      await loadCollections();
-      await loadActiveCollections();
-      
-      //   переключаем UI на активную alias-коллекцию
-      if (deletedType && activeCollections?.[deletedType]?.collection) {
-        const nextCollection = activeCollections[deletedType].collection;
-        select.value = nextCollection;
-        select.dispatchEvent(new Event("change"));
-      } else {
-        // fallback на первую доступную
-        select.selectedIndex = 0;
-        select.dispatchEvent(new Event("change"));
-      }
-
-
-    } catch (err) {
-      alert(`Failed to delete collection: It's active collection`); 
-      console.error(err);
-    }
-  });
-
-function openCreateCollectionModal() {
-    const modal = document.getElementById("create-collection-modal");
-    modal.classList.add("active");
-}
-
-function closeCreateCollectionModal() {
-    const modal = document.getElementById("create-collection-modal");
-    modal.classList.remove("active");
-}
-
-async function createCollection() {
-    const version = document.getElementById("newCollectionVersion").value.trim();
-    const type = document.getElementById("newCollectionType").value;
-    const errorBox = document.getElementById("create-collection-error");
-
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
-
-    if (!version) {
-        errorBox.textContent = "Version is required";
-        errorBox.classList.remove("hidden");
-        return;
-    }
-    const collectionName = `${type}_collection_v${version}`;
-    try {
-        const res = await fetch("/api/collections/create", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ version, type })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-            throw new Error(data.error || "Failed to create collection");
-        }
-
-        closeCreateCollectionModal();
-        await loadAliasData();
-        await loadCollections();
-        await loadActiveCollections();
-
-        const select = document.getElementById("collection-select");
-        select.value = collectionName;
-        select.dispatchEvent(new Event("change"));
-
-    } catch (err) {
-        errorBox.textContent = err.message;
-        errorBox.classList.remove("hidden");
-    }
-}
-
-
-async function loadAliasData() {
-    const [collectionsRes, activeRes] = await Promise.all([
-        fetch("/api/collections/by-type"),
-        fetch("/api/collections/active")
-    ]);
-
-    collectionsByType = await collectionsRes.json();
-    activeAliases = await activeRes.json();
-}
-
-
-async function openSwitchCollectionModal() {
-    document.getElementById("switch-collection-modal").classList.add("active");
-     if (!collectionsByType.faq) {
-        await loadAliasData();
-    }
-
-    loadAliasCollections();
-}
-
-function loadAliasCollections() {
-    const type = document.getElementById("switchCollectionType").value;
-    const targetSelect = document.getElementById("switchCollectionTarget");
-
-    const activeCollection = activeAliases[type]?.collection;
-    const collections = collectionsByType[type] || [];
-
-    targetSelect.innerHTML = "";
-
-    collections.forEach(name => {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-
-        if (name === activeCollection) {
-            option.disabled = true;
-            option.textContent += " (active)";
-        }
-
-        targetSelect.appendChild(option);
-    });
-}
-
-
-function closeSwitchCollectionModal() {
-    document.getElementById("switch-collection-modal").classList.remove("active");
-}
-
-async function switchCollectionAlias() {
-    const type = document.getElementById("switchCollectionType").value;
-    const collection = document.getElementById("switchCollectionTarget").value;
-    const errorBox = document.getElementById("switch-collection-error");
-
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
-
-    if (!collection) {
-        errorBox.textContent = "Select a collection";
-        errorBox.classList.remove("hidden");
-        return;
-    }
-
-
-    try {
-        const res = await fetch("/api/collections/switch-alias", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                collection_name: collection,
-                collection_type: type
-            })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-            throw new Error(data.detail || "Failed to switch alias");
-        }
-
-        const current = document.getElementById("collection-select").value;
-
-        if (current.startsWith(`${type}_`) && current !== collection) {
-            const confirmSwitch = confirm(
-                `Alias switched to "${collection}".\n\nSwitch UI to this collection?`
-            );
-
-            if (confirmSwitch) {
-                const select = document.getElementById("collection-select");
-                select.value = collection;
-                select.dispatchEvent(new Event("change"));
-            }
-        }
-
-        closeSwitchCollectionModal();
-
-        // 🔄 обновляем UI
-        await loadAliasData();
-        // await loadCollections();
-        await loadActiveCollections();
-
-        
-
-    } catch (err) {
-        errorBox.textContent = err.message;
-        errorBox.classList.remove("hidden");
-    }
-}
-
+// построение дерева файлов
 async function loadFilesystemTree() {
     const container = document.getElementById("filesystem-tree");
 
     container.innerHTML = "⏳ Loading...";
 
     try {
-        const response = await fetch("/api/filesystem/folders");
-        const tree = await response.json();
+        const res = await fetch("/api/filesystem/node?path=");
+        const data = await res.json();
 
-        container.innerHTML = renderTree(tree);
+        container.innerHTML = renderNode("", data);
 
     } catch (err) {
         container.innerHTML = "❌ Error loading tree";
-        console.error(err);
     }
 }
-
-function renderTree(node) {
+// рендеринг дерева
+function renderNode(path, data) {
     let html = "<ul class='tree'>";
 
-    for (const key in node) {
+    data.folders.forEach(folder => {
+        const newPath = path ? `${path}/${folder}` : folder;
 
-        if (key === "files") {
-            node[key].forEach(file => {
-                html += `<li class="file">📄 ${escapeHtml(file)}</li>`;
-            });
-        }
+        html += `
+            <li class="folder">
+                <span class="folder-toggle" data-path="${newPath}" data-loaded="false">
+                    📁 ${escapeHtml(folder)}
+                </span>
+                <div class="folder-content"></div>
+            </li>
+        `;
+    });
 
-        else if (typeof node[key] === "object") {
-            html += `
-                <li class="folder">
-                    <span class="folder-toggle">📁 ${escapeHtml(key)}</span>
-                    <div class="folder-content">
-                        ${renderTree(node[key])}
-                    </div>
-                </li>
-            `;
-        }
-    }
+    data.files.forEach(file => {
+        html += `<li class="file">📄 ${escapeHtml(file)}</li>`;
+    });
 
     html += "</ul>";
     return html;
 }
+// открытие папок внутри дерева
+document.addEventListener("click", async function (e) {
+    if (!e.target.classList.contains("folder-toggle")) return;
 
-document.addEventListener("click", function (e) {
+    const toggle = e.target;
+    const content = toggle.nextElementSibling;
+    const path = toggle.dataset.path;
 
-    if (e.target.classList.contains("folder-toggle")) {
-        const content = e.target.nextElementSibling;
-        content.classList.toggle("open");
+    if (toggle.dataset.loaded === "false") {
+        try {
+            content.innerHTML = "⏳ Loading...";
+
+            const res = await fetch(`/api/filesystem/node?path=${encodeURIComponent(path)}`);
+            const data = await res.json();
+
+            content.innerHTML = renderNode(path, data);
+            toggle.dataset.loaded = "true";
+
+        } catch (err) {
+            content.innerHTML = "❌ Error";
+        }
     }
 
+    content.classList.toggle("open");
 });
 
+// #############################
+// NEWS TAB LOGIC
+// #############################
+
+// отправка новостей
 async function sendNews() {
 
-    const text = document.getElementById("news-text").value;
-    const resultDiv = document.getElementById("news-result");
-    const sendBtn = document.getElementById("news-send-btn");
+    const html = newsEditor.root.innerHTML.trim();
 
-    if (!text) {
-        alert("Введите текст новости")
-        return
+    // Проверка что не пусто
+    if (!html || html === "<p><br></p>") {
+        alert("Введите текст новости");
+        return;
+    }
+    const resultDiv = document.getElementById("news-result");
+    const scheduleTimeEl = document.getElementById("news-schedule-time");
+    const scheduleTime = scheduleTimeEl.value;
+    const sendBtn = document.getElementById("news-send-btn");
+    const fileInput = document.getElementById("news-files");
+    const reusePath = fileInput.dataset.reusePath;
+    // выбранная группа получателей
+    const targetGroupEl = document.querySelector('input[name="news-target-group"]:checked');
+    const targetGroup = targetGroupEl ? targetGroupEl.value : "all";
+    const formData = new FormData();
+    if (fileInput.files.length > 0) {
+        // пользователь выбрал новый файл → ПЕРЕЗАТИРАЕМ reuse
+        formData.append("files", fileInput.files[0]);
+        console.log("Using NEW file");
+
+    } else if (reusePath && reusePath.trim() !== "") {
+        // если новый не выбран → используем старый
+        formData.append("reuse_file_path", reusePath);
+        console.log("Reusing OLD file");
+
+    } else {
+        console.log("No file attached");
+    }
+    formData.append("html", html);
+    formData.append("target_group", targetGroup);
+
+    if (scheduleTime) {
+        const utcTime = new Date(scheduleTime).toISOString();
+        const now = new Date().toISOString();
+        if (utcTime <= now){
+            alert("❌ Нельзя выбрать прошедшее время");
+            return;
+        }
+        formData.append("schedule_time", utcTime);
     }
     // Блокировка кнопки
     sendBtn.disabled = true;
@@ -1234,36 +1421,303 @@ async function sendNews() {
     try {
         const res = await fetch("/api/news/send", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: text })
+            body: formData
         });
         
         const data = await res.json();
-        
+        const recipients = data.count ?? data.sent ?? 0;
         if (res.ok) {
             resultDiv.innerHTML = `
                 ✅ Отправлено!<br>
-                📬 Получателей: ${data.sent || 0}<br>
-                ❌ Ошибок: ${data.failed || 0}
+                📬 Получателей: ${recipients}<br>
+                👥 Группа: ${getTargetGroupName(targetGroup)}
             `;
-            document.getElementById("news-text").value = "";
+            newsEditor.setText("");
+            // Очищаем форму
+            fileInput.value = "";
+            document.getElementById("news-file-info").style.display = "none";
+            delete fileInput.dataset.reusePath;
         } else {
             throw new Error(data.detail || "Ошибка отправки");
+        }
+        if (scheduleTime){
+            alert(`📅 Новость запланирована \n📬 Получателей: ${recipients}`);
+        } else{
+            alert(`📤 Отправлено сразу \n📬 Получателей: ${recipients}`);
         }
     } catch (err) {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     } finally {
         sendBtn.disabled = false;
         sendBtn.innerText = "📤 Отправить новость";
+        loadNewsHistory();
     }
 }
+
+document.getElementById("news-file-remove").onclick = () => {
+    const fileInput = document.getElementById("news-files");
+
+    // удаляем reuse
+    delete fileInput.dataset.reusePath;
+
+    // чистим input
+    fileInput.value = "";
+
+    // скрываем UI
+    document.getElementById("news-file-info").style.display = "none";
+
+    console.log("File removed (reuse cleared)");
+};
+
+document.getElementById("news-files").addEventListener("change", (e) => {
+    const fileInput = e.target;
+
+    if (fileInput.files.length > 0) {
+        // пользователь выбрал новый файл → убираем reuse
+        delete fileInput.dataset.reusePath;
+
+        const file = fileInput.files[0];
+
+        document.getElementById("news-file-name").textContent = file.name;
+        document.getElementById("news-file-info").style.display = "flex";
+
+        console.log("New file selected, reuse cleared");
+    }
+});
+
+// загрузка истории новостей
+async function loadNewsHistory() {
+    const container = document.getElementById("news-history");
+    container.innerHTML = '<div class="loading">Загрузка...</div>';
+
+    try {
+        const res = await fetch("/api/news");
+        if (!res.ok) {
+            throw new Error("Failed to load news");
+        }
+
+        const data = await res.json();
+
+        if (!data || data.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Нет новостей</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = data.map(n =>{
+            const files = n.files || [];
+            const targetGroup = n.target_group || "all";
+            const filesHtml = files.length > 0
+                ? files.map(f => `
+                    <div style="margin-top:5px;">
+                        📎 ${escapeHtml(f.name)}
+                        <button 
+                            class="btn btn-small btn-secondary"
+                            onclick="viewNewsFile('${f.name}')">
+                            View File 👁
+                        </button>
+                    </div>
+                `).join("")
+                : '<div style="color:#999;">Без файлов</div>';
+            return `
+                <div class="document-card">
+                    <div class="document-header">
+                        <div class="document-title">
+                            📰 ID: ${n.id}
+                        </div>
+                        <button 
+                            class="btn btn-primary btn-small"
+                            onclick="reuseNewsById(${n.id})">
+                            📋 Использовать
+                        </button>
+                        <button 
+                            class="btn btn-primary btn-danger btn-small"
+                            onclick="deleteNews(${n.id})">
+                            🗑️ Удалить
+                        </button>
+                    </div>
+                    
+                    <div class="document-meta">
+                        <div class="meta-item">
+                            📅 ${formatDate(n.created_at)}
+                        </div>
+                        <div class="meta-item">
+                            ⏰ ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}
+                        </div>
+                        <div class="meta-item">
+                            📊 ${n.status}
+                        </div>
+                        <div class="meta-item">
+                            👥 ${getTargetGroupName(targetGroup) || n.target_group || "all"}
+                        </div>
+                    </div>
+
+                    <div class="result-text" style="margin-top:10px;">
+                        <div class="news-preview">
+                            ${n.text || ""}
+                        </div>
+                    </div>
+                    <div style="margin-top:10px;">
+                        ${filesHtml}
+                    </div>
+                </div>
+            `; 
+        }).join("");
+
+    } catch (e) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки: ${e.message}
+            </div>
+        `;
+    }
+}
+
+// функция удаления новости из истории
+async function deleteNews(id) {
+    const confirmDelete = confirm("Удалить новость из истории?");
+    if (!confirmDelete) return;
+
+    try {
+        const res = await fetch(`/api/news/${id}`, {
+            method: "DELETE"
+        });
+
+        if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.detail || "Ошибка удаления");
+        }
+
+        showNotification("Новость удалена", "success");
+
+        // перезагрузка списка
+        loadNewsHistory();
+
+    } catch (e) {
+        alert("Ошибка: " + e.message);
+    }
+}
+                        
+// просмотр файла новости
+async function viewNewsFile(name) {
+    try {
+        const res = await fetch(`/api/local-file-news?name=${encodeURIComponent(name)}`);
+
+        if (!res.ok) {
+            throw new Error("Ошибка загрузки файла");
+        }
+
+        const contentType = res.headers.get("content-type") || "";
+
+        const fileExt = name.split('.').pop().toLowerCase();
+        const textExtensions = ['md', 'txt', 'json', 'csv', 'xml', 'html', 'htm'];
+        const isTextFile = textExtensions.includes(fileExt);
+
+        // текст / markdown / json - показываем в модалке
+        if (isTextFile || contentType.includes("text")) {
+            const text = await res.text();
+
+            // Сохраняем форматирование с помощью white-space: pre-wrap
+            document.getElementById("file-content").innerHTML = `
+                <div class="file-content-text">
+                    ${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+                </div>
+            `;
+            document.getElementById("file-modal").style.display = "block";
+        } 
+        // pdf / изображения — тоже в модалку
+        else if (contentType.includes("pdf") || contentType.includes("image")) {
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+
+            document.getElementById("file-content").innerHTML = `
+                <iframe src="${url}" class="file-content-iframe"></iframe>
+            `;
+            document.getElementById("file-modal").style.display = "block";
+        }
+        else {
+            // Остальные файлы - скачиваем
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+    } catch (e) {
+        alert("Ошибка: " + e.message);
+    }
+}
+// переиспользование новости по id
+async function reuseNewsById(id) {
+    const res = await fetch(`/api/news/${id}`);
+    const news = await res.json();
+    reuseNews(news);
+}
+// функция переиспользования новости
+function reuseNews(news) {
+    // 1. текст
+    if (newsEditor && news.text) {
+        newsEditor.setText(""); // очистка 
+        newsEditor.clipboard.dangerouslyPasteHTML(news.text);
+    }
+    // востанавливаем группу получателей
+    const targetGroup = news.target_group || "all";
+    const groupRadio = document.querySelector(`input[name="news-target-group"][value="${targetGroup}"]`);
+    if (groupRadio) {
+        groupRadio.checked = true;
+    }
+
+    // 2. файл
+    const fileInput = document.getElementById("news-files");
+    const fileInfo = document.getElementById("news-file-info");
+    const fileName = document.getElementById("news-file-name");
+
+    if (news.files && Array.isArray(news.files) && news.files.length > 0) {
+        const f = news.files[0];
+        fileName.textContent = f.name + " (reuse)";
+        fileInfo.style.display = "flex";
+
+        // сохраняем путь
+        fileInput.dataset.reusePath = f.path || "";
+
+        // очищаем input (на всякий)
+        fileInput.value = "";
+    } else {
+        fileInput.value = "";
+        fileInfo.style.display = "none";
+        delete fileInput.dataset.reusePath;
+    }
+
+    showNotification("Новость загружена как шаблон", "success");
+}
+// закрытие модальности просмотра новости
+function closeFileModal() {
+    const modal = document.getElementById("file-modal");
+    modal.style.display = "none";
+
+    // чистим контент
+    document.getElementById("file-content").innerHTML = "";
+}
+
+// #############################
+// PROMPTS TAB LOGIC
+// #############################
 
 // Загрузка вкладки Prompts
 async function loadPromptsTab() {
     await loadPromptFiles();
     await loadCurrentPrompt();
 }
-
 // Загрузка списка файлов промптов
 async function loadPromptFiles() {
     const filesList = document.getElementById("prompt-files-list");
@@ -1306,7 +1760,6 @@ async function loadPromptFiles() {
         console.error("Error loading prompt files:", err);
     }
 }
-
 // Загрузка текущего промпта
 async function loadCurrentPrompt() {
     const editor = document.getElementById("prompt-editor");
@@ -1336,9 +1789,6 @@ async function loadCurrentPrompt() {
             if (fileNameEl && fileNameEl.textContent.includes(data.name)) {
                 item.classList.add("active");
             }
-            // if (item.querySelector(".file-name")?.textContent.includes(data.name)) {
-            //     item.classList.add("active");
-            // }
         });
         
     } catch (err) {
@@ -1346,7 +1796,6 @@ async function loadCurrentPrompt() {
         console.error("Error loading current prompt:", err);
     }
 }
-
 // Загрузка конкретного файла промпта
 async function loadPromptFile(filename) {
     const editor = document.getElementById("prompt-editor");
@@ -1371,14 +1820,11 @@ async function loadPromptFile(filename) {
                 item.classList.add("active");
             }
         });
-        // event.target.closest(".prompt-file-item")?.classList.add("active");
-        
     } catch (err) {
         alert(`Ошибка загрузки: ${err.message}`);
         console.error("Error loading prompt file:", err);
     }
 }
-
 // Создание бэкапа
 async function createBackup() {
     const resultDiv = document.getElementById("prompt-result");
@@ -1402,7 +1848,6 @@ async function createBackup() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
-
 // Сохранение промпта
 async function savePrompt() {
     const editor = document.getElementById("prompt-editor");
@@ -1437,7 +1882,7 @@ async function savePrompt() {
             resultDiv.innerHTML = `✅ Промпт сохранён!<br>📦 Бэкап создан автоматически`;
             currentPromptContent = newContent;
             await loadPromptFiles();
-            await loadCurrentPrompt();
+            // await loadCurrentPrompt();
         } else {
             throw new Error(data.detail || "Ошибка сохранения");
         }
@@ -1446,7 +1891,6 @@ async function savePrompt() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
-
 // Восстановление из бэкапа
 async function restorePrompt(filename) {
     if (!confirm(`Восстановить промпт из ${filename}?\n\nТекущий промпт будет заменён.`)) {
@@ -1472,7 +1916,6 @@ async function restorePrompt(filename) {
         console.error("Error restoring prompt:", err);
     }
 }
-
 // Удаление файла бэкапа
 async function deletePromptFile(filename) {
     if (!confirm(`Удалить файл ${filename}?`)) {
@@ -1497,43 +1940,11 @@ async function deletePromptFile(filename) {
     }
 }
 
-async function loadSyncSettings() {
+// #############################
+// BOT SETTINGS TAB LOGIC
+// #############################
 
-    const res = await fetch("/api/sync/settings")
-    const data = await res.json()
-
-    document.getElementById("sync-interval").innerText =
-        data.interval_hours
-}
-
-async function loadSyncSettings() {
-
-    const res = await fetch("/api/sync/settings")
-    const data = await res.json()
-
-    document.getElementById("sync-interval").innerText =
-        data.interval_hours
-}
-
-async function changeSyncInterval(){
-    const current = document.getElementById("sync-interval").innerText
-    const hours = prompt("Enter sync interval in hours", current)
-
-    if(!hours) return
-
-    const res = await fetch("/api/sync/settings", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({hours:parseInt(hours)})
-    })
-
-    if(res.ok){
-        loadSyncSettings()
-        loadCollectionInfo()
-    }
-}
-
-
+// загрузка стартового сообщения бота
 async function loadBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
     const metaSize = document.getElementById("bot-start-size");
@@ -1560,7 +1971,7 @@ async function loadBotStartMessage() {
         console.error("Error loading bot start message:", err);
     }
 }
-
+// сохранение нового стартового сообщения бота
 async function saveBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
     const resultDiv = document.getElementById("bot-start-result");
@@ -1598,4 +2009,208 @@ async function saveBotStartMessage() {
         resultDiv.className = "result-message error";
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
+}
+
+// #############################
+// GROUPS TAB LOGIC
+// #############################
+
+// Загрузка списка пользователей с группами
+async function loadUserGroups() {
+    const container = document.getElementById("user-groups-list");
+    const searchQuery = document.getElementById("user-search")?.value || "";
+    const groupFilter = document.getElementById("group-filter")?.value || "all";
+    if (!container) return;
+
+    container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
+    try {
+        const res = await fetch("/api/subscribers");  
+        if (!res.ok) {
+            throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
+        }
+        const users = await res.json();
+        
+        // Фильтрация по поиску
+        let filtered = users.filter(u => {
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            return (
+                String(u.user_id).includes(q) ||
+                (u.username && u.username.toLowerCase().includes(q)) ||
+                (u.first_name && u.first_name.toLowerCase().includes(q)) ||
+                (u.last_name && u.last_name.toLowerCase().includes(q))
+            );
+        });
+        
+        // Фильтрация по группе
+        if (groupFilter === "manager_group") {
+            filtered = filtered.filter(u => u.manager_group);
+        } else if (groupFilter === "couch_group") {
+            filtered = filtered.filter(u => u.couch_group);
+        } else if (groupFilter === "no_groups") {
+            filtered = filtered.filter(u => !u.manager_group && !u.couch_group);
+        }
+        
+        // Обновление статистики
+        updateGroupStats(users);
+        if (filtered.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Пользователи не найдены</p>
+                </div>
+            `;
+            return;
+        }
+        
+        container.innerHTML = `
+            <table class="user-groups-table">
+                <thead>
+                    <tr>
+                        <th>User ID</th>
+                        <th>Username</th>
+                        <th>Имя</th>
+                        <th class="text-center">👔 Менеджер</th>
+                        <th class="text-center">🎓 Коуч</th>
+                        <th>Телефон</th>
+                        <th>Последний вход</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${filtered.map(u => `
+                        <tr>
+                            <td class="font-monospace">${u.user_id}</td>
+                            <td>${escapeHtml(u.username || '-')}</td>
+                            <td>${escapeHtml(u.first_name || '')} ${escapeHtml(u.last_name || '')}</td>
+                            <td class="text-center">
+                                <input type="checkbox" 
+                                      ${u.manager_group ? 'checked' : ''} 
+                                      onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
+                            </td>
+                            <td class="text-center">
+                                <input type="checkbox" 
+                                      ${u.couch_group ? 'checked' : ''} 
+                                      onchange="toggleUserGroup(${u.user_id}, 'couch_group', this.checked)">
+                            </td>
+                            <td>${escapeHtml(u.phone_number || '-')}</td>
+                            <td>${formatDate(u.last_seen)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+        
+    } catch (e) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки: ${e.message}
+            </div>
+        `;
+        console.error("Error loading user groups:", e);
+    }
+}
+// Обновление статистики по группам
+function updateGroupStats(users) {
+    const statsDiv = document.getElementById("user-groups-stats");
+    if (!statsDiv) return;
+    
+    const total = users.length;
+    const managers = users.filter(u => u.manager_group).length;
+    const couchs = users.filter(u => u.couch_group).length;
+    const both = users.filter(u => u.manager_group && u.couch_group).length;
+    const noGroups = users.filter(u => !u.manager_group && !u.couch_group).length;
+    
+    statsDiv.innerHTML = `
+        <h3>📊 Статистика пользователей</h3>
+        <div class="groups-stats-grid">
+            <div class="groups-stat-card groups-stat-total">
+                <div class="groups-stat-number">${total}</div>
+                <div class="groups-stat-label">Всего пользователей</div>
+            </div>
+            <div class="groups-stat-card groups-stat-managers">
+                <div class="groups-stat-number">${managers}</div>
+                <div class="groups-stat-label">👔 Менеджеры</div>
+            </div>
+            <div class="groups-stat-card groups-stat-couchs">
+                <div class="groups-stat-number">${couchs}</div>
+                <div class="groups-stat-label">🎓 Коучи</div>
+            </div>
+            <div class="groups-stat-card groups-stat-both">
+                <div class="groups-stat-number">${both}</div>
+                <div class="groups-stat-label">В обеих группах</div>
+            </div>
+            <div class="groups-stat-card groups-stat-none">
+                <div class="groups-stat-number">${noGroups}</div>
+                <div class="groups-stat-label">Без групп</div>
+            </div>
+        </div>
+    `;
+}
+// Переключение группы пользователя
+async function toggleUserGroup(userId, group, value) {
+    try {
+        const res = await fetch("/api/subscribers/group", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                user_id: userId,
+                group: group,
+                value: value
+            })
+        });
+        
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Ошибка ${res.status}`);
+        }
+        const groupName = group === "manager_group" ? "👔 Менеджер" : "🎓 Коуч";
+        const action = value ? "добавлен в" : "удалён из";
+        
+        showNotification(`Пользователь ${userId} ${action} группы "${groupName}"`, "success");
+        
+        // Перезагружаем список для обновления статистики
+        await loadUserGroups();
+        
+    } catch (e) {
+        alert(`Ошибка обновления группы: ${e.message}`);
+        // Возвращаем чекбокс в исходное состояние
+        await loadUserGroups();
+    }
+}
+// Экспорт пользователей в CSV
+function exportUsers() {
+    const table = document.querySelector("#user-groups-list table");
+    if (!table) {
+        alert("Нет данных для экспорта");
+        return;
+    }
+    
+    let csv = [];
+    const rows = table.querySelectorAll("tr");
+    
+    rows.forEach(row => {
+        const cols = row.querySelectorAll("th, td");
+        const rowData = [];
+        
+        cols.forEach((col, index) => {
+            // Для чекбоксов берём состояние
+            const checkbox = col.querySelector("input[type='checkbox']");
+            if (checkbox) {
+                rowData.push(`"${checkbox.checked ? 'Yes' : 'No'}"`);
+            } else {
+                rowData.push(`"${col.textContent.trim().replace(/"/g, '""')}"`);
+            }
+        });
+        
+        csv.push(rowData.join(","));
+    });
+    
+    const csvContent = csv.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `users_groups_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    
+    showNotification("Экспорт выполнен успешно", "success");
 }

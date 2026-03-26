@@ -13,8 +13,13 @@ import threading
 from google.adk.tools import FunctionTool
 
 def get_prompt():
+    """
+    Специальная функция tool  
+    для модели чтобы получать системный промпт
+    """
     return root_agent.instruction
 
+# Handler для того чтобы подхватывать изменения промпта
 class PromptManager(FileSystemEventHandler):
     def __init__(self, prompt_path: Path, agent):
         self.prompt_path = prompt_path
@@ -119,7 +124,7 @@ root_agent = LlmAgent(
         api_key=API_KEY,
         api_base=API_URL,
         # Ограничение длины генерируемого ответа
-        max_tokens=2000,
+        max_tokens=5000,
         # Температура для более предсказуемых ответов
         temperature=0.1,
         # Дополнительные параметры для управления контекстом
@@ -133,7 +138,8 @@ root_agent = LlmAgent(
 
 logger.info("✓ Агент успешно инициализирован")
 logger.info(f"  Подключено tools: {len(tools)}")
-# 2. Запускаем слежку за файлом
+# 2. Запускаем слежку за файлом, чтобы если изменился промпт он сразу подхватывался
+# но из-за того что это агент google срабатывает только при reset команде
 event_handler = PromptManager(PROMPT_FILE, root_agent)
 observer = Observer()
 observer.schedule(event_handler, path=str(PROMPT_FILE.parent), recursive=False)
