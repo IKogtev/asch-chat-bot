@@ -57,6 +57,7 @@ pipeline {
 
       environment {
         // ADK runtime (ingress)
+        ADK_API_BASE = "${params.ADK_API_BASE}"
         ADK_APP_NAME = "agent"
 
         // Evaluator LLM
