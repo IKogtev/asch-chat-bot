@@ -76,8 +76,6 @@ pipeline {
               set -euo pipefail
 
               echo "Workspace: ${WORKSPACE}"
-              ls -la
-              ls -la tester || true
 
               # Decode uploaded Excel into tester/ folder
               was_x=0
