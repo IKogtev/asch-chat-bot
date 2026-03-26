@@ -1,0 +1,131 @@
+pipeline {
+  agent none
+
+  parameters {
+    base64File(
+      name: 'TC_TASK_FILE_LOCAL',
+      description: 'Upload local test case Excel file'
+    )
+    hidden(
+      name: 'LLM_API_URL',
+      defaultValue: 'https://dsrv1.llm.nstcloud.ru/v1',
+      description: 'LLM API URL'
+    )
+    choice(
+      choices: [
+        'Qwen/Qwen3-30B-A3B',
+        'Qwen/Qwen3-Embedding-0.6B',
+        'openai/gpt-oss-20b',
+      ],
+      name: 'LLM_API_MODEL',
+      description: 'LLM model name'
+    )
+    choice(
+      name: 'ADK_API_BASE',
+      choices: [
+        'adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru',
+        'adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru',
+      ],
+      description: 'ADK agent base host (ingress)'
+    )
+  }
+
+  options {
+    skipDefaultCheckout(true)
+  }
+
+  stages {
+    stage('Run adk-agent tester') {
+      agent {
+        kubernetes {
+          yaml """
+            apiVersion: v1
+            kind: Pod
+            spec:
+              restartPolicy: Never
+              containers:
+                - name: tester
+                  image: python:3.12-slim
+                  command:
+                    - cat
+                  tty: true
+          """
+          defaultContainer 'tester'
+        }
+      }
+
+      environment {
+        // ADK runtime (ingress)
+        ADK_API_BASE = "https://${params.ADK_API_BASE}"
+        ADK_APP_NAME = "agent"
+
+        // Evaluator LLM
+        LLM_API_URL = "${params.LLM_API_URL}"
+        LLM_API_MODEL = "${params.LLM_API_MODEL}"
+
+        // Test-case upload (base64File plugin)
+        TC_TASK_FILE_LOCAL = "${params.TC_TASK_FILE_LOCAL}"
+      }
+
+      steps {
+        withCredentials([
+          string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
+        ]) {
+          container('tester') {
+            checkout scm
+            sh '''
+              set -euo pipefail
+
+              echo "Workspace: ${WORKSPACE}"
+              ls -la
+              ls -la tester || true
+
+              # Decode uploaded Excel into tester/ folder
+              was_x=0
+              case "$-" in
+                *x*) was_x=1 ;;
+              esac
+              set +x
+              if [ -z "${TC_TASK_FILE_LOCAL:-}" ]; then
+                echo "ERROR: TC_TASK_FILE_LOCAL is empty. Please upload Excel file in job parameters."
+                exit 2
+              fi
+              mkdir -p "${WORKSPACE}/tester"
+              printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "${WORKSPACE}/tester/${TC_TASK_FILE_LOCAL_FILENAME}"
+              export TC_TASK_FILE_NAME="${TC_TASK_FILE_LOCAL_FILENAME}"
+              echo "Using uploaded file: tester/${TC_TASK_FILE_LOCAL_FILENAME}"
+              if [ "$was_x" -eq 1 ]; then
+                set -x
+              fi
+
+              python -V
+              python -m pip install --upgrade pip
+              pip install --no-cache-dir -r tester/requirements.txt
+
+              # Run the tester (writes REPORT_* and answers_* into tester/)
+              python tester/adk_agent_tester_v1.py --excel "tester/${TC_TASK_FILE_LOCAL_FILENAME}" --out "tester"
+
+              echo "Artifacts:"
+              ls -la tester || true
+            '''
+          }
+        }
+      }
+
+      post {
+        success {
+          archiveArtifacts artifacts: 'tester/REPORT_*.xlsx, tester/REPORT_*.png, tester/REPORT_*.html, tester/answers_*.parquet, tester/answers_*.csv', allowEmptyArchive: true
+          emailext(
+            subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Artifacts",
+            mimeType: 'text/html',
+            body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
+                     Build URL: ${env.BUILD_URL}<br/>
+                     ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>""",
+            attachmentsPattern: 'tester/REPORT_*.xlsx, tester/REPORT_*.png, tester/REPORT_*.html',
+            recipientProviders: [[$class: 'RequesterRecipientProvider']]
+          )
+        }
+      }
+    }
+  }
+}
