@@ -23,8 +23,8 @@ pipeline {
     choice(
       name: 'ADK_API_BASE',
       choices: [
-        'adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru',
-        'adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru',
+        'https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru',
+        'https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru',
       ],
       description: 'ADK agent base host (ingress)'
     )
@@ -43,20 +43,20 @@ pipeline {
             kind: Pod
             spec:
               restartPolicy: Never
+              imagePullPolicy: IfNotPresent
               containers:
-                - name: tester
-                  image: python:3.12-slim
+                - name: adk-agent-tester
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.1-amd64
                   command:
                     - cat
                   tty: true
-          """
-          defaultContainer 'tester'
+            """
+          defaultContainer 'adk-agent-tester'
         }
       }
 
       environment {
         // ADK runtime (ingress)
-        ADK_API_BASE = "https://${params.ADK_API_BASE}"
         ADK_APP_NAME = "agent"
 
         // Evaluator LLM
@@ -72,7 +72,6 @@ pipeline {
           string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
         ]) {
           container('tester') {
-            checkout scm
             sh '''
               set -euo pipefail
 
@@ -90,23 +89,28 @@ pipeline {
                 echo "ERROR: TC_TASK_FILE_LOCAL is empty. Please upload Excel file in job parameters."
                 exit 2
               fi
-              mkdir -p "${WORKSPACE}/tester"
-              printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "${WORKSPACE}/tester/${TC_TASK_FILE_LOCAL_FILENAME}"
+
+              # Decode Excel into /app (container workdir)
+              printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "/app/${TC_TASK_FILE_LOCAL_FILENAME}"
               export TC_TASK_FILE_NAME="${TC_TASK_FILE_LOCAL_FILENAME}"
-              echo "Using uploaded file: tester/${TC_TASK_FILE_LOCAL_FILENAME}"
+              echo "Using uploaded file: /app/${TC_TASK_FILE_LOCAL_FILENAME}"
               if [ "$was_x" -eq 1 ]; then
                 set -x
               fi
 
-              python -V
-              python -m pip install --upgrade pip
-              pip install --no-cache-dir -r tester/requirements.txt
+              # Run the tester (writes REPORT_* and answers_* into /app)
+              python3 /app/adk_agent_tester_v1.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out "/app"
 
-              # Run the tester (writes REPORT_* and answers_* into tester/)
-              python tester/adk_agent_tester_v1.py --excel "tester/${TC_TASK_FILE_LOCAL_FILENAME}" --out "tester"
+              echo "Copying artifacts from /app to workspace: ${WORKSPACE}/tester"
+              mkdir -p "${WORKSPACE}/tester"
 
-              echo "Artifacts:"
-              ls -la tester || true
+              for pattern in "/app/REPORT_*.xlsx" "/app/REPORT_*.png" "/app/REPORT_*.html" "/app/answers_*.parquet" "/app/answers_*.csv"; do
+                for f in $pattern; do
+                  if [ -e "$f" ]; then
+                    cp -v "$f" "${WORKSPACE}/tester/"
+                  fi
+                done
+              done
             '''
           }
         }
