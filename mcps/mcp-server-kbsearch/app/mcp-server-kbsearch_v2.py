@@ -69,7 +69,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 CHUNK_SIZE = int(os.getenv("KB_CHUNK_SIZE", 512))
 CHUNK_OVERLAP = int(os.getenv("KB_CHUNK_OVERLAP", 50))
 SIMILARITY_TOP_K = int(os.getenv("KB_SIMILARITY_TOP_K", 10))
-SIMILARITY_CUTOFF = float(os.getenv("KB_SIMILARITY_CUTOFF", 0.5))
+SIMILARITY_CUTOFF = float(os.getenv("KB_SIMILARITY_CUTOFF", 0.35))
 SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT",['.txt', '.pdf', '.docx', '.md']))
 
 # Qdrant settings
@@ -124,7 +124,7 @@ idx_config = IndexerConfig(
 )
 # Создаём Indexer с текущими конфигами
 indexer = Indexer(idx_config)
-
+logger.debug(f"Indexer config:\n{idx_config}")
 # ============================================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ, добавили блокировку
 # ============================================================================
@@ -259,6 +259,121 @@ def get_file_link(file_name: Annotated[str, "Name of source file"], section_list
     clean_path = file_path.lstrip("/")
     return f"{clean_path}"
 
+def normalize_text(text: str) -> str:
+    text = (text or "").lower()
+    text = text.replace("ё", "е")
+    text = re.sub(r"[_/\\\-+]+", " ", text)
+    text = re.sub(r"[^\w\sа-яА-Яa-zA-Z]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def expand_query_terms(query: str) -> list[str]:
+    q = normalize_text(query)
+    terms = [t for t in q.split() if len(t) >= 2]
+
+    aliases = set(terms)
+    joined = " ".join(terms)
+
+    # минимальный словарь под ваши продуктовые запросы
+    if "форт нокс" in joined or "fort knox" in joined or "форт" in joined or "fort" in joined or "нокс" in joined or "knox" in joined:
+        aliases.update(["fort knox", "форт нокс"])
+
+    if "защищенный капитал" in joined or "защищённый капитал" in joined:
+        aliases.update(["защищенный капитал", "защищённый капитал", "zash ish ennyiy kapital"])
+    if "aльфа" in joined or "alpha" in joined:
+        aliases.update(["alpha", "альфа", "al pha"])
+    if "инвестиции" in joined:
+        aliases.update(['investicii'])
+
+    return list(aliases)
+
+
+def overlap_score(text: str, terms: list[str]) -> float:
+    text_norm = normalize_text(text)
+    if not text_norm or not terms:
+        return 0.0
+
+    hits = sum(1 for term in terms if term in text_norm)
+    return hits / max(len(terms), 1)
+
+
+def phrase_score(text: str, query: str) -> float:
+    text_norm = normalize_text(text)
+    query_norm = normalize_text(query)
+    logger.debug(f"Phrase score{text_norm} : {query_norm}")
+    if not text_norm or not query_norm:
+        return 0.0
+    return 1.0 if query_norm in text_norm else 0.0
+
+
+def get_section_text(section_path) -> str:
+    if isinstance(section_path, list):
+        return " ".join(str(x) for x in section_path if x)
+    return str(section_path or "")
+
+
+def metadata_to_searchable_fields(metadata: dict) -> tuple[str, str]:
+    source = str(metadata.get("source", "") or "")
+    section_text = get_section_text(metadata.get("section_path", []))
+    return source, section_text
+
+
+def low_info_penalty(content: str) -> float:
+    text = (content or "").strip()
+    if not text:
+        return 0.35
+
+    if len(text) < 20:
+        return 0.25
+
+    letters = sum(ch.isalpha() for ch in text)
+    digits = sum(ch.isdigit() for ch in text)
+
+    # почти один номер / id
+    if letters == 0 and digits > 0:
+        return 0.35
+
+    # URL / короткие служебные хвосты
+    text_norm = normalize_text(text)
+    if text_norm.startswith("www ") or "http" in text_norm:
+        return 0.20
+
+    if letters > 0 and digits > letters:
+        return 0.20
+
+    return 0.0
+
+
+def compute_lexical_score(query: str, content: str, metadata: dict) -> float:
+    terms = expand_query_terms(query)
+    source, section_text = metadata_to_searchable_fields(metadata)
+
+    content_overlap = overlap_score(content, terms)
+    source_overlap = overlap_score(source, terms)
+    section_overlap = overlap_score(section_text, terms)
+
+    content_phrase = phrase_score(content, query)
+    source_phrase = phrase_score(source, query)
+    section_phrase = phrase_score(section_text, query)
+
+    # Для file_search сильнее бустим source и section_path
+    score = (
+        0.1 * content_overlap +
+        0.15 * source_overlap +
+        0.1 * section_overlap +
+        0.25 * content_phrase +
+        0.25 * source_phrase +
+        0.25 * section_phrase
+    )
+    return min(score, 1.0)
+
+
+def compute_final_score(dense_score: float, lexical_score: float, content: str) -> float:
+    base = 0.35 * float(dense_score or 0.0) + 0.65 * float(lexical_score or 0.0)
+    penalty = low_info_penalty(content)
+    return base - penalty
+
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
 # ============================================================================
@@ -277,7 +392,7 @@ async def kb_search(
         "section_relationships": "01_Маркетинговые материалы/02_Fort Knox"
         }
         """] = None,
-    top_k: Annotated[int, "Number of results to return (default: 10)"] = SIMILARITY_TOP_K,
+    top_k: Annotated[int, "Number of results to return (default: SIMILARITY_TOP_K)"] = SIMILARITY_TOP_K,
     include_metadata: Annotated[bool, "Include document metadata in the output"] = True,
 ):
     """
@@ -311,31 +426,53 @@ async def kb_search(
             return res
    
         try:
-            retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
+            candidate_k = max(top_k * 5, 30)
+            retriever = indexer.get_retriever_for_collection(collection, candidate_k, filters)
             nodes = retriever.retrieve(query)
 
             if not nodes:
                 res = ToolResult(
-                    content=f"Ошибка при поиске: {e}",
+                    content="Ничего не найдено",   
                     structured_content=None
                 )
-                res.isError = True
+                res.isError = False
                 return res
 
+            rescored = []
+            for node in nodes:
+                content = node.get_content()
+                metadata = node.metadata or {}
+                dense_score = float(node.score or 0.0)
+                lexical_score = compute_lexical_score(query, content, metadata)
+                final_score = compute_final_score(dense_score, lexical_score, content)
+
+                rescored.append({
+                    "node": node,
+                    "dense_score": dense_score,
+                    "lexical_score": lexical_score,
+                    "final_score": final_score,
+                })
+
+            rescored.sort(key=lambda x: x["final_score"], reverse=True)
+            rescored = rescored[:top_k]
+
             results = []
-            for i, node in enumerate(nodes[:top_k]):
+            for i, item in enumerate(rescored):
+                node = item["node"]
                 result = {
                     "rank": i,
-                    "score": node.score,
+                    "score": item["final_score"],
+                    "dense_score": item["dense_score"],
+                    "lexical_score": item["lexical_score"],
                     "content": node.get_content(),
                 }
 
                 if include_metadata:
                     result["metadata"] = node.metadata or {}
+                if item["final_score"]>=SIMILARITY_CUTOFF:
+                    results.append(result)
 
-                results.append(result)
-
-            logger.info(f"Найдено {len(results)} результатов")
+            logger.info(f"Найдено {len(results)} результатов после hybrid rerank")
 
             for res in results:
                 metadata = res.get("metadata") or {}
@@ -345,7 +482,7 @@ async def kb_search(
                 )
                 res["metadata"] = metadata
 
-            logger.debug("\n%s", json.dumps(results, indent=2, ensure_ascii=False))
+            
 
             def cleanup_label(text: str) -> str:
                 text = re.sub(r"^\d+[_\-\s]*", "", text)
@@ -362,18 +499,27 @@ async def kb_search(
                 if cleaned:
                     return cleaned[-1]
                 return source
-
+            
             def build_prompt(results: list[dict], question: str) -> str:
                 blocks = []
-
-                for i, item in enumerate(results):
+                doc_res = {}
+                for item in results:
+                    doc_id = item["metadata"]["document_id"]
+                    if not doc_id in doc_res.keys():
+                        doc_res.update({doc_id:item})
+                    else:
+                        doc_res[doc_id]["content"] += "\n..." + item["content"]
+                        doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+                        
+                logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
+                
+                for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
                     text = item["content"].strip()
                     metadata = item.get("metadata", {})
                     title = make_title(metadata)
                     relative_path = metadata.get("relative_path", "")
-                    doc_id = metadata.get("document_id", "")
 
-                    block = f"""[{i}] {title}
+                    block = f"""rank [{i+1}] {title}
 RELATIVE_PATH: {relative_path}
 
 DOCUMENT_ID: {doc_id}
@@ -395,9 +541,9 @@ QUESTION
 """
             prompt = build_prompt(results, query)
             res = ToolResult(
-            content=prompt,
-            structured_content=None,
-        )
+                            content=prompt,
+                            structured_content=None
+                                            )
             res.isError = False
             return res
 
