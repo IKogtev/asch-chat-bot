@@ -14,8 +14,7 @@ RUN apt-get update -qq && \
 WORKDIR /app
 
 # Copy tester script + requirements (build context should be repo root: `asch-chat-bot/`)
-COPY tester/adk_agent_tester_v1.py /app/adk_agent_tester_v1.py
-COPY tester/requirements.txt /app/requirements.txt
+COPY adk_agent_tester_v1.py requirements.txt ./
 
 # Install Python dependencies
 RUN python -m pip install --upgrade pip && \

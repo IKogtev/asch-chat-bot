@@ -15,28 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 import pandas as pd
 
-from dotenv import load_dotenv
-
 load_dotenv()
-
-## LOGGER CONFIG
-
-# def _setup_logger():
-#     try:
-#         from utils.logger import setup_logger  # type: ignore
-
-#         return setup_logger("tester", "adk_agent_tester.log")
-#     except Exception:
-#         import logging
-
-#         logging.basicConfig(
-#             level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
-#             format="%(asctime)s %(levelname)s %(message)s",
-#         )
-#         return logging.getLogger("tester")
-
-
-# logger = _setup_logger()
 
 # Configure logging level (override with env LOG_LEVEL=DEBUG/INFO/WARN/ERROR)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
