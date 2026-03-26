@@ -45,15 +45,20 @@ TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
 def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
     """
     Lightweight reachability check for ADK runtime from this machine.
-    We try known endpoints in order; any 200 means reachable.
+    We try known endpoints in order; any non-5xx HTTP response means reachable.
     """
     base_url = base_url.rstrip("/")
     candidates = [f"{base_url}/openapi.json", f"{base_url}/docs", f"{base_url}/"]
     for url in candidates:
         try:
             r = requests.get(url, timeout=timeout_sec)
-            if 200 <= r.status_code < 300:
-                logger.info(f"✅ ADK reachable: GET {url} -> {r.status_code}")
+            if r.status_code < 500:
+                if 200 <= r.status_code < 300:
+                    logger.info(f"✅ ADK reachable: GET {url} -> {r.status_code}")
+                else:
+                    logger.info(
+                        f"✅ ADK reachable (non-2xx but non-5xx): GET {url} -> {r.status_code}"
+                    )
                 return True
         except Exception:
             continue
