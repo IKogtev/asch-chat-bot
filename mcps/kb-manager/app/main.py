@@ -135,6 +135,29 @@ async def event_generator():
     finally:
         subscribers.remove(queue)
 
+async def save_upload_to_tmp(file: UploadFile) -> Path:
+    """Сохранение во временные файлы"""
+    upload_id = uuid.uuid4().hex
+    tmp_dir = Path("/tmp/uploads") / upload_id 
+    tmp_dir.mkdir(parents=True, exist_ok=True)    
+    tmp_file = tmp_dir / (file.filename or "unknown")
+    content = await file.read()
+    tmp_file.write_bytes(content)
+    return tmp_file
+
+def validate_extensions(ext: str, collection_type: str):
+    """Проверка поддерживания расширения для индексации"""
+    allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
+    if ext not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported {collection_type.upper()} format: {ext}"
+            f"\n Supported formats are: {', '.join(allowed)}"
+        )
+
+##################################
+# Работа с синхронихацией
+##################################
 @app.get("/api/filesystem/sync_events")
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -287,6 +310,35 @@ async def manual_sync_all():
     result = await run_sync_all_safe()
     return result
 
+@app.post("/api/filesystem/sync")
+async def filesystem_sync(
+    kb_id: str = Form("01_Маркетинговые материалы"),
+    collection_type: str = Form("kb")
+):
+    logger.info(f"[SYNC ONE] kb_id={kb_id}, type={collection_type}")
+    loop = asyncio.get_running_loop()
+    """синхронизация для kb отдельно, чтобы не делать для всех"""
+    if collection_type == CollectionType.FAQ:
+        storager = faq_file_storage
+    elif collection_type == CollectionType.DOCUMENTS or collection_type=="kb":
+        storager = kb_file_storage
+    else:
+        return {"status": "error", "message": "Invalid collection type"}
+
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: storager.sync(
+                kb_id=kb_id,
+                collection_type=collection_type
+            )
+        )
+    except Exception as e:
+        logger.error(f"[SYNC KB] Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "sync_completed"}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -294,12 +346,14 @@ async def root():
     with open(static_path / "index.html") as f:
         return f.read()
 
-
 @app.get("/api/health")
 async def health():
     """Health check endpoint"""
     return {"status": "healthy", "qdrant_url": qdrant_url, "collection": collection_name}
 
+##################################
+# Работа с документами
+##################################
 
 @app.get("/api/documents", response_model=List[DocumentInfo])
 async def list_documents():
@@ -309,26 +363,6 @@ async def list_documents():
         return documents
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-async def save_upload_to_tmp(file: UploadFile) -> Path:
-    """Сохранение во временные файлы"""
-    upload_id = uuid.uuid4().hex
-    tmp_dir = Path("/tmp/uploads") / upload_id 
-    tmp_dir.mkdir(parents=True, exist_ok=True)    
-    tmp_file = tmp_dir / (file.filename or "unknown")
-    content = await file.read()
-    tmp_file.write_bytes(content)
-    return tmp_file
-
-def validate_extensions(ext: str, collection_type: str):
-    """Проверка поддерживания расширения для индексации"""
-    allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
-    if ext not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported {collection_type.upper()} format: {ext}"
-            f"\n Supported formats are: {', '.join(allowed)}"
-        )
 
 @app.post("/api/documents/upload")
 async def upload_document(
@@ -451,7 +485,6 @@ async def get_document(document_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.delete("/api/documents/{document_id}")
 async def delete_document(document_id: str):
     """Delete a document and all its chunks"""
@@ -462,7 +495,6 @@ async def delete_document(document_id: str):
         return {"message": "Document deleted successfully", "document_id": document_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/search", response_model=List[SearchResult])
 async def search_documents(request: SearchRequest):
@@ -477,34 +509,6 @@ async def search_documents(request: SearchRequest):
     except Exception as e:
         logger.info(f"[SEARCH ERROR], {e}")
         return []
-
-
-@app.get("/api/collections/info")
-async def collection_info():
-    """Get collection information"""
-    try:
-        info = qdrant_service.get_collection_info()
-        info['platform_version'] = PLATFORM_VERSION
-        info['last_sync'] = sync_settings["last_sync"]
-        info['next_sync'] = sync_settings['next_sync']
-        return info
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/collections/refresh_metadata")
-async def refresh_collection_metadata():
-    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
-    try:
-        result = qdrant_service.refresh_collection_metadata()
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/knowledge-bases")
 async def list_knowledge_bases():
@@ -531,6 +535,59 @@ def delete_knowledge_base(req: DeleteKBRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/api/documents/download/{document_id}")
+async def download_document(document_id: str):
+    """скачивание документа по id"""
+    chunks = qdrant_service.get_document_chunks(document_id)
+    if not chunks:
+        raise HTTPException(404, "Document not found")
+
+    raw_path = chunks[0]["metadata"].get("file_path")
+
+    if not raw_path:
+        raise HTTPException(404, "No file_path in metadata")
+
+    file_path = Path(raw_path.strip())
+    if not file_path.exists():
+        raise HTTPException(
+            404,
+            f"File not found on disk: {file_path}"
+        )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/octet-stream"
+    )
+
+##################################
+# Работа с коллекциями
+##################################
+
+@app.get("/api/collections/info")
+async def collection_info():
+    """Get collection information"""
+    try:
+        info = qdrant_service.get_collection_info()
+        info['platform_version'] = PLATFORM_VERSION
+        info['last_sync'] = sync_settings["last_sync"]
+        info['next_sync'] = sync_settings['next_sync']
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/collections/refresh_metadata")
+async def refresh_collection_metadata():
+    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
+    try:
+        result = qdrant_service.refresh_collection_metadata()
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/collections")
 def get_collections():
@@ -642,59 +699,9 @@ def get_collections_by_type():
             result["kb"].append(c.name)
     return result
 
-@app.get("/api/documents/download/{document_id}")
-async def download_document(document_id: str):
-    """скачивание документа по id"""
-    chunks = qdrant_service.get_document_chunks(document_id)
-    if not chunks:
-        raise HTTPException(404, "Document not found")
-
-    raw_path = chunks[0]["metadata"].get("file_path")
-
-    if not raw_path:
-        raise HTTPException(404, "No file_path in metadata")
-
-    file_path = Path(raw_path.strip())
-    if not file_path.exists():
-        raise HTTPException(
-            404,
-            f"File not found on disk: {file_path}"
-        )
-
-    return FileResponse(
-        path=str(file_path),
-        filename=file_path.name,
-        media_type="application/octet-stream"
-    )
-
-@app.post("/api/filesystem/sync")
-async def filesystem_sync(
-    kb_id: str = Form("01_Маркетинговые материалы"),
-    collection_type: str = Form("kb")
-):
-    logger.info(f"[SYNC ONE] kb_id={kb_id}, type={collection_type}")
-    loop = asyncio.get_running_loop()
-    """синхронизация для kb отдельно, чтобы не делать для всех"""
-    if collection_type == CollectionType.FAQ:
-        storager = faq_file_storage
-    elif collection_type == CollectionType.DOCUMENTS or collection_type=="kb":
-        storager = kb_file_storage
-    else:
-        return {"status": "error", "message": "Invalid collection type"}
-
-    try:
-        await loop.run_in_executor(
-            None,
-            lambda: storager.sync(
-                kb_id=kb_id,
-                collection_type=collection_type
-            )
-        )
-    except Exception as e:
-        logger.error(f"[SYNC KB] Error: {e}")
-        return {"status": "error", "message": str(e)}
-
-    return {"status": "sync_completed"}
+##################################
+# Работа с файловой системой
+##################################
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
