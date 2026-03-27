@@ -804,7 +804,6 @@ function subscribeToSync() {
     };
 }
 
-
 // функция для синхронизации по всем данным
 async function syncAll(btnElement) {
     // 1. Защита: если кнопка не передана, выходим
@@ -844,7 +843,7 @@ async function syncAll(btnElement) {
 
         // 5. Показываем успех
         btnElement.innerText = "✅ Готово";
-        btnElement.style.backgroundColor = "#28a745"; // Зеленый цвет (если используете Bootstrap)
+        btnElement.style.backgroundColor = "#28a745"; 
 
         // 6. Обновляем список документов (если функция существует)
         if (typeof loadDocuments === 'function') {
