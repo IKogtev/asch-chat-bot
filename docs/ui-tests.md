@@ -1,4 +1,4 @@
-# установка чтобы была возможность запускать тесты
+# установка чтобы была возможность запускать mock тесты
 npm init -y
 npm install -D playwright
 npx playwright install
@@ -8,3 +8,4 @@ npx playwright test --list
 
 # запуск тестов: 
 npx playwright test tests/ui/collections.spec.ts
+UI тесты
