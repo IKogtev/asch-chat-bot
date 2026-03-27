@@ -16,6 +16,9 @@ from aiogram.types import (
     InlineKeyboardButton, CallbackQuery, KeyboardButton, ReplyKeyboardMarkup,
     ReplyKeyboardRemove
     )
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiohttp_socks import ProxyConnector
+
 from dotenv import load_dotenv
 import aiohttp
 import time
@@ -357,7 +360,7 @@ class SubscriberStore:
             last_seen TIMESTAMP DEFAULT NOW(),
             region TEXT,
             manager_group BOOLEAN DEFAULT FALSE,
-            couch_group BOOLEAN DEFAULT FALSE,
+            coach_group BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT NOW()
         );
         """
@@ -377,7 +380,7 @@ class SubscriberStore:
         query = """
         INSERT INTO subscribers (
             user_id, username, first_name, last_name, phone_number, 
-            last_seen, region, manager_group, couch_group
+            last_seen, region, manager_group, coach_group
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (user_id) DO UPDATE SET
             username = EXCLUDED.username,
@@ -397,7 +400,7 @@ class SubscriberStore:
                 last_seen,
                 None, # region
                 False, # manager_group
-                False # couch_group
+                False # coach_group
             )
 
     async def get_phone(self, user_id: int) -> str | None:
@@ -430,6 +433,31 @@ class SubscriberStore:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [r["user_id"] for r in rows]
+    
+    async def get_user_data(self, user_id: int) -> dict | None:
+        """Получение полных данных пользователя для передачи в ADK"""
+        query = """
+        SELECT user_id, username, first_name, last_name, phone_number, 
+               region, manager_group, coach_group
+        FROM subscribers
+        WHERE user_id = $1
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id)
+        
+        if not row:
+            return None
+        
+        return {
+            "user_id": row["user_id"],
+            "username": row["username"],
+            "first_name": row["first_name"],
+            "last_name": row["last_name"],
+            "phone_number": row["phone_number"],
+            "region": row["region"],
+            "manager_group": row["manager_group"],
+            "coach_group": row["coach_group"]
+        }
 
 class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
@@ -723,6 +751,35 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
+    async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
+        """Установка данных пользователя в состояние ADK сессии"""
+        if not self.http:
+            raise RuntimeError("HTTP session not initialized")
+        
+        url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}/state"
+        
+        # Формируем состояние для ADK
+        state_payload = {
+            "user_profile": {
+                "phone": user_data.get("phone_number"),
+                "first_name": user_data.get("first_name"),
+                "last_name": user_data.get("last_name"),
+                "username": user_data.get("username"),
+                "region": user_data.get("region"),
+                "is_manager": user_data.get("manager_group", False),
+                "is_coach": user_data.get("coach_group", False)
+            }
+        }
+        
+        try:
+            async with self.http.patch(url, json=state_payload) as resp:
+                if resp.status in (200, 204):
+                    logger.info(f"✅ Состояние установлено для user={user_id}")
+                else:
+                    text = await resp.text()
+                    logger.warning(f"⚠️ Не удалось установить состояние: {resp.status} - {text}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Ошибка при установке состояния: {e}", exc_info=True)
         
 async def main() -> None:
     """Главная функция бота"""
@@ -763,32 +820,95 @@ async def main() -> None:
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
     
     # Инициализация компонентов
-    bot = Bot(token=tg_token)
-    dp = Dispatcher()
-    
+    proxy_url = os.getenv("TELEGRAM_PROXY")  # например: "socks5://user:pass@host:port"
+
+    # Инициализация компонентов, которые не требуют подключения к Telegram
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
-    # инициализируем хранилище пользователей
     subscriber_store = SubscriberStore(store.pool)
     await subscriber_store.ensure_schema()
-    # инициализируем хранилище новостей
     news_store = NewsStore(store.pool)
     await news_store.ensure_schema()
     
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
     
-    # Инициализация DocumentHandler
     doc_handler = DocumentHandler(
         kb_manager_url=KB_MANAGER_URL,
         kb_manager_token=kb_manager_token,
         downloads_dir=downloads_dir
     )
     
-    logger.info("Все компоненты инициализированы")
+    logger.info("Базовые компоненты инициализированы")
 
-    # Обработчики команд
+    # Цикл переподключения к Telegram с перезагрузкой диспетчера
+    while True:
+        bot = None
+        dp = None
+        try:
+            # Подключение к Telegram
+            logger.info("Попытка подключения к Telegram...")
+            if proxy_url:
+                connector = ProxyConnector.from_url(proxy_url)
+                session = AiohttpSession(connector=connector)
+                bot = Bot(token=tg_token, session=session)
+            else:
+                bot = Bot(token=tg_token)
+
+            me = await bot.get_me()
+            logger.info(f"✓ Успешное подключение к Telegram: бот @{me.username}")
+            
+            # Инициализация диспетчера и регистрация обработчиков
+            dp = Dispatcher()
+            register_handlers(
+                dp=dp,
+                store=store,
+                subscriber_store=subscriber_store,
+                adk=adk,
+                doc_handler=doc_handler
+            )
+            logger.info("✓ Диспетчер инициализирован")
+            
+            # Запуск polling
+            logger.info("Запуск Telegram бота (polling)...")
+            await dp.start_polling(bot)
+            
+        except (aiohttp.ClientConnectorError, aiohttp.ClientOSError) as e:
+            logger.error(f"Ошибка подключения к Telegram: {e}")
+            logger.info("Повторная попытка через 60 секунд...")
+            await asyncio.sleep(60)
+            
+        except asyncio.CancelledError:
+            logger.info("Бот остановлен (CancelledError)")
+            break
+            
+        except Exception as e:
+            logger.critical(f"Критическая ошибка: {e}", exc_info=True)
+            logger.info("Перезапуск через 60 секунд...")
+            await asyncio.sleep(60)
+            
+        finally:
+            # Очистка ресурсов текущей итерации
+            if bot and bot.session:
+                try:
+                    await bot.session.close()
+                except Exception as e:
+                    logger.warning(f"Ошибка при закрытии сессии бота: {e}")
+    
+    # Финальная очистка
+    logger.info("Остановка бота...")
+    try:
+        await adk.close()
+        await store.close()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии компонентов: {e}", exc_info=True)
+    
+    logger.info("Бот остановлен")
+   
+def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler) -> None:
+    """Регистрация всех обработчиков сообщений"""
+
     @dp.message(Command("start"))
     async def start(m: Message) -> None:
         user_id = m.from_user.id
@@ -807,6 +927,16 @@ async def main() -> None:
             phone_number=None
         )
         if existing_phone:
+            # Если телефон есть - загружаем данные в ADK
+            session_id = f"session-{user_id}"
+            await adk.ensure_session(user_id=str(user_id), session_id=session_id)
+            
+            user_data = await subscriber_store.get_user_data(user_id)
+            if user_data:
+                await adk.set_user_state(str(user_id), session_id, user_data)
+                logger.info(f"📋 Данные пользователя загружены в ADK: {user_data.get('phone_number')}")
+        
+
             logger.info(f"Команда /start от user_id={user_id} (@{username}) - телефон уже есть: {existing_phone}")
             # строим меню для ответа
             tree = await get_tree_cached()
@@ -829,22 +959,41 @@ async def main() -> None:
 
     @dp.message(F.contact)
     async def handle_contact(m: Message) -> None:
-        """Обработка полученного контакта"""
+        """Обработка получения номера телефона"""
+        if not m.contact:
+            return
+        
         user_id = m.from_user.id
+        
+        # Проверяем, что пользователь отправил свой контакт
+        if m.contact.user_id != user_id:
+            await m.answer("⚠️ Пожалуйста, отправьте свой номер телефона")
+            return
+        
         phone = m.contact.phone_number
         
-        # Сохраняем телефон в БД
+        # Сохраняем телефон
         await subscriber_store.update_phone(user_id, phone)
+
+        logger.info(f"✓ Получен телефон от user_id={user_id}.")
         
-        logger.info(f"✓ Получен телефон от user_id={user_id}: {phone}")
+        # Создаём сессию и загружаем данные в ADK
+        session_id = f"session-{user_id}"
+        await adk.ensure_session(user_id=str(user_id), session_id=session_id)
         
-        # Показываем меню
+        user_data = await subscriber_store.get_user_data(user_id)
+        if user_data:
+            await adk.set_user_state(str(user_id), session_id, user_data)
+        
+        # Убираем клавиатуру и показываем меню
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
+        
         await m.answer(
-            TITLE_START,
-            reply_markup=menu
-            )
+            "✅ Спасибо! Теперь вы можете пользоваться ботом.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await m.answer(TITLE_START, reply_markup=menu)
 
     @dp.message(Command("version"))
     async def version_info(m: Message) -> None:
@@ -1086,7 +1235,6 @@ async def main() -> None:
             if parts:
                 return " ".join(parts).strip()
         return ""
-
 
     def _find_tool_payloads(events: list[dict]) -> list[dict]:
         payloads = []
@@ -1468,7 +1616,7 @@ async def main() -> None:
             )
         else: 
 
-            session_id = "default"
+            session_id = f"session-{user_id}"
             user_text = (m.text or "").strip()
 
             if not user_text:
@@ -1514,11 +1662,14 @@ async def main() -> None:
                     if handled:
                         return
 
-
-
                 # 4. обычный запрос -> ADK
                 await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-
+       
+                # Загружаем данные пользователя в состояние ADK (на случай если сессия новая)
+                user_data = await subscriber_store.get_user_data(int(user_id))
+                if user_data:
+                    await adk.set_user_state(user_id, session_id, user_data)
+        
                 answer, events = await adk.run(
                     user_id=str(user_id),
                     session_id=session_id,
@@ -1825,8 +1976,6 @@ async def main() -> None:
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-    
-    
 
     # Запуск бота
     try:
@@ -1852,6 +2001,8 @@ async def main() -> None:
     finally:
         logger.info("Остановка бота...")
         await adk.close()
+        logger.info("✅ ADK клиент закрыт")
+        
         await store.close()
         await bot.session.close()
         logger.info("Бот остановлен")
