@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardButton, CallbackQuery, KeyboardButton, ReplyKeyboardMarkup,
     ReplyKeyboardRemove
     )
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp_socks import ProxyConnector
 
@@ -57,6 +58,9 @@ SHOW_MAX = int(os.getenv("SHOW_LIST_SIZE",5))
 SHOW_BY_PAGE = bool(os.getenv("SHOW_BY_PAGE",False))
 UPLOAD_NEWS = Path("/app/data/upload")
 UPLOAD_NEWS.mkdir(parents=True, exist_ok=True)
+
+# Пауза между попытками подключиться а API telegram
+RECONNECT_DELAY_SEC = 60
 
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
@@ -751,161 +755,297 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
+
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
-        """Установка данных пользователя в состояние ADK сессии"""
+        """Установка данных пользователя через system message"""
         if not self.http:
             raise RuntimeError("HTTP session not initialized")
+
+        first_name = (user_data.get("first_name") or "").strip()
+        last_name = (user_data.get("last_name") or "").strip()
+        username = (user_data.get("username") or "").strip()
+        phone = user_data.get("phone_number") or "не указан"
+        region = user_data.get("region") or "не указан"
+        is_manager = "да" if user_data.get("manager_group") else "нет"
+        is_coach = "да" if user_data.get("coach_group") else "нет"
+
+        display_name = first_name or username or "пользователь"
+
+        # Формируем структурированное сообщение с данными
+        user_context = (
+            f"Контекст пользователя:\n"
+            f"Имя: {display_name}\n"
+            f"Полное имя: {first_name} {last_name}\n"
+            f"Username: @{username if username else 'не указан'}\n"
+            f"Телефон: {phone}\n"
+            f"Регион: {region}\n"
+            f"Роль менеджера: {is_manager}\n"
+            f"Роль коуча: {is_coach}\n\n"
+            f"Обращайся к пользователю по имени '{display_name}' в дальнейшем диалоге."
+        )
+
+        url = f"{self.base_url}/run"
         
-        url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}/state"
-        
-        # Формируем состояние для ADK
-        state_payload = {
-            "user_profile": {
-                "phone": user_data.get("phone_number"),
-                "first_name": user_data.get("first_name"),
-                "last_name": user_data.get("last_name"),
-                "username": user_data.get("username"),
-                "region": user_data.get("region"),
-                "is_manager": user_data.get("manager_group", False),
-                "is_coach": user_data.get("coach_group", False)
+        payload = {
+            "app_name": self.app_name,
+            "user_id": user_id,
+            "session_id": session_id,
+            "new_message": {
+                "role": "system",
+                "parts": [{"text": user_context}]
             }
         }
-        
+
         try:
-            async with self.http.patch(url, json=state_payload) as resp:
-                if resp.status in (200, 204):
-                    logger.info(f"✅ Состояние установлено для user={user_id}")
+            async with self.http.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    logger.info(f"✅ Контекст пользователя установлен для user={user_id} ({display_name})")
+                    logger.debug(f"Отправлен контекст: {user_context}")
                 else:
                     text = await resp.text()
-                    logger.warning(f"⚠️ Не удалось установить состояние: {resp.status} - {text}")
+                    logger.warning(f"⚠️ Не удалось установить контекст: {resp.status} - {text}")
         except aiohttp.ClientError as e:
-            logger.error(f"Ошибка при установке состояния: {e}", exc_info=True)
-        
+            logger.error(f"Ошибка при установке контекста: {e}", exc_info=True)
+
+bot: Optional[Bot] = None
+subscriber_store: Optional[SubscriberStore] = None
+news_store: Optional[NewsStore] = None
+
+async def send_now(text: str, file_data: List):
+    sent = 0
+
+    users = await subscriber_store.get_all()
+
+    for user_id in users:
+        try:
+            # отправка текста
+            if text:
+                await bot.send_message(user_id, text)
+
+            # отправка файлов
+            for filename, content_type, content in file_data:
+
+                if content_type.startswith("image"):
+                    await bot.send_photo(
+                        user_id,
+                        BufferedInputFile(content, filename=filename)
+                    )
+                else:
+                    await bot.send_document(
+                        user_id, 
+                        BufferedInputFile(content, filename=filename)
+                    )
+
+            sent += 1
+            # защита от Flood Limits 
+            await asyncio.sleep(0.05)
+
+        except Exception as e:
+            logger.error(f"Broadcast error to {user_id}: {e}")
+
+    return {"sent": sent}
+
+async def news_scheduler():
+    logger.info("🕒 Scheduler started")
+
+    while True:
+        try:
+            pending = await news_store.get_pending_news()
+            now = datetime.now(timezone.utc)
+
+            for news in pending:
+                if news["scheduled_at"] is None or now >= news["scheduled_at"]:
+                    logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
+                    files = json.loads(news.get("files") or "[]")
+                    file_data = []
+                    for f in files:
+                        try: 
+                            with open(f["path"], "rb") as fp:
+                                content = fp.read()
+                                file_data.append((f["name"], f["type"], content))
+                        except Exception as e:
+                            logger.error(f"File read error: {e}")
+
+                    await send_now(news['text'], file_data)
+                    await news_store.mark_sent(news["id"])
+
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"Error during news_scheduler like this {e}")
+
+PHONE_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
 async def main() -> None:
-    """Главная функция бота"""
+    global bot, subscriber_store, news_store
+
     logger.info("=" * 60)
     logger.info("Запуск Telegram бота")
     logger.info("=" * 60)
-    # Клавиатура для запроса телефона (показывается только если телефона нет)
-    PHONE_KEYBOARD = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    # Загрузка конфигурации
+
+
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not tg_token:
         logger.error("TELEGRAM_BOT_TOKEN отсутствует в .env")
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
-    
+
     dsn = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_DSN") or "").strip()
     if not dsn:
         logger.error("DATABASE_URL отсутствует в .env")
         raise RuntimeError("DATABASE_URL (or POSTGRES_DSN) is missing in .env")
-    
+
     adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
-    
-    # Конфигурация для DocumentHandler
     kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
-    
-    logger.info(f"Конфигурация:")
+
+    logger.info("Конфигурация:")
     logger.info(f"  ADK Base: {adk_base}")
     logger.info(f"  ADK App: {adk_app}")
     logger.info(f"  KB Manager: {KB_MANAGER_URL}")
     logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
-    
-    # Инициализация компонентов
-    proxy_url = os.getenv("TELEGRAM_PROXY")  # например: "socks5://user:pass@host:port"
 
-    # Инициализация компонентов, которые не требуют подключения к Telegram
+    proxy_url = os.getenv("TELEGRAM_PROXY")
+
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
+
     subscriber_store = SubscriberStore(store.pool)
     await subscriber_store.ensure_schema()
+
     news_store = NewsStore(store.pool)
     await news_store.ensure_schema()
-    
+
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
-    
+
     doc_handler = DocumentHandler(
         kb_manager_url=KB_MANAGER_URL,
         kb_manager_token=kb_manager_token,
         downloads_dir=downloads_dir
     )
-    
+
     logger.info("Базовые компоненты инициализированы")
 
-    # Цикл переподключения к Telegram с перезагрузкой диспетчера
-    while True:
-        bot = None
-        dp = None
+    async def run_http_server():
+        """Запуск HTTP сервера"""
         try:
-            # Подключение к Telegram
-            logger.info("Попытка подключения к Telegram...")
-            if proxy_url:
-                connector = ProxyConnector.from_url(proxy_url)
-                session = AiohttpSession(connector=connector)
-                bot = Bot(token=tg_token, session=session)
-            else:
-                bot = Bot(token=tg_token)
-
-            me = await bot.get_me()
-            logger.info(f"✓ Успешное подключение к Telegram: бот @{me.username}")
-            
-            # Инициализация диспетчера и регистрация обработчиков
-            dp = Dispatcher()
-            register_handlers(
-                dp=dp,
-                store=store,
-                subscriber_store=subscriber_store,
-                adk=adk,
-                doc_handler=doc_handler
+            config = uvicorn.Config(
+                broadcast_app,
+                host="0.0.0.0",
+                port=8001,
+                log_level="info"
             )
-            logger.info("✓ Диспетчер инициализирован")
-            
-            # Запуск polling
-            logger.info("Запуск Telegram бота (polling)...")
-            await dp.start_polling(bot)
-            
-        except (aiohttp.ClientConnectorError, aiohttp.ClientOSError) as e:
-            logger.error(f"Ошибка подключения к Telegram: {e}")
-            logger.info("Повторная попытка через 60 секунд...")
-            await asyncio.sleep(60)
-            
+            server = uvicorn.Server(config)
+            await server.serve()
         except asyncio.CancelledError:
-            logger.info("Бот остановлен (CancelledError)")
-            break
-            
-        except Exception as e:
-            logger.critical(f"Критическая ошибка: {e}", exc_info=True)
-            logger.info("Перезапуск через 60 секунд...")
-            await asyncio.sleep(60)
-            
-        finally:
-            # Очистка ресурсов текущей итерации
-            if bot and bot.session:
-                try:
-                    await bot.session.close()
-                except Exception as e:
-                    logger.warning(f"Ошибка при закрытии сессии бота: {e}")
-    
-    # Финальная очистка
-    logger.info("Остановка бота...")
+            logger.info("HTTP сервер остановлен")
+
+    http_task = asyncio.create_task(run_http_server())
+    scheduler_task = asyncio.create_task(news_scheduler())
+    logger.info("🚀 HTTP сервер и scheduler запущены")
+
     try:
-        await adk.close()
-        await store.close()
-    except Exception as e:
-        logger.error(f"Ошибка при закрытии компонентов: {e}", exc_info=True)
-    
-    logger.info("Бот остановлен")
-   
+        while True:
+            bot_instance = None
+            try:
+                logger.info("Попытка подключения к Telegram API...")
+
+                if proxy_url:
+                    session = AiohttpSession(proxy=proxy_url)
+                    bot_instance = Bot(token=tg_token, session=session)
+                    logger.info(f"Используется Telegram proxy: {proxy_url}")
+                else:
+                    bot_instance = Bot(token=tg_token)
+
+                me = await bot_instance.get_me()
+                logger.info(f"✅ Успешное подключение к Telegram API. Бот: @{me.username}")
+
+                bot = bot_instance
+
+                dp = Dispatcher()
+                register_handlers(
+                    dp=dp,
+                    store=store,
+                    subscriber_store=subscriber_store,
+                    adk=adk,
+                    doc_handler=doc_handler
+                )
+                logger.info("✓ Диспетчер инициализирован")
+
+                logger.info(f"🚀 Бот запущен и готов к работе (версия {PLATFORM_VERSION})")
+                await dp.start_polling(bot_instance)
+
+            except TelegramNetworkError as e:
+                logger.warning(
+                    f"⚠️ Нет доступа к Telegram API: {e}. "
+                    f"Следующая попытка через {RECONNECT_DELAY_SEC} секунд."
+                )
+                await asyncio.sleep(RECONNECT_DELAY_SEC)
+
+            except (
+                aiohttp.ClientError,
+                OSError,
+                ConnectionResetError,
+                TimeoutError,
+            ) as e:
+                logger.warning(
+                    f"⚠️ Сетевая ошибка при работе с Telegram API: {e}. "
+                    f"Следующая попытка через {RECONNECT_DELAY_SEC} секунд."
+                )
+                await asyncio.sleep(RECONNECT_DELAY_SEC)
+
+            except asyncio.CancelledError:
+                logger.info("Получен сигнал остановки бота")
+                break
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка при работе бота: {e}", exc_info=True)
+                logger.info(f"Перезапуск через {RECONNECT_DELAY_SEC} секунд...")
+                await asyncio.sleep(RECONNECT_DELAY_SEC)
+
+            finally:
+                if bot_instance and hasattr(bot_instance, "session") and bot_instance.session:
+                    try:
+                        await bot_instance.session.close()
+                    except Exception as e:
+                        logger.warning(f"Ошибка при закрытии сессии бота: {e}")
+
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал прерывания (Ctrl+C)")
+
+    finally:
+        logger.info("Остановка фоновых задач...")
+
+        for task, name in [(http_task, "HTTP сервер"), (scheduler_task, "Scheduler")]:
+            if not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    logger.info(f"✓ {name} остановлен")
+
+        try:
+            await adk.close()
+            logger.info("✅ ADK клиент закрыт")
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии ADK: {e}")
+
+        try:
+            await store.close()
+            logger.info("✅ Подключение к базе закрыто")
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии БД: {e}")
+
+        logger.info("Бот остановлен")
+
 def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler) -> None:
     """Регистрация всех обработчиков сообщений"""
 
@@ -1022,25 +1162,22 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
-        session_id = "default"
-        
+        session_id = f"session-{user_id}"
+
         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
-        
+
         try:
-            # Удаляем сессию в ADK
             await adk.delete_session(user_id=str(user_id), session_id=session_id)
-            
-            # Создаём новую сессию
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-            
-            # Очищаем историю в БД
             await store.reset(user_id)
-            
-            # Удаляем состояние результатов поиска
             await store.reset_search_state(user_id, session_id)
-            
+
+            # после reset сразу вернуть профиль в state
+            user_data = await subscriber_store.get_user_data(user_id)
+            if user_data:
+                await adk.set_user_state(str(user_id), session_id, user_data)
+
             await m.answer("✅ История диалога и сессия сброшены")
-            logger.info(f"История и сессия сброшены для user_id={user_id}")
         except Exception as e:
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
@@ -1850,68 +1987,6 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
 
         os.remove(tmp.name)
     
-    async def send_now(text: str, file_data: List):
-        sent = 0
-
-        users = await subscriber_store.get_all()
-
-        for user_id in users:
-            try:
-                # отправка текста
-                if text:
-                    await bot.send_message(user_id, text)
-
-                # отправка файлов
-                for filename, content_type, content in file_data:
-
-                    if content_type.startswith("image"):
-                        await bot.send_photo(
-                            user_id,
-                            BufferedInputFile(content, filename=filename)
-                        )
-                    else:
-                        await bot.send_document(
-                            user_id, 
-                            BufferedInputFile(content, filename=filename)
-                        )
-
-                sent += 1
-                # защита от Flood Limits 
-                await asyncio.sleep(0.05)
-
-            except Exception as e:
-                logger.error(f"Broadcast error to {user_id}: {e}")
-
-        return {"sent": sent}
-
-    async def news_scheduler():
-        logger.info("🕒 Scheduler started")
-
-        while True:
-            try:
-                pending = await news_store.get_pending_news()
-                now = datetime.now(timezone.utc)
-
-                for news in pending:
-                    if news["scheduled_at"] is None or now >= news["scheduled_at"]:
-                        logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
-                        files = json.loads(news.get("files") or "[]")
-                        file_data = []
-                        for f in files:
-                            try: 
-                                with open(f["path"], "rb") as fp:
-                                    content = fp.read()
-                                    file_data.append((f["name"], f["type"], content))
-                            except Exception as e:
-                                logger.error(f"File read error: {e}")
-
-                        await send_now(news['text'], file_data)
-                        await news_store.mark_sent(news["id"])
-
-                await asyncio.sleep(5)
-            except Exception as e:
-                logger.error(f"Error during news_scheduler like this {e}")
-    
     @broadcast_app.post("/broadcast")
     async def broadcast(
         text: str = Form(...),
@@ -1976,36 +2051,6 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
-    # Запуск бота
-    try:
-        logger.info("🚀 Бот запущен и готов к работе")
-        # Запуск HTTP сервера в отдельной задаче
-        async def run_http_server():
-            config = uvicorn.Config(
-                broadcast_app,
-                host="0.0.0.0",
-                port=8001,
-                log_level="info"
-            )
-            server = uvicorn.Server(config)
-            await server.serve()
-        asyncio.create_task(news_scheduler())
-    # Запуск обоих серверов параллельно
-        await asyncio.gather(
-            dp.start_polling(bot),
-            run_http_server()
-        )
-        logger.info(f"Текущая версия бота: {PLATFORM_VERSION}")
-        
-    finally:
-        logger.info("Остановка бота...")
-        await adk.close()
-        logger.info("✅ ADK клиент закрыт")
-        
-        await store.close()
-        await bot.session.close()
-        logger.info("Бот остановлен")
 
 # функция хранения пути
 def register_callback_path(path: str) -> str:
@@ -2125,7 +2170,6 @@ async def get_document_id(path: str) -> str | None:
             return doc.get("document_id")
 
     return None
-
 
 if __name__ == "__main__":
     try:

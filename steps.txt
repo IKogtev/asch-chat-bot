@@ -84,3 +84,252 @@ LOG_LEVEL=DEBUG
 - для каждого пользователя создается своя сессия в Google ADK, которая сохраняет контекст диалога
 - по команде /reset надо очищать сессию и создавать новую
 Выполни доработки в bot\bot_v4.py и выдай код, который реализует эти изменения.
+===============
+При создании сессии бота bot\bot_v6.py надо узнавать сотовый телефон пользователя, и подгружать из таблицы подписчиков в состояние ADK agent эти свойства.
+Что надо доработать ?
+==
+        url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}/state"
+======================
+если телеграм в момент запуска блокируют, то это вызывает ошибку. Надо сделать без ошибок, но чтобы периодически пытался инициализировать бота, ожидая когда заработает прокси
+kb-file-ui exited with code 255 (restarting)                                                                                                                                                                                                                                  
+kb-manager         | 2026-03-26 11:05:46 | file_storage | INFO     | Filesystem sync completed                                                                                                                                                                                
+kb-manager         | 2026-03-26 11:05:46 | file_storage | INFO     | Starting filesystem sync
+aszh-bot           | 2026-03-26 11:05:49 | bot | INFO | 🔄 Закрытие ресурсов...                                                                                                                                                                                               
+aszh-bot           | ERROR:    Traceback (most recent call last):
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1313, in _wrap_create_connection                                                                                                                                             
+aszh-bot           |     return await self._loop.create_connection(*args, **kwargs, sock=sock)
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 1113, in create_connection                                                                                                                                                               
+aszh-bot           |     transport, protocol = await self._create_connection_transport(                                                                                                                                                                                       
+aszh-bot           |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 1146, in _create_connection_transport                                                                                                                                                    
+aszh-bot           |     await waiter                                                                                                                                                                                                                                         
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/sslproto.py", line 578, in _on_handshake_complete                                                                                                                                                              
+aszh-bot           |     raise handshake_exc                                                                                                                                                                                                                                  
+aszh-bot           | ConnectionResetError
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | The above exception was the direct cause of the following exception:                                                                                                                                                                                     
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | Traceback (most recent call last):
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/aiohttp.py", line 167, in make_request                                                                                                                                            
+aszh-bot           |     async with session.post(                                                                                                                                                                                                                             
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 1510, in __aenter__                                                                                                                                                             
+aszh-bot           |     self._resp: _RetType = await self._coro
+aszh-bot           |                            ^^^^^^^^^^^^^^^^                                                                                                                                                                                                              
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 779, in _request                                                                                                                                                                
+aszh-bot           |     resp = await handler(req)                                                                                                                                                                                                                            
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                            
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 734, in _connect_and_send_request
+aszh-bot           |     conn = await self._connector.connect(                                                                                                                                                                                                                
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 672, in connect                                                                                                                                                              
+aszh-bot           |     proto = await self._create_connection(req, traces, timeout)
+aszh-bot           |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                          
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1239, in _create_connection                                                                                                                                                  
+aszh-bot           |     _, proto = await self._create_direct_connection(req, traces, timeout)                                                                                                                                                                                
+aszh-bot           |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1611, in _create_direct_connection                                                                                                                                           
+aszh-bot           |     raise last_exc                                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1580, in _create_direct_connection                                                                                                                                           
+aszh-bot           |     transp, proto = await self._wrap_create_connection(
+aszh-bot           |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                  
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1321, in _wrap_create_connection                                                                                                                                             
+aszh-bot           |     raise client_error(req.connection_key, exc) from exc                                                                                                                                                                                                 
+aszh-bot           | aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [None]
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | The above exception was the direct cause of the following exception:                                                                                                                                                                                     
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | Traceback (most recent call last):
+aszh-bot           |   File "/app/bot/bot_v6.py", line 1938, in main                                                                                                                                                                                                          
+aszh-bot           |     await asyncio.gather(                                                                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/dispatcher/dispatcher.py", line 621, in start_polling                                                                                                                                            
+aszh-bot           |     await asyncio.gather(*done)
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/dispatcher/dispatcher.py", line 377, in _polling                                                                                                                                                 
+aszh-bot           |     user: User = await bot.me()                                                                                                                                                                                                                          
+aszh-bot           |                  ^^^^^^^^^^^^^^                                                                                                                                                                                                                          
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/bot.py", line 362, in me
+aszh-bot           |     self._me = await self.get_me()                                                                                                                                                                                                                       
+aszh-bot           |                ^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/bot.py", line 1798, in get_me                                                                                                                                                             
+aszh-bot           |     return await self(call, request_timeout=request_timeout)
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                             
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/bot.py", line 488, in __call__                                                                                                                                                            
+aszh-bot           |     return await self.session(self, method, timeout=request_timeout)                                                                                                                                                                                     
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                     
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/base.py", line 259, in __call__
+aszh-bot           |     return cast(TelegramType, await middleware(bot, method))                                                                                                                                                                                             
+aszh-bot           |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                              
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/aiohttp.py", line 176, in make_request                                                                                                                                            
+aszh-bot           |     raise TelegramNetworkError(method=method, message=f"{type(e).__name__}: {e}") from e
+aszh-bot           | aiogram.exceptions.TelegramNetworkError: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [None]                                                                                                         
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | During handling of the above exception, another exception occurred:
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | Traceback (most recent call last):                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/runners.py", line 190, in run
+aszh-bot           |     return runner.run(main)                                                                                                                                                                                                                              
+aszh-bot           |            ^^^^^^^^^^^^^^^^                                                                                                                                                                                                                              
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run                                                                                                                                                                                  
+aszh-bot           |     return self._loop.run_until_complete(task)
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                           
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete                                                                                                                                                               
+aszh-bot           |     return future.result()                                                                                                                                                                                                                               
+aszh-bot           |            ^^^^^^^^^^^^^^^
+aszh-bot           |   File "/app/bot/bot_v6.py", line 1948, in main                                                                                                                                                                                                          
+aszh-bot           |     if aiohttp_session:                                                                                                                                                                                                                                  
+aszh-bot           |        ^^^^^^^^^^^^^^^                                                                                                                                                                                                                                   
+aszh-bot           | NameError: name 'aiohttp_session' is not defined
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | During handling of the above exception, another exception occurred:                                                                                                                                                                                      
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | Traceback (most recent call last):
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 701, in lifespan                                                                                                                                                             
+aszh-bot           |     await receive()                                                                                                                                                                                                                                      
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/uvicorn/lifespan/on.py", line 137, in receive                                                                                                                                                            
+aszh-bot           |     return await self.receive_queue.get()
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/queues.py", line 158, in get                                                                                                                                                                                   
+aszh-bot           |     await getter                                                                                                                                                                                                                                         
+aszh-bot           | asyncio.exceptions.CancelledError                                                                                                                                                                                                                        
+aszh-bot           | 
+aszh-bot           | 2026-03-26 11:05:49 | bot | ERROR | Критическая ошибка: name 'aiohttp_session' is not defined                                                                                                                                                            
+aszh-bot           | Traceback (most recent call last):                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1313, in _wrap_create_connection                                                                                                                                             
+aszh-bot           |     return await self._loop.create_connection(*args, **kwargs, sock=sock)
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 1113, in create_connection                                                                                                                                                               
+aszh-bot           |     transport, protocol = await self._create_connection_transport(                                                                                                                                                                                       
+aszh-bot           |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 1146, in _create_connection_transport                                                                                                                                                    
+aszh-bot           |     await waiter                                                                                                                                                                                                                                         
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/sslproto.py", line 578, in _on_handshake_complete                                                                                                                                                              
+aszh-bot           |     raise handshake_exc
+aszh-bot           | ConnectionResetError                                                                                                                                                                                                                                     
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | The above exception was the direct cause of the following exception:                                                                                                                                                                                     
+aszh-bot           | 
+aszh-bot           | Traceback (most recent call last):                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/aiohttp.py", line 167, in make_request                                                                                                                                            
+aszh-bot           |     async with session.post(                                                                                                                                                                                                                             
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 1510, in __aenter__
+aszh-bot           |     self._resp: _RetType = await self._coro                                                                                                                                                                                                              
+aszh-bot           |                            ^^^^^^^^^^^^^^^^                                                                                                                                                                                                              
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 779, in _request                                                                                                                                                                
+aszh-bot           |     resp = await handler(req)
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                            
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 734, in _connect_and_send_request                                                                                                                                               
+aszh-bot           |     conn = await self._connector.connect(                                                                                                                                                                                                                
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 672, in connect                                                                                                                                                              
+aszh-bot           |     proto = await self._create_connection(req, traces, timeout)                                                                                                                                                                                          
+aszh-bot           |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                          
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1239, in _create_connection
+aszh-bot           |     _, proto = await self._create_direct_connection(req, traces, timeout)                                                                                                                                                                                
+aszh-bot           |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1611, in _create_direct_connection                                                                                                                                           
+aszh-bot           |     raise last_exc                                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1580, in _create_direct_connection
+aszh-bot           |     transp, proto = await self._wrap_create_connection(                                                                                                                                                                                                  
+aszh-bot           |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1321, in _wrap_create_connection                                                                                                                                             
+aszh-bot           |     raise client_error(req.connection_key, exc) from exc
+aszh-bot           | aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [None]                                                                                                                                           
+aszh-bot           |                                     
+============
+ранее был такой код запуска бота:
+# Запуск бота
+    try:
+        logger.info("🚀 Бот запущен и готов к работе")
+        # Запуск HTTP сервера в отдельной задаче
+        async def run_http_server():
+            config = uvicorn.Config(
+                broadcast_app,
+                host="0.0.0.0",
+                port=8001,
+                log_level="info"
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+        asyncio.create_task(news_scheduler())
+    # Запуск обоих серверов параллельно
+        await asyncio.gather(
+            dp.start_polling(bot),
+            run_http_server()
+        )
+        logger.info(f"Текущая версия бота: {PLATFORM_VERSION}")
+        
+    finally:
+        logger.info("Остановка бота...")
+        await adk.close()
+        logger.info("✅ ADK клиент закрыт")
+        
+        await store.close()
+        logger.info("Бот остановлен")
+============
+Теперь выделенный фрагмент - цикл для отказоустойчивости.
+Надо доделать цикл, чтобы максимально сохранить логику и оформление старой версии
+==============
+проблема с доступом к api.telegram. Если доступа нет, то не должна вываливаться ошибка. Надо логировать факт и ждать минуту.
+Сейчас ошибка такая:
+aszh-bot           | 2026-03-27 08:53:19 | bot | ERROR | ❌ Ошибка при работе бота: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [None]                                                                                   
+aszh-bot           | Traceback (most recent call last):
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1313, in _wrap_create_connection                                                                                                                                             
+aszh-bot           |     return await self._loop.create_connection(*args, **kwargs, sock=sock)                                                                                                                                                                                
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 1113, in create_connection                                                                                                                                                               
+aszh-bot           |     transport, protocol = await self._create_connection_transport(                                                                                                                                                                                       
+aszh-bot           |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 1146, in _create_connection_transport                                                                                                                                                    
+aszh-bot           |     await waiter                                                                                                                                                                                                                                         
+aszh-bot           |   File "/usr/local/lib/python3.11/asyncio/sslproto.py", line 578, in _on_handshake_complete                                                                                                                                                              
+aszh-bot           |     raise handshake_exc                                                                                                                                                                                                                                  
+aszh-bot           | ConnectionResetError
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | The above exception was the direct cause of the following exception:                                                                                                                                                                                     
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | Traceback (most recent call last):
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/aiohttp.py", line 167, in make_request                                                                                                                                            
+aszh-bot           |     async with session.post(                                                                                                                                                                                                                             
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 1510, in __aenter__                                                                                                                                                             
+aszh-bot           |     self._resp: _RetType = await self._coro
+aszh-bot           |                            ^^^^^^^^^^^^^^^^                                                                                                                                                                                                              
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 779, in _request                                                                                                                                                                
+aszh-bot           |     resp = await handler(req)                                                                                                                                                                                                                            
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/client.py", line 734, in _connect_and_send_request                                                                                                                                               
+aszh-bot           |     conn = await self._connector.connect(                                                                                                                                                                                                                
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 672, in connect                                                                                                                                                              
+aszh-bot           |     proto = await self._create_connection(req, traces, timeout)
+aszh-bot           |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                          
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1239, in _create_connection                                                                                                                                                  
+aszh-bot           |     _, proto = await self._create_direct_connection(req, traces, timeout)                                                                                                                                                                                
+aszh-bot           |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1611, in _create_direct_connection                                                                                                                                           
+aszh-bot           |     raise last_exc                                                                                                                                                                                                                                       
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1580, in _create_direct_connection                                                                                                                                           
+aszh-bot           |     transp, proto = await self._wrap_create_connection(
+aszh-bot           |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                  
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiohttp/connector.py", line 1321, in _wrap_create_connection                                                                                                                                             
+aszh-bot           |     raise client_error(req.connection_key, exc) from exc                                                                                                                                                                                                 
+aszh-bot           | aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [None]
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | The above exception was the direct cause of the following exception:                                                                                                                                                                                     
+aszh-bot           |                                                                                                                                                                                                                                                          
+aszh-bot           | Traceback (most recent call last):                                                                                                                                                                                                                       
+aszh-bot           |   File "/app/bot/bot_v6.py", line 945, in main
+aszh-bot           |     me = await bot_instance.get_me()                                                                                                                                                                                                                     
+aszh-bot           |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                                                     
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/bot.py", line 1798, in get_me                                                                                                                                                             
+aszh-bot           |     return await self(call, request_timeout=request_timeout)
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                             
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/bot.py", line 488, in __call__                                                                                                                                                            
+aszh-bot           |     return await self.session(self, method, timeout=request_timeout)                                                                                                                                                                                     
+aszh-bot           |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/base.py", line 259, in __call__                                                                                                                                                   
+aszh-bot           |     return cast(TelegramType, await middleware(bot, method))                                                                                                                                                                                             
+aszh-bot           |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                                                                                                                                                                              
+aszh-bot           |   File "/usr/local/lib/python3.11/site-packages/aiogram/client/session/aiohttp.py", line 176, in make_request
+aszh-bot           |     raise TelegramNetworkError(method=method, message=f"{type(e).__name__}: {e}") from e                                                                                                                                                                 
+aszh-bot           | aiogram.exceptions.TelegramNetworkError: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [None]                                                                                                         
+aszh-bot           | 2026-03-27 08:53:19 | bot | INFO | Перезапуск через 60 секунд...              
