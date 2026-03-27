@@ -31,3 +31,4 @@ tests/
 tsconfig.json
 test-results/
 playwright.config.ts
+__pycache__
