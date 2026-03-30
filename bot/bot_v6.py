@@ -18,7 +18,6 @@ from aiogram.types import (
     )
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp_socks import ProxyConnector
 
 from dotenv import load_dotenv
 import aiohttp
@@ -38,6 +37,10 @@ from pydantic import BaseModel
 import uvicorn
 from pathlib import Path
 
+
+##################################
+# Глобальные константы и переменные
+##################################
 # Модель для запроса новостей
 class BroadcastRequest(BaseModel):
     text: str
@@ -58,15 +61,38 @@ SHOW_MAX = int(os.getenv("SHOW_LIST_SIZE",5))
 SHOW_BY_PAGE = bool(os.getenv("SHOW_BY_PAGE",False))
 UPLOAD_NEWS = Path("/app/data/upload")
 UPLOAD_NEWS.mkdir(parents=True, exist_ok=True)
+# Регулярные выражения для распознавания команд
+DOWNLOAD_RE = re.compile(
+    r'^\s*(?:скачай|пришли|отправь|документ)?\s*((?:\d+\s*[,\s]\s*)*\d+)\s*$',
+    re.IGNORECASE
+)
+SHOW_MORE_RE = re.compile(
+    r'^\s*(?:ещ[её]|покажи\s+ещ[её]|дальше|ещ[её]\s+файлы)\s*$',
+    re.IGNORECASE
+)
+SHOW_ALL_RE = re.compile(
+    r'^\s*(?:покажи\s+все|все\s+файлы|вс[её]|(дай )*все( файлы)*|полный\s+список|полный|весь|да|ага|угу|ок|окей|хорошо|хочу|конечно|да,*\s*давай|давай|покажи|показывай)\s*$',
+    re.IGNORECASE
+)
+SHOW_ALL_RE = re.compile('|'.join(x.pattern for x in [SHOW_ALL_RE, SHOW_MORE_RE]), re.IGNORECASE)
+# Клавиатура для запроса телефона (показывается только если телефона нет)
+PHONE_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
 
 # Пауза между попытками подключиться а API telegram
 RECONNECT_DELAY_SEC = 60
-
+# стартовое сообщение
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
+# создаем FastAPI для получения запросов на рассылку от внешних систем (админки)
 broadcast_app = FastAPI(title="Bot Broadcast API")
 
 # делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
@@ -81,9 +107,12 @@ def load_bot_start_message():
             logger.warning(f"Start file not found using standart")
     except Exception as e:
         logger.error(f"Error loading starting message: {e}")
-
+# загрузка стартового сообщения
 load_bot_start_message()
 
+##############################################
+# Работа с Базами данных через классы-обертки
+##############################################
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
     
@@ -107,7 +136,7 @@ class PostgresChatStore:
         if not self.pool:
             logger.error("Pool не инициализирован")
             raise RuntimeError("Pool not initialized")
-
+        # создаем 3 таблицы: chat_history для сообщений, search_meta для информации о последнем поиске и search_results для результатов поиска
         query = """
         CREATE TABLE IF NOT EXISTS chat_history (
             id SERIAL PRIMARY KEY,
@@ -224,6 +253,7 @@ class PostgresChatStore:
         items: list[dict],
         shown_count: int = SHOW_MAX,
     ) -> str:
+        """Сохранение результатов поиска"""
         if not self.pool:
             raise RuntimeError("Pool not initialized")
 
@@ -271,6 +301,7 @@ class PostgresChatStore:
 
 
     async def get_last_search_meta(self, user_id: int, session_id: str) -> dict | None:
+        """Получаем последнюю метаинформацию"""
         if not self.pool:
             return None
 
@@ -285,6 +316,7 @@ class PostgresChatStore:
 
 
     async def get_last_search_results(self, user_id: int, session_id: str) -> list[dict]:
+        """Получаем последние результаты поиска"""
         if not self.pool:
             return []
 
@@ -300,6 +332,7 @@ class PostgresChatStore:
 
 
     async def get_result_by_rank(self, user_id: int, session_id: str, rank: int) -> dict | None:
+        """Получаем результаты поиска по рангу"""
         if not self.pool:
             return None
 
@@ -314,6 +347,7 @@ class PostgresChatStore:
 
 
     async def update_shown_count(self, user_id: int, session_id: str, shown_count: int) -> None:
+        """Обновляем количество показанных"""
         if not self.pool:
             return
 
@@ -327,6 +361,7 @@ class PostgresChatStore:
 
 
     async def reset_search_state(self, user_id: int, session_id: str) -> None:
+        """Сбрасываем состояние поиска"""
         if not self.pool:
             return
 
@@ -361,11 +396,11 @@ class SubscriberStore:
             first_name TEXT,
             last_name TEXT,
             phone_number VARCHAR(20),
-            last_seen TIMESTAMP DEFAULT NOW(),
+            last_seen TIMESTAMPTZ DEFAULT NOW(),
             region TEXT,
             manager_group BOOLEAN DEFAULT FALSE,
             coach_group BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );
         """
         async with self.pool.acquire() as conn:
@@ -425,18 +460,19 @@ class SubscriberStore:
             await conn.execute(query, phone_number, user_id)
         logger.info(f"✓ Телефон обновлён для user_id={user_id}: {phone_number}")
 
-    async def get_all(self) -> list[int]:
-        """Получение всех пользователей из таблицы"""
-        logger.info("Получаем пользователей")
+    async def get_all_with_groups(self) -> list[dict]:
+        """Получение всех пользователей с информацией с группами"""
+        logger.info("Получаем пользователей с группами")
         query = """
         SELECT user_id, username, first_name, last_name, 
-               phone_number, last_seen, created_at
+               phone_number, last_seen, created_at,
+               manager_group, coach_group
         FROM subscribers
         ORDER BY last_seen DESC
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
-        return [r["user_id"] for r in rows]
+        return [dict(r) for r in rows]
     
     async def get_user_data(self, user_id: int) -> dict | None:
         """Получение полных данных пользователя для передачи в ADK"""
@@ -462,7 +498,23 @@ class SubscriberStore:
             "manager_group": row["manager_group"],
             "coach_group": row["coach_group"]
         }
+    
+    async def update_user_group(self, user_id: int, group: str, value: bool):
+        """Обновление принадлежности пользователя к группе"""
+        if group not in ("manager_group", "coach_group"):
+            raise ValueError(f"Invalid group: {group}")
+        
+        query = f"""
+        UPDATE subscribers 
+        SET {group} = $1, last_seen = NOW()
+        WHERE user_id = $2
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, value, user_id)
+        
+        logger.info(f"✓ Группа {group} обновлена для user_id={user_id}: {value}")
 
+# Хранилище новостей и рассылок
 class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
@@ -473,7 +525,7 @@ class NewsStore:
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
             text TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
             scheduled_at TIMESTAMPTZ,
             files JSONB,
             status VARCHAR(20) DEFAULT 'pending', -- pending | sent
@@ -484,6 +536,7 @@ class NewsStore:
             await conn.execute(query)
 
     async def create_news(self, text, scheduled_at=None, group="all", files=None):
+        """Создание новостей для рассылки"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO news (text, scheduled_at, target_group, files)
@@ -493,6 +546,7 @@ class NewsStore:
             return row["id"]
         
     async def get_pending_news(self):
+        """Получение новостей в ожидании к отправке"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT * FROM news
@@ -501,6 +555,7 @@ class NewsStore:
             return [dict(r) for r in rows]
 
     async def mark_sent(self, news_id: int):
+        """Отметить новость как отправленную"""
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE news SET status = 'sent'
@@ -508,6 +563,7 @@ class NewsStore:
             """, news_id)
 
     async def get_all(self):
+        """Получение всех новостей"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT * FROM news ORDER BY created_at DESC
@@ -528,6 +584,10 @@ class NewsStore:
                         d["files"] = files
                     else:
                         d["files"] = []
+                    
+                    if "target_group" not in d:
+                        d["target_group"] = "all"
+    
                     result.append(d)
             except Exception as e:
                 logger.error(f"Ошибка во время получения всех новостей: {e}")
@@ -535,13 +595,40 @@ class NewsStore:
             return result
 
     async def get_by_id(self, news_id: int):
+        """Получение новости по ID"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT * FROM news WHERE id = $1
             """, news_id)
-            return dict(row) if row else None
+            if not row:
+                return None
+                
+            news = dict(row)
+            files = news.get("files")
+            if files is None:
+                news["files"] = []
+            elif isinstance(files, str):
+                try:
+                    news["files"] = json.loads(files)
+                except Exception:
+                    news["files"] = []
+            elif isinstance(files, list):
+                news["files"] = files
+            else:
+                news["files"] = []
+            
+            if "target_group" not in news:
+                news["target_group"] = "all"
 
-
+            return news
+        
+    async def delete_news(self, news_id: int):
+        """Удаление новости по ID"""
+        query = "DELETE FROM news WHERE id=$1"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(query, news_id)
+# Хранилище для взаимодействия с ADK API
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
     
@@ -755,7 +842,7 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
-
+    
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
         """Установка данных пользователя через system message"""
         if not self.http:
@@ -807,88 +894,16 @@ class AdkApiClient:
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка при установке контекста: {e}", exc_info=True)
 
-bot: Optional[Bot] = None
-subscriber_store: Optional[SubscriberStore] = None
-news_store: Optional[NewsStore] = None
-
-async def send_now(text: str, file_data: List):
-    sent = 0
-
-    users = await subscriber_store.get_all()
-
-    for user_id in users:
-        try:
-            # отправка текста
-            if text:
-                await bot.send_message(user_id, text)
-
-            # отправка файлов
-            for filename, content_type, content in file_data:
-
-                if content_type.startswith("image"):
-                    await bot.send_photo(
-                        user_id,
-                        BufferedInputFile(content, filename=filename)
-                    )
-                else:
-                    await bot.send_document(
-                        user_id, 
-                        BufferedInputFile(content, filename=filename)
-                    )
-
-            sent += 1
-            # защита от Flood Limits 
-            await asyncio.sleep(0.05)
-
-        except Exception as e:
-            logger.error(f"Broadcast error to {user_id}: {e}")
-
-    return {"sent": sent}
-
-async def news_scheduler():
-    logger.info("🕒 Scheduler started")
-
-    while True:
-        try:
-            pending = await news_store.get_pending_news()
-            now = datetime.now(timezone.utc)
-
-            for news in pending:
-                if news["scheduled_at"] is None or now >= news["scheduled_at"]:
-                    logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
-                    files = json.loads(news.get("files") or "[]")
-                    file_data = []
-                    for f in files:
-                        try: 
-                            with open(f["path"], "rb") as fp:
-                                content = fp.read()
-                                file_data.append((f["name"], f["type"], content))
-                        except Exception as e:
-                            logger.error(f"File read error: {e}")
-
-                    await send_now(news['text'], file_data)
-                    await news_store.mark_sent(news["id"])
-
-            await asyncio.sleep(5)
-        except Exception as e:
-            logger.error(f"Error during news_scheduler like this {e}")
-
-PHONE_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=True
-)
-
+#####################################
+# Главная функция и обработчики бота
+#####################################        
 async def main() -> None:
     global bot, subscriber_store, news_store
 
     logger.info("=" * 60)
     logger.info("Запуск Telegram бота")
     logger.info("=" * 60)
-
-
+    # Загрузка конфигурации
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not tg_token:
         logger.error("TELEGRAM_BOT_TOKEN отсутствует в .env")
@@ -910,9 +925,8 @@ async def main() -> None:
     logger.info(f"  KB Manager: {KB_MANAGER_URL}")
     logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
-
+    # ссылка на прокси для телеграма (если нужна)
     proxy_url = os.getenv("TELEGRAM_PROXY")
-
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     await store.ensure_schema()
@@ -931,9 +945,9 @@ async def main() -> None:
         kb_manager_token=kb_manager_token,
         downloads_dir=downloads_dir
     )
-
-    logger.info("Базовые компоненты инициализированы")
-
+    
+    logger.info("Все компоненты инициализированы")
+    # Запуск HTTP сервера в отдельной задаче
     async def run_http_server():
         """Запуск HTTP сервера"""
         try:
@@ -947,12 +961,105 @@ async def main() -> None:
             await server.serve()
         except asyncio.CancelledError:
             logger.info("HTTP сервер остановлен")
+        
+    # получение отфильтрованных пользователей по группе для рассылки
+    async def get_filtered_users(target_group: str = "all"):
+        all_users = await subscriber_store.get_all_with_groups()
+
+        filtered_users = []
+        for user in all_users:
+            user_id = user["user_id"]
+            if target_group == "all":
+                filtered_users.append(user_id)
+            elif target_group == "manager_group" and user.get("manager_group"):
+                filtered_users.append(user_id)
+            elif target_group == "coach_group" and user.get("coach_group"):
+                filtered_users.append(user_id)
+        return filtered_users, len(all_users)
+
+    #  функция отправки новости с фильтрацией по группе
+    async def send_now(text: str, file_data: List, target_group: str="all"):
+        """Отправка новости с фильтрацией по группе"""
+        sent = 0
+
+        users, all_count = await get_filtered_users(target_group)
+        count = len(users)
+
+        logger.info(f"📬 Отправка новости: {count} из {all_count} пользователей (группа: {target_group})")        
+        
+        for user_id in users:
+            try:
+                # отправка текста
+                if text:
+                    # защита от слишком больших новостей, чтобы Telegram не обрезал их
+                    parts = split_message(text)
+                    for part in parts:
+                        try:
+                            # await bot.send_message(user_id, text)
+                            await bot.send_message(user_id, part, parse_mode="HTML")
+                        except Exception as e:
+                            logger.error(f"HTML send error, fallback to plain: {e}")
+                            await bot.send_message(user_id, part)
+
+                # отправка файлов
+                for filename, content_type, content in file_data:
+
+                    if content_type.startswith("image"):
+                        await bot.send_photo(
+                            user_id,
+                            BufferedInputFile(content, filename=filename)
+                        )
+                    else:
+                        await bot.send_document(
+                            user_id, 
+                            BufferedInputFile(content, filename=filename)
+                        )
+
+                sent += 1
+                # защита от Flood Limits 
+                await asyncio.sleep(0.05)
+
+            except Exception as e:
+                logger.error(f"Broadcast error to {user_id}: {e}")
+
+        return {"sent": sent}
+
+    # планировщик для отложенных новостей 
+    async def news_scheduler():
+        logger.info("🕒 Scheduler started")
+
+        while True:
+            try:
+                pending = await news_store.get_pending_news()
+                now = datetime.now(timezone.utc)
+
+                for news in pending:
+                    if news["scheduled_at"] is None or now >= news["scheduled_at"]:
+                        logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
+                        files = json.loads(news.get("files") or "[]")
+                        file_data = []
+                        for f in files:
+                            try: 
+                                with open(f["path"], "rb") as fp:
+                                    content = fp.read()
+                                    file_data.append((f["name"], f["type"], content))
+                            except Exception as e:
+                                logger.error(f"File read error: {e}")
+                        target_group = news.get("target_group", "all")
+                        safe_html = html_to_telegram(news['text'])
+                        await send_now(safe_html, file_data, target_group)
+                        await news_store.mark_sent(news["id"])
+
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error during news_scheduler like this {e}")
 
     http_task = asyncio.create_task(run_http_server())
     scheduler_task = asyncio.create_task(news_scheduler())
     logger.info("🚀 HTTP сервер и scheduler запущены")
-
+    # Запуск бота
     try:
+        logger.info("🚀 Бот запущен и готов к работе")
         while True:
             bot_instance = None
             try:
@@ -967,22 +1074,24 @@ async def main() -> None:
 
                 me = await bot_instance.get_me()
                 logger.info(f"✅ Успешное подключение к Telegram API. Бот: @{me.username}")
-
+                
+                # Инициализация компонентов
                 bot = bot_instance
-
                 dp = Dispatcher()
+                # регистрация обработчиков сообщений и команд бота
                 register_handlers(
                     dp=dp,
                     store=store,
                     subscriber_store=subscriber_store,
+                    news_store=news_store,
                     adk=adk,
                     doc_handler=doc_handler
                 )
+                broadcast_app_factory(subscriber_store, news_store, adk, bot)
                 logger.info("✓ Диспетчер инициализирован")
 
                 logger.info(f"🚀 Бот запущен и готов к работе (версия {PLATFORM_VERSION})")
                 await dp.start_polling(bot_instance)
-
             except TelegramNetworkError as e:
                 logger.warning(
                     f"⚠️ Нет доступа к Telegram API: {e}. "
@@ -1017,13 +1126,12 @@ async def main() -> None:
                         await bot_instance.session.close()
                     except Exception as e:
                         logger.warning(f"Ошибка при закрытии сессии бота: {e}")
-
+        
     except KeyboardInterrupt:
         logger.info("Получен сигнал прерывания (Ctrl+C)")
 
     finally:
         logger.info("Остановка фоновых задач...")
-
         for task, name in [(http_task, "HTTP сервер"), (scheduler_task, "Scheduler")]:
             if not task.done():
                 task.cancel()
@@ -1031,24 +1139,147 @@ async def main() -> None:
                     await asyncio.wait_for(task, timeout=5.0)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     logger.info(f"✓ {name} остановлен")
-
         try:
             await adk.close()
             logger.info("✅ ADK клиент закрыт")
         except Exception as e:
             logger.error(f"Ошибка при закрытии ADK: {e}")
-
         try:
             await store.close()
             logger.info("✅ Подключение к базе закрыто")
         except Exception as e:
             logger.error(f"Ошибка при закрытии БД: {e}")
-
+        try:
+            await bot.session.close()
+            logger.info("✅ Сессия бота закрыта")
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии сессии бота: {e}")
         logger.info("Бот остановлен")
 
-def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler) -> None:
-    """Регистрация всех обработчиков сообщений"""
+###############################################################
+# стриминг бекенд для взаимодействия с админкой и планировщиком
+###############################################################
+def broadcast_app_factory(subscriber_store, news_store, adk, bot):
+    """Фабрика для стриминга бекенда"""
+    
+    @broadcast_app.post("/broadcast")
+    async def broadcast(
+        html: str = Form(...),
+        files: List[UploadFile] = File(default=[]),
+        schedule_time: Optional[str] = Form(None),
+        reuse_file_path: Optional[str] = Form(None),
+        target_group: str = Form("all")
+    ):
+        """Функция стриминга новостей в бота"""
+        try: 
+            safe_html = html_to_telegram(html)
+            file_paths = []
+            if reuse_file_path and Path(reuse_file_path).exists():
+                file_path = reuse_file_path
+                file_paths.append({
+                    "path": file_path,
+                    "type": "application/octet-stream",
+                    "name": Path(file_path).name
+                })
+                logger.info(f"Reusing file: {file_path}")
+            
+            elif files:
+                for f in files:
+                    content = await f.read()
+                    file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
+                    
+                    with open(file_path, "wb") as out:
+                        out.write(content)
 
+                    file_paths.append({
+                        "path": file_path,
+                        "type": f.content_type,
+                        "name": f.filename
+                    })
+            schedule_dt = None
+            try:
+                if schedule_time:
+                    schedule_dt = datetime.fromisoformat(schedule_time)
+                    schedule_dt = schedule_dt.astimezone(timezone.utc)
+                    logger.info(f"📅 Задача отложена на {schedule_dt}")
+                users, _ = await get_filtered_users(target_group)    
+                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group)
+                return {"status": "ok", "news_send": news_id, "sent": len(users)}
+            except Exception as e:
+                logger.error(f"Error while broadcast inside shecdule and news: {e}")
+                raise HTTPException(400, str(e))
+        except Exception as e:
+            logger.error(f"Error while broadcast all: {e}")
+            raise HTTPException(400, str(e))
+
+    @broadcast_app.get("/api/news")
+    async def get_news():
+        """Получить все новости"""
+        return await news_store.get_all()
+
+    @broadcast_app.get("/api/news/{news_id}")
+    async def get_news_id(news_id: int):
+        """Получить новость по ID"""
+        news = await news_store.get_by_id(news_id)
+        if not news:
+            raise HTTPException(status_code=404, detail="News not found")
+        return news
+    
+    @broadcast_app.delete("/api/news/{news_id}")
+    async def delete_news(news_id: int):
+        try: 
+            await news_store.delete_news(news_id)
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Delete news error: {e}")
+            raise HTTPException(500, str(e))
+
+    @broadcast_app.post("/api/reload-start-message")
+    async def reload_start_message():
+        """Перезагрузить стартовое сообщение из файла"""
+        try:
+            load_bot_start_message()
+            return {
+                "success": True,
+                "message": "Start message reloaded",
+                "length": len(TITLE_START)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @broadcast_app.get("/api/subscribers")
+    async def get_subscribers():
+        """Получить всех подписчиков с группами"""
+        try:
+            subscribers = await subscriber_store.get_all_with_groups()
+            return subscribers
+        except Exception as e:
+            logger.error(f"Error getting subscribers: {e}")
+            raise HTTPException(500, str(e))
+
+    @broadcast_app.post("/api/subscribers/group")
+    async def update_subscriber_group(data: dict):
+        """Обновить группу пользователя"""
+        try:
+            user_id = int(data.get("user_id"))
+            group = data.get("group")
+            value = bool(data.get("value"))
+            
+            if group not in ("manager_group", "coach_group"):
+                raise HTTPException(400, "Invalid group")
+            
+            await subscriber_store.update_user_group(user_id, group, value)
+            
+            return {"status": "ok", "user_id": user_id, "group": group, "value": value}
+        except Exception as e:
+            raise HTTPException(400, str(e))
+
+######################################
+# обработчики сообщений и команд бота
+######################################
+def register_handlers(dp: Dispatcher, store, subscriber_store, news_store, adk, doc_handler) -> None:
+    """Регистрация всех обработчиков сообщений"""
+    # Обработчик команды /start
     @dp.message(Command("start"))
     async def start(m: Message) -> None:
         user_id = m.from_user.id
@@ -1076,7 +1307,6 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
                 await adk.set_user_state(str(user_id), session_id, user_data)
                 logger.info(f"📋 Данные пользователя загружены в ADK: {user_data.get('phone_number')}")
         
-
             logger.info(f"Команда /start от user_id={user_id} (@{username}) - телефон уже есть: {existing_phone}")
             # строим меню для ответа
             tree = await get_tree_cached()
@@ -1097,6 +1327,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
                 reply_markup=PHONE_KEYBOARD
             )
 
+    # обработчик получения контакта (номера телефона)
     @dp.message(F.contact)
     async def handle_contact(m: Message) -> None:
         """Обработка получения номера телефона"""
@@ -1104,7 +1335,6 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
             return
         
         user_id = m.from_user.id
-        
         # Проверяем, что пользователь отправил свой контакт
         if m.contact.user_id != user_id:
             await m.answer("⚠️ Пожалуйста, отправьте свой номер телефона")
@@ -1114,9 +1344,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
         
         # Сохраняем телефон
         await subscriber_store.update_phone(user_id, phone)
-
-        logger.info(f"✓ Получен телефон от user_id={user_id}.")
         
+        logger.info(f"✓ Получен телефон от user_id={user_id}.")
         # Создаём сессию и загружаем данные в ADK
         session_id = f"session-{user_id}"
         await adk.ensure_session(user_id=str(user_id), session_id=session_id)
@@ -1135,6 +1364,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
         )
         await m.answer(TITLE_START, reply_markup=menu)
 
+    # обработчик команды /version для получения версии
     @dp.message(Command("version"))
     async def version_info(m: Message) -> None:
         """Команда для получения версии платформы/бота"""
@@ -1157,7 +1387,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
             TITLE_START,
             reply_markup=menu
         )
-    
+
+    # обработчик команды /reset для сброса истории и сессии
     @dp.message(Command("reset"))
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
@@ -1170,18 +1401,21 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
             await adk.delete_session(user_id=str(user_id), session_id=session_id)
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
             await store.reset(user_id)
-            await store.reset_search_state(user_id, session_id)
-
+            
+            # Удаляем состояние результатов поиска
+            await store.reset_search_state(user_id)
+            
             # после reset сразу вернуть профиль в state
             user_data = await subscriber_store.get_user_data(user_id)
             if user_data:
                 await adk.set_user_state(str(user_id), session_id, user_data)
-
+                
             await m.answer("✅ История диалога и сессия сброшены")
         except Exception as e:
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
     
+    #  обработчик команды /help для отображения справки
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
@@ -1195,535 +1429,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
             "/reset — сбросить историю\n"
             "/help — эта справка"
         )
-
-    def markdown_to_safe_html(text: str) -> str:
-        """Конвертация Markdown в безопасный HTML для Telegram"""
-        # Экранируем HTML
-        text = html_module.escape(text)
-        
-        # **bold** -> <b>bold</b>
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        
-        # *italic* -> <i>italic</i> (только если не внутри bold)
-        text = re.sub(r'(?<!</b>)\*([^*]+?)\*(?!<b>)', r'<i>\1</i>', text)
-        
-        # `code` -> <code>code</code>
-        text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
-        
-        # [text](url) -> <a href="url">text</a>
-        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
-        
-        return text
-        
-    DOWNLOAD_RE = re.compile(
-        r'^\s*(?:скачай|пришли|отправь|документ)?\s*((?:\d+\s*[,\s]\s*)*\d+)\s*$',
-        re.IGNORECASE
-    )
     
-    SHOW_MORE_RE = re.compile(
-        r'^\s*(?:ещ[её]|покажи\s+ещ[её]|дальше|ещ[её]\s+файлы)\s*$',
-        re.IGNORECASE
-    )
-    
-    SHOW_ALL_RE = re.compile(
-        r'^\s*(?:покажи\s+все|все\s+файлы|вс[её]|(дай )*все( файлы)*|полный\s+список|полный|весь|да|ага|угу|ок|окей|хорошо|хочу|конечно|да,*\s*давай|давай|покажи|показывай)\s*$',
-        re.IGNORECASE
-    )
-    
-    SHOW_ALL_RE = re.compile('|'.join(x.pattern for x in [SHOW_ALL_RE, SHOW_MORE_RE]), re.IGNORECASE)
-
-    def parse_download_ranks(text: str) -> list[int]:
-        m = DOWNLOAD_RE.match(text.strip())
-        if not m:
-            return []
-        raw = m.group(1)
-        return [int(x) for x in re.findall(r'\d+', raw)]
-
-
-    def render_results(items: list[dict], total: int, offset: int = 0) -> str:
-        if not items:
-            return "Ничего не нашёл."
-
-        lines = []
-        for i, item in enumerate(items, start=offset + 1):
-            title = html_module.escape(item["source_name"])
-            snippet = (item.get("snippet") or "").strip().replace("\n", " ")
-            if len(snippet) > 180:
-                snippet = snippet[:177] + "..."
-            snippet = html_module.escape(snippet)
-
-            block = f"<b>{i}. {title}</b>"
-            if snippet:
-                block += f"\n{snippet}"
-            lines.append(block)
-
-        text = "\n\n".join(lines)
-
-        shown = offset + len(items)
-        if shown < total:
-            text += f"\n\nПоказано {shown} из {total}. Напишите <b>ещё</b> или <b>покажи все</b>."
-        else:
-            text += "\n\nНапишите номер документа, чтобы скачать его."
-
-        return text
-    
-    def extract_bot_contract(answer: str) -> dict | None:
-        if not answer:
-            return None
-
-        m = re.search(
-            r"<bot_contract>\s*(\{.*?\})\s*</bot_contract>",
-            answer,
-            flags=re.DOTALL,
-        )
-        if not m:
-            return None
-
-        raw_json = m.group(1).strip()
-
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError as e:
-            logger.error(f"Не удалось распарсить bot_contract JSON: {e}")
-            return None
-
-        if not isinstance(data, dict):
-            return None
-
-        if data.get("mode") != "search_results":
-            return None
-
-        results = data.get("results")
-        if not isinstance(results, list):
-            return None
-
-        return data
-        
-    def normalize_contract_results(contract: dict) -> list[dict]:
-        results = contract.get("results", [])
-        normalized = []
-
-        for item in results:
-            if not isinstance(item, dict):
-                continue
-
-            document_id = item.get("document_id")
-            source_name = item.get("source_name")
-            if not document_id or not source_name:
-                continue
-
-            is_relevant = bool(item.get("is_relevant"))
-            new_rank = item.get("new_rank")
-            old_rank = item.get("old_rank")
-            snippet = (item.get("snippet") or "").strip()
-            source_path = item.get("source_path")
-
-            if is_relevant and not isinstance(new_rank, int):
-                continue
-
-            normalized.append({
-                "document_id": document_id,
-                "source_name": str(source_name),
-                "source_path": str(source_path) if source_path else None,
-                "score": None,  # при желании можно позже сохранить score отдельно
-                "snippet": snippet[:500],
-                "rank": new_rank if is_relevant else 10_000 + (old_rank or 0),
-                "old_rank": old_rank,
-                "new_rank": new_rank,
-                "is_relevant": is_relevant,
-            })
-
-        # сначала релевантные по new_rank, потом нерелевантные
-        normalized.sort(
-            key=lambda x: (
-                not x["is_relevant"],
-                x["rank"] if isinstance(x["rank"], int) else 10_000,
-            )
-        )
-
-        # перенумеровываем только релевантные для UI
-        relevant = [x for x in normalized if x["is_relevant"]]
-        for idx, item in enumerate(relevant, start=1):
-            item["rank"] = idx
-
-        return relevant
-
-    def _extract_textish(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if isinstance(value, list):
-            parts = [_extract_textish(v) for v in value]
-            return " ".join(x for x in parts if x).strip()
-        if isinstance(value, dict):
-            preferred_keys = [
-                "text", "content", "snippet", "chunk_text", "body",
-                "section", "summary", "description", "comment"
-            ]
-            parts = []
-            for key in preferred_keys:
-                if key in value:
-                    txt = _extract_textish(value.get(key))
-                    if txt:
-                        parts.append(txt)
-            if parts:
-                return " ".join(parts).strip()
-        return ""
-
-    def _find_tool_payloads(events: list[dict]) -> list[dict]:
-        payloads = []
-
-        for event in events or []:
-            if not isinstance(event, dict):
-                continue
-
-            content = event.get("content")
-            if isinstance(content, dict):
-                for part in content.get("parts", []) or []:
-                    if not isinstance(part, dict):
-                        continue
-
-                    # старые варианты
-                    if "tool_response" in part and isinstance(part["tool_response"], dict):
-                        payloads.append(part["tool_response"])
-                    if "function_response" in part and isinstance(part["function_response"], dict):
-                        payloads.append(part["function_response"])
-
-                    # новые варианты camelCase
-                    if "toolResponse" in part and isinstance(part["toolResponse"], dict):
-                        payloads.append(part["toolResponse"])
-                    if "functionResponse" in part and isinstance(part["functionResponse"], dict):
-                        payloads.append(part["functionResponse"])
-
-            actions = event.get("actions")
-            if isinstance(actions, dict):
-                for key in ("function_response", "functionResponse", "tool_response", "toolResponse"):
-                    value = actions.get(key)
-                    if isinstance(value, dict):
-                        payloads.append(value)
-
-        return payloads
-
-    def _collect_candidate_dicts(obj: Any, out: list[dict]) -> None:
-        if isinstance(obj, dict):
-            # Похоже на один candidate/result/chunk
-            keys = set(obj.keys())
-            if (
-                "document_id" in keys
-                or "source_name" in keys
-                or "source_path" in keys
-                or "metadata" in keys
-                or "content" in keys
-                or "chunk_text" in keys
-            ):
-                out.append(obj)
-
-            for v in obj.values():
-                _collect_candidate_dicts(v, out)
-
-        elif isinstance(obj, list):
-            for item in obj:
-                _collect_candidate_dicts(item, out)
-
-
-    def extract_search_results_from_events(events: list[dict]) -> list[dict]:
-        """
-        Извлекает document-level результаты kb_search из events.
-        Приоритет:
-        1. functionResponse.response.structuredContent.results
-        2. functionResponse.response.structured_content.results
-        3. fallback на старую эвристику
-        """
-        payloads = _find_tool_payloads(events)
-
-        # 1. Нормальный путь: structuredContent
-        for payload in payloads:
-            if not isinstance(payload, dict):
-                continue
-
-            if payload.get("name") != "kb_search":
-                continue
-
-            response = payload.get("response")
-            if not isinstance(response, dict):
-                continue
-
-            structured = response.get("structuredContent") or response.get("structured_content")
-            if not isinstance(structured, dict):
-                continue
-
-            results = structured.get("results")
-            if not isinstance(results, list):
-                continue
-
-            docs_by_id: dict[str, dict] = {}
-
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
-
-                document_id = item.get("document_id")
-                if not document_id:
-                    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-                    document_id = metadata.get("document_id") or metadata.get("DOCUMENT_ID")
-
-                if not document_id:
-                    continue
-
-                source_name = (
-                    item.get("source_name")
-                    or item.get("source")
-                    or item.get("filename")
-                )
-
-                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-                if not source_name:
-                    source_name = (
-                        metadata.get("source_name")
-                        or metadata.get("source")
-                        or metadata.get("filename")
-                        or metadata.get("file_name")
-                        or metadata.get("name")
-                    )
-
-                source_path = (
-                    item.get("relative_path")
-                    or item.get("source_path")
-                    or metadata.get("relative_path")
-                    or metadata.get("source_path")
-                )
-
-                if not source_name:
-                    if source_path:
-                        source_name = str(source_path).split("/")[-1]
-                    else:
-                        source_name = f"{document_id}.file"
-
-                score = item.get("score")
-                numeric_score = float(score) if isinstance(score, (int, float)) else None
-
-                snippet = (
-                    _extract_textish(item.get("snippet"))
-                    or _extract_textish(item.get("content"))
-                    or _extract_textish(metadata.get("snippet"))
-                )
-
-                existing = docs_by_id.get(document_id)
-                if not existing:
-                    docs_by_id[document_id] = {
-                        "document_id": document_id,
-                        "source_name": str(source_name),
-                        "source_path": str(source_path) if source_path else None,
-                        "score": numeric_score,
-                        "snippet": snippet[:500] if snippet else "",
-                    }
-                    continue
-
-                existing_score = existing.get("score")
-                if numeric_score is not None and (existing_score is None or numeric_score > existing_score):
-                    existing["score"] = numeric_score
-                    if snippet:
-                        existing["snippet"] = snippet[:500]
-
-                if not existing.get("source_path") and source_path:
-                    existing["source_path"] = str(source_path)
-
-            docs = list(docs_by_id.values())
-            docs.sort(
-                key=lambda x: (
-                    x["score"] is not None,
-                    x["score"] if x["score"] is not None else float("-inf"),
-                    x["source_name"].lower(),
-                ),
-                reverse=True,
-            )
-
-            for idx, doc in enumerate(docs, start=1):
-                doc["rank"] = idx
-
-            return docs
-
-        # 2. fallback: старая эвристика
-        raw_candidates: list[dict] = []
-        for payload in payloads:
-            _collect_candidate_dicts(payload, raw_candidates)
-
-        if not raw_candidates:
-            return []
-
-        docs_by_id: dict[str, dict] = {}
-
-        for item in raw_candidates:
-            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-
-            document_id = (
-                item.get("document_id")
-                or metadata.get("document_id")
-                or metadata.get("DOCUMENT_ID")
-            )
-            if not document_id:
-                continue
-
-            source_name = (
-                item.get("source_name")
-                or metadata.get("source_name")
-                or metadata.get("source")
-                or metadata.get("filename")
-                or metadata.get("file_name")
-                or metadata.get("name")
-            )
-            if not source_name:
-                source_path = item.get("source_path") or metadata.get("source_path") or metadata.get("relative_path")
-                if source_path:
-                    source_name = str(source_path).split("/")[-1]
-                else:
-                    source_name = f"{document_id}.file"
-
-            source_path = (
-                item.get("source_path")
-                or metadata.get("source_path")
-                or metadata.get("relative_path")
-            )
-
-            score = item.get("score")
-            if score is None:
-                score = metadata.get("score")
-
-            snippet = (
-                _extract_textish(item.get("content"))
-                or _extract_textish(item.get("chunk_text"))
-                or _extract_textish(item.get("text"))
-                or _extract_textish(item.get("snippet"))
-                or _extract_textish(metadata.get("snippet"))
-            )
-
-            existing = docs_by_id.get(document_id)
-            if not existing:
-                docs_by_id[document_id] = {
-                    "document_id": document_id,
-                    "source_name": str(source_name),
-                    "source_path": str(source_path) if source_path else None,
-                    "score": float(score) if isinstance(score, (int, float)) else None,
-                    "snippet": snippet[:500] if snippet else "",
-                }
-                continue
-
-            existing_score = existing.get("score")
-            numeric_score = float(score) if isinstance(score, (int, float)) else None
-            if numeric_score is not None and (existing_score is None or numeric_score > existing_score):
-                existing["score"] = numeric_score
-                if snippet:
-                    existing["snippet"] = snippet[:500]
-
-            if not existing.get("source_path") and source_path:
-                existing["source_path"] = str(source_path)
-
-        docs = list(docs_by_id.values())
-        docs.sort(
-            key=lambda x: (
-                x["score"] is not None,
-                x["score"] if x["score"] is not None else float("-inf"),
-                x["source_name"].lower(),
-            ),
-            reverse=True,
-        )
-
-        for idx, doc in enumerate(docs, start=1):
-            doc["rank"] = idx
-
-        return docs
-
-    async def handle_download_by_ranks(
-        m: Message,
-        store: PostgresChatStore,
-        doc_handler: DocumentHandler,
-        user_id: int,
-        session_id: str,
-        ranks: list[int],
-    ) -> bool:
-        if not ranks:
-            return False
-
-        sent_any = False
-        for rank in ranks:
-            item = await store.get_result_by_rank(user_id, session_id, rank)
-            if not item:
-                await m.answer(f"Не нашёл документ №{rank} в последнем списке.")
-                continue
-
-            doc_id = item.get("document_id")
-            if not doc_id:
-                await m.answer(f"Не удалось определить document_id для документа №{rank}.")
-                continue
-
-            file_path = None
-            try:
-                file_path = await doc_handler.download_document(doc_id)
-                if file_path and file_path.exists():
-                    await m.answer_document(
-                        FSInputFile(str(file_path), filename=file_path.name)
-                    )
-                    sent_any = True
-                else:
-                    await m.answer(f"Не удалось загрузить документ №{rank}.")
-            except Exception as e:
-                logger.error(f"Ошибка отправки документа rank={rank}, doc_id={doc_id}: {e}", exc_info=True)
-                await m.answer(f"Ошибка при загрузке документа №{rank}.")
-            finally:
-                try:
-                    if file_path and file_path.exists():
-                        file_path.unlink()
-                except Exception:
-                    pass
-
-        return sent_any
-
-
-    async def handle_show_all(
-        m: Message,
-        store: PostgresChatStore,
-        user_id: int,
-        session_id: str,
-    ) -> bool:
-        items = await store.get_last_search_results(user_id, session_id)
-        if not items:
-            return False
-
-        text = render_results(items, total=len(items), offset=0)
-        await store.update_shown_count(user_id, session_id, len(items))
-        await m.answer(text, parse_mode="HTML")
-        return True
-
-
-    async def handle_show_more(
-        m: Message,
-        store: PostgresChatStore,
-        user_id: int,
-        session_id: str,
-        page_size: int = SHOW_MAX,
-    ) -> bool:
-        meta = await store.get_last_search_meta(user_id, session_id)
-        items = await store.get_last_search_results(user_id, session_id)
-
-        if not meta or not items:
-            return False
-
-        start = meta["shown_count"]
-        end = min(start + page_size, len(items))
-
-        if start >= len(items):
-            await m.answer("Это уже все найденные файлы.")
-            return True
-
-        chunk = items[start:end]
-        text = render_results(chunk, total=len(items), offset=start)
-        await store.update_shown_count(user_id, session_id, end)
-        await m.answer(text, parse_mode="HTML")
-        return True
-        
+    # обработчик всех текстовых сообщений (основной диалог)
     @dp.message(F.text)
     async def on_text(m: Message) -> None:
         user_id = int(m.from_user.id)
@@ -1801,7 +1508,6 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
 
                 # 4. обычный запрос -> ADK
                 await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-       
                 # Загружаем данные пользователя в состояние ADK (на случай если сессия новая)
                 user_data = await subscriber_store.get_user_data(int(user_id))
                 if user_data:
@@ -1885,19 +1591,18 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
                         session_id=session_id,
                         query=user_text,
                         items=reranked_items,
-                        shown_count=min(8, len(reranked_items)),
+                        shown_count=min(SHOW_MAX, len(reranked_items)),
                     )
                     logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
 
                     if reranked_items:
-                        top_items = reranked_items[:8]
+                        top_items = reranked_items[:SHOW_MAX]
                         text = render_results(top_items, total=len(reranked_items), offset=0)
                         await m.answer(text, parse_mode="HTML")
                     else:
                         await m.answer("Не нашёл релевантных файлов по запросу.")
-
                     return
-
+                
                 # 7. fallback: старая логика через events
                 extracted_items = extract_search_results_from_events(events)
                 if extracted_items:
@@ -1916,7 +1621,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
                 clean_answer = doc_handler.remove_document_ids(answer)
                 if clean_answer.strip():
                     html_answer = markdown_to_safe_html(clean_answer)
-                    await m.answer(html_answer, parse_mode="HTML")
+                    await m.answer(answer, parse_mode="HTML") 
 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
@@ -1925,6 +1630,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
                     "Попробуйте позже или используйте /reset для сброса диалога."
                 )
 
+    #  обработчик открытия папки в меню бота
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
         """Команда обработчик открытия папки"""
@@ -1948,6 +1654,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
             reply_markup=menu
         )
 
+    # обработчик открытия файла в меню бота
     @dp.callback_query(F.data.startswith("f:"))
     async def send_file(callback: CallbackQuery):
         """Обработчик отправки файлов через меню бота"""
@@ -1987,70 +1694,587 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler)
 
         os.remove(tmp.name)
     
-    @broadcast_app.post("/broadcast")
-    async def broadcast(
-        text: str = Form(...),
-        files: List[UploadFile] = File(default=[]),
-        schedule_time: Optional[str] = Form(None)
-    ):
-        """Функция стриминга новостей в бота"""
-        try: 
+
+##################################
+# Вспомогательные функции
+##################################
+def markdown_to_safe_html(text: str) -> str:
+        """Конвертация Markdown в безопасный HTML для Telegram"""
+        # Экранируем HTML
+        text = html_module.escape(text)
+        
+        # **bold** -> <b>bold</b>
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # *italic* -> <i>italic</i> (только если не внутри bold)
+        text = re.sub(r'(?<!</b>)\*([^*]+?)\*(?!<b>)', r'<i>\1</i>', text)
+        
+        # `code` -> <code>code</code>
+        text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+        
+        # [text](url) -> <a href="url">text</a>
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
+        
+        return text
+
+# парсер для извлечения номеров документов из текста, например "скачай 1 и 3"
+def parse_download_ranks(text: str) -> list[int]:
+    m = DOWNLOAD_RE.match(text.strip())
+    if not m:
+        return []
+    raw = m.group(1)
+    return [int(x) for x in re.findall(r'\d+', raw)]
+
+# рендер результатов для ответа пользователю
+def render_results(items: list[dict], total: int, offset: int = 0) -> str:
+    if not items:
+        return "Ничего не нашёл."
+        
+    shown = offset + len(items)
+    if shown < total:
+        text = "Вот самые релевантные документы, которые удалось найти:\n"
+    else:
+        text = "Вот документы, которые удалось найти:\n"
+    lines = []
+    for i, item in enumerate(items, start=offset + 1):
+        title = html_module.escape(item["source_name"])
+        snippet = (item.get("snippet") or "").strip().replace("\n", " ")
+        if len(snippet) > 180:
+            snippet = snippet[:177] + "..."
+        snippet = html_module.escape(snippet)
+
+        block = f"<b>{i}. {title}</b>"
+        if snippet:
+            block += f"\n{snippet}"
+        lines.append(block)
+
+    text += "\n\n".join(lines)
+
+    if shown < total:
+        text += f"\n\nПоказано {shown} из {total}. Хотите получить весь список? Напишите <b>ещё</b>, чтобы получить следующую порцию документов; <b>все</b>, <b>покажи все</b> или <b>да</b>, чтобы получить весь список.\nИли напишите номер документа, чтобы скачать его."
+    else:
+        text += "\n\nНапишите номер документа, чтобы скачать его."
+
+    return text
+# извлечение bot_contract
+def extract_bot_contract(answer: str) -> dict | None:
+    if not answer:
+        return None
             
-            file_paths = []
+    m = re.search(
+        r"<bot_contract>\s*(\{.*?\})\s*</bot_contract>",
+        answer,
+        flags=re.DOTALL,
+    )
+    
+    logger.debug(f"RegExp {m}")
+    if not m:
+        return None
 
-            for f in files:
-                content = await f.read()
-                # file_path = os.path.join(UPLOAD_NEWS, f"{int(time.time())}_{f.filename}")
-                file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
-                
-                with open(file_path, "wb") as out:
-                    out.write(content)
+    raw_json = m.group(1).strip()
 
-                file_paths.append({
-                    "path": file_path,
-                    "type": f.content_type,
-                    "name": f.filename
-                })
-            schedule_dt = None
-            try:
-                if schedule_time:
-                    schedule_dt = datetime.fromisoformat(schedule_time)
-                    schedule_dt = schedule_dt.astimezone(timezone.utc)
-                    logger.info(f"📅 Задача отложена на {schedule_dt}")
-                news_id = await news_store.create_news(text, schedule_dt, files=file_paths)
-                return {"status": "ok", "news_send": news_id}
-            except Exception as e:
-                logger.error(f"Error while broadcast inside shecdule and news: {e}")
-                raise HTTPException(400, str(e))
-        except Exception as e:
-            logger.error(f"Error while broadcast all: {e}")
-            raise HTTPException(400, str(e))
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as e:
+        logger.error(f"Не удалось распарсить bot_contract JSON: {e}")
+        return None
 
-    @broadcast_app.get("/api/news")
-    async def get_news():
-        """Получить все новости"""
-        return await news_store.get_all()
+    if not isinstance(data, dict):
+        return None
 
-    @broadcast_app.get("/api/news/{news_id}")
-    async def get_news_id(news_id: int):
-        """Получить новость по ID"""
-        news = await news_store.get_by_id(news_id)
-        if not news:
-            raise HTTPException(status_code=404, detail="News not found")
-        return news
+    if data.get("mode") != "search_results":
+        return None
 
-    @broadcast_app.post("/api/reload-start-message")
-    async def reload_start_message():
-        """Перезагрузить стартовое сообщение из файла"""
-        try:
-            load_bot_start_message()
-            return {
-                "success": True,
-                "message": "Start message reloaded",
-                "length": len(TITLE_START)
+    results = data.get("results")
+    if not isinstance(results, list):
+        return None
+
+    return data
+
+# нормализация результатов контракта
+def normalize_contract_results(contract: dict) -> list[dict]:
+    results = contract.get("results", [])
+    normalized = []
+
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+
+        document_id = item.get("document_id")
+        source_name = item.get("source_name")
+        if not document_id or not source_name:
+            continue
+
+        is_relevant = bool(item.get("is_relevant"))
+        new_rank = item.get("new_rank")
+        old_rank = item.get("old_rank")
+        snippet = (item.get("snippet") or "").strip()
+        source_path = item.get("source_path")
+
+        if is_relevant and not isinstance(new_rank, int):
+            continue
+
+        normalized.append({
+            "document_id": document_id,
+            "source_name": str(source_name),
+            "source_path": str(source_path) if source_path else None,
+            "score": None,  # при желании можно позже сохранить score отдельно
+            "snippet": snippet[:500],
+            "rank": new_rank if is_relevant else 10_000 + (old_rank or 0),
+            "old_rank": old_rank,
+            "new_rank": new_rank,
+            "is_relevant": is_relevant,
+        })
+
+    # сначала релевантные по new_rank, потом нерелевантные
+    normalized.sort(
+        key=lambda x: (
+            not x["is_relevant"],
+            x["rank"] if isinstance(x["rank"], int) else 10_000,
+        )
+    )
+
+    # перенумеровываем только релевантные для UI
+    relevant = [x for x in normalized if x["is_relevant"]]
+    for idx, item in enumerate(relevant, start=1):
+        item["rank"] = idx
+
+    return relevant
+
+def _extract_textish(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [_extract_textish(v) for v in value]
+        return " ".join(x for x in parts if x).strip()
+    if isinstance(value, dict):
+        preferred_keys = [
+            "text", "content", "snippet", "chunk_text", "body",
+            "section", "summary", "description", "comment"
+        ]
+        parts = []
+        for key in preferred_keys:
+            if key in value:
+                txt = _extract_textish(value.get(key))
+                if txt:
+                    parts.append(txt)
+        if parts:
+            return " ".join(parts).strip()
+    return ""
+
+def _find_tool_payloads(events: list[dict]) -> list[dict]:
+    payloads = []
+
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+
+        content = event.get("content")
+        if isinstance(content, dict):
+            for part in content.get("parts", []) or []:
+                if not isinstance(part, dict):
+                    continue
+
+                # старые варианты
+                if "tool_response" in part and isinstance(part["tool_response"], dict):
+                    payloads.append(part["tool_response"])
+                if "function_response" in part and isinstance(part["function_response"], dict):
+                    payloads.append(part["function_response"])
+
+                # новые варианты camelCase
+                if "toolResponse" in part and isinstance(part["toolResponse"], dict):
+                    payloads.append(part["toolResponse"])
+                if "functionResponse" in part and isinstance(part["functionResponse"], dict):
+                    payloads.append(part["functionResponse"])
+
+        actions = event.get("actions")
+        if isinstance(actions, dict):
+            for key in ("function_response", "functionResponse", "tool_response", "toolResponse"):
+                value = actions.get(key)
+                if isinstance(value, dict):
+                    payloads.append(value)
+
+    return payloads
+
+def _collect_candidate_dicts(obj: Any, out: list[dict]) -> None:
+    if isinstance(obj, dict):
+        # Похоже на один candidate/result/chunk
+        keys = set(obj.keys())
+        if (
+            "document_id" in keys
+            or "source_name" in keys
+            or "source_path" in keys
+            or "metadata" in keys
+            or "content" in keys
+            or "chunk_text" in keys
+        ):
+            out.append(obj)
+
+        for v in obj.values():
+            _collect_candidate_dicts(v, out)
+
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_candidate_dicts(item, out)
+
+def extract_search_results_from_events(events: list[dict]) -> list[dict]:
+    """
+    Извлекает document-level результаты kb_search из events.
+    Приоритет:
+    1. functionResponse.response.structuredContent.results
+    2. functionResponse.response.structured_content.results
+    3. fallback на старую эвристику
+    """
+    payloads = _find_tool_payloads(events)
+
+    # 1. Нормальный путь: structuredContent
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+
+        if payload.get("name") != "kb_search":
+            continue
+
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            continue
+
+        structured = response.get("structuredContent") or response.get("structured_content")
+        if not isinstance(structured, dict):
+            continue
+
+        results = structured.get("results")
+        if not isinstance(results, list):
+            continue
+
+        docs_by_id: dict[str, dict] = {}
+
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+
+            document_id = item.get("document_id")
+            if not document_id:
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                document_id = metadata.get("document_id") or metadata.get("DOCUMENT_ID")
+
+            if not document_id:
+                continue
+
+            source_name = (
+                item.get("source_name")
+                or item.get("source")
+                or item.get("filename")
+            )
+
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if not source_name:
+                source_name = (
+                    metadata.get("source_name")
+                    or metadata.get("source")
+                    or metadata.get("filename")
+                    or metadata.get("file_name")
+                    or metadata.get("name")
+                )
+
+            source_path = (
+                item.get("relative_path")
+                or item.get("source_path")
+                or metadata.get("relative_path")
+                or metadata.get("source_path")
+            )
+
+            if not source_name:
+                if source_path:
+                    source_name = str(source_path).split("/")[-1]
+                else:
+                    source_name = f"{document_id}.file"
+
+            score = item.get("score")
+            numeric_score = float(score) if isinstance(score, (int, float)) else None
+
+            snippet = (
+                _extract_textish(item.get("snippet"))
+                or _extract_textish(item.get("content"))
+                or _extract_textish(metadata.get("snippet"))
+            )
+
+            existing = docs_by_id.get(document_id)
+            if not existing:
+                docs_by_id[document_id] = {
+                    "document_id": document_id,
+                    "source_name": str(source_name),
+                    "source_path": str(source_path) if source_path else None,
+                    "score": numeric_score,
+                    "snippet": snippet[:500] if snippet else "",
+                }
+                continue
+
+            existing_score = existing.get("score")
+            if numeric_score is not None and (existing_score is None or numeric_score > existing_score):
+                existing["score"] = numeric_score
+                if snippet:
+                    existing["snippet"] = snippet[:500]
+
+            if not existing.get("source_path") and source_path:
+                existing["source_path"] = str(source_path)
+
+        docs = list(docs_by_id.values())
+        docs.sort(
+            key=lambda x: (
+                x["score"] is not None,
+                x["score"] if x["score"] is not None else float("-inf"),
+                x["source_name"].lower(),
+            ),
+            reverse=True,
+        )
+
+        for idx, doc in enumerate(docs, start=1):
+            doc["rank"] = idx
+
+        return docs
+
+    # 2. fallback: старая эвристика
+    raw_candidates: list[dict] = []
+    for payload in payloads:
+        _collect_candidate_dicts(payload, raw_candidates)
+
+    if not raw_candidates:
+        return []
+
+    docs_by_id: dict[str, dict] = {}
+
+    for item in raw_candidates:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+
+        document_id = (
+            item.get("document_id")
+            or metadata.get("document_id")
+            or metadata.get("DOCUMENT_ID")
+        )
+        if not document_id:
+            continue
+
+        source_name = (
+            item.get("source_name")
+            or metadata.get("source_name")
+            or metadata.get("source")
+            or metadata.get("filename")
+            or metadata.get("file_name")
+            or metadata.get("name")
+        )
+        if not source_name:
+            source_path = item.get("source_path") or metadata.get("source_path") or metadata.get("relative_path")
+            if source_path:
+                source_name = str(source_path).split("/")[-1]
+            else:
+                source_name = f"{document_id}.file"
+
+        source_path = (
+            item.get("source_path")
+            or metadata.get("source_path")
+            or metadata.get("relative_path")
+        )
+
+        score = item.get("score")
+        if score is None:
+            score = metadata.get("score")
+
+        snippet = (
+            _extract_textish(item.get("content"))
+            or _extract_textish(item.get("chunk_text"))
+            or _extract_textish(item.get("text"))
+            or _extract_textish(item.get("snippet"))
+            or _extract_textish(metadata.get("snippet"))
+        )
+
+        existing = docs_by_id.get(document_id)
+        if not existing:
+            docs_by_id[document_id] = {
+                "document_id": document_id,
+                "source_name": str(source_name),
+                "source_path": str(source_path) if source_path else None,
+                "score": float(score) if isinstance(score, (int, float)) else None,
+                "snippet": snippet[:500] if snippet else "",
             }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            continue
+
+        existing_score = existing.get("score")
+        numeric_score = float(score) if isinstance(score, (int, float)) else None
+        if numeric_score is not None and (existing_score is None or numeric_score > existing_score):
+            existing["score"] = numeric_score
+            if snippet:
+                existing["snippet"] = snippet[:500]
+
+        if not existing.get("source_path") and source_path:
+            existing["source_path"] = str(source_path)
+
+    docs = list(docs_by_id.values())
+    docs.sort(
+        key=lambda x: (
+            x["score"] is not None,
+            x["score"] if x["score"] is not None else float("-inf"),
+            x["source_name"].lower(),
+        ),
+        reverse=True,
+    )
+
+    for idx, doc in enumerate(docs, start=1):
+        doc["rank"] = idx
+
+    return docs
+
+# обработка команды скачивания по рангам
+async def handle_download_by_ranks(
+        m: Message,
+        store: PostgresChatStore,
+        doc_handler: DocumentHandler,
+        user_id: int,
+        session_id: str,
+        ranks: list[int],
+    ) -> bool:
+        if not ranks:
+            return False
+
+        sent_any = False
+        for rank in ranks:
+            item = await store.get_result_by_rank(user_id, session_id, rank)
+            if not item:
+                await m.answer(f"Не нашёл документ №{rank} в последнем списке.")
+                continue
+
+            doc_id = item.get("document_id")
+            if not doc_id:
+                await m.answer(f"Не удалось определить document_id для документа №{rank}.")
+                continue
+
+            file_path = None
+            try:
+                file_path = await doc_handler.download_document(doc_id)
+                if file_path and file_path.exists():
+                    await m.answer_document(
+                        FSInputFile(str(file_path), filename=file_path.name)
+                    )
+                    sent_any = True
+                else:
+                    await m.answer(f"Не удалось загрузить документ №{rank}.")
+            except Exception as e:
+                logger.error(f"Ошибка отправки документа rank={rank}, doc_id={doc_id}: {e}", exc_info=True)
+                await m.answer(f"Ошибка при загрузке документа №{rank}.")
+            finally:
+                try:
+                    if file_path and file_path.exists():
+                        file_path.unlink()
+                except Exception:
+                    pass
+
+        return sent_any
+
+# обработка команды показать все результаты
+async def handle_show_all(
+    m: Message,
+    store: PostgresChatStore,
+    user_id: int,
+    session_id: str,
+) -> bool:
+    items = await store.get_last_search_results(user_id, session_id)
+    if not items:
+        return False
+
+    text = render_results(items, total=len(items), offset=0)
+    await store.update_shown_count(user_id, session_id, len(items))
+    await m.answer(text, parse_mode="HTML")
+    return True
+
+#  обработка команды показать ещё результаты
+async def handle_show_more(
+    m: Message,
+    store: PostgresChatStore,
+    user_id: int,
+    session_id: str,
+    page_size: int = SHOW_MAX,
+) -> bool:
+    meta = await store.get_last_search_meta(user_id, session_id)
+    items = await store.get_last_search_results(user_id, session_id)
+
+    if not meta or not items:
+        return False
+
+    start = meta["shown_count"]
+    end = min(start + page_size, len(items))
+
+    if start >= len(items):
+        await m.answer("Это уже все найденные файлы.")
+        return True
+
+    chunk = items[start:end]
+    text = render_results(chunk, total=len(items), offset=start)
+    await store.update_shown_count(user_id, session_id, end)
+    await m.answer(text, parse_mode="HTML")
+    return True
+
+# функция для безопасного разбиения длинного текста на части, чтобы Telegram не обрезал его
+def split_message(text: str, limit: int = 4000):
+    return [text[i:i+limit] for i in range(0, len(text), limit)]
+
+
+# конвертация HTML в безопасный для Telegram формат
+def html_to_telegram(html: str) -> str:
+    if not html:
+        return ""
+
+    # переносы строк
+    html = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+
+    # параграфы
+    html = re.sub(r"<p[^>]*>", "", html)
+    html = html.replace("</p>", "\n")
+
+    # заголовки → bold
+    html = re.sub(r"<h[1-6][^>]*>", "<b>", html)
+    html = re.sub(r"</h[1-6]>", "</b>\n", html)
+
+    # списки
+    html = html.replace("<ul>", "").replace("</ul>", "")
+    html = html.replace("<ol>", "").replace("</ol>", "")
+    html = re.sub(r"<li[^>]*>", "• ", html)
+    html = html.replace("</li>", "\n")
+
+    # bold / italic
+    html = html.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    html = html.replace("<em>", "<i>").replace("</em>", "</i>")
+
+    # underline / strike
+    html = html.replace("<u>", "<u>").replace("</u>", "</u>")
+    html = html.replace("<s>", "<s>").replace("</s>", "</s>")
+
+    # code block
+    html = re.sub(r'<pre.*?>', '<pre>', html)
+    html = re.sub(r'</pre>', '</pre>\n', html)
+
+    # удалить ВСЕ лишние теги (очень важно)
+    allowed_tags = ["b", "i", "u", "s", "a", "code", "pre"]
+
+    def clean_tags(match):
+        tag = match.group(1)
+        if tag.split()[0].lower() in allowed_tags:
+            return match.group(0)
+        return ""
+
+    html = re.sub(r"</?([^>\s]+)[^>]*>", clean_tags, html)
+
+    # HTML entities
+    html = html.replace("&nbsp;", " ")
+    html = html.replace("&amp;", "&")
+
+    # лишние переносы
+    html = re.sub(r"\n{3,}", "\n\n", html)
+
+    return html.strip()
 
 # функция хранения пути
 def register_callback_path(path: str) -> str:
@@ -2074,7 +2298,7 @@ def register_callback_path(path: str) -> str:
 async def get_tree_cached():
     global TREE_CACHE, TREE_TS
     # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
-    if time.time() - TREE_TS < TIME_SET_WAIT:
+    if TREE_CACHE and time.time() - TREE_TS < TIME_SET_WAIT:
         return TREE_CACHE
 
     TREE_CACHE = await get_kb_tree()
