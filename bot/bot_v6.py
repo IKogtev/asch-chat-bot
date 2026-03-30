@@ -963,7 +963,119 @@ async def main() -> None:
             await server.serve()
         except asyncio.CancelledError:
             logger.info("HTTP сервер остановлен")
-        
+            
+    @broadcast_app.post("/broadcast")
+    async def broadcast(
+        html: str = Form(...),
+        files: List[UploadFile] = File(default=[]),
+        schedule_time: Optional[str] = Form(None),
+        reuse_file_path: Optional[str] = Form(None),
+        target_group: str = Form("all")
+    ):
+        """Функция стриминга новостей в бота"""
+        try: 
+            safe_html = html_to_telegram(html)
+            file_paths = []
+            if reuse_file_path and Path(reuse_file_path).exists():
+                file_path = reuse_file_path
+                file_paths.append({
+                    "path": file_path,
+                    "type": "application/octet-stream",
+                    "name": Path(file_path).name
+                })
+                logger.info(f"Reusing file: {file_path}")
+            
+            elif files:
+                for f in files:
+                    content = await f.read()
+                    file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
+                    
+                    with open(file_path, "wb") as out:
+                        out.write(content)
+
+                    file_paths.append({
+                        "path": file_path,
+                        "type": f.content_type,
+                        "name": f.filename
+                    })
+            schedule_dt = None
+            try:
+                if schedule_time:
+                    schedule_dt = datetime.fromisoformat(schedule_time)
+                    schedule_dt = schedule_dt.astimezone(timezone.utc)
+                    logger.info(f"📅 Задача отложена на {schedule_dt}")
+                users, _ = await get_filtered_users(target_group)    
+                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group)
+                return {"status": "ok", "news_send": news_id, "sent": len(users)}
+            except Exception as e:
+                logger.error(f"Error while broadcast inside shecdule and news: {e}")
+                raise HTTPException(400, str(e))
+        except Exception as e:
+            logger.error(f"Error while broadcast all: {e}")
+            raise HTTPException(400, str(e))
+
+    @broadcast_app.get("/api/news")
+    async def get_news():
+        """Получить все новости"""
+        return await news_store.get_all()
+
+    @broadcast_app.get("/api/news/{news_id}")
+    async def get_news_id(news_id: int):
+        """Получить новость по ID"""
+        news = await news_store.get_by_id(news_id)
+        if not news:
+            raise HTTPException(status_code=404, detail="News not found")
+        return news
+    
+    @broadcast_app.delete("/api/news/{news_id}")
+    async def delete_news(news_id: int):
+        try: 
+            await news_store.delete_news(news_id)
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Delete news error: {e}")
+            raise HTTPException(500, str(e))
+
+    @broadcast_app.post("/api/reload-start-message")
+    async def reload_start_message():
+        """Перезагрузить стартовое сообщение из файла"""
+        try:
+            load_bot_start_message()
+            return {
+                "success": True,
+                "message": "Start message reloaded",
+                "length": len(TITLE_START)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @broadcast_app.get("/api/subscribers")
+    async def get_subscribers():
+        """Получить всех подписчиков с группами"""
+        try:
+            subscribers = await subscriber_store.get_all_with_groups()
+            return subscribers
+        except Exception as e:
+            logger.error(f"Error getting subscribers: {e}")
+            raise HTTPException(500, str(e))
+
+    @broadcast_app.post("/api/subscribers/group")
+    async def update_subscriber_group(data: dict):
+        """Обновить группу пользователя"""
+        try:
+            user_id = int(data.get("user_id"))
+            group = data.get("group")
+            value = bool(data.get("value"))
+            
+            if group not in ("manager_group", "coach_group"):
+                raise HTTPException(400, "Invalid group")
+            
+            await subscriber_store.update_user_group(user_id, group, value)
+            
+            return {"status": "ok", "user_id": user_id, "group": group, "value": value}
+        except Exception as e:
+            raise HTTPException(400, str(e))
+            
     # получение отфильтрованных пользователей по группе для рассылки
     async def get_filtered_users(target_group: str = "all"):
         all_users = await subscriber_store.get_all_with_groups()
@@ -1163,118 +1275,8 @@ async def main() -> None:
 ###############################################################
 def broadcast_app_factory(subscriber_store, news_store, adk, bot):
     """Фабрика для стриминга бекенда"""
+    pass 
     
-    @broadcast_app.post("/broadcast")
-    async def broadcast(
-        html: str = Form(...),
-        files: List[UploadFile] = File(default=[]),
-        schedule_time: Optional[str] = Form(None),
-        reuse_file_path: Optional[str] = Form(None),
-        target_group: str = Form("all")
-    ):
-        """Функция стриминга новостей в бота"""
-        try: 
-            safe_html = html_to_telegram(html)
-            file_paths = []
-            if reuse_file_path and Path(reuse_file_path).exists():
-                file_path = reuse_file_path
-                file_paths.append({
-                    "path": file_path,
-                    "type": "application/octet-stream",
-                    "name": Path(file_path).name
-                })
-                logger.info(f"Reusing file: {file_path}")
-            
-            elif files:
-                for f in files:
-                    content = await f.read()
-                    file_path = os.path.join(UPLOAD_NEWS, f"{f.filename}")
-                    
-                    with open(file_path, "wb") as out:
-                        out.write(content)
-
-                    file_paths.append({
-                        "path": file_path,
-                        "type": f.content_type,
-                        "name": f.filename
-                    })
-            schedule_dt = None
-            try:
-                if schedule_time:
-                    schedule_dt = datetime.fromisoformat(schedule_time)
-                    schedule_dt = schedule_dt.astimezone(timezone.utc)
-                    logger.info(f"📅 Задача отложена на {schedule_dt}")
-                users, _ = await get_filtered_users(target_group)    
-                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group)
-                return {"status": "ok", "news_send": news_id, "sent": len(users)}
-            except Exception as e:
-                logger.error(f"Error while broadcast inside shecdule and news: {e}")
-                raise HTTPException(400, str(e))
-        except Exception as e:
-            logger.error(f"Error while broadcast all: {e}")
-            raise HTTPException(400, str(e))
-
-    @broadcast_app.get("/api/news")
-    async def get_news():
-        """Получить все новости"""
-        return await news_store.get_all()
-
-    @broadcast_app.get("/api/news/{news_id}")
-    async def get_news_id(news_id: int):
-        """Получить новость по ID"""
-        news = await news_store.get_by_id(news_id)
-        if not news:
-            raise HTTPException(status_code=404, detail="News not found")
-        return news
-    
-    @broadcast_app.delete("/api/news/{news_id}")
-    async def delete_news(news_id: int):
-        try: 
-            await news_store.delete_news(news_id)
-            return {"status": "ok"}
-        except Exception as e:
-            logger.error(f"Delete news error: {e}")
-            raise HTTPException(500, str(e))
-
-    @broadcast_app.post("/api/reload-start-message")
-    async def reload_start_message():
-        """Перезагрузить стартовое сообщение из файла"""
-        try:
-            load_bot_start_message()
-            return {
-                "success": True,
-                "message": "Start message reloaded",
-                "length": len(TITLE_START)
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @broadcast_app.get("/api/subscribers")
-    async def get_subscribers():
-        """Получить всех подписчиков с группами"""
-        try:
-            subscribers = await subscriber_store.get_all_with_groups()
-            return subscribers
-        except Exception as e:
-            logger.error(f"Error getting subscribers: {e}")
-            raise HTTPException(500, str(e))
-
-    @broadcast_app.post("/api/subscribers/group")
-    async def update_subscriber_group(data: dict):
-        """Обновить группу пользователя"""
-        try:
-            user_id = int(data.get("user_id"))
-            group = data.get("group")
-            value = bool(data.get("value"))
-            
-            if group not in ("manager_group", "coach_group"):
-                raise HTTPException(400, "Invalid group")
-            
-            await subscriber_store.update_user_group(user_id, group, value)
-            
-            return {"status": "ok", "user_id": user_id, "group": group, "value": value}
-        except Exception as e:
-            raise HTTPException(400, str(e))
 
 ######################################
 # обработчики сообщений и команд бота
