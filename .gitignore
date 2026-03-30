@@ -28,13 +28,7 @@ node_modules/
 package-lock.json
 package.json
 tests/
-<<<<<<< HEAD
-playwright.config.ts
-test-results/
-tsconfig.json
-=======
 tsconfig.json
 test-results/
 playwright.config.ts
 __pycache__
->>>>>>> ui-features-2
