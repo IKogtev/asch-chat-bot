@@ -1171,8 +1171,8 @@ async def update_subscriber_group(data: dict):
         group = data.get("group")
         value = bool(data.get("value"))
         
-        if group not in ("manager_group", "couch_group"):
-            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'couch_group'")
+        if group not in ("manager_group", "coach_group"):
+            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'coach_group'")
         
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
