@@ -3,7 +3,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
-from pathlib import Path
 from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
@@ -11,29 +10,40 @@ from app.models import (
     DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
     )
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
-import hashlib, os, uuid, shutil, asyncio
+import hashlib, os, uuid, shutil, asyncio, aiofiles
+from contextlib import asynccontextmanager
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
-import aiofiles, shutil
 from datetime import datetime, timedelta
 
-TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
-
-PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
-PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-# Путь к файлу стартового сообщения бота
-BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
-# папка загрузки файлов
-BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
-
-logger = setup_logger(name="Test", service_dir="App")
-
 load_dotenv()
+# Используем современный Lifespan вместо @app.on_event("startup")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize Qdrant collection on startup"""
+    global http_client
+    # создаем глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
+    http_client = httpx.AsyncClient(timeout=60)
+    # создаем коллекцию в qdrant 
+    qdrant_service.ensure_collection()
+    # строим дерево кэш изначально
+    kb_file_storage.build_tree()
+    # создаем фоновые задачи
+    # делаем синхронизацию при старте
+    sync_task = asyncio.create_task(run_sync_all_safe())
+    # запускаем расписание переиндексации
+    scheduler_task = asyncio.create_task(start_scheduler())
+    yield
+    sync_task.cancel()
+    scheduler_task.cancel()
+    await http_client.aclose()
+
 app = FastAPI(
     title="UI Manager for Anastasia",
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -45,6 +55,17 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600,
 )
+
+TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
+
+PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
+PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+# Путь к файлу стартового сообщения бота
+BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
+# папка загрузки файлов
+BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
+
+logger = setup_logger(name="Test", service_dir="App")
 
 # Initialize services
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))
@@ -113,6 +134,8 @@ sync_settings = {
 }
 # очередь событий
 subscribers = []
+# глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
+http_client: httpx.AsyncClient = None
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
@@ -141,8 +164,10 @@ async def save_upload_to_tmp(file: UploadFile) -> Path:
     tmp_dir = Path("/tmp/uploads") / upload_id 
     tmp_dir.mkdir(parents=True, exist_ok=True)    
     tmp_file = tmp_dir / (file.filename or "unknown")
-    content = await file.read()
-    tmp_file.write_bytes(content)
+    # Читаем и пишем асинхронно, не блокируя основной поток
+    async with aiofiles.open(tmp_file, 'wb') as out_file:
+        while content := await file.read(1024 * 1024): # Читаем чанками по 1МБ
+            await out_file.write(content)
     return tmp_file
 
 def validate_extensions(ext: str, collection_type: str):
@@ -249,16 +274,6 @@ async def run_sync_all_once():
         "message": "SYNC completed"
     }     
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize Qdrant collection on startup"""
-    qdrant_service.ensure_collection()
-    # строим дерево кэш изначально
-    kb_file_storage.build_tree()
-    # делаем синхронизацию при старте
-    asyncio.create_task(run_sync_all_safe())
-    # запускаем расписание переиндексации
-    asyncio.create_task(start_scheduler())
 
 async def start_scheduler():
     # запускаем расписание автоматической синхроонизации
@@ -349,8 +364,17 @@ async def root():
 @app.get("/api/health")
 async def health():
     """Health check endpoint"""
-    return {"status": "healthy", "qdrant_url": qdrant_url, "collection": collection_name}
-
+    try:
+        qdrant_service.qdrant_client.get_collections()
+        is_alive = True 
+        return {
+            "status": "healthy" if is_alive else "unhealthy",
+            "qdrant_url": qdrant_url,
+            "collection": collection_name
+        }
+    except Exception as e:
+         raise HTTPException(status_code=503, detail=f"Qdrant connection failed: {e}")
+    
 ##################################
 # Работа с документами
 ##################################
@@ -758,9 +782,8 @@ async def download_filesystem_file(path: str):
 @app.get("/api/news")
 async def get_news():
     """Получить все новости из бота"""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(f"{TELEGRAM_BOT_API}/api/news")
-        resp.raise_for_status()
+    resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/news")
+    resp.raise_for_status()
     return resp.json()
 
 @app.get("/api/local-file-news")
@@ -779,12 +802,14 @@ async def get_news_file(name: str):
         is_text_file = file_path.suffix.lower() in text_extensions
         if is_text_file or (content_type and content_type.startswith("text")):
             try:
-                content = file_path.read_text(encoding="utf-8")
+                async with aiofiles.open(file_path, mode='r', encoding='utf-8') as f:
+                    content = await f.read()
             except UnicodeDecodeError:
                 # Пробуем другие кодировки для кириллицы
                 for enc in ["cp1251", "utf-8-sig", "koi8-r"]:
                     try:
-                        content = file_path.read_text(encoding=enc)
+                        async with aiofiles.open(file_path, mode='r', encoding=enc) as f:
+                            content = await f.read()
                         logger.info(f"File read with encoding: {enc}")
                         break
                     except UnicodeDecodeError:
@@ -827,17 +852,15 @@ async def get_news_file(name: str):
 @app.get("/api/news/{news_id}")
 async def get_news_by_id(news_id: int):
     """Получить новость по ID из бота"""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
-        resp.raise_for_status()
+    resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
+    resp.raise_for_status()
     return resp.json()
 
 @app.delete("/api/news/{news_id}")
 async def delete_news(news_id: int):
     """удалить новость из истории бд"""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.delete(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
-        resp.raise_for_status()
+    resp = await http_client.delete(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
+    resp.raise_for_status()
     return resp.json()
 
 @app.post("/api/news/send")
@@ -850,40 +873,39 @@ async def send_news(
 ):
     """отправить новость"""
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            multipart_data = []
-            # откладываем время 
-            if schedule_time:
-                multipart_data.append(("schedule_time", (None, schedule_time)))
-                logger.info(f"Отложено на: {schedule_time}")
-            else: 
-                logger.info("Без отложенной отправки")
-            multipart_data.append(("html", (None, html)))
-            logger.info(f"HTML length: {len(html)}")
-            # группа получателей
-            multipart_data.append(("target_group", (None, target_group)))
-            logger.info(f"Группа получателей: {target_group}")
-            # переиспользование старого файла
-            if reuse_file_path:
-                logger.info(f"Reusing file from path: {reuse_file_path}")
-                multipart_data.append(("reuse_file_path", (None, reuse_file_path)))
-            
-            # файлы
-            if not reuse_file_path:
-                for f in files:
-                    content = await f.read()
-                    multipart_data.append(
-                        ("files", (f.filename, content, f.content_type))
-                    )
-            else:
-                logger.info("Using reused file, skipping new upload")
+        multipart_data = []
+        # откладываем время 
+        if schedule_time:
+            multipart_data.append(("schedule_time", (None, schedule_time)))
+            logger.info(f"Отложено на: {schedule_time}")
+        else: 
+            logger.info("Без отложенной отправки")
+        multipart_data.append(("html", (None, html)))
+        logger.info(f"HTML length: {len(html)}")
+        # группа получателей
+        multipart_data.append(("target_group", (None, target_group)))
+        logger.info(f"Группа получателей: {target_group}")
+        # переиспользование старого файла
+        if reuse_file_path:
+            logger.info(f"Reusing file from path: {reuse_file_path}")
+            multipart_data.append(("reuse_file_path", (None, reuse_file_path)))
+        
+        # файлы
+        if not reuse_file_path:
+            for f in files:
+                content = await f.read()
+                multipart_data.append(
+                    ("files", (f.filename, content, f.content_type))
+                )
+        else:
+            logger.info("Using reused file, skipping new upload")
 
-            resp = await client.post(
-                f"{TELEGRAM_BOT_API}/broadcast",
-                files=multipart_data
-            )
-            resp.raise_for_status()
-            bot_response = resp.json()
+        resp = await http_client.post(
+            f"{TELEGRAM_BOT_API}/broadcast",
+            files=multipart_data
+        )
+        resp.raise_for_status()
+        bot_response = resp.json()
 
         return bot_response
     
@@ -1092,7 +1114,8 @@ async def get_bot_start_message():
         if not BOT_START_MESSAGE_FILE.exists():
             # Создаём файл с дефолтным сообщением если не существует
             default_message = "👋 Привет! Я ваш помощник.\n\nЧем могу помочь?"
-            BOT_START_MESSAGE_FILE.write_text(default_message, encoding="utf-8")
+            async with aiofiles.open(BOT_START_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(default_message)
             return {
                 "success": True,
                 "content": default_message,
@@ -1100,9 +1123,9 @@ async def get_bot_start_message():
                 "size": len(default_message),
                 "modified": datetime.now().isoformat()
             }
-        
-        content = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
-        stat = BOT_START_MESSAGE_FILE.stat()
+        async with aiofiles.open(BOT_START_MESSAGE_FILE, "r", encoding="utf-8") as f:
+            content = await f.read()
+            stat = BOT_START_MESSAGE_FILE.stat()
         
         return {
             "success": True,
@@ -1124,16 +1147,16 @@ async def save_bot_start_message(data: dict):
             raise HTTPException(status_code=400, detail="Content is required")
         
         # Сохраняем в файл
-        BOT_START_MESSAGE_FILE.write_text(content, encoding="utf-8")
+        async with aiofiles.open(BOT_START_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(content)
         
         logger.info(f"Bot start message saved ({len(content)} symbols)")
         bot_reload_success = False
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
-                if r.status_code == 200:
-                    bot_reload_success = True
-                    logger.info("Bot notified to reload start message")
+            r = await http_client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
+            if r.status_code == 200:
+                bot_reload_success = True
+                logger.info("Bot notified to reload start message")
         except Exception as e:
             logger.warning(f"Could not notify bot: {e}")
 
@@ -1155,10 +1178,9 @@ async def save_bot_start_message(data: dict):
 async def get_subscribers():
     """Получить всех подписчиков с информацией о группах"""
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
-            resp.raise_for_status()
-            return resp.json()
+        resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
         logger.error(f"Error getting subscribers: {e}")
         raise HTTPException(500, f"Failed to get subscribers: {str(e)}")
@@ -1174,17 +1196,16 @@ async def update_subscriber_group(data: dict):
         if group not in ("manager_group", "coach_group"):
             raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'coach_group'")
         
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{TELEGRAM_BOT_API}/api/subscribers/group",
-                json={
-                    "user_id": user_id,
-                    "group": group,
-                    "value": value
-                }
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await http_client.post(
+            f"{TELEGRAM_BOT_API}/api/subscribers/group",
+            json={
+                "user_id": user_id,
+                "group": group,
+                "value": value
+            }
+        )
+        resp.raise_for_status()
+        return resp.json()
             
     except HTTPException:
         raise
