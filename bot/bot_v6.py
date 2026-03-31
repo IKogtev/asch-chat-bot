@@ -1412,7 +1412,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, news_store, adk, 
             await store.reset(user_id)
             
             # Удаляем состояние результатов поиска
-            await store.reset_search_state(user_id)
+            await store.reset_search_state(user_id, session_id)
             
             # после reset сразу вернуть профиль в state
             user_data = await subscriber_store.get_user_data(user_id)
