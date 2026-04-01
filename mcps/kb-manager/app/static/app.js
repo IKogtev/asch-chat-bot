@@ -403,9 +403,11 @@ async function switchCollectionAlias() {
 // Tab Management
 function showTab(tabName) {
     // Hide all tabs
+    // tabs
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.remove('active');
     });
+    // buttons
     document.querySelectorAll('.tab-button').forEach(btn => {
         btn.classList.remove('active');
     });
@@ -413,6 +415,9 @@ function showTab(tabName) {
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
     event.target.classList.add('active');
+
+    const button = event.currentTarget;
+    button.classList.add('active');
     
     // Load data if needed
     if (tabName === 'documents') {
@@ -435,6 +440,20 @@ function showTab(tabName) {
 // #############################
 // Utilities subsystem
 // #############################
+// функция для открытия и закрытия сайдбара
+function toggleSidebar() {
+    const sidebar = document.getElementById("sidebar");
+    const icon = document.getElementById("toggle-icon");
+    sidebar.classList.toggle("expanded");
+    sidebar.classList.toggle("collapsed");
+
+    // меняем иконку
+    if (sidebar.classList.contains("expanded")) {
+        icon.textContent = "✖";
+    } else {
+        icon.textContent = "☰";
+    }
+}
 // extract question from text
 function extractQuestionFromText(text){
     if (!text) return '';

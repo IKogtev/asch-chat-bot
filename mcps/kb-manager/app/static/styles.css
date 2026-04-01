@@ -35,6 +35,9 @@ body {
     max-width: 1200px;
     margin: 0 auto;
     padding: 20px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
 }
 
 header {
@@ -68,6 +71,14 @@ header h1 {
 .search-options {
     display: flex;
     gap: 16px;
+    width: 100%;
+    max-width: 100%;
+    flex-wrap: wrap;
+}
+.search-options select {
+    min-width: 150px;
+    max-width: 300px;
+    flex: 1;
 }
 
 .search-options label {
@@ -75,6 +86,7 @@ header h1 {
     align-items: center;
     gap: 8px;
     color: var(--text-secondary);
+    flex: 1;
 }
 /* Buttons */
 .btn {
@@ -194,6 +206,123 @@ header h1 {
     gap: 12px; /* ← комфортный минимальный отступ */
 }
 
+/* Layout */
+.app-layout {
+    display: flex;
+    flex-direction: row;
+    height: 100vh;
+}
+
+/* Main content */
+.main-content {
+    margin-left: 70px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+
+/* sidebar styles */
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 70px;
+    background: var(--card-bg);
+    border-right: 1px solid var(--border-color);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: width 0.3s ease;
+     /* чтобы контент не прыгал при открытии */
+    z-index: 100;
+}
+/* COLLAPSED STATE */
+.sidebar.collapsed {
+    width: 70px;
+}
+.sidebar.collapsed .label {
+    opacity: 0;
+    transform: translateX(-10px);
+    pointer-events: none;
+    width: 0;
+    overflow: hidden;
+}
+/* Центрируем иконки когда свернуто */
+.sidebar.collapsed .tab-button {
+    justify-content: center;
+    gap: 0;
+}
+/* expanded */
+.sidebar.expanded {
+    width: 220px;
+}
+/* toggle button */
+.sidebar-toggle {
+    position: absolute; 
+    top: 10px;
+    right: 10px;
+
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+
+    width: 32px;
+    height: 32px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+/* Поворот иконки */
+.sidebar.expanded .sidebar-toggle {
+    transform: rotate(180deg);
+}
+/* tabs inside sidebar */
+.sidebar-tabs {
+    margin-top: 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    padding: 10px;
+}
+.sidebar .tab-button {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+/* collapsed = только иконки */
+.sidebar:not(.expanded) .tab-button {
+    text-align: center;
+    font-size: 18px;
+}
+/* Icon */
+.icon {
+    font-size: 18px;
+    min-width: 24px;
+    text-align: center;
+    width: 24px;
+    flex-shrink: 0;
+}
+
+/* Label animation */
+.label {
+    opacity: 1;
+    transform: translateX(0);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
 /* Tabs */
 .tabs {
     display: flex;
@@ -227,10 +356,18 @@ header h1 {
 .tab-content {
     display: none;
     animation: fadeIn 0.3s;
+    flex: 1; 
+    height: 100%;
 }
 
 .tab-content.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
+.tab-content.active > * {
+    width: 100%;
+    max-width: 100%;
 }
 
 /* анимация */
@@ -337,7 +474,7 @@ header h1 {
 .documents-list {
     display: grid;
     /* добавление нескольких колонок kb цифра задает число в будущем можно*/
-    grid-template-columns: repeat(2, minmax(300px, 1fr));
+    grid-template-columns: repeat(1, minmax(300px, 1fr));
     gap: 16px;
 }
 
@@ -567,14 +704,20 @@ header h1 {
     border-radius: 12px;
     box-shadow: var(--shadow);
     margin-bottom: 24px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 .search-input-group {
     display: flex;
-    gap: 12px;
+    gap: 16px;
     margin-bottom: 16px;
+    width: 100%;
+    max-width: 100%;
 }
 .search-input-group input {
     flex: 1;
+    min-width: 0;
     padding: 10px 16px;
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -590,6 +733,8 @@ header h1 {
     display: grid;
     gap: 16px;
     margin-top: 10px;
+    width: 100%;
+    max-width: 100%;
 }
 .search-result {
     background: var(--card-bg);
