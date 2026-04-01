@@ -229,7 +229,28 @@ services:
       # password=admin123 
     networks:
       - aszh-bot-network
-
+  adk-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: aszh-adk-web
+    command: >
+      sh -c "cd /app && adk web --host 0.0.0.0 --port 8080"
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL}
+      - LLM_API_MODEL=${LLM_API_MODEL}
+    volumes:
+      - ./agent:/app/agent
+    networks:
+      - aszh-bot-network
+    depends_on:
+      - kbsearch
+    
 volumes:
   pg_data:
   pgadmin_data:
