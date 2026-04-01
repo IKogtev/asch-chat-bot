@@ -3,14 +3,14 @@
 ##################################
 import html as html_module
 import re
-from bot.config import Settings
+from bot.services.config import Settings
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
 import json
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
-from bot.database import PostgresChatStore
-from typing import Optional, Any
+from bot.services.database import PostgresChatStore
+from typing import Any
 
 # Настройка логгера
 logger = setup_logger('utils_processing', 'utils_processing.log')

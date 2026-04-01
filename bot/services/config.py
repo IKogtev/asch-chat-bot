@@ -3,11 +3,10 @@ import re
 from pathlib import Path
 from dotenv import load_dotenv
 from collections import OrderedDict
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
 
-class Settings:
+class Settings():
     # версия платформы
     PLATFORM_VERSION: str = os.getenv("PLATFORM_VERSION", "0.5.1")
     # URL для доступа к API KB Manager Admin
@@ -40,19 +39,17 @@ class Settings:
         re.IGNORECASE
     )
     SHOW_ALL_RE = re.compile('|'.join(x.pattern for x in [ _SHOW_ALL_BASE_RE, SHOW_MORE_RE]), re.IGNORECASE)
-    # Клавиатура для запроса телефона (показывается только если телефона нет)
-    PHONE_KEYBOARD = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
     # сохраняем пути папок в сортированном по времени словаре
     CALLBACK_MAP = OrderedDict()
     MAX_CALLBACK_ENTRIES = 5000
     
     TIME_SET_WAIT = 120
+    AVAILABLE_GROUPS = ("all", "manager_group", "coach_group")
 
+    def create_directories(self):
+        """Создает необходимые директории при старте, если их нет"""
+        self.UPLOAD_NEWS.mkdir(parents=True, exist_ok=True)
+        self.BOT_START_MESSAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-
+settings = Settings()
+settings.create_directories()

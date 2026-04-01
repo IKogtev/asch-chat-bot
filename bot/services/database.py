@@ -1,11 +1,11 @@
 import asyncpg
 import aiohttp
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from uuid import uuid4
 # Импортируем логгер из 
 from utils import setup_logger
-from bot.config import Settings
+from bot.services.config import Settings
 from datetime import datetime
 
 # Настройка логгера
@@ -413,7 +413,6 @@ class SubscriberStore:
             await conn.execute(query, value, user_id)
         
         logger.info(f"✓ Группа {group} обновлена для user_id={user_id}: {value}")
-
 # Хранилище новостей и рассылок
 class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
@@ -462,6 +461,25 @@ class NewsStore:
                 WHERE id = $1
             """, news_id)
 
+    def _parse_news_row(self, row: asyncpg.Record) -> dict:
+        """Приватный метод для нормализации данных новости из БД"""
+        d = dict(row)
+        files = d.get("files")
+        
+        if isinstance(files, str):
+            try:
+                d["files"] = json.loads(files)
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse files JSON for news_id={d.get('id')}")
+                d["files"] = []
+        elif isinstance(files, list):
+            d["files"] = files
+        else:
+            d["files"] = []
+            
+        d.setdefault("target_group", "all")
+        return d
+
     async def get_all(self):
         """Получение всех новостей"""
         async with self.pool.acquire() as conn:
@@ -469,28 +487,11 @@ class NewsStore:
                 SELECT * FROM news ORDER BY created_at DESC
             """)
             result = []
-            try: 
-                for r in rows:
-                    d = dict(r)
-                    files = d.get("files")
-                    if files is None:
-                        d["files"] = []
-                    elif isinstance(files, str):
-                        try:
-                            d["files"] = json.loads(files)
-                        except Exception:
-                            d["files"] = []
-                    elif isinstance(files, list):
-                        d["files"] = files
-                    else:
-                        d["files"] = []
-                    
-                    if "target_group" not in d:
-                        d["target_group"] = "all"
-    
-                    result.append(d)
-            except Exception as e:
-                logger.error(f"Ошибка во время получения всех новостей: {e}")
+            for r in rows:    
+                try:
+                    result.append(self._parse_news_row(r))
+                except Exception as e:
+                    logger.error(f"Ошибка во время получения всех новостей: {e}")
 
             return result
 
@@ -502,25 +503,7 @@ class NewsStore:
             """, news_id)
             if not row:
                 return None
-                
-            news = dict(row)
-            files = news.get("files")
-            if files is None:
-                news["files"] = []
-            elif isinstance(files, str):
-                try:
-                    news["files"] = json.loads(files)
-                except Exception:
-                    news["files"] = []
-            elif isinstance(files, list):
-                news["files"] = files
-            else:
-                news["files"] = []
-            
-            if "target_group" not in news:
-                news["target_group"] = "all"
-
-            return news
+            return self._parse_news_row(row)
         
     async def delete_news(self, news_id: int):
         """Удаление новости по ID"""
