@@ -1,0 +1,11 @@
+pandas
+openpyxl
+xlsxwriter
+tqdm
+requests
+python-dotenv==1.0.1
+plotly
+kaleido
+langchain-openai
+langchain-core
+pyarrow
