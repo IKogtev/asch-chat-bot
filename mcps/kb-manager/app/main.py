@@ -3,7 +3,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
-from pathlib import Path
 from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
@@ -11,29 +10,43 @@ from app.models import (
     DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
     )
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
-import hashlib, os, uuid, shutil, asyncio
+import hashlib, os, uuid, shutil, asyncio, aiofiles
+from contextlib import asynccontextmanager
 from app.utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
-import aiofiles, shutil
 from datetime import datetime, timedelta
 
-TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
-
-PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
-PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-# Путь к файлу стартового сообщения бота
-BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
-# папка загрузки файлов
-BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
-
-logger = setup_logger(name="Test", service_dir="App")
-
 load_dotenv()
+# Используем современный Lifespan вместо @app.on_event("startup")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize Qdrant collection on startup"""
+    global http_client
+    # создаем глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
+    http_client = httpx.AsyncClient(timeout=60)
+    # создаем коллекцию в qdrant 
+    qdrant_service.ensure_collection()
+    # создаем все необходимые коллекции, чтобы не было проблем с переключением между ними
+    qdrant_service.ensure_collections()
+    storage = get_current_storage()
+    # строим дерево кэш изначально
+    storage.build_tree()
+    # создаем фоновые задачи
+    # делаем синхронизацию при старте
+    sync_task = asyncio.create_task(run_sync_all_safe())
+    # запускаем расписание переиндексации
+    scheduler_task = asyncio.create_task(start_scheduler())
+    yield
+    sync_task.cancel()
+    scheduler_task.cancel()
+    await http_client.aclose()
+
 app = FastAPI(
     title="UI Manager for Anastasia",
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -46,15 +59,21 @@ app.add_middleware(
     max_age=3600,
 )
 
+TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
+
+PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
+PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+# Путь к файлу стартового сообщения бота
+BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
+# папка загрузки файлов
+BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
+
+logger = setup_logger(name="Test", service_dir="App")
+
 # Initialize services
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))
 KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-# folders subdirs for faq and kb
-KB_ROOT = KB_STORAGE_ROOT / "kb"
-FAQ_ROOT = KB_STORAGE_ROOT / "faq"
-KB_ROOT.mkdir(parents=True, exist_ok=True)
-FAQ_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -70,10 +89,46 @@ PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
 chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "50"))
+# storage services для разных индексов, для kb, faq и других
+COLLECTIONS_CFG = {
+    os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb_collection"): {
+        "dir": os.getenv("ACTIVE_DOCUMENTS_PATH","kb"),
+        "type": CollectionType.DOCUMENTS,
+        "ext": SUPPORTED_KB_EXTENSIONS,
+        "sync_type": "kb"
+    },
+    os.getenv("ARCHIVE_DOCUMENTS_COLLECTION", "archive_kb_collection"): {
+        "dir": os.getenv("ARCHIVE_DOCUMENTS_PATH","archive_kb"),
+        "type": CollectionType.DOCUMENTS,
+        "ext": SUPPORTED_KB_EXTENSIONS,
+        "sync_type": "kb"
+    },
+    os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base_collection"): {
+        "dir": os.getenv("KB_DOCUMENTS_PATH","knowledge_base"),
+        "type": CollectionType.DOCUMENTS,
+        "ext": SUPPORTED_KB_EXTENSIONS,
+        "sync_type": "kb"
+    },
+    os.getenv("FAQ_COLLECTION_NAME", "faq_collection"): {
+        "dir": os.getenv("FAQ_DOCUMENTS_PATH","faq"),
+        "type": CollectionType.FAQ, 
+        "ext": SUPPORTED_FAQ_EXTENSIONS,
+        "sync_type": "faq"
+    }
+}
+file_storages = {}
+collections_config_for_qdrant = {}
+# Инициализация путей и подготовка конфига для Qdrant в одном цикле
+for name, cfg in COLLECTIONS_CFG.items():
+    root_path = KB_STORAGE_ROOT / cfg["dir"]
+    root_path.mkdir(parents=True, exist_ok=True)
+    # Сохраняем абсолютный путь прямо в конфиг
+    cfg["root_path"] = root_path
+    collections_config_for_qdrant[name] = cfg["type"]
 
-# Initialize LangChain-based service
+# Инициализация QdrantService
 qdrant_service = QdrantService(
-    collection_name=collection_name,
+    collection_name=collection_name, # Дефолтная коллекция
     embedding_api_base=embedding_api_base,
     embedding_api_key=embedding_api_key,
     embedding_model=embedding_model,
@@ -81,27 +136,21 @@ qdrant_service = QdrantService(
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     qdrant_host=QDRANT_HOST,
-    qdrant_port=QDRANT_PORT
-)
-# storage services для разных индексов, для kb и для faq 
-kb_file_storage = FileStorageService(
-    root_path=KB_ROOT,
-    qdrant_service=qdrant_service,
-    chunk_size=chunk_size,
-    chunk_overlap=chunk_overlap,
-    service_dir=Path("app"),
-    ext_allowed = SUPPORTED_KB_EXTENSIONS
+    qdrant_port=QDRANT_PORT,
+    collections_config=collections_config_for_qdrant
 )
 
-faq_file_storage = FileStorageService(
-    root_path=FAQ_ROOT,
-    qdrant_service=qdrant_service,
-    chunk_size=chunk_size,
-    chunk_overlap=chunk_overlap,
-    service_dir=Path("app"),
-    ext_allowed=SUPPORTED_FAQ_EXTENSIONS
-)
-# sync settings
+# Инициализация всех FileStorageService без дублирования
+for name, cfg in COLLECTIONS_CFG.items():
+    file_storages[name] = FileStorageService(
+        root_path=cfg["root_path"],
+        qdrant_service=qdrant_service,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        service_dir=Path("app"),
+        ext_allowed=cfg["ext"]
+    )
+
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
@@ -113,10 +162,22 @@ sync_settings = {
 }
 # очередь событий
 subscribers = []
+# глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
+http_client: httpx.AsyncClient = None
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+# функция для получения текущего сервиса хранилища
+def get_current_storage() -> FileStorageService:
+    """Возвращает сервис хранилища для текущей активной коллекции Qdrant"""
+    # current_name = qdrant_service.collection_name
+    current_name = collection_name
+    
+    if current_name not in file_storages:
+        raise ValueError(f"Storage for collection '{current_name}' not initialized!")
+        
+    return file_storages[current_name]
 
 def get_interval_delta():
     """функция вычисления интервала между синхронизациями"""
@@ -135,6 +196,31 @@ async def event_generator():
     finally:
         subscribers.remove(queue)
 
+async def save_upload_to_tmp(file: UploadFile) -> Path:
+    """Сохранение во временные файлы"""
+    upload_id = uuid.uuid4().hex
+    tmp_dir = Path("/tmp/uploads") / upload_id 
+    tmp_dir.mkdir(parents=True, exist_ok=True)    
+    tmp_file = tmp_dir / (file.filename or "unknown")
+    # Читаем и пишем асинхронно, не блокируя основной поток
+    async with aiofiles.open(tmp_file, 'wb') as out_file:
+        while content := await file.read(1024 * 1024): # Читаем чанками по 1МБ
+            await out_file.write(content)
+    return tmp_file
+
+def validate_extensions(ext: str, collection_type: str):
+    """Проверка поддерживания расширения для индексации"""
+    allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
+    if ext not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported {collection_type.upper()} format: {ext}"
+            f"\n Supported formats are: {', '.join(allowed)}"
+        )
+
+##################################
+# Работа с синхронихацией
+##################################
 @app.get("/api/filesystem/sync_events")
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -179,7 +265,8 @@ async def run_sync_all_safe():
         finally:
             sync_settings["running"] = False
             logger.info("[SYNC] finished")
-            kb_file_storage.build_tree()
+            storage = get_current_storage()
+            storage.build_tree()
             for q in subscribers:
                 await q.put("sync_completed")
 
@@ -190,52 +277,50 @@ async def run_sync_all_once():
     функция для правильного вызова синхронизации от типа, 
     в дальнейшем можно добавить другие типы коллекций если надо
     """
-    logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
-    if qdrant_service.collection_type == CollectionType.FAQ:
-        root = FAQ_ROOT
-        storager = faq_file_storage
-        collection_type = "faq"
-    elif qdrant_service.collection_type== CollectionType.DOCUMENTS:
-        root = KB_ROOT
-        storager = kb_file_storage
-        collection_type = "kb"
-    else: 
-        logger.error(f"Something went wrong: {qdrant_service.collection_type}")
-        return
-    disk_kb_ids = {
-        folder.name for folder in root.iterdir() if folder.is_dir()
-    }
-    qdrant_kbs = qdrant_service.list_knowledge_bases()
-    qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
-    # функционал удаления kb_id если удалили папку, то удалять и в qdrant
-    deleted_kbs = qdrant_kb_ids - disk_kb_ids
+    
+    original_collection = qdrant_service.collection_name
+    original_type = qdrant_service.collection_type
 
-    for kb_id in deleted_kbs:
-        logger.info(f"[SYNC] KB DELETED: {kb_id}")
-        try:
-            qdrant_service.delete_kb(
-                kb_id=kb_id,
-                collection_name=qdrant_service.collection_name
-            )
-        except Exception as e:
-            logger.error(f"[SYNC] Failed to delete KB {kb_id}: {e}")
-    # синхронизация существующих папок
-    await sync_function(root, storager, collection_type)        
-    return {
-        "status": "success",
-        "message": "SYNC completed"
-    }     
+    for collection_name, cfg in COLLECTIONS_CFG.items():
+        logger.info(f"[SYNC] Processing {collection_name}")
+        root = cfg["root_path"]
+        storager = file_storages[collection_name]
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize Qdrant collection on startup"""
-    qdrant_service.ensure_collection()
-    # строим дерево кэш изначально
-    kb_file_storage.build_tree()
-    # делаем синхронизацию при старте
-    asyncio.create_task(run_sync_all_safe())
-    # запускаем расписание переиндексации
-    asyncio.create_task(start_scheduler())
+        logger.info(f"[SYNC] {collection_name} from {root}")
+        # 1. переключаемся на коллекцию
+        qdrant_service.switch_collection(
+            collection_name,
+            cfg["type"]
+        )
+
+        # 2. удаление отсутствующих KB
+        disk_kb_ids = {
+            folder.name for folder in root.iterdir() if folder.is_dir()
+        }
+
+        qdrant_kbs = qdrant_service.list_knowledge_bases()
+        qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
+
+        deleted_kbs = qdrant_kb_ids - disk_kb_ids
+
+        for kb_id in deleted_kbs:
+            logger.info(f"[SYNC] KB DELETED: {kb_id}")
+            try:
+                qdrant_service.delete_kb(
+                    kb_id=kb_id,
+                    collection_name=collection_name
+                )
+            except Exception as e:
+                logger.error(f"[SYNC] delete error {kb_id}: {e}")
+
+        # 3. синхронизация существующих папок
+        await sync_function(root, storager, cfg["sync_type"])
+
+    # вернуть состояние
+    qdrant_service.switch_collection(original_collection, original_type)
+
+    return {"status": "success", "message": "SYNC completed"}          
+
 
 async def start_scheduler():
     # запускаем расписание автоматической синхроонизации
@@ -287,6 +372,39 @@ async def manual_sync_all():
     result = await run_sync_all_safe()
     return result
 
+@app.post("/api/filesystem/sync")
+async def filesystem_sync(
+    kb_id: str = Form("01_Маркетинговые материалы"),
+    collection_name: str = Form("kb_collection")
+):
+    """синхронизация для kb отдельно, чтобы не делать для всех"""
+    logger.info(f"[SYNC ONE] kb_id={kb_id}, collection={collection_name}")
+    if collection_name not in COLLECTIONS_CFG:
+        return {"status": "error", "message": f"Collection '{collection_name}' not found"}
+    cfg = COLLECTIONS_CFG[collection_name]
+    storager = file_storages.get(collection_name)
+    if not storager:
+        return {"status": "error", "message": f"Storage for {collection_name} is not initialized"}
+    try: 
+        # Обязательно переключаем Qdrant на нужную коллекцию перед синхронизацией!
+        # Это критично, так как storager внутри себя обращается к qdrant_service
+        qdrant_service.switch_collection(collection_name, cfg["type"])
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: storager.sync(
+                kb_id=kb_id,
+                # Передаем "kb" или "faq" из конфига, чтобы storager понимал логику парсинга
+                collection_type=cfg["sync_type"]
+                )
+            )
+
+    except Exception as e:
+        logger.error(f"[SYNC KB] Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "sync_completed"}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -294,12 +412,23 @@ async def root():
     with open(static_path / "index.html") as f:
         return f.read()
 
-
 @app.get("/api/health")
 async def health():
     """Health check endpoint"""
-    return {"status": "healthy", "qdrant_url": qdrant_url, "collection": collection_name}
-
+    try:
+        qdrant_service.qdrant_client.get_collections()
+        is_alive = True 
+        return {
+            "status": "healthy" if is_alive else "unhealthy",
+            "qdrant_url": qdrant_url,
+            "collection": collection_name
+        }
+    except Exception as e:
+         raise HTTPException(status_code=503, detail=f"Qdrant connection failed: {e}")
+    
+##################################
+# Работа с документами
+##################################
 
 @app.get("/api/documents", response_model=List[DocumentInfo])
 async def list_documents():
@@ -310,33 +439,14 @@ async def list_documents():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def save_upload_to_tmp(file: UploadFile) -> Path:
-    """Сохранение во временные файлы"""
-    upload_id = uuid.uuid4().hex
-    tmp_dir = Path("/tmp/uploads") / upload_id 
-    tmp_dir.mkdir(parents=True, exist_ok=True)    
-    tmp_file = tmp_dir / (file.filename or "unknown")
-    content = await file.read()
-    tmp_file.write_bytes(content)
-    return tmp_file
-
-def validate_extensions(ext: str, collection_type: str):
-    """Проверка поддерживания расширения для индексации"""
-    allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
-    if ext not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported {collection_type.upper()} format: {ext}"
-            f"\n Supported formats are: {', '.join(allowed)}"
-        )
-
 @app.post("/api/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
     kb_id: str = Form("default"),
     user_id: str = Form("anonymous"),
     upload_mode: str = Form("check"),  # check, replace, keep-both, force
-    collection_type: str = Form("faq")  # faq or kb
+    collection_type: str = Form("faq"),  # faq or kb
+    collection_name: str = Form("kb_collection")
 ):
     """Upload and process a document
     
@@ -346,19 +456,23 @@ async def upload_document(
     - keep-both: Keep both versions with incremented version number
     - force: Skip all checks and upload anyway
     """
+    # Валидация коллекции
+    if collection_name not in COLLECTIONS_CFG:
+        raise HTTPException(400, f"Collection '{collection_name}' not found")
+    
+    # get type of collection:
+    cfg = COLLECTIONS_CFG[collection_name]
+    filename = file.filename or "unknown"
+    ext = Path(filename).suffix.lower()
+    validate_extensions(ext, collection_type)    
     tmp_file = None
+    # Переключаем Qdrant на нужную коллекцию (КРИТИЧЕСКИ ВАЖНО)
+    # Делаем это в самом начале, чтобы все последующие запросы к Qdrant шли в правильный индекс
+    qdrant_service.switch_collection(collection_name, cfg["type"])
     try:
-        # get type of collection:
-        collection_type = collection_type
-        filename = file.filename or "unknown"
-        ext = Path(filename).suffix.lower()
-        validate_extensions(ext, collection_type)
         tmp_file = await save_upload_to_tmp(file)
         logger.info(f"collection_type : {collection_type}")
-        if collection_type == CollectionType.FAQ:
-            kb_dir = FAQ_ROOT/kb_id
-        else: 
-            kb_dir = KB_ROOT/kb_id
+        kb_dir = cfg["root_path"] / kb_id
         kb_dir.mkdir(parents=True, exist_ok=True)
         final_file_path = kb_dir/filename
         shutil.copy(tmp_file, final_file_path)
@@ -451,7 +565,6 @@ async def get_document(document_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.delete("/api/documents/{document_id}")
 async def delete_document(document_id: str):
     """Delete a document and all its chunks"""
@@ -462,7 +575,6 @@ async def delete_document(document_id: str):
         return {"message": "Document deleted successfully", "document_id": document_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/search", response_model=List[SearchResult])
 async def search_documents(request: SearchRequest):
@@ -477,34 +589,6 @@ async def search_documents(request: SearchRequest):
     except Exception as e:
         logger.info(f"[SEARCH ERROR], {e}")
         return []
-
-
-@app.get("/api/collections/info")
-async def collection_info():
-    """Get collection information"""
-    try:
-        info = qdrant_service.get_collection_info()
-        info['platform_version'] = PLATFORM_VERSION
-        info['last_sync'] = sync_settings["last_sync"]
-        info['next_sync'] = sync_settings['next_sync']
-        return info
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/collections/refresh_metadata")
-async def refresh_collection_metadata():
-    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
-    try:
-        result = qdrant_service.refresh_collection_metadata()
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/knowledge-bases")
 async def list_knowledge_bases():
@@ -531,6 +615,60 @@ def delete_knowledge_base(req: DeleteKBRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/api/documents/download/{document_id}")
+async def download_document(document_id: str):
+    """скачивание документа по id"""
+    qdrant_service.switch_collection(collection_name, CollectionType.DOCUMENTS)
+    chunks = qdrant_service.get_document_chunks(document_id)
+    if not chunks:
+        raise HTTPException(404, "Document not found")
+
+    raw_path = chunks[0]["metadata"].get("file_path")
+
+    if not raw_path:
+        raise HTTPException(404, "No file_path in metadata")
+
+    file_path = Path(raw_path.strip())
+    if not file_path.exists():
+        raise HTTPException(
+            404,
+            f"File not found on disk: {file_path}"
+        )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/octet-stream"
+    )
+
+##################################
+# Работа с коллекциями
+##################################
+
+@app.get("/api/collections/info")
+async def collection_info():
+    """Get collection information"""
+    try:
+        info = qdrant_service.get_collection_info()
+        info['platform_version'] = PLATFORM_VERSION
+        info['last_sync'] = sync_settings["last_sync"]
+        info['next_sync'] = sync_settings['next_sync']
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/collections/refresh_metadata")
+async def refresh_collection_metadata():
+    """Пересчитать document_count в метаданных по фактическим данным коллекции"""
+    try:
+        result = qdrant_service.refresh_collection_metadata()
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/collections")
 def get_collections():
@@ -640,72 +778,32 @@ def get_collections_by_type():
             result["faq"].append(c.name)
         elif c.name.startswith("kb_"):
             result["kb"].append(c.name)
+        elif c.name.startswith("archive_kb_"):
+            result["kb"].append(c.name)
+        elif c.name.startswith("knowledge_base_"):
+            result["kb"].append(c.name)
     return result
 
-@app.get("/api/documents/download/{document_id}")
-async def download_document(document_id: str):
-    """скачивание документа по id"""
-    chunks = qdrant_service.get_document_chunks(document_id)
-    if not chunks:
-        raise HTTPException(404, "Document not found")
-
-    raw_path = chunks[0]["metadata"].get("file_path")
-
-    if not raw_path:
-        raise HTTPException(404, "No file_path in metadata")
-
-    file_path = Path(raw_path.strip())
-    if not file_path.exists():
-        raise HTTPException(
-            404,
-            f"File not found on disk: {file_path}"
-        )
-
-    return FileResponse(
-        path=str(file_path),
-        filename=file_path.name,
-        media_type="application/octet-stream"
-    )
-
-@app.post("/api/filesystem/sync")
-async def filesystem_sync(
-    kb_id: str = Form("01_Маркетинговые материалы"),
-    collection_type: str = Form("kb")
-):
-    logger.info(f"[SYNC ONE] kb_id={kb_id}, type={collection_type}")
-    loop = asyncio.get_running_loop()
-    """синхронизация для kb отдельно, чтобы не делать для всех"""
-    if collection_type == CollectionType.FAQ:
-        storager = faq_file_storage
-    elif collection_type == CollectionType.DOCUMENTS or collection_type=="kb":
-        storager = kb_file_storage
-    else:
-        return {"status": "error", "message": "Invalid collection type"}
-
-    try:
-        await loop.run_in_executor(
-            None,
-            lambda: storager.sync(
-                kb_id=kb_id,
-                collection_type=collection_type
-            )
-        )
-    except Exception as e:
-        logger.error(f"[SYNC KB] Error: {e}")
-        return {"status": "error", "message": str(e)}
-
-    return {"status": "sync_completed"}
+##################################
+# Работа с файловой системой
+##################################
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
-    """Показывает дерево файлов, сейчас пока ориентируемся на kb коллекцию только"""
+    """Строит дерево файлов, для бота Анастасии"""
     # meanwhile show only kb_tree 
-    return kb_file_storage.build_tree()
+    storage = get_current_storage()
+    return storage.build_tree()
 
 @app.get("/api/filesystem/node")
-async def get_node(path: str = ""):
+async def get_node(path: str = "", collection_name: str="kb_collection"):
     """строим узлы дерева чтобы ускорить отработку"""
-    base = KB_ROOT
+    # проверяем, есть ли такая коллекция в конфиге
+    if collection_name not in COLLECTIONS_CFG:
+        return {"error": f"Collection '{collection_name}' not found"}
+        
+    # Достаем сохраненный при инициализации root_path
+    base = COLLECTIONS_CFG[collection_name]["root_path"]
     target = (base / path).resolve()
 
     # защита
@@ -729,10 +827,16 @@ async def get_node(path: str = ""):
 async def download_filesystem_file(path: str):
     """Скачивает файл из нашего источника, пока только для kb коллекции документов"""
     path = unquote(path)
-    file_path = (KB_ROOT / path).resolve()
+    # Получаем имя текущей активной коллекции
+    # current_collection = qdrant_service.collection_name
+    current_collection = collection_name
+    if current_collection not in COLLECTIONS_CFG:
+        return {"error": f"Collection '{current_collection}' not found in config"}
+    root_path = COLLECTIONS_CFG[current_collection]["root_path"]
+    file_path = (root_path / path).resolve()
 
     # защита от выхода из root
-    if not str(file_path).startswith(str(KB_ROOT)):
+    if not str(file_path).startswith(str(root_path)):
         raise HTTPException(403, "Invalid path")
 
     if not file_path.exists():
@@ -751,9 +855,8 @@ async def download_filesystem_file(path: str):
 @app.get("/api/news")
 async def get_news():
     """Получить все новости из бота"""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(f"{TELEGRAM_BOT_API}/api/news")
-        resp.raise_for_status()
+    resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/news")
+    resp.raise_for_status()
     return resp.json()
 
 @app.get("/api/local-file-news")
@@ -772,12 +875,14 @@ async def get_news_file(name: str):
         is_text_file = file_path.suffix.lower() in text_extensions
         if is_text_file or (content_type and content_type.startswith("text")):
             try:
-                content = file_path.read_text(encoding="utf-8")
+                async with aiofiles.open(file_path, mode='r', encoding='utf-8') as f:
+                    content = await f.read()
             except UnicodeDecodeError:
                 # Пробуем другие кодировки для кириллицы
                 for enc in ["cp1251", "utf-8-sig", "koi8-r"]:
                     try:
-                        content = file_path.read_text(encoding=enc)
+                        async with aiofiles.open(file_path, mode='r', encoding=enc) as f:
+                            content = await f.read()
                         logger.info(f"File read with encoding: {enc}")
                         break
                     except UnicodeDecodeError:
@@ -820,17 +925,15 @@ async def get_news_file(name: str):
 @app.get("/api/news/{news_id}")
 async def get_news_by_id(news_id: int):
     """Получить новость по ID из бота"""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
-        resp.raise_for_status()
+    resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
+    resp.raise_for_status()
     return resp.json()
 
 @app.delete("/api/news/{news_id}")
 async def delete_news(news_id: int):
     """удалить новость из истории бд"""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.delete(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
-        resp.raise_for_status()
+    resp = await http_client.delete(f"{TELEGRAM_BOT_API}/api/news/{news_id}")
+    resp.raise_for_status()
     return resp.json()
 
 @app.post("/api/news/send")
@@ -843,40 +946,39 @@ async def send_news(
 ):
     """отправить новость"""
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            multipart_data = []
-            # откладываем время 
-            if schedule_time:
-                multipart_data.append(("schedule_time", (None, schedule_time)))
-                logger.info(f"Отложено на: {schedule_time}")
-            else: 
-                logger.info("Без отложенной отправки")
-            multipart_data.append(("html", (None, html)))
-            logger.info(f"HTML length: {len(html)}")
-            # группа получателей
-            multipart_data.append(("target_group", (None, target_group)))
-            logger.info(f"Группа получателей: {target_group}")
-            # переиспользование старого файла
-            if reuse_file_path:
-                logger.info(f"Reusing file from path: {reuse_file_path}")
-                multipart_data.append(("reuse_file_path", (None, reuse_file_path)))
-            
-            # файлы
-            if not reuse_file_path:
-                for f in files:
-                    content = await f.read()
-                    multipart_data.append(
-                        ("files", (f.filename, content, f.content_type))
-                    )
-            else:
-                logger.info("Using reused file, skipping new upload")
+        multipart_data = []
+        # откладываем время 
+        if schedule_time:
+            multipart_data.append(("schedule_time", (None, schedule_time)))
+            logger.info(f"Отложено на: {schedule_time}")
+        else: 
+            logger.info("Без отложенной отправки")
+        multipart_data.append(("html", (None, html)))
+        logger.info(f"HTML length: {len(html)}")
+        # группа получателей
+        multipart_data.append(("target_group", (None, target_group)))
+        logger.info(f"Группа получателей: {target_group}")
+        # переиспользование старого файла
+        if reuse_file_path:
+            logger.info(f"Reusing file from path: {reuse_file_path}")
+            multipart_data.append(("reuse_file_path", (None, reuse_file_path)))
+        
+        # файлы
+        if not reuse_file_path:
+            for f in files:
+                content = await f.read()
+                multipart_data.append(
+                    ("files", (f.filename, content, f.content_type))
+                )
+        else:
+            logger.info("Using reused file, skipping new upload")
 
-            resp = await client.post(
-                f"{TELEGRAM_BOT_API}/broadcast",
-                files=multipart_data
-            )
-            resp.raise_for_status()
-            bot_response = resp.json()
+        resp = await http_client.post(
+            f"{TELEGRAM_BOT_API}/broadcast",
+            files=multipart_data
+        )
+        resp.raise_for_status()
+        bot_response = resp.json()
 
         return bot_response
     
@@ -1085,7 +1187,8 @@ async def get_bot_start_message():
         if not BOT_START_MESSAGE_FILE.exists():
             # Создаём файл с дефолтным сообщением если не существует
             default_message = "👋 Привет! Я ваш помощник.\n\nЧем могу помочь?"
-            BOT_START_MESSAGE_FILE.write_text(default_message, encoding="utf-8")
+            async with aiofiles.open(BOT_START_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(default_message)
             return {
                 "success": True,
                 "content": default_message,
@@ -1093,9 +1196,9 @@ async def get_bot_start_message():
                 "size": len(default_message),
                 "modified": datetime.now().isoformat()
             }
-        
-        content = BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
-        stat = BOT_START_MESSAGE_FILE.stat()
+        async with aiofiles.open(BOT_START_MESSAGE_FILE, "r", encoding="utf-8") as f:
+            content = await f.read()
+            stat = BOT_START_MESSAGE_FILE.stat()
         
         return {
             "success": True,
@@ -1117,16 +1220,16 @@ async def save_bot_start_message(data: dict):
             raise HTTPException(status_code=400, detail="Content is required")
         
         # Сохраняем в файл
-        BOT_START_MESSAGE_FILE.write_text(content, encoding="utf-8")
+        async with aiofiles.open(BOT_START_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(content)
         
         logger.info(f"Bot start message saved ({len(content)} symbols)")
         bot_reload_success = False
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
-                if r.status_code == 200:
-                    bot_reload_success = True
-                    logger.info("Bot notified to reload start message")
+            r = await http_client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
+            if r.status_code == 200:
+                bot_reload_success = True
+                logger.info("Bot notified to reload start message")
         except Exception as e:
             logger.warning(f"Could not notify bot: {e}")
 
@@ -1148,10 +1251,9 @@ async def save_bot_start_message(data: dict):
 async def get_subscribers():
     """Получить всех подписчиков с информацией о группах"""
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
-            resp.raise_for_status()
-            return resp.json()
+        resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
         logger.error(f"Error getting subscribers: {e}")
         raise HTTPException(500, f"Failed to get subscribers: {str(e)}")
@@ -1164,20 +1266,19 @@ async def update_subscriber_group(data: dict):
         group = data.get("group")
         value = bool(data.get("value"))
         
-        if group not in ("manager_group", "couch_group"):
-            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'couch_group'")
+        if group not in ("manager_group", "coach_group"):
+            raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'coach_group'")
         
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{TELEGRAM_BOT_API}/api/subscribers/group",
-                json={
-                    "user_id": user_id,
-                    "group": group,
-                    "value": value
-                }
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await http_client.post(
+            f"{TELEGRAM_BOT_API}/api/subscribers/group",
+            json={
+                "user_id": user_id,
+                "group": group,
+                "value": value
+            }
+        )
+        resp.raise_for_status()
+        return resp.json()
             
     except HTTPException:
         raise

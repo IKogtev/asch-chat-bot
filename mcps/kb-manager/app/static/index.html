@@ -199,7 +199,6 @@
                 </span>
             </div>
             <!-- window to edit text -->
-            <!-- <div id="news-editor" style="height: 300px;"></div> -->
             <div id="news-editor" class="news-editor-container"></div>
             <div class="news-upload-wrapper">            
                 <div class="news-upload-box" id="news-upload-box">
@@ -212,23 +211,6 @@
                 <span id="news-file-remove" class="news-file-remove">❌</span>
             </div>
             <!-- группы получателей -->
-            <!-- <div style="margin: 15px 0;">
-                <label style="display:block; margin-bottom:8px; font-weight:600;">👥 Группа получателей:</label>
-                <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
-                        <input type="radio" name="news-target-group" value="all" checked>
-                        <span>Все пользователи</span>
-                    </label>
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
-                        <input type="radio" name="news-target-group" value="manager_group">
-                        <span>👔 Менеджеры</span>
-                    </label>
-                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
-                        <input type="radio" name="news-target-group" value="couch_group">
-                        <span>🎓 Коучи</span>
-                    </label>
-                </div>
-            </div> -->
             <div class="news-form-section">
                 <label class="news-form-label">👥 Группа получателей:</label>
                 <div class="news-form-group">
@@ -241,18 +223,11 @@
                         <span>👔 Менеджеры</span>
                     </label>
                     <label class="news-form-option">
-                        <input type="radio" name="news-target-group" value="couch_group">
+                        <input type="radio" name="news-target-group" value="coach_group">
                         <span>🎓 Коучи</span>
                     </label>
                 </div>
             </div>
-            <!-- Schedule -->
-            <!-- <div class="news-schedule">
-                <label>📅 Отложить отправку:</label>
-                <input type="datetime-local" id="news-schedule-time" 
-               style="width: 100%; max-width: 300px; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
-                <label>⏰ Время отображается в Московском часовом поясе</label>
-            </div> -->
             <!-- Schedule -->
             <div class="news-schedule">
                 <label class="form-label">📅 Отложить отправку:</label>
@@ -354,26 +329,6 @@
             </div>
         </div>
         
-        <!-- Group tab -->
-        <!-- <div id="user_groups-tab" class="tab-content">
-            <h2>👥 Управление группами пользователей</h2>
-            
-            <div style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
-                <input type="text" id="user-search" placeholder="🔍 Поиск по user_id, username или имени" 
-                    style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 300px;"
-                    onkeyup="loadUserGroups()">
-                <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
-                <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
-        …   </div>
-            
-            <div id="user-groups-list">
-                <div class="loading">Загрузка пользователей...</div>
-            </div>
-            
-            <div id="user-groups-stats" style="margin-top: 20px; padding: 15px; background: #f5f5f5; border-radius: 8px;">
-                 Статистика будет загружена сюда -->
-            <!-- </div>
-        </div> --> 
         <!-- Groups Tab -->
         <div id="user_groups-tab" class="tab-content">
             <h2>👥 Управление группами пользователей</h2>
