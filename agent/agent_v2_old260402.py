@@ -10,6 +10,8 @@ from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools.mcp_tool import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 
@@ -26,8 +28,13 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_API_URL = os.getenv("LLM_API_URL", "").strip()
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 
-DOC_SEARCH_COLLECTION = os.getenv("DOC_SEARCH_COLLECTION", "documents").strip()
-KB_ANSWER_COLLECTION = os.getenv("KB_ANSWER_COLLECTION", "knowledge_base").strip()
+# --- MCP KB Search Configuration ---
+KBSEARCH_MCP_URL = os.getenv("KBSEARCH_MCP_URL", "http://mcp-server-kbsearch:7001").strip()
+MCP_TOKEN = os.getenv("MCP_TOKEN", "").strip()
+MCP_TIMEOUT_SEC = float(os.getenv("MCP_TIMEOUT_SEC", "30"))
+
+ACTIVE_DOCUMENTS_COLLECTION = os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb_collection").strip()
+KB_DOCUMENTS_COLLECTION = os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base_collection").strip()
 KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -223,19 +230,7 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_kb_answer_result(data: Dict[str, Any]) -> Dict[str, Any]:
-    required = {"status", "mode", "message"}
-    missing = required - data.keys()
-    if missing:
-        raise ValueError(f"kb_answer_result missing fields: {missing}")
-
-    if data["status"] != "ok":
-        raise ValueError("kb_answer status must be ok")
-
-    if data["mode"] != "text_answer":
-        raise ValueError("kb_answer mode must be text_answer")
-
     return data
-
 
 # =============================================================================
 # MODEL
@@ -327,7 +322,7 @@ def create_owasp_agent(model: LiteLlm) -> LlmAgent:
     return LlmAgent(
         name="owasp_agent",
         model=model,
-        instruction=load_prompt("owasp_agent-prompt.md", fallback),
+        instruction=load_prompt("owasp_agent_prompt.md", fallback),
         output_key="owasp_result_json",
     )
 
@@ -362,43 +357,44 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
     return LlmAgent(
         name="dispatcher_agent",
         model=model,
-        instruction=load_prompt("dispatcher_agent-prompt.md", fallback),
+        instruction=load_prompt("dispatcher_agent_prompt.md", fallback),
         output_key="dispatcher_result_json",
     )
 
-
 def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
-    fallback = """
-Ты doc_search_agent.
-Текущий запрос пользователя:
-{user_query}
+    tools = []
 
-Контекст поиска:
-{doc_search_context_json}
+    if KBSEARCH_MCP_URL:
+        try:
+            headers = {"Authorization": f"Bearer {MCP_TOKEN}"} if MCP_TOKEN else None
 
-Верни только JSON без markdown и без пояснений.
+            kbsearch_toolset = McpToolset(
+                connection_params=StreamableHTTPConnectionParams(
+                    url=KBSEARCH_MCP_URL,
+                    headers=headers,
+                    timeout=MCP_TIMEOUT_SEC,
+                ),
+                tool_filter=["kb_search"],
+            )
 
-Формат:
-{
-  "status": "ok",
-  "mode": "search_results",
-  "message": "Вот найденные документы:",
-  "results": []
-}
+            tools.append(kbsearch_toolset)
+            logger.info(f"✓ MCP kbsearch подключен к doc_search_agent: {KBSEARCH_MCP_URL}")
 
-Правила:
-- не выдумывай документы;
-- если документы найдены, дай короткое сообщение;
-- если документов нет, верни results=[];
-- не отвечай общим текстом вместо JSON.
-"""
+        except Exception as e:
+            logger.error(f"✗ Ошибка подключения MCP kbsearch: {e}", exc_info=True)
+    else:
+        logger.warning("⚠ KBSEARCH_MCP_URL не задан — MCP kbsearch не подключён к doc_search_agent")
+
     return LlmAgent(
         name="doc_search_agent",
         model=model,
-        instruction=load_prompt("doc_search_agent-prompt.md", fallback),
-        output_key="doc_search_result_json",
+        instruction=load_prompt(
+            "doc_search_agent-prompt.md",
+            "Ты — ИИ-ассистент для поиска по базе знаний.",
+        ),
+        tools=tools,
+        output_key="doc_search_final_text",  # <-- обязательно
     )
-
 
 def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
@@ -426,7 +422,7 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
     return LlmAgent(
         name="kb_answer_agent",
         model=model,
-        instruction=load_prompt("kb_answer_agent-prompt.md", fallback),
+        instruction=load_prompt("kb_answer_agent_prompt.md", fallback),
         output_key="kb_answer_result_json",
     )
 
@@ -455,8 +451,8 @@ class RootAgent(BaseAgent):
         doc_search_agent: LlmAgent,
         kb_answer_agent: LlmAgent,
         kb_backend: KbSearchBackend,
-        doc_collection: str = DOC_SEARCH_COLLECTION,
-        kb_collection: str = KB_ANSWER_COLLECTION,
+        doc_collection: str = ACTIVE_DOCUMENTS_COLLECTION,
+        kb_collection: str = KB_DOCUMENTS_COLLECTION,
         top_k: int = KB_TOP_K,
     ):
         super().__init__(
@@ -562,42 +558,27 @@ class RootAgent(BaseAgent):
     ) -> AsyncGenerator[Event, None]:
         logger.info("doc_search route: query=%s", truncate_for_log(search_query, 300))
 
-        raw_results = await self.kb_backend.search(
-            query=search_query,
-            collection=self.doc_collection,
-            top_k=self.top_k,
-        )
-        logger.info("doc_search backend returned %s raw results", len(raw_results or []))
-
-        normalized = self._normalize_search_backend_results(raw_results)
-        deduped = deduplicate_results(normalized)
-        logger.info("doc_search normalized=%s deduped=%s", len(normalized), len(deduped))
-
         ctx.session.state["user_query"] = user_message
+        ctx.session.state["search_query"] = search_query
+        ctx.session.state["doc_search_collection"] = self.doc_collection
         ctx.session.state["doc_search_context_json"] = json.dumps(
             {
                 "search_query": search_query,
                 "collection": self.doc_collection,
-                "results": deduped,
             },
             ensure_ascii=False,
         )
-
-        async for event in self._run_json_leaf_agent(
+        # Запускаем sub-agent, который умеет работать с tools
+        async for event in self._run_leaf_agent(
             ctx=ctx,
             agent=self.doc_search_agent,
-            output_key="doc_search_result_json",
-            parsed_state_key="_doc_search_result_parsed",
-            validator=validate_doc_search_result,
-            log_label="doc_search_result_json",
+            output_key="doc_search_final_text",
         ):
             yield event
 
-        doc_result = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
-        ctx.session.state["_root_final_text"] = format_search_results_contract(
-            message=doc_result["message"],
-            results=deduped,
-        )
+        # Получаем финальный текстовый ответ от агента
+        final_text = self._get_required_state_text(ctx, "doc_search_final_text")
+        ctx.session.state["_root_final_text"] = final_text
 
     async def _handle_kb_answer(
         self,
@@ -640,6 +621,24 @@ class RootAgent(BaseAgent):
 
         kb_result = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_result["message"])
+
+    async def _run_leaf_agent(
+            self,
+            *,
+            ctx: InvocationContext,
+            agent: LlmAgent,
+            output_key: str,
+        ) -> AsyncGenerator[Event, None]:
+            """
+            Запускает листового агента (который может использовать tools) и сохраняет
+            его финальный текстовый ответ в state.
+            """
+            self._clear_state_keys(ctx, [output_key])
+
+            async for event in agent.run_async(ctx):
+                yield event
+
+            self._get_required_state_text(ctx, output_key)
 
     async def _run_json_leaf_agent(
         self,
@@ -795,8 +794,8 @@ def build_agent_chain(kb_backend: Optional[KbSearchBackend] = None) -> RootAgent
         doc_search_agent=create_doc_search_agent(model),
         kb_answer_agent=create_kb_answer_agent(model),
         kb_backend=kb_backend or StubKbSearchBackend(),
-        doc_collection=DOC_SEARCH_COLLECTION,
-        kb_collection=KB_ANSWER_COLLECTION,
+        doc_collection=ACTIVE_DOCUMENTS_COLLECTION,
+        kb_collection=KB_DOCUMENTS_COLLECTION,
         top_k=KB_TOP_K,
     )
 
