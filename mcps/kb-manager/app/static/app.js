@@ -614,7 +614,7 @@ function getTargetGroupName(group) {
     const names = {
         "all": "Все пользователи",
         "manager_group": "👔 Менеджеры",
-        "couch_group": "🎓 Коучи"
+        "coach_group": "🎓 Коучи"
     };
     return names[group] || group;
 }
@@ -804,7 +804,6 @@ function subscribeToSync() {
     };
 }
 
-
 // функция для синхронизации по всем данным
 async function syncAll(btnElement) {
     // 1. Защита: если кнопка не передана, выходим
@@ -844,7 +843,7 @@ async function syncAll(btnElement) {
 
         // 5. Показываем успех
         btnElement.innerText = "✅ Готово";
-        btnElement.style.backgroundColor = "#28a745"; // Зеленый цвет (если используете Bootstrap)
+        btnElement.style.backgroundColor = "#28a745"; 
 
         // 6. Обновляем список документов (если функция существует)
         if (typeof loadDocuments === 'function') {
@@ -2045,10 +2044,10 @@ async function loadUserGroups() {
         // Фильтрация по группе
         if (groupFilter === "manager_group") {
             filtered = filtered.filter(u => u.manager_group);
-        } else if (groupFilter === "couch_group") {
-            filtered = filtered.filter(u => u.couch_group);
+        } else if (groupFilter === "coach_group") {
+            filtered = filtered.filter(u => u.coach_group);
         } else if (groupFilter === "no_groups") {
-            filtered = filtered.filter(u => !u.manager_group && !u.couch_group);
+            filtered = filtered.filter(u => !u.manager_group && !u.coach_group);
         }
         
         // Обновление статистики
@@ -2089,8 +2088,8 @@ async function loadUserGroups() {
                             </td>
                             <td class="text-center">
                                 <input type="checkbox" 
-                                      ${u.couch_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'couch_group', this.checked)">
+                                      ${u.coach_group ? 'checked' : ''} 
+                                      onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
                             </td>
                             <td>${escapeHtml(u.phone_number || '-')}</td>
                             <td>${formatDate(u.last_seen)}</td>
@@ -2116,9 +2115,9 @@ function updateGroupStats(users) {
     
     const total = users.length;
     const managers = users.filter(u => u.manager_group).length;
-    const couchs = users.filter(u => u.couch_group).length;
-    const both = users.filter(u => u.manager_group && u.couch_group).length;
-    const noGroups = users.filter(u => !u.manager_group && !u.couch_group).length;
+    const couchs = users.filter(u => u.coach_group).length;
+    const both = users.filter(u => u.manager_group && u.coach_group).length;
+    const noGroups = users.filter(u => !u.manager_group && !u.coach_group).length;
     
     statsDiv.innerHTML = `
         <h3>📊 Статистика пользователей</h3>
