@@ -7,29 +7,43 @@ from ..helpers import load_prompt
 
 
 def validate_dispatcher_result(data: Dict[str, Any]) -> Dict[str, Any]:
-    status = data.get("status", "").strip()
-    route = data.get("route", "").strip()
-    intent = data.get("intent", "").strip()
-    
+    status = str(data.get("status", "")).strip()
+    route = str(data.get("route", "")).strip()
+    intent = str(data.get("intent", "")).strip()
+    reason = str(data.get("reason", "")).strip()
+    search_query = str(data.get("search_query", "")).strip()
+
+    allowed_routes = {"doc_search", "kb_answer"}
+    allowed_intents = {"doc_search", "kb_answer", "smalltalk"}
+
     if status != "ok":
         raise ValueError(f"Invalid status: {status}")
-    
-    if route not in ("doc_search", "kb_answer"):
+
+    if route not in allowed_routes:
         raise ValueError(f"Invalid route: {route}")
-    
-    # search_query обязателен только для поисковых запросов
-    search_query = data.get("search_query", "").strip()
-    if intent not in ("smalltalk", "greeting") and not search_query:
+
+    if intent not in allowed_intents:
+        raise ValueError(f"Invalid intent: {intent}")
+
+    if intent == "doc_search" and route != "doc_search":
+        raise ValueError("intent=doc_search must use route=doc_search")
+
+    if intent in {"kb_answer", "smalltalk"} and route != "kb_answer":
+        raise ValueError("intent=kb_answer|smalltalk must use route=kb_answer")
+
+    if intent != "smalltalk" and not search_query:
         raise ValueError("search_query is required for non-smalltalk intents")
-    
+
+    if not reason:
+        raise ValueError("reason is required")
+
     return {
         "status": status,
         "route": route,
         "intent": intent,
-        "search_query": search_query,  # Может быть пустым для smalltalk
-        "reason": data.get("reason", ""),
+        "search_query": search_query,
+        "reason": reason,
     }
-
 def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
     """
     Создаёт агента для маршрутизации запросов.

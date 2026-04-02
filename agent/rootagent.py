@@ -1,5 +1,5 @@
 import json
-from typing import Any, AsyncGenerator, Callable, Dict, List
+from typing import AsyncGenerator, Callable, Dict, List, Any
 
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
@@ -9,20 +9,18 @@ from utils.logger import setup_logger
 from .config import (
     ACTIVE_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
-    KB_TOP_K,
     DEBUG_EXCEPTIONS,
-    KbSearchBackend,
 )
 from .helpers import (
     truncate_for_log,
     extract_json,
     format_text_answer,
     format_reject_answer,
-    deduplicate_results,
 )
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
+from .agents.doc_search_agent import validate_doc_search_result
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -37,10 +35,8 @@ class RootAgent(BaseAgent):
     dispatcher_agent: LlmAgent
     doc_search_agent: LlmAgent
     kb_answer_agent: LlmAgent
-    kb_backend: Any
     doc_collection: str
     kb_collection: str
-    top_k: int
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -51,10 +47,8 @@ class RootAgent(BaseAgent):
         dispatcher_agent: LlmAgent,
         doc_search_agent: LlmAgent,
         kb_answer_agent: LlmAgent,
-        kb_backend: KbSearchBackend,
         doc_collection: str = ACTIVE_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
-        top_k: int = KB_TOP_K,
     ):
         super().__init__(
             name="root_agent",
@@ -62,10 +56,8 @@ class RootAgent(BaseAgent):
             dispatcher_agent=dispatcher_agent,
             doc_search_agent=doc_search_agent,
             kb_answer_agent=kb_answer_agent,
-            kb_backend=kb_backend,
             doc_collection=doc_collection,
             kb_collection=kb_collection,
-            top_k=top_k,
             sub_agents=[
                 owasp_agent,
                 dispatcher_agent,
@@ -102,19 +94,6 @@ class RootAgent(BaseAgent):
             ),
             actions=EventActions(end_of_agent=True),
         )
-
-    @staticmethod
-    def _normalize_search_backend_results(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Нормализация результатов поиска из KB backend"""
-        normalized = []
-        for item in items:
-            normalized.append({
-                "title": item.get("title", "Без названия"),
-                "content": item.get("content", ""),
-                "score": item.get("score", 0.0),
-                "metadata": item.get("metadata", {}),
-            })
-        return normalized
 
     def _clear_state_keys(self, ctx: InvocationContext, keys: List[str]) -> None:
         """Очистка указанных ключей из state"""
@@ -218,7 +197,12 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event(ctx, final_text)
                 return
 
-            async for event in self._handle_kb_answer(ctx, user_text, dispatch["search_query"]):
+            async for event in self._handle_kb_answer(
+                ctx, 
+                user_text, 
+                dispatch["search_query"],
+                dispatch["intent"]
+            ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
             yield self._build_final_event(ctx, final_text)
@@ -231,11 +215,68 @@ class RootAgent(BaseAgent):
                 else "Произошла ошибка при обработке запроса. Попробуйте позже."
             )
             yield self._build_final_event(ctx, message)
-
     async def _handle_doc_search(
         self,
         ctx: InvocationContext,
         user_message: str,
         search_query: str,
     ) -> AsyncGenerator[Event, None]:
-        logger.info("doc_search route: query=%s", truncate_for_log(search_query, 300))
+        """
+        Запуск doc_search_agent с JSON-валидацией.
+        """
+        effective_search_query = (search_query or user_message).strip()
+        logger.info("doc_search route: query=%s", truncate_for_log(effective_search_query, 300))
+
+        # Переменные для промпта doc_search_agent
+        ctx.session.state["search_query"] = effective_search_query
+        ctx.session.state["doc_search_collection"] = self.doc_collection
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.doc_search_agent,
+            output_key="doc_search_result_json",
+            parsed_state_key="_doc_search_result_parsed",
+            validator=validate_doc_search_result,
+            log_label="doc_search_result_json",
+        ):
+            yield event
+
+        doc_search = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
+        ctx.session.state["_root_final_text"] = format_text_answer(doc_search["message"])
+
+    async def _handle_kb_answer(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        search_query: str,
+        intent: str,
+        ) -> AsyncGenerator[Event, None]:
+        """
+        Запуск kb_answer_agent с прямым MCP-поиском или smalltalk.
+        
+        Args:
+            ctx: Контекст выполнения
+            user_message: Исходный вопрос пользователя
+            search_query: Нормализованный поисковый запрос
+            intent: Тип запроса (kb_answer, smalltalk)
+        """
+        effective_search_query = (search_query or user_message).strip()
+        logger.info("kb_answer route: query=%s intent=%s", truncate_for_log(effective_search_query, 300), intent)
+
+        # Переменные для промпта kb_answer_agent
+        ctx.session.state["search_query"] = effective_search_query
+        ctx.session.state["kb_answer_collection"] = self.kb_collection
+        ctx.session.state["intent"] = intent  # Передаём intent в состояние
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.kb_answer_agent,
+            output_key="kb_answer_result_json",
+            parsed_state_key="_kb_answer_result_parsed",
+            validator=validate_kb_answer_result,
+            log_label="kb_answer_result_json",
+        ):
+            yield event
+
+        kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
+        ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
