@@ -74,9 +74,6 @@ logger = setup_logger(name="Test", service_dir="App")
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))
 KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-# folders subdirs for faq and kb
-KB_ROOT = KB_STORAGE_ROOT / "kb"
-KB_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -447,7 +444,8 @@ async def upload_document(
     kb_id: str = Form("default"),
     user_id: str = Form("anonymous"),
     upload_mode: str = Form("check"),  # check, replace, keep-both, force
-    collection_type: str = Form("faq")  # faq or kb
+    collection_type: str = Form("faq"),  # faq or kb
+    collection_name: str = Form("kb_collection")
 ):
     """Upload and process a document
     
@@ -457,19 +455,23 @@ async def upload_document(
     - keep-both: Keep both versions with incremented version number
     - force: Skip all checks and upload anyway
     """
+    # Валидация коллекции
+    if collection_name not in COLLECTIONS_CFG:
+        raise HTTPException(400, f"Collection '{collection_name}' not found")
+    
+    # get type of collection:
+    cfg = COLLECTIONS_CFG[collection_name]
+    filename = file.filename or "unknown"
+    ext = Path(filename).suffix.lower()
+    validate_extensions(ext, collection_type)    
     tmp_file = None
+    # Переключаем Qdrant на нужную коллекцию (КРИТИЧЕСКИ ВАЖНО)
+    # Делаем это в самом начале, чтобы все последующие запросы к Qdrant шли в правильный индекс
+    qdrant_service.switch_collection(collection_name, cfg["type"])
     try:
-        # get type of collection:
-        collection_type = collection_type
-        filename = file.filename or "unknown"
-        ext = Path(filename).suffix.lower()
-        validate_extensions(ext, collection_type)
         tmp_file = await save_upload_to_tmp(file)
         logger.info(f"collection_type : {collection_type}")
-        if collection_type == CollectionType.FAQ:
-            kb_dir = FAQ_ROOT/kb_id
-        else: 
-            kb_dir = KB_ROOT/kb_id
+        kb_dir = cfg["root_path"] / kb_id
         kb_dir.mkdir(parents=True, exist_ok=True)
         final_file_path = kb_dir/filename
         shutil.copy(tmp_file, final_file_path)
@@ -786,15 +788,20 @@ def get_collections_by_type():
 
 @app.get("/api/filesystem/folders")
 async def get_folders():
-    """Показывает дерево файлов, сейчас пока ориентируемся на kb коллекцию только"""
+    """Строит дерево файлов, для бота Анастасии"""
     # meanwhile show only kb_tree 
     storage = get_current_storage()
     return storage.build_tree()
 
 @app.get("/api/filesystem/node")
-async def get_node(path: str = ""):
+async def get_node(path: str = "", collection_name: str="kb_collection"):
     """строим узлы дерева чтобы ускорить отработку"""
-    base = KB_ROOT
+    # проверяем, есть ли такая коллекция в конфиге
+    if collection_name not in COLLECTIONS_CFG:
+        return {"error": f"Collection '{collection_name}' not found"}
+        
+    # Достаем сохраненный при инициализации root_path
+    base = COLLECTIONS_CFG[collection_name]["root_path"]
     target = (base / path).resolve()
 
     # защита
@@ -818,10 +825,15 @@ async def get_node(path: str = ""):
 async def download_filesystem_file(path: str):
     """Скачивает файл из нашего источника, пока только для kb коллекции документов"""
     path = unquote(path)
-    file_path = (KB_ROOT / path).resolve()
+    # Получаем имя текущей активной коллекции
+    current_collection = qdrant_service.collection_name
+    if current_collection not in COLLECTIONS_CFG:
+        return {"error": f"Collection '{current_collection}' not found in config"}
+    root_path = COLLECTIONS_CFG[current_collection]["root_path"]
+    file_path = (root_path / path).resolve()
 
     # защита от выхода из root
-    if not str(file_path).startswith(str(KB_ROOT)):
+    if not str(file_path).startswith(str(root_path)):
         raise HTTPException(403, "Invalid path")
 
     if not file_path.exists():
