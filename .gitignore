@@ -28,6 +28,10 @@ node_modules/
 package-lock.json
 package.json
 tests/
+tsconfig.json
+test-results/
+playwright.config.ts
+__pycache__
 
 # Adk agent tester
 *.xlsx
