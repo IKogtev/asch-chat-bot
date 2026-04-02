@@ -1,0 +1,140 @@
+pipeline {
+  agent none
+
+  parameters {
+    base64File(
+      name: 'TC_TASK_FILE_LOCAL',
+      description: 'Upload local test case Excel file'
+    )
+    hidden(
+      name: 'LLM_API_URL',
+      defaultValue: 'https://dsrv1.llm.nstcloud.ru/v1',
+      description: 'LLM API URL'
+    )
+    choice(
+      choices: [
+        'Qwen/Qwen3-30B-A3B',
+        'Qwen/Qwen3-Embedding-0.6B',
+        'openai/gpt-oss-20b',
+      ],
+      name: 'LLM_API_MODEL',
+      description: 'LLM model name'
+    )
+    choice(
+      name: 'ADK_API_BASE',
+      choices: [
+        'chatbot-dev',
+        'chatbot-test1',
+        // 'https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru',
+        // 'https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru',
+      ],
+      description: 'Google ADK Agent API URL'
+    )
+  }
+
+  options {
+    skipDefaultCheckout(true)
+  }
+
+  stages {
+    stage('Run adk-agent tester') {
+      agent {
+        kubernetes {
+          yaml """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                app: adk-agent-tester
+            spec:
+              restartPolicy: Never
+              imagePullPolicy: IfNotPresent
+              containers:
+                - name: adk-agent-tester
+                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.1-amd64
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:18c0278b33431417402372c0dd27a9d2377e80db10f4477a361cfdd83f99b68e
+                  command:
+                    - cat
+                  tty: true
+            """
+          defaultContainer 'adk-agent-tester'
+        }
+      }
+
+      environment {
+        // ADK runtime (ingress)
+        ADK_API_BASE = "http://adk-agent.${params.ADK_API_BASE}:8000"
+        ADK_APP_NAME = "agent"
+
+        // Evaluator LLM
+        LLM_API_URL = "${params.LLM_API_URL}"
+        LLM_API_MODEL = "${params.LLM_API_MODEL}"
+
+        // Test-case upload (base64File plugin)
+        TC_TASK_FILE_LOCAL = "${params.TC_TASK_FILE_LOCAL}"
+      }
+
+      steps {
+        withCredentials([
+          string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
+        ]) {
+          container('adk-agent-tester') {
+            sh '''
+              set -euo pipefail
+
+              echo "Workspace: ${WORKSPACE}"
+
+              # Decode uploaded Excel into tester/ folder
+              was_x=0
+              case "$-" in
+                *x*) was_x=1 ;;
+              esac
+              set +x
+              if [ -z "${TC_TASK_FILE_LOCAL:-}" ]; then
+                echo "ERROR: TC_TASK_FILE_LOCAL is empty. Please upload Excel file in job parameters."
+                exit 2
+              fi
+
+              # Decode Excel into /app (container workdir)
+              printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "/app/${TC_TASK_FILE_LOCAL_FILENAME}"
+              export TC_TASK_FILE_NAME="${TC_TASK_FILE_LOCAL_FILENAME}"
+              echo "Using uploaded file: /app/${TC_TASK_FILE_LOCAL_FILENAME}"
+              if [ "$was_x" -eq 1 ]; then
+                set -x
+              fi
+
+              # Run the tester (writes REPORT_* and answers_* into /app)
+              python3 /app/adk_agent_tester_v1.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out "/app"
+
+              echo "Copying artifacts from /app to workspace: ${WORKSPACE}/tester"
+              mkdir -p "${WORKSPACE}/tester"
+
+              for pattern in "/app/REPORT_*.xlsx" "/app/REPORT_*.png" "/app/REPORT_*.html" "/app/answers_*.parquet" "/app/answers_*.csv"; do
+                for f in $pattern; do
+                  if [ -e "$f" ]; then
+                    cp -v "$f" "${WORKSPACE}/tester/"
+                  fi
+                done
+              done
+            '''
+          }
+        }
+      }
+
+      post {
+        success {
+          archiveArtifacts artifacts: 'tester/REPORT_*.xlsx, tester/REPORT_*.png, tester/REPORT_*.html, tester/answers_*.parquet, tester/answers_*.csv', allowEmptyArchive: true
+          emailext(
+            subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Artifacts",
+            mimeType: 'text/html',
+            body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
+                     Build URL: ${env.BUILD_URL}<br/>
+                     ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>""",
+            attachmentsPattern: 'tester/REPORT_*.xlsx, tester/REPORT_*.png, tester/REPORT_*.html',
+            recipientProviders: [[$class: 'RequesterRecipientProvider']]
+          )
+        }
+      }
+    }
+  }
+}
