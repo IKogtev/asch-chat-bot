@@ -753,7 +753,7 @@ document.addEventListener("click", async function (e) {
 
         const formData = new FormData();
         formData.append("kb_id", kbId);
-        formData.append("collection_type", "kb");
+        formData.append("collection_name", currentCollection);
 
         try {
             const response = await fetch("/api/filesystem/sync", {
@@ -1182,6 +1182,7 @@ async function uploadDocument(uploadMode = 'check') {
         formData.append('user_id', user_id);
         formData.append('upload_mode', uploadMode);
         formData.append('collection_type', currentCollectionType);
+        formData.append('collection_name', currentCollection);
         
         console.log('Uploading file:', selectedFile.name, 'Mode:', uploadMode);
         
