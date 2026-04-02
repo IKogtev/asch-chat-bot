@@ -171,7 +171,8 @@ app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 # функция для получения текущего сервиса хранилища
 def get_current_storage() -> FileStorageService:
     """Возвращает сервис хранилища для текущей активной коллекции Qdrant"""
-    current_name = qdrant_service.collection_name
+    # current_name = qdrant_service.collection_name
+    current_name = collection_name
     
     if current_name not in file_storages:
         raise ValueError(f"Storage for collection '{current_name}' not initialized!")
@@ -617,6 +618,7 @@ def delete_knowledge_base(req: DeleteKBRequest):
 @app.get("/api/documents/download/{document_id}")
 async def download_document(document_id: str):
     """скачивание документа по id"""
+    qdrant_service.switch_collection(collection_name, CollectionType.DOCUMENTS)
     chunks = qdrant_service.get_document_chunks(document_id)
     if not chunks:
         raise HTTPException(404, "Document not found")
@@ -826,7 +828,8 @@ async def download_filesystem_file(path: str):
     """Скачивает файл из нашего источника, пока только для kb коллекции документов"""
     path = unquote(path)
     # Получаем имя текущей активной коллекции
-    current_collection = qdrant_service.collection_name
+    # current_collection = qdrant_service.collection_name
+    current_collection = collection_name
     if current_collection not in COLLECTIONS_CFG:
         return {"error": f"Collection '{current_collection}' not found in config"}
     root_path = COLLECTIONS_CFG[current_collection]["root_path"]
