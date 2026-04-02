@@ -29,8 +29,11 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient(timeout=60)
     # создаем коллекцию в qdrant 
     qdrant_service.ensure_collection()
+    # создаем все необходимые коллекции, чтобы не было проблем с переключением между ними
+    qdrant_service.ensure_collections()
+    storage = get_current_storage()
     # строим дерево кэш изначально
-    kb_file_storage.build_tree()
+    storage.build_tree()
     # создаем фоновые задачи
     # делаем синхронизацию при старте
     sync_task = asyncio.create_task(run_sync_all_safe())
@@ -73,9 +76,7 @@ KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # folders subdirs for faq and kb
 KB_ROOT = KB_STORAGE_ROOT / "kb"
-FAQ_ROOT = KB_STORAGE_ROOT / "faq"
 KB_ROOT.mkdir(parents=True, exist_ok=True)
-FAQ_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -91,10 +92,46 @@ PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
 chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "50"))
+# storage services для разных индексов, для kb, faq и других
+COLLECTIONS_CFG = {
+    os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb_collection"): {
+        "dir": os.getenv("ACTIVE_DOCUMENTS_PATH","kb"),
+        "type": CollectionType.DOCUMENTS,
+        "ext": SUPPORTED_KB_EXTENSIONS,
+        "sync_type": "kb"
+    },
+    os.getenv("ARCHIVE_DOCUMENTS_COLLECTION", "archive_kb_collection"): {
+        "dir": os.getenv("ARCHIVE_DOCUMENTS_PATH","archive_kb"),
+        "type": CollectionType.DOCUMENTS,
+        "ext": SUPPORTED_KB_EXTENSIONS,
+        "sync_type": "kb"
+    },
+    os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base_collection"): {
+        "dir": os.getenv("KB_DOCUMENTS_PATH","knowledge_base"),
+        "type": CollectionType.DOCUMENTS,
+        "ext": SUPPORTED_KB_EXTENSIONS,
+        "sync_type": "kb"
+    },
+    os.getenv("FAQ_COLLECTION_NAME", "faq_collection"): {
+        "dir": os.getenv("FAQ_DOCUMENTS_PATH","faq"),
+        "type": CollectionType.FAQ, 
+        "ext": SUPPORTED_FAQ_EXTENSIONS,
+        "sync_type": "faq"
+    }
+}
+file_storages = {}
+collections_config_for_qdrant = {}
+# Инициализация путей и подготовка конфига для Qdrant в одном цикле
+for name, cfg in COLLECTIONS_CFG.items():
+    root_path = KB_STORAGE_ROOT / cfg["dir"]
+    root_path.mkdir(parents=True, exist_ok=True)
+    # Сохраняем абсолютный путь прямо в конфиг
+    cfg["root_path"] = root_path
+    collections_config_for_qdrant[name] = cfg["type"]
 
-# Initialize LangChain-based service
+# Инициализация QdrantService
 qdrant_service = QdrantService(
-    collection_name=collection_name,
+    collection_name=collection_name, # Дефолтная коллекция
     embedding_api_base=embedding_api_base,
     embedding_api_key=embedding_api_key,
     embedding_model=embedding_model,
@@ -102,27 +139,21 @@ qdrant_service = QdrantService(
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     qdrant_host=QDRANT_HOST,
-    qdrant_port=QDRANT_PORT
-)
-# storage services для разных индексов, для kb и для faq 
-kb_file_storage = FileStorageService(
-    root_path=KB_ROOT,
-    qdrant_service=qdrant_service,
-    chunk_size=chunk_size,
-    chunk_overlap=chunk_overlap,
-    service_dir=Path("app"),
-    ext_allowed = SUPPORTED_KB_EXTENSIONS
+    qdrant_port=QDRANT_PORT,
+    collections_config=collections_config_for_qdrant
 )
 
-faq_file_storage = FileStorageService(
-    root_path=FAQ_ROOT,
-    qdrant_service=qdrant_service,
-    chunk_size=chunk_size,
-    chunk_overlap=chunk_overlap,
-    service_dir=Path("app"),
-    ext_allowed=SUPPORTED_FAQ_EXTENSIONS
-)
-# sync settings
+# Инициализация всех FileStorageService без дублирования
+for name, cfg in COLLECTIONS_CFG.items():
+    file_storages[name] = FileStorageService(
+        root_path=cfg["root_path"],
+        qdrant_service=qdrant_service,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        service_dir=Path("app"),
+        ext_allowed=cfg["ext"]
+    )
+
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
@@ -140,6 +171,15 @@ http_client: httpx.AsyncClient = None
 # Mount static files
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+# функция для получения текущего сервиса хранилища
+def get_current_storage() -> FileStorageService:
+    """Возвращает сервис хранилища для текущей активной коллекции Qdrant"""
+    current_name = qdrant_service.collection_name
+    
+    if current_name not in file_storages:
+        raise ValueError(f"Storage for collection '{current_name}' not initialized!")
+        
+    return file_storages[current_name]
 
 def get_interval_delta():
     """функция вычисления интервала между синхронизациями"""
@@ -227,7 +267,8 @@ async def run_sync_all_safe():
         finally:
             sync_settings["running"] = False
             logger.info("[SYNC] finished")
-            kb_file_storage.build_tree()
+            storage = get_current_storage()
+            storage.build_tree()
             for q in subscribers:
                 await q.put("sync_completed")
 
@@ -238,41 +279,49 @@ async def run_sync_all_once():
     функция для правильного вызова синхронизации от типа, 
     в дальнейшем можно добавить другие типы коллекций если надо
     """
-    logger.info(f"Collection_type now is: {qdrant_service.collection_type}")
-    if qdrant_service.collection_type == CollectionType.FAQ:
-        root = FAQ_ROOT
-        storager = faq_file_storage
-        collection_type = "faq"
-    elif qdrant_service.collection_type== CollectionType.DOCUMENTS:
-        root = KB_ROOT
-        storager = kb_file_storage
-        collection_type = "kb"
-    else: 
-        logger.error(f"Something went wrong: {qdrant_service.collection_type}")
-        return
-    disk_kb_ids = {
-        folder.name for folder in root.iterdir() if folder.is_dir()
-    }
-    qdrant_kbs = qdrant_service.list_knowledge_bases()
-    qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
-    # функционал удаления kb_id если удалили папку, то удалять и в qdrant
-    deleted_kbs = qdrant_kb_ids - disk_kb_ids
+    
+    original_collection = qdrant_service.collection_name
+    original_type = qdrant_service.collection_type
 
-    for kb_id in deleted_kbs:
-        logger.info(f"[SYNC] KB DELETED: {kb_id}")
-        try:
-            qdrant_service.delete_kb(
-                kb_id=kb_id,
-                collection_name=qdrant_service.collection_name
-            )
-        except Exception as e:
-            logger.error(f"[SYNC] Failed to delete KB {kb_id}: {e}")
-    # синхронизация существующих папок
-    await sync_function(root, storager, collection_type)        
-    return {
-        "status": "success",
-        "message": "SYNC completed"
-    }     
+    for collection_name, cfg in COLLECTIONS_CFG.items():
+        logger.info(f"[SYNC] Processing {collection_name}")
+        root = cfg["root_path"]
+        storager = file_storages[collection_name]
+
+        logger.info(f"[SYNC] {collection_name} from {root}")
+        # 1. переключаемся на коллекцию
+        qdrant_service.switch_collection(
+            collection_name,
+            cfg["type"]
+        )
+
+        # 2. удаление отсутствующих KB
+        disk_kb_ids = {
+            folder.name for folder in root.iterdir() if folder.is_dir()
+        }
+
+        qdrant_kbs = qdrant_service.list_knowledge_bases()
+        qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
+
+        deleted_kbs = qdrant_kb_ids - disk_kb_ids
+
+        for kb_id in deleted_kbs:
+            logger.info(f"[SYNC] KB DELETED: {kb_id}")
+            try:
+                qdrant_service.delete_kb(
+                    kb_id=kb_id,
+                    collection_name=collection_name
+                )
+            except Exception as e:
+                logger.error(f"[SYNC] delete error {kb_id}: {e}")
+
+        # 3. синхронизация существующих папок
+        await sync_function(root, storager, cfg["sync_type"])
+
+    # вернуть состояние
+    qdrant_service.switch_collection(original_collection, original_type)
+
+    return {"status": "success", "message": "SYNC completed"}          
 
 
 async def start_scheduler():
@@ -328,26 +377,30 @@ async def manual_sync_all():
 @app.post("/api/filesystem/sync")
 async def filesystem_sync(
     kb_id: str = Form("01_Маркетинговые материалы"),
-    collection_type: str = Form("kb")
+    collection_name: str = Form("kb_collection")
 ):
-    logger.info(f"[SYNC ONE] kb_id={kb_id}, type={collection_type}")
-    loop = asyncio.get_running_loop()
     """синхронизация для kb отдельно, чтобы не делать для всех"""
-    if collection_type == CollectionType.FAQ:
-        storager = faq_file_storage
-    elif collection_type == CollectionType.DOCUMENTS or collection_type=="kb":
-        storager = kb_file_storage
-    else:
-        return {"status": "error", "message": "Invalid collection type"}
-
-    try:
+    logger.info(f"[SYNC ONE] kb_id={kb_id}, collection={collection_name}")
+    if collection_name not in COLLECTIONS_CFG:
+        return {"status": "error", "message": f"Collection '{collection_name}' not found"}
+    cfg = COLLECTIONS_CFG[collection_name]
+    storager = file_storages.get(collection_name)
+    if not storager:
+        return {"status": "error", "message": f"Storage for {collection_name} is not initialized"}
+    try: 
+        # Обязательно переключаем Qdrant на нужную коллекцию перед синхронизацией!
+        # Это критично, так как storager внутри себя обращается к qdrant_service
+        qdrant_service.switch_collection(collection_name, cfg["type"])
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             lambda: storager.sync(
                 kb_id=kb_id,
-                collection_type=collection_type
+                # Передаем "kb" или "faq" из конфига, чтобы storager понимал логику парсинга
+                collection_type=cfg["sync_type"]
+                )
             )
-        )
+
     except Exception as e:
         logger.error(f"[SYNC KB] Error: {e}")
         return {"status": "error", "message": str(e)}
@@ -721,6 +774,10 @@ def get_collections_by_type():
             result["faq"].append(c.name)
         elif c.name.startswith("kb_"):
             result["kb"].append(c.name)
+        elif c.name.startswith("archive_kb_"):
+            result["kb"].append(c.name)
+        elif c.name.startswith("knowledge_base_"):
+            result["kb"].append(c.name)
     return result
 
 ##################################
@@ -731,7 +788,8 @@ def get_collections_by_type():
 async def get_folders():
     """Показывает дерево файлов, сейчас пока ориентируемся на kb коллекцию только"""
     # meanwhile show only kb_tree 
-    return kb_file_storage.build_tree()
+    storage = get_current_storage()
+    return storage.build_tree()
 
 @app.get("/api/filesystem/node")
 async def get_node(path: str = ""):

@@ -31,7 +31,8 @@ class QdrantService:
         qdrant_port: int=6333,
         qdrant_host: str="localhost",
         chunk_size: int = 1000,
-        chunk_overlap: int = 200
+        chunk_overlap: int = 200,
+        collections_config: dict={}
     ):
         qdrant_timeout = 10
         self.qdrant_client = qdrant_client.QdrantClient(
@@ -67,7 +68,54 @@ class QdrantService:
             client=self.qdrant_client,
             collection_name=self.collection_name
         )
+        # initialize collection dict 
+        self.collections_config = collections_config
     
+    def _generate_alias_name(self, collection_name: str) -> str:
+        """
+        archive_kb_collection -> archive_kb_collection_active
+        faq_collection -> faq_collection_active
+        """
+        if not collection_name.endswith("_collection"):
+            raise ValueError(f"Invalid collection name: {collection_name}")
+        
+        base = collection_name.replace("_collection", "")
+        return f"{base}_collection_active"
+
+    def ensure_collections(self):
+        """Ensure multiple collections exist + aliases"""
+        try:
+            existing = {
+                c.name for c in self.qdrant_client.get_collections().collections
+            }
+
+            for name, ctype in self.collections_config.items():
+                # 1. create collection
+                if name not in existing:
+                    self.qdrant_client.create_collection(
+                        collection_name=name,
+                        vectors_config=VectorParams(
+                            size=self.vector_size,
+                            distance=Distance.COSINE
+                        )
+                    )
+                    print(f"[INIT] Created collection: {name}")
+                else:
+                    print(f"[INIT] Exists: {name}")
+
+                # 2. set alias
+                try:
+                    self.switch_alias(name, ctype)
+                except Exception as e:
+                    print(f"[INIT] Alias error {name}: {e}")
+
+            # 3. установить дефолтную
+            self.collection_name = "kb_collection"
+            self.collection_type = CollectionType.DOCUMENTS
+
+        except Exception as e:
+            print(f"[INIT ERROR] {e}")
+
     def ensure_collection(self):
         """Create collection if it doesn't exist"""
         try:
@@ -84,6 +132,7 @@ class QdrantService:
                 print(f"Created collection: {self.collection_name}")
             else:
                 print(f"Collection {self.collection_name} already exists")
+            # self.switch_alias(self.collection_name, self.collection_type)
             self.switch_alias(self.collection_name, CollectionTypeAlias.kb)
         except Exception as e:
             print(f"Error ensuring collection: {e}")
@@ -704,7 +753,7 @@ class QdrantService:
     
     def switch_alias(self, collection_name: str, collection_type: CollectionType):
         alias_name = f"{collection_type.value}_collection_active"
-
+        # alias_name = self._generate_alias_name(collection_name)
         # проверка, что коллекция существует
         collections = self.qdrant_client.get_collections().collections
         names = {c.name for c in collections}
