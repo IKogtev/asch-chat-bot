@@ -21,14 +21,14 @@ LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 # =============================================================================
 # COLLECTIONS
 # =============================================================================
-ACTIVE_DOCUMENTS_COLLECTION = os.getenv("DOC_SEARCH_COLLECTION", "documents").strip()
-KB_DOCUMENTS_COLLECTION = os.getenv("KB_ANSWER_COLLECTION", "knowledge_base").strip()
+ACTIVE_DOCUMENTS_COLLECTION = os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb").strip()
+KB_DOCUMENTS_COLLECTION = os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base").strip()
 KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
 
 # =============================================================================
 # KB_SEARCH MCP SETTINGS
 # =============================================================================
-KBSEARCH_MCP_URL = os.getenv("KBSEARCH_MCP_URL", "http://mcp-server-kbsearch:7001").strip()
+KBSEARCH_MCP_URL = os.getenv("KBSEARCH_MCP_URL", "http://kbsearch:7001/kbsearch/mcp").strip()
 MCP_TOKEN = os.getenv("MCP_TOKEN", "").strip()
 MCP_TIMEOUT_SEC = float(os.getenv("MCP_TIMEOUT_SEC", "30"))
 
