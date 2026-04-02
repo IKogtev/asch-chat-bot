@@ -9,6 +9,8 @@ kb_default/
 kb_data/
 logs/
 kb_storage/kb
+kb_storage/archive_kb
+kb_storage/knowledge_base
 kb_storage/faq
 kb_storage/wait
 kb_storage/bot/upload
