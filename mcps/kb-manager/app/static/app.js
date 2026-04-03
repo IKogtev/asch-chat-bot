@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupDragAndDrop();
     loadSyncSettings();
     subscribeToSync();
+    loadFilesystemTree();
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
     const fileInfo = document.getElementById("news-file-info");
@@ -146,6 +147,7 @@ async function switchCollection(collectionName, collectionType) {
         await loadActiveCollections();
         await loadCollectionInfo();
         await loadDocuments();
+        await loadFilesystemTree();
         
 
         // Очистка поиска
@@ -715,6 +717,7 @@ async function loadDocuments() {
             </div>
         `).join('');
         loadCollectionInfo();
+        loadFilesystemTree();
     } catch (error) {
         container.innerHTML = `
             <div class="result-message error">
@@ -1306,7 +1309,10 @@ async function loadFilesystemTree() {
     container.innerHTML = "⏳ Loading...";
 
     try {
-        const res = await fetch("/api/filesystem/node?path=");
+        // const res = await fetch("/api/filesystem/node?path=");
+        const res = await fetch(
+            `/api/filesystem/node?path=&collection_name=${encodeURIComponent(currentCollection)}`
+        );
         const data = await res.json();
 
         container.innerHTML = renderNode("", data);
@@ -1351,7 +1357,10 @@ document.addEventListener("click", async function (e) {
         try {
             content.innerHTML = "⏳ Loading...";
 
-            const res = await fetch(`/api/filesystem/node?path=${encodeURIComponent(path)}`);
+            // const res = await fetch(`/api/filesystem/node?path=${encodeURIComponent(path)}`);
+            const res = await fetch(
+                `/api/filesystem/node?path=${encodeURIComponent(path)}&collection_name=${encodeURIComponent(currentCollection)}`
+            );
             const data = await res.json();
 
             content.innerHTML = renderNode(path, data);

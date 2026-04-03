@@ -37,3 +37,9 @@ tsconfig.json
 test-results/
 playwright.config.ts
 __pycache__
+
+# Adk agent tester
+*.xlsx
+*.png
+*.csv
+*.parquet
