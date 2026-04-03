@@ -167,8 +167,8 @@ async function loadCollectionInfo() {
         const isFAQ = currentCollectionType === 'faq';
 
         document.getElementById('collection-info').innerHTML = 
-            `Collection: <strong>${data.name}</strong> 
-                | ${isFAQ? "Documents": "Points"} 
+            `
+                ${isFAQ? "Documents": "Points"} 
                 <strong>${data.points_count-1 || 0}</strong>
                 | Platform Version
                 <strong>${data.platform_version || 0}</strong>
@@ -177,7 +177,8 @@ async function loadCollectionInfo() {
                 | Next Synchronization
                 <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
             `;
-    } catch (error) {
+         
+        } catch (error) {
         console.error('Error loading collection info:', error);
     }
 }
@@ -2098,9 +2099,9 @@ async function loadUserGroups() {
                         <th>User ID</th>
                         <th>Username</th>
                         <th>Имя</th>
+                        <th>Фамилия</th>
                         <th class="text-center">👔 Менеджер</th>
                         <th class="text-center">🎓 Коуч</th>
-                        <th>Телефон</th>
                         <th>Последний вход</th>
                     </tr>
                 </thead>
@@ -2109,7 +2110,8 @@ async function loadUserGroups() {
                         <tr>
                             <td class="font-monospace">${u.user_id}</td>
                             <td>${escapeHtml(u.username || '-')}</td>
-                            <td>${escapeHtml(u.first_name || '')} ${escapeHtml(u.last_name || '')}</td>
+                            <td>${escapeHtml(u.first_name || '')}</td>
+                            <td>${escapeHtml(u.last_name || '')}</td>
                             <td class="text-center">
                                 <input type="checkbox" 
                                       ${u.manager_group ? 'checked' : ''} 
@@ -2120,7 +2122,6 @@ async function loadUserGroups() {
                                       ${u.coach_group ? 'checked' : ''} 
                                       onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
                             </td>
-                            <td>${escapeHtml(u.phone_number || '-')}</td>
                             <td>${formatDate(u.last_seen)}</td>
                         </tr>
                     `).join('')}

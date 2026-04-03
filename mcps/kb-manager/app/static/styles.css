@@ -29,6 +29,7 @@ body {
     color: var(--text-primary);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    height: 100%;
 }
 
 .container {
@@ -38,6 +39,7 @@ body {
     flex: 1;
     display: flex;
     flex-direction: column;
+    height: 100vh; 
 }
 
 header {
@@ -46,11 +48,6 @@ header {
     border-radius: 12px;
     margin-bottom: 30px;
     box-shadow: var(--shadow);
-}
-
-header h1 {
-    font-size: 2rem;
-    margin-bottom: 10px;
 }
 
 .header-info {
@@ -210,15 +207,16 @@ header h1 {
 .app-layout {
     display: flex;
     flex-direction: row;
-    height: 100vh;
+    flex: 1;
 }
 
 /* Main content */
 .main-content {
     margin-left: 70px;
-    height: 100%;
     display: flex;
     flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 
 
@@ -239,6 +237,22 @@ header h1 {
      /* чтобы контент не прыгал при открытии */
     z-index: 100;
 }
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px;
+}
+/* текст */
+.sidebar-header .title {
+    white-space: nowrap;
+    transition: opacity 0.2s;
+}
+
+/* иконка */
+.sidebar-header .logo {
+    font-size: 20px;
+}
 /* COLLAPSED STATE */
 .sidebar.collapsed {
     width: 70px;
@@ -249,6 +263,10 @@ header h1 {
     pointer-events: none;
     width: 0;
     overflow: hidden;
+}
+/* скрываем текст */
+.sidebar.collapsed .sidebar-header .title {
+    display: none;   
 }
 /* Центрируем иконки когда свернуто */
 .sidebar.collapsed .tab-button {
@@ -357,17 +375,13 @@ header h1 {
     display: none;
     animation: fadeIn 0.3s;
     flex: 1; 
-    height: 100%;
+    min-height: 0;
 }
 
 .tab-content.active {
     display: flex;
     flex-direction: column;
-    width: 100%;
-}
-.tab-content.active > * {
-    width: 100%;
-    max-width: 100%;
+    flex: 1;
 }
 
 /* анимация */
@@ -422,9 +436,6 @@ header h1 {
     header {
         padding: 20px;
     }
-    header h1 {
-        font-size: 1.5rem;
-    }
     .upload-options {
         grid-template-columns: 1fr;
     }
@@ -476,6 +487,8 @@ header h1 {
     /* добавление нескольких колонок kb цифра задает число в будущем можно*/
     grid-template-columns: repeat(1, minmax(300px, 1fr));
     gap: 16px;
+    flex: 1;
+    overflow: auto;
 }
 
 .document-card {
@@ -543,12 +556,14 @@ header h1 {
     background: rgba(0,0,0,0.02);
     border-radius: 12px;
     border: 2px dashed var(--border-color);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 .empty-state .icon {
     font-size: 4rem;
     margin-bottom: 16px;
-    opacity: 0.3;
 }
 
 /* Knowledge Base Sections */
@@ -1034,11 +1049,16 @@ select:focus {
     background: #fffbea;
 }
 .bot-settings-container {
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 .setting-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -1091,7 +1111,12 @@ select:focus {
     min-height: 200px;
     box-sizing: border-box;
     background: #fffbea;
-    color: var(--text-primary)
+    color: var(--text-primary);
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    resize: none; 
+    overflow: auto;
 }
 .setting-editor:focus {
     outline: none;
@@ -1146,7 +1171,7 @@ select:focus {
     position:relative;
     box-shadow: 0 10px 25px rgba(0,0,0,0.1);
 }
-.news-editor{
+#news-editor .ql-editor{
     flex: 1;
     width: 100%;
     font-family: 'Fira Code', 'Consolas', monospace;
@@ -1159,13 +1184,16 @@ select:focus {
     min-height: 300px;
     color: var(--text-primary);
     background: var(--card-bg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
-.news-editor:focus {
+#news-editor:focus {
     outline: none;
     border-color: var(--primary-color);
     box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
-.news-editor:disabled {
+#news-editor:disabled {
     background: var(--bg-color);
     cursor: not-allowed;
     opacity: 0.7;
@@ -1192,7 +1220,8 @@ select:focus {
     text-decoration: underline;
 }
 .news-editor-container {
-    height: 300px;
+    width: 100%;
+    max-width: 100%;
 }
 .news-form-section {margin: 15px 0;}
 .news-form-label {
@@ -1243,6 +1272,12 @@ select:focus {
     margin-top: 8px;
     font-size: 13px;
     color: var(--text-secondary);
+}
+.news-list{
+    display: grid;
+    /* добавление нескольких колонок kb цифра задает число в будущем можно*/
+    grid-template-columns: repeat(1, minmax(300px, 1fr));
+    gap: 16px;
 }
 /* Стили для вкладки Groups */
 #user-groups-list table {
