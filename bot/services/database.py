@@ -40,57 +40,56 @@ class PostgresChatStore:
         if not self.pool:
             logger.error("Pool не инициализирован")
             raise RuntimeError("Pool not initialized")
-        # создаем 3 таблицы: chat_history для сообщений, search_meta для информации о последнем поиске и search_results для результатов поиска
-        query = """
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_id ON chat_history(user_id);
-        CREATE INDEX IF NOT EXISTS idx_created_at ON chat_history(created_at);
-
-        CREATE TABLE IF NOT EXISTS search_meta (
-            user_id BIGINT NOT NULL,
-            session_id TEXT NOT NULL,
-            search_id TEXT NOT NULL,
-            query TEXT NOT NULL,
-            total_count INT NOT NULL,
-            shown_count INT NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW(),
-            PRIMARY KEY (user_id, session_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS search_results (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            session_id TEXT NOT NULL,
-            search_id TEXT NOT NULL,
-            rank INT NOT NULL,
-            document_id TEXT NOT NULL,
-            source_name TEXT NOT NULL,
-            source_path TEXT,
-            score DOUBLE PRECISION,
-            snippet TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_search_results_user_session
-        ON search_results(user_id, session_id, rank);
-
-        CREATE INDEX IF NOT EXISTS idx_search_results_search_id
-        ON search_results(search_id);
-        """
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(query)
-            logger.info("Схема БД проверена/создана")
-        except Exception as e:
-            logger.error(f"Ошибка создания схемы: {e}", exc_info=True)
-            raise
-        # pass
+        # query = """
+        # CREATE TABLE IF NOT EXISTS chat_history (
+        #     id SERIAL PRIMARY KEY,
+        #     user_id BIGINT NOT NULL,
+        #     role TEXT NOT NULL,
+        #     content TEXT NOT NULL,
+        #     created_at TIMESTAMP DEFAULT NOW()
+        # );
+        # CREATE INDEX IF NOT EXISTS idx_user_id ON chat_history(user_id);
+        # CREATE INDEX IF NOT EXISTS idx_created_at ON chat_history(created_at);
+        #
+        # CREATE TABLE IF NOT EXISTS search_meta (
+        #     user_id BIGINT NOT NULL,
+        #     session_id TEXT NOT NULL,
+        #     search_id TEXT NOT NULL,
+        #     query TEXT NOT NULL,
+        #     total_count INT NOT NULL,
+        #     shown_count INT NOT NULL DEFAULT 0,
+        #     created_at TIMESTAMP DEFAULT NOW(),
+        #     PRIMARY KEY (user_id, session_id)
+        # );
+        #
+        # CREATE TABLE IF NOT EXISTS search_results (
+        #     id SERIAL PRIMARY KEY,
+        #     user_id BIGINT NOT NULL,
+        #     session_id TEXT NOT NULL,
+        #     search_id TEXT NOT NULL,
+        #     rank INT NOT NULL,
+        #     document_id TEXT NOT NULL,
+        #     source_name TEXT NOT NULL,
+        #     source_path TEXT,
+        #     score DOUBLE PRECISION,
+        #     snippet TEXT,
+        #     created_at TIMESTAMP DEFAULT NOW()
+        # );
+        #
+        # CREATE INDEX IF NOT EXISTS idx_search_results_user_session
+        # ON search_results(user_id, session_id, rank);
+        #
+        # CREATE INDEX IF NOT EXISTS idx_search_results_search_id
+        # ON search_results(search_id);
+        # """
+        # try:
+        #     async with self.pool.acquire() as conn:
+        #         await conn.execute(query)
+        #     logger.info("Схема БД проверена/создана")
+        # except Exception as e:
+        #     logger.error(f"Ошибка создания схемы: {e}", exc_info=True)
+        #     raise
+        pass
 
     async def append(self, user_id: int, role: str, content: str) -> None:
         """Добавление сообщения в историю"""
@@ -294,23 +293,23 @@ class SubscriberStore:
 
     async def ensure_schema(self):
         """Schema is owned by Alembic; see revision ``a1b2c3d4e5f6``."""
-        query = """
-        CREATE TABLE IF NOT EXISTS subscribers (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            phone_number VARCHAR(20),
-            last_seen TIMESTAMPTZ DEFAULT NOW(),
-            region TEXT,
-            manager_group BOOLEAN DEFAULT FALSE,
-            coach_group BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-        """
-        async with self.pool.acquire() as conn:
-            await conn.execute(query)
-        # pass
+        # query = """
+        # CREATE TABLE IF NOT EXISTS subscribers (
+        #     user_id BIGINT PRIMARY KEY,
+        #     username TEXT,
+        #     first_name TEXT,
+        #     last_name TEXT,
+        #     phone_number VARCHAR(20),
+        #     last_seen TIMESTAMPTZ DEFAULT NOW(),
+        #     region TEXT,
+        #     manager_group BOOLEAN DEFAULT FALSE,
+        #     coach_group BOOLEAN DEFAULT FALSE,
+        #     created_at TIMESTAMPTZ DEFAULT NOW()
+        # );
+        # """
+        # async with self.pool.acquire() as conn:
+        #     await conn.execute(query)
+        pass
 
     async def add(
             self,
@@ -426,20 +425,20 @@ class NewsStore:
 
     async def ensure_schema(self):
         """Schema is owned by Alembic; see revision ``a1b2c3d4e5f6``."""
-        query = """
-        CREATE TABLE IF NOT EXISTS news (
-            id SERIAL PRIMARY KEY,
-            text TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            scheduled_at TIMESTAMPTZ,
-            files JSONB,
-            status VARCHAR(20) DEFAULT 'pending', -- pending | sent
-            target_group VARCHAR(50) DEFAULT 'all'
-        );
-        """
-        async with self.pool.acquire() as conn:
-            await conn.execute(query)
-        # pass
+        # query = """
+        # CREATE TABLE IF NOT EXISTS news (
+        #     id SERIAL PRIMARY KEY,
+        #     text TEXT NOT NULL,
+        #     created_at TIMESTAMPTZ DEFAULT NOW(),
+        #     scheduled_at TIMESTAMPTZ,
+        #     files JSONB,
+        #     status VARCHAR(20) DEFAULT 'pending', -- pending | sent
+        #     target_group VARCHAR(50) DEFAULT 'all'
+        # );
+        # """
+        # async with self.pool.acquire() as conn:
+        #     await conn.execute(query)
+        pass
 
     async def create_news(self, text, scheduled_at=None, group="all", files=None):
         """Создание новостей для рассылки"""
