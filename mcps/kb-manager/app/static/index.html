@@ -9,28 +9,27 @@
 </head>
 <body>
     <div class="container">
+        <!-- Collections view -->
         <header>
-            <h1>UI Manager for Anastasia</h1>
+            <div class="collection-selector">
+                <label for="collection-select">
+                    <strong>Active collection:</strong>
+                    <span id="current-collection" class="collection-current"></span>
+                    <button 
+                    id="delete-collection-btn" 
+                    class="btn btn-danger btn-small" 
+                    title="Delete collection">🗑️ Delete</button>            
+                </label>
+                <select id="collection-select">
+                    <option value="">Loading collections…</option>
+                </select>
+                <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Add collection</button>
+                <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Switch alias 🔄</button>
+            </div>
             <div class="header-info">
                 <span id="collection-info"></span>
             </div>
         </header>
-        <!-- Collections view -->
-        <div class="collection-selector">
-            <label for="collection-select">
-                <strong>Active collection:</strong>
-                <span id="current-collection" class="collection-current"></span>
-                <button 
-                id="delete-collection-btn" 
-                class="btn btn-danger btn-small" 
-                title="Delete collection">🗑️ Delete</button>            
-            </label>
-            <select id="collection-select">
-                <option value="">Loading collections…</option>
-            </select>
-            <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Add collection</button>
-            <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Switch alias 🔄</button>
-        </div>
         <div class="app-layout">
             <div class="main-content">
                 <!-- Documents Tab -->
@@ -242,7 +241,7 @@
                         </button>
                     </div>
 
-                    <div id="news-history" class="documents-list">
+                    <div id="news-history" class="news-list">
                         <div class="loading">История не загружена</div>
                     </div>
                 </div>
@@ -333,7 +332,7 @@
                     
                     <div class="groups-tab-header">
                         <input type="text" id="user-search" class="groups-search-input" 
-                            placeholder="🔍 Поиск по user_id, username или имени"
+                            placeholder="🔍 Поиск по user_id, username, имени или фамилии"
                             onkeyup="loadUserGroups()">
                         <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
                         <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
@@ -435,6 +434,9 @@
                 <button class="sidebar-toggle" onclick="toggleSidebar()">
                     <span id="toggle-icon">☰</span>
                 </button>
+                <div class="sidebar-header">
+                    <span class="title">NST / Admin</span>
+                </div>
                 <div class="sidebar-tabs">
                     <button class="tab-button active" onclick="showTab('documents', event)">
                         <span class="icon">📄</span>
