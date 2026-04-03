@@ -9,9 +9,14 @@ kb_default/
 kb_data/
 logs/
 kb_storage/kb
+kb_storage/archive_kb
+kb_storage/knowledge_base
 kb_storage/faq
 kb_storage/wait
 kb_storage/bot/upload
+kb_storage/archive_kb
+kb_storage/knowledge_base
+kb_storage/kb
 data/
 venv/
 
@@ -20,6 +25,7 @@ venv/
 .env
 agent/__pycache__/
 agent/agent/
+agent/.adk/
 filebrowser_data/database.db
 filebrowser_data/settings.json
 filegator_data
@@ -32,6 +38,12 @@ tsconfig.json
 test-results/
 playwright.config.ts
 __pycache__
+
+# Adk agent tester
+*.xlsx
+*.png
+*.csv
+*.parquet
 
 # Next.js / Copilot web (generated & deps — do not commit)
 web/copilot-web/node_modules/

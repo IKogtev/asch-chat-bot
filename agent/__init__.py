@@ -1,3 +1,3 @@
-from .agent_v1 import root_agent
+from .agent import root_agent, RootAgent, build_agent_chain
 
-__all__ = ["root_agent"]
+__all__ = ["root_agent", "RootAgent", "build_agent_chain"]
