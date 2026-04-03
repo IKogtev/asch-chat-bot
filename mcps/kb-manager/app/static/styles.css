@@ -337,7 +337,7 @@ header h1 {
 .documents-list {
     display: grid;
     /* добавление нескольких колонок kb цифра задает число в будущем можно*/
-    grid-template-columns: repeat(2, minmax(300px, 1fr));
+    grid-template-columns: repeat(1, minmax(300px, 1fr));
     gap: 16px;
 }
 
