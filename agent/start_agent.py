@@ -9,17 +9,16 @@ from .agents.dispatcher_agent import create_dispatcher_agent
 from .agents.doc_search_agent import create_doc_search_agent
 from .agents.kb_answer_agent import create_kb_answer_agent
 
-
 def build_agent_chain() -> RootAgent:
     """
     Создает полную цепочку агентов.
     """
     model = build_common_model()
 
-    owasp_agent = create_owasp_agent(model)
-    dispatcher_agent = create_dispatcher_agent(model)
     doc_search_agent = create_doc_search_agent(model)
     kb_answer_agent = create_kb_answer_agent(model)
+    dispatcher_agent = create_dispatcher_agent(model)
+    owasp_agent = create_owasp_agent(model)
 
     return RootAgent(
         owasp_agent=owasp_agent,
