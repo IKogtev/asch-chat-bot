@@ -15,7 +15,7 @@ kb_storage/faq
 kb_storage/wait
 kb_storage/bot/upload
 data/
-venv/
+venv*/
 
 *.env
 *.code-workspace

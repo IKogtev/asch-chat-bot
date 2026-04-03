@@ -10,6 +10,9 @@ COPY utils/ ./utils/
 
 COPY bot/ ./bot/
 
+COPY alembic.ini .
+COPY alembic/ ./alembic/
+
 # Создаём директорию для логов
 RUN mkdir -p /app/logs
 

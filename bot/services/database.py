@@ -3,7 +3,7 @@ import aiohttp
 import json
 from typing import Optional
 from uuid import uuid4
-# Импортируем логгер из 
+# Импортируем логгер из
 from utils import setup_logger
 from bot.services.config import Settings
 from datetime import datetime
@@ -15,13 +15,13 @@ logger = setup_logger('database', 'db.log')
 ##############################################
 class PostgresChatStore:
     """Хранилище истории диалогов в PostgreSQL"""
-    
+
     def __init__(self, dsn: str, max_turns: int = 30):
         self.dsn = dsn
         self.max_turns = max_turns
         self.pool: Optional[asyncpg.Pool] = None
         logger.info(f"Инициализация PostgresChatStore (max_turns={max_turns})")
-    
+
     async def connect(self) -> None:
         """Подключение к БД"""
         try:
@@ -30,9 +30,13 @@ class PostgresChatStore:
         except Exception as e:
             logger.error(f"Ошибка подключения к БД: {e}", exc_info=True)
             raise
-    
+
     async def ensure_schema(self) -> None:
-        """Создание таблиц если не существуют"""
+        """Schema is owned by Alembic; run ``alembic upgrade head`` before the app.
+
+        Revision ``a1b2c3d4e5f6`` (``alembic/versions/a1b2c3d4e5f6_initial_schema.py``) replaces
+        the former inline DDL below (kept only as reference).
+        """
         if not self.pool:
             logger.error("Pool не инициализирован")
             raise RuntimeError("Pool not initialized")
@@ -86,13 +90,14 @@ class PostgresChatStore:
         except Exception as e:
             logger.error(f"Ошибка создания схемы: {e}", exc_info=True)
             raise
-    
+        # pass
+
     async def append(self, user_id: int, role: str, content: str) -> None:
         """Добавление сообщения в историю"""
         if not self.pool:
             logger.warning("Pool не инициализирован, сообщение не сохранено")
             return
-        
+
         query = """
         INSERT INTO chat_history (user_id, role, content)
         VALUES ($1, $2, $3)
@@ -103,13 +108,13 @@ class PostgresChatStore:
             logger.debug(f"Сохранено сообщение: user={user_id}, role={role}, len={len(content)}")
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
-    
+
     async def get_history(self, user_id: int) -> list[dict]:
         """Получение истории диалога"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return []
-        
+
         query = """
         SELECT role, content, created_at
         FROM chat_history
@@ -120,7 +125,7 @@ class PostgresChatStore:
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(query, user_id, self.max_turns)
-            
+
             history = [
                 {"role": row["role"], "content": row["content"]}
                 for row in reversed(rows)
@@ -130,13 +135,13 @@ class PostgresChatStore:
         except Exception as e:
             logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
             return []
-    
+
     async def reset(self, user_id: int) -> None:
         """Очистка истории пользователя"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return
-        
+
         query = "DELETE FROM chat_history WHERE user_id = $1"
         try:
             async with self.pool.acquire() as conn:
@@ -144,7 +149,7 @@ class PostgresChatStore:
             logger.info(f"История очищена для user={user_id}: {result}")
         except Exception as e:
             logger.error(f"Ошибка очистки истории: {e}", exc_info=True)
-    
+
     async def save_search_results(
         self,
         user_id: int,
@@ -275,20 +280,20 @@ class PostgresChatStore:
                     "DELETE FROM search_meta WHERE user_id = $1 AND session_id = $2",
                     user_id, session_id
                 )
-    
+
     async def close(self) -> None:
         """Закрытие пула соединений"""
         if self.pool:
             await self.pool.close()
             logger.info("Пул соединений PostgreSQL закрыт")
 
-# Хранилище пользователей отправлявших сообщения боту 
+# Хранилище пользователей отправлявших сообщения боту
 class SubscriberStore:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
-    
+
     async def ensure_schema(self):
-        """Создание таблицы если не существует"""
+        """Schema is owned by Alembic; see revision ``a1b2c3d4e5f6``."""
         query = """
         CREATE TABLE IF NOT EXISTS subscribers (
             user_id BIGINT PRIMARY KEY,
@@ -305,20 +310,21 @@ class SubscriberStore:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query)
+        # pass
 
     async def add(
-            self, 
-            user_id: int, 
-            username: str | None, 
-            first_name: str, 
-            last_name: str, 
+            self,
+            user_id: int,
+            username: str | None,
+            first_name: str,
+            last_name: str,
             last_seen: datetime,
             phone_number: str | None=None):
         """добавление пользователя в таблицу"""
         logger.info(f"Added a new user: {user_id} (@{username})")
         query = """
         INSERT INTO subscribers (
-            user_id, username, first_name, last_name, phone_number, 
+            user_id, username, first_name, last_name, phone_number,
             last_seen, region, manager_group, coach_group
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (user_id) DO UPDATE SET
@@ -330,10 +336,10 @@ class SubscriberStore:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(
-                query, 
-                user_id, 
-                username, 
-                first_name, 
+                query,
+                user_id,
+                username,
+                first_name,
                 last_name,
                 phone_number,
                 last_seen,
@@ -352,7 +358,7 @@ class SubscriberStore:
     async def update_phone(self, user_id: int, phone_number: str):
         """Обновить номер телефона"""
         query = """
-        UPDATE subscribers 
+        UPDATE subscribers
         SET phone_number = $1, last_seen = NOW()
         WHERE user_id = $2
         """
@@ -364,7 +370,7 @@ class SubscriberStore:
         """Получение всех пользователей с информацией с группами"""
         logger.info("Получаем пользователей с группами")
         query = """
-        SELECT user_id, username, first_name, last_name, 
+        SELECT user_id, username, first_name, last_name,
                phone_number, last_seen, created_at,
                manager_group, coach_group
         FROM subscribers
@@ -373,21 +379,21 @@ class SubscriberStore:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [dict(r) for r in rows]
-    
+
     async def get_user_data(self, user_id: int) -> dict | None:
         """Получение полных данных пользователя для передачи в ADK"""
         query = """
-        SELECT user_id, username, first_name, last_name, phone_number, 
+        SELECT user_id, username, first_name, last_name, phone_number,
                region, manager_group, coach_group
         FROM subscribers
         WHERE user_id = $1
         """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)
-        
+
         if not row:
             return None
-        
+
         return {
             "user_id": row["user_id"],
             "username": row["username"],
@@ -398,28 +404,28 @@ class SubscriberStore:
             "manager_group": row["manager_group"],
             "coach_group": row["coach_group"]
         }
-    
+
     async def update_user_group(self, user_id: int, group: str, value: bool):
         """Обновление принадлежности пользователя к группе"""
         if group not in ("manager_group", "coach_group"):
             raise ValueError(f"Invalid group: {group}")
-        
+
         query = f"""
-        UPDATE subscribers 
+        UPDATE subscribers
         SET {group} = $1, last_seen = NOW()
         WHERE user_id = $2
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, value, user_id)
-        
+
         logger.info(f"✓ Группа {group} обновлена для user_id={user_id}: {value}")
 # Хранилище новостей и рассылок
 class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
-    
+
     async def ensure_schema(self):
-        """Создание таблицы если не существует"""
+        """Schema is owned by Alembic; see revision ``a1b2c3d4e5f6``."""
         query = """
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
@@ -433,6 +439,7 @@ class NewsStore:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query)
+        # pass
 
     async def create_news(self, text, scheduled_at=None, group="all", files=None):
         """Создание новостей для рассылки"""
@@ -443,7 +450,7 @@ class NewsStore:
                 RETURNING id
             """, text, scheduled_at, group, json.dumps(files or []))
             return row["id"]
-        
+
     async def get_pending_news(self):
         """Получение новостей в ожидании к отправке"""
         async with self.pool.acquire() as conn:
@@ -465,7 +472,7 @@ class NewsStore:
         """Приватный метод для нормализации данных новости из БД"""
         d = dict(row)
         files = d.get("files")
-        
+
         if isinstance(files, str):
             try:
                 d["files"] = json.loads(files)
@@ -476,7 +483,7 @@ class NewsStore:
             d["files"] = files
         else:
             d["files"] = []
-            
+
         d.setdefault("target_group", "all")
         return d
 
@@ -487,7 +494,7 @@ class NewsStore:
                 SELECT * FROM news ORDER BY created_at DESC
             """)
             result = []
-            for r in rows:    
+            for r in rows:
                 try:
                     result.append(self._parse_news_row(r))
                 except Exception as e:
@@ -504,7 +511,7 @@ class NewsStore:
             if not row:
                 return None
             return self._parse_news_row(row)
-        
+
     async def delete_news(self, news_id: int):
         """Удаление новости по ID"""
         query = "DELETE FROM news WHERE id=$1"
@@ -514,38 +521,38 @@ class NewsStore:
 # Хранилище для взаимодействия с ADK API
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
-    
+
     def __init__(self, base_url: str, app_name: str):
         self.base_url = base_url.rstrip('/')
         self.app_name = app_name
         self.http: Optional[aiohttp.ClientSession] = None
         logger.info(f"Инициализация ADK клиента: {base_url}, app={app_name}")
-    
+
     async def open(self) -> None:
         """Открытие HTTP сессии"""
         self.http = aiohttp.ClientSession()
         logger.info("HTTP сессия ADK клиента открыта")
-    
+
     async def close(self) -> None:
         """Закрытие HTTP сессии"""
         if self.http:
             await self.http.close()
             logger.info("HTTP сессия ADK клиента закрыта")
-    
+
     async def ensure_session(self, user_id: str, session_id: str) -> None:
         """Создание/проверка сессии в ADK"""
         if not self.http:
             logger.error("HTTP сессия не инициализирована")
             raise RuntimeError("HTTP session not initialized")
-        
+
         url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}"
-        
+
         try:
             async with self.http.post(url, json={}) as resp:
                 if resp.status in (200, 201):
                     logger.debug(f"Сессия создана/проверена: user={user_id}, session={session_id}")
                     return
-                
+
                 if resp.status in (400, 409):
                     try:
                         data = await resp.json()
@@ -555,22 +562,22 @@ class AdkApiClient:
                             return
                     except Exception:
                         pass
-                
+
                 text = await resp.text()
                 logger.error(f"ADK ensure_session failed: {resp.status} {text}")
                 raise RuntimeError(f"ADK ensure_session failed: {resp.status}")
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при ensure_session: {e}", exc_info=True)
             raise
-    
+
     async def delete_session(self, user_id: str, session_id: str) -> None:
         """Удаление сессии ADK"""
         if not self.http:
             logger.error("HTTP сессия не инициализирована")
             raise RuntimeError("HTTP session not initialized")
-        
+
         url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}"
-        
+
         try:
             async with self.http.delete(url) as resp:
                 if resp.status in (200, 204, 404):
@@ -580,15 +587,15 @@ class AdkApiClient:
                     logger.warning(f"⚠️ Не удалось удалить сессию: {resp.status} - {text}")
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при delete_session: {e}", exc_info=True)
-    
+
     async def run(self, user_id: str, session_id: str, text: str) -> tuple[str, list]:
         """Отправка сообщения агенту и получение ответа (БЕЗ передачи истории)"""
         if not self.http:
             logger.error("HTTP сессия не инициализирована")
             raise RuntimeError("HTTP session not initialized")
-        
+
         url = f"{self.base_url}/run"
-    
+
         payload = {
             "app_name": self.app_name,
             "user_id": user_id,
@@ -598,23 +605,23 @@ class AdkApiClient:
                 "parts": [{"text": text}]
             }
         }
-        
+
         try:
             logger.debug(f"=== ADK REQUEST ===")
             logger.debug(f"URL: {url}")
             logger.debug(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
-            
+
             async with self.http.post(url, json=payload) as resp:
                 text_resp = await resp.text()
-                
+
                 logger.debug(f"=== ADK RESPONSE ===")
                 logger.debug(f"Status: {resp.status}")
                 logger.debug(f"Raw response: {text_resp[:1000]}")
-                
+
                 if resp.status != 200:
                     logger.error(f"ADK run failed: {resp.status} {text_resp}")
                     raise RuntimeError(f"ADK run failed: {resp.status}")
-                
+
                 try:
                     events = await resp.json()
                     logger.debug(f"=== PARSED EVENTS ===")
@@ -622,18 +629,18 @@ class AdkApiClient:
                 except Exception as e:
                     logger.warning(f"Ответ не в формате JSON: {text_resp[:200]}")
                     return text_resp, []
-                
+
                 answer = self._extract_model_text(events)
-                
+
                 if not answer:
                     logger.warning("Пустой ответ от агента")
                     logger.error(f"Не удалось извлечь текст из: {json.dumps(events, indent=2, ensure_ascii=False)}")
                     return "Агент не вернул ответ", events
-                
+
                 logger.debug(f"=== EXTRACTED ANSWER ===")
                 logger.debug(f"Answer: {answer}")
                 return answer, events
-                
+
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при run: {e}", exc_info=True)
             raise
@@ -725,7 +732,7 @@ class AdkApiClient:
         # Склеиваем и чистим
         final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
         return final
-    
+
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
         """Установка данных пользователя через system message"""
         if not self.http:
@@ -755,7 +762,7 @@ class AdkApiClient:
         )
 
         url = f"{self.base_url}/run"
-        
+
         payload = {
             "app_name": self.app_name,
             "user_id": user_id,
