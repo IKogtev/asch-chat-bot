@@ -44,3 +44,6 @@ __pycache__
 *.png
 *.csv
 *.parquet
+
+web/copilot-web/.next/
+web/copilot-web/node_modules/
