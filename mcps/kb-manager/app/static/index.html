@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UI Manager for Anastasia</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <!-- Quill editor редактор для html -->
     <link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
+    <!-- EasyMDE editor для markdown -->
+    <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
 </head>
 <body>
     <div class="container">
@@ -257,51 +260,6 @@
                     </div>
                 </div>
 
-                <!-- <div id="prompts-tab" class="tab-content">
-                    <div class="section-header">
-                        <h2>📝 Управление промптами</h2>
-                    </div>
-                    
-                    <div class="prompt-container"> -->
-                        <!-- Левая панель - история файлов -->
-                        <!-- <div class="prompt-sidebar">
-                            <h3>📚 Файлы промптов</h3>
-                            <div id="prompt-files-list" class="prompt-files-list">
-                                <div class="loading">Загрузка...</div>
-                            </div>
-                        </div> -->
-                        
-                        <!-- Правая панель - редактор -->
-                        <!-- <div class="prompt-editor-panel">
-                            <div class="prompt-header">
-                                <h3>✏️ Редактор промпта</h3>
-                                <div class="prompt-actions">
-                                    <button onclick="loadCurrentPrompt()" class="btn btn-secondary btn-small">
-                                        🔄 Обновить
-                                    </button>
-                                    <button onclick="createBackup()" class="btn btn-warning btn-small">
-                                        💾 Бэкап
-                                    </button>
-                                    <button onclick="savePrompt()" class="btn btn-primary btn-small">
-                                        💾 Сохранить
-                                    </button>
-                                </div>
-                            </div>
-                            
-                            <div class="prompt-meta" id="prompt-meta">
-                                <span>Файл: <strong id="prompt-filename">-</strong></span>
-                                <span>Размер: <strong id="prompt-size">-</strong></span>
-                                <span>Изменён: <strong id="prompt-modified">-</strong></span>
-                            </div>
-                            
-                            <textarea id="prompt-editor" class="prompt-editor" 
-                                    placeholder="Загрузка промпта..."></textarea>
-                            
-                            <div id="prompt-result" class="result-message" style="display:none;"></div>
-                        </div>
-                    </div>
-                </div> -->
-
                 <!-- Bot settings tab -->
                 <div id="bot_settings-tab" class="tab-content">
                     <div class="section-header">
@@ -441,7 +399,7 @@
                 </div>
                 <!-- Agent Prompt Modal -->
                 <div id="agent-modal" class="modal">
-                    <div class="modal-content">
+                    <div class="file-content-modal">
                         <div class="modal-header">
                             <h3 id="agent-modal-title">Agent</h3>
                             <button class="modal-close" onclick="closeAgentModal()">&times;</button>
@@ -535,7 +493,10 @@
 
     </div>
     <script src="/static/app.js?v=15" defer></script>
+    <!-- Quill editor редактор для html -->
     <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
+    <!-- EasyMDE editor для markdown -->
+    <script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
 </body>
 </html>
 

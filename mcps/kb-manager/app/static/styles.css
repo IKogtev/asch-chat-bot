@@ -198,6 +198,8 @@ header {
 .modal-body {
     padding: 24px;
     overflow-y: auto;
+    flex: 1;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 12px; /* ← комфортный минимальный отступ */
@@ -411,10 +413,16 @@ header {
     }
     .prompt-container {
         flex-direction: column;
+        display: flex;
+        width: 100%;
+        height: 100%;
     }
     .prompt-sidebar {
-        width: 100%;
+        /* width: 100%; */
         max-height: 200px;
+        width: 300px;
+        min-width: 250px;
+        max-width: 350px;
     }
     .tabs {
         overflow-x: auto;
@@ -987,6 +995,7 @@ select:focus {
     flex-direction: column;
     gap: 10px;
     min-width: 0;
+    height: 100%;
 }
 .prompt-header {
     display: flex;
@@ -1020,6 +1029,7 @@ select:focus {
     gap: 5px;
 }
 .prompt-editor {
+    flex: 1;
     width: 100%;
     font-family: 'Courier New', 'Consolas', monospace;
     font-size: 13px;
@@ -1041,6 +1051,26 @@ select:focus {
     background: var(--bg-color);
     cursor: not-allowed;
     opacity: 0.7;
+}
+
+/* редактор md формата */
+/* контейнер редактора */
+.EasyMDEContainer {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+/* сам редактор */
+.CodeMirror {
+    flex: 1;
+    height: 100% !important;
+    min-height: 0; /* важно для flex */
+}
+.editor-preview,
+.editor-preview-side {
+    height: 100%;
+    overflow: auto;
 }
 
 /* Стартовое сообщение бота - поменьше */
@@ -1165,11 +1195,16 @@ select:focus {
     background:var(--card-bg); 
     margin:50px auto; 
     padding:20px; 
-    width:80%; 
-    max-width:800px; 
+    /* width:80%;  */
+    width: 90vw;  
+    /* max-width:800px;  */
+    height: 90vh;
+    max-width:1400px; 
     border-radius:8px; 
     position:relative;
     box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+    display: flex;
+    flex-direction: column;
 }
 #news-editor .ql-editor{
     flex: 1;
