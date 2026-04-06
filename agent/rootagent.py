@@ -1,4 +1,3 @@
-import json
 from typing import AsyncGenerator, Callable, Dict, List, Any
 
 from google.genai import types as genai_types
@@ -6,21 +5,13 @@ from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
-from .config import (
-    ACTIVE_DOCUMENTS_COLLECTION,
-    KB_DOCUMENTS_COLLECTION,
-    DEBUG_EXCEPTIONS,
-)
-from .helpers import (
-    truncate_for_log,
-    extract_json,
-    format_text_answer,
-    format_reject_answer,
-)
+from .config import KB_DOCUMENTS_COLLECTION, DEBUG_EXCEPTIONS
+from .helpers import truncate_for_log, format_text_answer, format_reject_answer
+from .json_leaf_runner import run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
-from .agents.doc_search_agent import validate_doc_search_result
+from .agents.doc_search_orchestrator import DocSearchOrchestrator
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -28,14 +19,13 @@ logger = setup_logger("root_agent", "agent.log")
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
-    owasp_agent -> dispatcher_agent -> (doc_search_agent | kb_answer_agent)
+    owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
     """
 
     owasp_agent: LlmAgent
     dispatcher_agent: LlmAgent
-    doc_search_agent: LlmAgent
+    doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
-    doc_collection: str
     kb_collection: str
 
     model_config = {"arbitrary_types_allowed": True}
@@ -45,26 +35,25 @@ class RootAgent(BaseAgent):
         *,
         owasp_agent: LlmAgent,
         dispatcher_agent: LlmAgent,
-        doc_search_agent: LlmAgent,
+        doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
-        doc_collection: str = ACTIVE_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
     ):
         super().__init__(
             name="root_agent",
             owasp_agent=owasp_agent,
             dispatcher_agent=dispatcher_agent,
-            doc_search_agent=doc_search_agent,
+            doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
-            doc_collection=doc_collection,
             kb_collection=kb_collection,
             sub_agents=[
                 owasp_agent,
                 dispatcher_agent,
-                doc_search_agent,
+                doc_search_orchestrator,
                 kb_answer_agent,
             ],
         )
+
     @staticmethod
     def _extract_user_text(ctx: InvocationContext) -> str:
         """
@@ -81,7 +70,7 @@ class RootAgent(BaseAgent):
                 return "\n".join(out).strip()
 
         return ""
-    
+
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
         """Финальное событие root-агента"""
@@ -123,17 +112,17 @@ class RootAgent(BaseAgent):
         validator: Callable[[Dict[str, Any]], Dict[str, Any]],
         log_label: str,
     ) -> AsyncGenerator[Event, None]:
-        """Запуск leaf-агента с JSON-валидацией"""
-        async for event in agent.run_async(ctx):
+        """Запуск leaf-агента с JSON-валидацией (делегирует json_leaf_runner)."""
+        async for event in run_json_leaf_agent(
+            ctx=ctx,
+            agent=agent,
+            output_key=output_key,
+            parsed_state_key=parsed_state_key,
+            validator=validator,
+            log_label=log_label,
+        ):
             yield event
-        
-        raw = str(ctx.session.state.get(output_key) or "").strip()
-        logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))
-        
-        parsed = validator(extract_json(raw))
-        ctx.session.state[parsed_state_key] = parsed
-        logger.debug("%s parsed: %s", log_label, json.dumps(parsed, ensure_ascii=False))
-        
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
@@ -191,17 +180,19 @@ class RootAgent(BaseAgent):
             )
 
             if dispatch["route"] == "doc_search":
-                async for event in self._handle_doc_search(ctx, user_text, dispatch["search_query"]):
+                ctx.session.state["doc_search_intent"] = dispatch["intent"]
+                ctx.session.state["doc_search_search_query"] = dispatch["search_query"]
+                async for event in self.doc_search_orchestrator.run_async(ctx):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event(ctx, final_text)
                 return
 
             async for event in self._handle_kb_answer(
-                ctx, 
-                user_text, 
+                ctx,
+                user_text,
                 dispatch["search_query"],
-                dispatch["intent"]
+                dispatch["intent"],
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
@@ -215,34 +206,6 @@ class RootAgent(BaseAgent):
                 else "Произошла ошибка при обработке запроса. Попробуйте позже."
             )
             yield self._build_final_event(ctx, message)
-    async def _handle_doc_search(
-        self,
-        ctx: InvocationContext,
-        user_message: str,
-        search_query: str,
-    ) -> AsyncGenerator[Event, None]:
-        """
-        Запуск doc_search_agent с JSON-валидацией.
-        """
-        effective_search_query = (search_query or user_message).strip()
-        logger.info("doc_search route: query=%s", truncate_for_log(effective_search_query, 300))
-
-        # Переменные для промпта doc_search_agent
-        ctx.session.state["search_query"] = effective_search_query
-        ctx.session.state["doc_search_collection"] = self.doc_collection
-
-        async for event in self._run_json_leaf_agent(
-            ctx=ctx,
-            agent=self.doc_search_agent,
-            output_key="doc_search_result_json",
-            parsed_state_key="_doc_search_result_parsed",
-            validator=validate_doc_search_result,
-            log_label="doc_search_result_json",
-        ):
-            yield event
-
-        doc_search = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
-        ctx.session.state["_root_final_text"] = format_text_answer(doc_search["message"])
 
     async def _handle_kb_answer(
         self,
@@ -250,10 +213,10 @@ class RootAgent(BaseAgent):
         user_message: str,
         search_query: str,
         intent: str,
-        ) -> AsyncGenerator[Event, None]:
+    ) -> AsyncGenerator[Event, None]:
         """
         Запуск kb_answer_agent с прямым MCP-поиском или smalltalk.
-        
+
         Args:
             ctx: Контекст выполнения
             user_message: Исходный вопрос пользователя
@@ -261,12 +224,15 @@ class RootAgent(BaseAgent):
             intent: Тип запроса (kb_answer, smalltalk)
         """
         effective_search_query = (search_query or user_message).strip()
-        logger.info("kb_answer route: query=%s intent=%s", truncate_for_log(effective_search_query, 300), intent)
+        logger.info(
+            "kb_answer route: query=%s intent=%s",
+            truncate_for_log(effective_search_query, 300),
+            intent,
+        )
 
-        # Переменные для промпта kb_answer_agent
         ctx.session.state["search_query"] = effective_search_query
         ctx.session.state["kb_answer_collection"] = self.kb_collection
-        ctx.session.state["intent"] = intent  # Передаём intent в состояние
+        ctx.session.state["intent"] = intent
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,

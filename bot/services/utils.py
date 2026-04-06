@@ -6,6 +6,13 @@ import re
 from bot.services.config import Settings
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
+from utils.doc_search_format import (
+    render_doc_list_html,
+    parse_download_ranks,
+    extract_bot_search_meta,
+    strip_bot_search_meta,
+    extract_document_id_lines,
+)
 import json
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
@@ -34,45 +41,9 @@ def markdown_to_safe_html(text: str) -> str:
     
     return text
 
-# парсер для извлечения номеров документов из текста, например "скачай 1 и 3"
-def parse_download_ranks(text: str) -> list[int]:
-    m = Settings.DOWNLOAD_RE.match(text.strip())
-    if not m:
-        return []
-    raw = m.group(1)
-    return [int(x) for x in re.findall(r'\d+', raw)]
-
-# рендер результатов для ответа пользователю
 def render_results(items: list[dict], total: int, offset: int = 0) -> str:
-    if not items:
-        return "Ничего не нашёл."
-        
-    shown = offset + len(items)
-    if shown < total:
-        text = "Вот самые релевантные документы, которые удалось найти:\n"
-    else:
-        text = "Вот документы, которые удалось найти:\n"
-    lines = []
-    for i, item in enumerate(items, start=offset + 1):
-        title = html_module.escape(item["source_name"])
-        snippet = (item.get("snippet") or "").strip().replace("\n", " ")
-        if len(snippet) > 180:
-            snippet = snippet[:177] + "..."
-        snippet = html_module.escape(snippet)
-
-        block = f"<b>{i}. {title}</b>"
-        if snippet:
-            block += f"\n{snippet}"
-        lines.append(block)
-
-    text += "\n\n".join(lines)
-
-    if shown < total:
-        text += f"\n\nПоказано {shown} из {total}. Хотите получить весь список? Напишите <b>ещё</b>, чтобы получить следующую порцию документов; <b>все</b>, <b>покажи все</b> или <b>да</b>, чтобы получить весь список.\nИли напишите номер документа, чтобы скачать его."
-    else:
-        text += "\n\nНапишите номер документа, чтобы скачать его."
-
-    return text
+    """Рендер списка документов (логика общая с агентом doc_search)."""
+    return render_doc_list_html(items, total, offset)
 
 # извлечение bot_contract
 def extract_bot_contract(answer: str) -> dict | None:

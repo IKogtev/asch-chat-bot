@@ -7,6 +7,7 @@ from .config import (
 from .agents.owasp_agent import create_owasp_agent
 from .agents.dispatcher_agent import create_dispatcher_agent
 from .agents.doc_search_agent import create_doc_search_agent
+from .agents.doc_search_orchestrator import create_doc_search_orchestrator
 from .agents.kb_answer_agent import create_kb_answer_agent
 
 def build_agent_chain() -> RootAgent:
@@ -16,6 +17,10 @@ def build_agent_chain() -> RootAgent:
     model = build_common_model()
 
     doc_search_agent = create_doc_search_agent(model)
+    doc_search_orchestrator = create_doc_search_orchestrator(
+        doc_search_agent,
+        doc_collection=ACTIVE_DOCUMENTS_COLLECTION,
+    )
     kb_answer_agent = create_kb_answer_agent(model)
     dispatcher_agent = create_dispatcher_agent(model)
     owasp_agent = create_owasp_agent(model)
@@ -23,9 +28,8 @@ def build_agent_chain() -> RootAgent:
     return RootAgent(
         owasp_agent=owasp_agent,
         dispatcher_agent=dispatcher_agent,
-        doc_search_agent=doc_search_agent,
+        doc_search_orchestrator=doc_search_orchestrator,
         kb_answer_agent=kb_answer_agent,
-        doc_collection=ACTIVE_DOCUMENTS_COLLECTION,
         kb_collection=KB_DOCUMENTS_COLLECTION,
     )
 
