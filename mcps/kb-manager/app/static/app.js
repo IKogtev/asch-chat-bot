@@ -15,6 +15,7 @@ let currentPromptContent = "";
 let promptFiles = [];
 let botStartMessageContent = "";
 let newsEditor = null;
+let currentAgent = null;
 
 
 // Initialize on load
@@ -1741,19 +1742,128 @@ function closeFileModal() {
 // #############################
 // PROMPTS TAB LOGIC
 // #############################
-
-// Загрузка вкладки Prompts
+// Загрузка вкладки Prompts новой логики
 async function loadPromptsTab() {
-    await loadPromptFiles();
-    await loadCurrentPrompt();
+    const container = document.getElementById("agents-list");
+    container.innerHTML = '<div class="loading">Loading agents...</div>';
+
+    try {
+        const res = await fetch("/api/prompts/agents");
+        const agents = await res.json();
+
+        if (!agents.length) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">🤖</div>
+                    <p>No agents found</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = agents.map(agent => `
+            <div class="document-card">
+                <div class="document-header">
+                    <div class="document-title">🤖 ${agent}</div>
+                    <div class="document-actions">
+                        <button 
+                            class="btn btn-primary btn-small"
+                            onclick="openAgent('${agent}')">
+                            👁️ View
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `).join("");
+
+    } catch (err) {
+        container.innerHTML = `<div class="result-message error">Error loading agents</div>`;
+        console.error(err);
+    }
 }
+// открытие агента 
+async function openAgent(agent) {
+    currentAgent = agent;
+
+    // заголовок модалки
+    const title = document.getElementById("agent-modal-title");
+    if (title) {
+        title.textContent = `🤖 ${agent}`;
+    }
+
+    // открываем модалку
+    const modal = document.getElementById("agent-modal");
+    if (modal) {
+        modal.classList.add("active");
+    }
+
+    // сбрасываем UI внутри
+    const filesList = document.getElementById("prompt-files-list");
+    if (filesList) {
+        filesList.innerHTML = '<div class="loading">Loading...</div>';
+    }
+
+    const editor = document.getElementById("prompt-editor");
+    if (editor) {
+        editor.value = "";
+    }
+
+    // 👉 загружаем файлы агента
+    loadAgentFiles(agent);
+
+    // 👉 грузим текущий промпт (пока старый API, потом поправим)
+    loadCurrentPrompt();
+}
+
+function closeAgentModal() {
+    const modal = document.getElementById("agent-modal");
+    if (modal) {
+        modal.classList.remove("active");
+    }
+
+    currentAgent = null;
+}
+async function loadAgentFiles(agent) {
+    const container = document.getElementById("prompt-files-list");
+
+    if (!container) return;
+
+    container.innerHTML = '<div class="loading">Loading...</div>';
+
+    try {
+        const res = await fetch(`/api/prompts/files?agent=${agent}`);
+        const files = await res.json();
+
+        if (!files || files.length === 0) {
+            container.innerHTML = '<div class="empty-state">No files</div>';
+            return;
+        }
+
+        container.innerHTML = files.map(file => `
+            <div class="prompt-file-item" onclick="loadPromptFile('${file}')">
+                📄 ${file}
+            </div>
+        `).join("");
+
+    } catch (e) {
+        console.error(e);
+        container.innerHTML = "❌ Error loading files";
+    }
+}
+
+// загрука вкладки Prompts для старой логики
+// async function loadPromptsTab() {
+//     await loadPromptFiles();
+//     await loadCurrentPrompt();
+// }
 // Загрузка списка файлов промптов
 async function loadPromptFiles() {
     const filesList = document.getElementById("prompt-files-list");
     filesList.innerHTML = '<div class="loading">Загрузка...</div>';
     
     try {
-        const res = await fetch("/api/prompts/list");
+        // const res = await fetch("/api/prompts/list");
+        const res = await fetch(`/api/prompts/list?agent=${currentAgent}`);
         const data = await res.json();
         promptFiles = data.files || [];
         
@@ -1800,7 +1910,8 @@ async function loadCurrentPrompt() {
     editor.disabled = true;
     
     try {
-        const res = await fetch("/api/prompts/current");
+        // const res = await fetch("/api/prompts/current");
+        const res = await fetch(`/api/prompts/current?agent=${currentAgent}`);
         const data = await res.json();
         
         currentPromptContent = data.content;
@@ -1830,7 +1941,7 @@ async function loadPromptFile(filename) {
     const editor = document.getElementById("prompt-editor");
     
     try {
-        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}`);
+        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`);
         const data = await res.json();
         
         editor.value = data.content;
@@ -1862,7 +1973,8 @@ async function createBackup() {
     resultDiv.innerHTML = "⏳ Создание бэкапа...";
     
     try {
-        const res = await fetch("/api/prompts/backup", { method: "POST" });
+        // const res = await fetch("/api/prompts/backup", { method: "POST" });
+        const res = await fetch(`/api/prompts/backup?agent=${currentAgent}`, { method: "POST" });
         const data = await res.json();
         
         if (res.ok) {
@@ -1901,7 +2013,10 @@ async function savePrompt() {
         const res = await fetch("/api/prompts/save", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: newContent })
+            body: JSON.stringify({
+                 content: newContent,
+                 agent: currentAgent 
+            })
         });
         
         const data = await res.json();
@@ -1927,7 +2042,7 @@ async function restorePrompt(filename) {
     }
     
     try {
-        const res = await fetch(`/api/prompts/restore/${encodeURIComponent(filename)}`, {
+        const res = await fetch(`/api/prompts/restore/${encodeURIComponent(filename)}?agent=${currentAgent}`, {
             method: "POST"
         });
         
@@ -1952,7 +2067,7 @@ async function deletePromptFile(filename) {
     }
     
     try {
-        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}`, {
+        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`, {
             method: "DELETE"
         });
         
