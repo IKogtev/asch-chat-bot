@@ -58,3 +58,6 @@ web/copilot-web/*.tsbuildinfo
 !web/copilot-web/tsconfig.json
 !web/copilot-web/next.config.ts
 !web/copilot-web/next-env.d.ts
+
+web/copilot-web/.next/
+web/copilot-web/node_modules/
