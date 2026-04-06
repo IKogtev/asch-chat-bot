@@ -22,6 +22,7 @@ services:
       retries: 20
     networks:
       - aszh-bot-network
+
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: aszh-bot-pgadmin
@@ -58,15 +59,31 @@ services:
       - LLM_API_MODEL=${LLM_API_MODEL}
       - PORT=8000
       - HOST=0.0.0.0
-      - KBSEARCH_MCP_URL=${KBSEARCH_MCP_URL}
+
+      # MCP kb_search
+      - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
       - MCP_TOKEN=${MCP_TOKEN}
-      - KB_COLLECTION=${KB_COLLECTION}
+      - MCP_TIMEOUT_SEC=${MCP_TIMEOUT_SEC:-60}
+
+      # Documents paths
+      - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
+      - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
+      - ARCHIVE_DOCUMENTS_PATH=${ARCHIVE_DOCUMENTS_PATH:-archive_kb/}
+      - ARCHIVE_DOCUMENTS_COLLECTION=${ARCHIVE_DOCUMENTS_COLLECTION:-archive_kb_collection}
+      - KB_DOCUMENTS_PATH=${KB_DOCUMENTS_PATH:-knowledge_base/}
+      - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
+
+      - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
+      - ./agent:/app/agent
       - ./kb_storage/prompts:/app/agent/prompts
     tmpfs:
       - /app/agent/.adk:size=100M
     networks:
       - aszh-bot-network
+    depends_on:
+      kbsearch:
+        condition: service_healthy
 
   bot:
     build:
@@ -82,7 +99,7 @@ services:
       kb-manager:
         condition: service_started
     ports:
-      - 8001:8001
+      - "8001:8001"
     env_file:
       - .env
     volumes:
@@ -106,9 +123,10 @@ services:
     ports:
       - "6333:6333"
     volumes:
-      - qdrant-storage:/qdrant/storage # здесь qdrant будет хранить свои данные индексы
+      - qdrant-storage:/qdrant/storage
     networks:
       - aszh-bot-network
+
   kb-manager:
     build:
       context: ./mcps/kb-manager
@@ -117,7 +135,7 @@ services:
     container_name: kb-manager
     restart: unless-stopped
     ports:
-      - 5000:5000
+      - "5000:5000"
     volumes:
       - ./kb_storage:/app/data/kb_documents
       - ./kb_storage/prompts:/app/data/prompts
@@ -125,7 +143,7 @@ services:
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - QDRANT_COLLECTION=kb_collection
+      - QDRANT_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
@@ -155,7 +173,6 @@ services:
     ports:
       - "7001:7001"
     environment:
-      # Основные настройки сервера
       - MCP_HOST=0.0.0.0
       - MCP_PORT=7001
       - MCP_KBSEARCH=/kbsearch
@@ -163,30 +180,26 @@ services:
       - IN_DOCKER=true
       - LOG_TO_FILE=false
       - LOG_LEVEL=${KB_LOG_LEVEL:-INFO}
-      
-      # Настройки удалённого эмбеддинга
+
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-REDACTED_EXAMPLE}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
 
-      # Настройки эмбеддинга и индексирования
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
       - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-15}
       - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.15}
 
-      # Qdrant
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_URL=http://qdrant:6333
-      - QDRANT_COLLECTION=kb_collection
+      - QDRANT_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
       - USE_QDRANT=true
     depends_on:
       kb-manager:
         condition: service_healthy
     networks:
       - aszh-bot-network
-    
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:7001/kb/status')"]
       interval: 60s
@@ -195,40 +208,74 @@ services:
       start_period: 60s
 
   mcp-filesystem:
-    build: 
+    build:
       context: ./mcps/mcp-filesystem-http
     container_name: mcp-filesystem
     restart: unless-stopped
     ports:
-      - "7002:8080" 
+      - "7002:8080"
     volumes:
       - ./kb_storage:/mcp-filesystem/kb:ro
     networks:
       - aszh-bot-network
     environment:
       - NODE_ENV=production
-      
+
   file-manager:
     image: filegator/filegator:latest
     container_name: kb-file-ui
-    user: "0:0" # Запускаем от рута, чтобы отработал chown в скрипте
+    user: "0:0"
     restart: unless-stopped
     entrypoint: ["/filegator_init.sh"]
     ports:
       - "8081:8080"
     volumes:
-      - ./kb_storage:/var/www/filegator/repository 
+      - ./kb_storage:/var/www/filegator/repository
       - ./filegator_data:/var/www/filegator/private
-      - ./filegator_init.sh:/filegator_init.sh:ro # Прокидываем наш скрипт
+      - ./filegator_init.sh:/filegator_init.sh:ro
     environment:
       - TZ=Europe/Moscow
-      # username=admin
-      # если хотим изменить то меняем в filegator_init.sh на нужный нам, 
-      # только важно вставлять сразу хэш пароля, можно получить вот тут 
-      # хэш: https://bcrypt-generator.com/ 
-      # password=admin123 
     networks:
       - aszh-bot-network
+
+  adk-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: aszh-adk-web
+    command: >
+      sh -c "cd /app && adk web --host 0.0.0.0 --port 8080"
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL}
+      - LLM_API_MODEL=${LLM_API_MODEL}
+
+      # MCP kb_search
+      - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
+      - MCP_TOKEN=${MCP_TOKEN}
+      - MCP_TIMEOUT_SEC=${MCP_TIMEOUT_SEC:-60}
+
+      # Documents paths
+      - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
+      - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
+      - ARCHIVE_DOCUMENTS_PATH=${ARCHIVE_DOCUMENTS_PATH:-archive_kb/}
+      - ARCHIVE_DOCUMENTS_COLLECTION=${ARCHIVE_DOCUMENTS_COLLECTION:-archive_kb_collection}
+      - KB_DOCUMENTS_PATH=${KB_DOCUMENTS_PATH:-knowledge_base/}
+      - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
+
+      - KB_TOP_K=${KB_TOP_K:-5}
+    volumes:
+      - ./agent:/app/agent
+      - ./kb_storage/prompts:/app/agent/prompts
+    networks:
+      - aszh-bot-network
+    depends_on:
+      kbsearch:
+        condition: service_healthy
 
 volumes:
   pg_data:
@@ -237,5 +284,4 @@ volumes:
 
 networks:
   aszh-bot-network:
-    # external: true
     driver: bridge
