@@ -1,24 +1,26 @@
 import json
 import re
-from pathlib import Path
 from typing import Any, Dict, List
 
 
 def load_prompt(filename: str, fallback: str) -> str:
     """
-    Загружает промпт из файла или возвращает fallback.
+    Загружает промпт из файла из подпапки агента или возвращает fallback.
+    kb_answer_agent_prompt.md -> kb_answer/kb_answer_agent_prompt.md
     """
     from .config import PROMPTS_DIR
-    
-    prompt_path = PROMPTS_DIR / filename
-    
-    if prompt_path.exists():
-        try:
+    from utils.logger import setup_logger
+            
+    logger = setup_logger("agent_helpers", "agent.log")
+    try:
+        # извлекаем имя агента
+        agent_name = filename.split("_agent")[0]
+        # формируем путь
+        prompt_path = PROMPTS_DIR / agent_name/ filename
+        if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8").strip()
-        except Exception as e:
-            from utils.logger import setup_logger
-            logger = setup_logger("agent_helpers", "agent.log")
-            logger.warning(f"Failed to load prompt from {filename}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to load prompt from {filename}: {e}")
     
     return fallback.strip()
 
