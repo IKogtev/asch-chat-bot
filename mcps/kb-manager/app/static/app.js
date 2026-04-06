@@ -1792,9 +1792,6 @@ async function openAgent(agent) {
             spellChecker: false,
             status: false,
             minHeight: "400px",
-            // previewRender: (plainText) => {
-            //     return EasyMDE.prototype.markdown(plainText);
-            // }
         });
     }
     // открываем модалку
@@ -1815,10 +1812,6 @@ async function openAgent(agent) {
         filesList.innerHTML = '<div class="loading">Загрузка...</div>';
     }
 
-    // const editor = document.getElementById("prompt-editor");
-    // if (editor) {
-    //     editor.value = "";
-    // }
     if (promptEditorMDE) {
         promptEditorMDE.value("");
     }
@@ -1888,8 +1881,6 @@ async function loadCurrentPrompt() {
     
     promptEditorMDE.value("Загрузка...");
     promptEditorMDE.codemirror.setOption("readOnly", true);
-    // editor.value = "Загрузка...";
-    // editor.disabled = true;
     
     try {
         const res = await fetch(`/api/prompts/current?agent=${currentAgent}`);
@@ -1898,8 +1889,6 @@ async function loadCurrentPrompt() {
         currentPromptContent = data.content;
         promptEditorMDE.value(currentPromptContent);
         promptEditorMDE.codemirror.setOption("readOnly", false);
-        // editor.value = currentPromptContent;
-        // editor.disabled = false;
         
         metaFilename.textContent = data.name;
         metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
@@ -1921,14 +1910,12 @@ async function loadCurrentPrompt() {
 }
 // Загрузка конкретного файла промпта
 async function loadPromptFile(filename) {
-    // const editor = document.getElementById("prompt-editor");
     
     try {
         const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`);
         const data = await res.json();
         
         promptEditorMDE.value(data.content);
-        // editor.value = data.content;
         currentPromptContent = data.content;
         
         // Обновление мета-информации
@@ -1974,10 +1961,8 @@ async function createBackup() {
 }
 // Сохранение промпта
 async function savePrompt() {
-    // const editor = document.getElementById("prompt-editor");
     const resultDiv = document.getElementById("prompt-result");
     
-    // const newContent = editor.value;
     const newContent = promptEditorMDE.value();
 
     if (!newContent.trim()) {

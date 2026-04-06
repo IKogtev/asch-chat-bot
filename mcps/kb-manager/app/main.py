@@ -405,7 +405,9 @@ async def filesystem_sync(
 
     return {"status": "sync_completed"}
 
-
+##################################
+# Авторизация и главная
+##################################
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main UI"""
