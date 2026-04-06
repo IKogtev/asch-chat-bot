@@ -5,7 +5,6 @@ from google.adk.models.lite_llm import LiteLlm
 
 from ..helpers import load_prompt
 
-
 def validate_owasp_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Валидация результата owasp_agent.
