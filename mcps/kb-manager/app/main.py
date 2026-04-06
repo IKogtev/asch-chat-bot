@@ -1006,7 +1006,7 @@ async def list_prompts(agent: str):
                     "size": stat.st_size,
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                     "is_current": file.name == f"{agent}_agent_prompt.md",
-                    "is_backup": file.name.startswith("agent_prompt_backup_")
+                    "is_backup": file.name.startswith(f"{agent}_agent_prompt_backup_")
                 })
         prompts.sort(key=lambda x: (
             not x["is_current"],
@@ -1024,10 +1024,9 @@ async def list_prompts(agent: str):
 
 @app.get("/api/prompts/current")
 async def get_current_prompt(agent: str):
-    """Получить текущий промпт (f"{agent}_agent_prompt.md")"""
+    """Получить текущий промпт (f'{agent}_agent_prompt.md')"""
     try:
         prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
-        # prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
         
@@ -1105,15 +1104,13 @@ async def save_prompt(data: dict):
         if not content:
             raise HTTPException(status_code=400, detail="Content is required")
         
-
-        # prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
         prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         
         # 1. Создать бэкап если файл существует
         if prompt_file.exists():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"agent_prompt_backup_{timestamp}.md"
-            backup_file = PROMPTS_STORAGE_ROOT / backup_name
+            backup_name = f"{agent}_agent_prompt_backup_{timestamp}.md"
+            backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
             shutil.copy2(prompt_file, backup_file)
             logger.info(f"Created backup before save: {backup_name}")
         
@@ -1139,11 +1136,11 @@ async def restore_prompt(filename: str, agent: str):
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        backup_file = PROMPTS_STORAGE_ROOT / filename
+        backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="Backup file not found")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / f"{agent}_agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         shutil.copy2(backup_file, prompt_file)
         
         logger.info(f"Restored prompt from backup: {filename}")
