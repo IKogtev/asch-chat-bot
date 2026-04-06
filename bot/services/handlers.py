@@ -15,10 +15,21 @@ from utils import setup_logger
 # импортируем конфиг
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
+from utils.doc_search_format import (
+    extract_bot_search_meta,
+    extract_document_id_lines,
+    strip_bot_search_meta,
+)
 from bot.services.utils import (
-    markdown_to_safe_html, parse_download_ranks, render_results, extract_bot_contract, 
-    normalize_contract_results, extract_search_results_from_events, handle_download_by_ranks,
-    handle_show_all, handle_show_more, build_menu_from_tree, get_document_id, get_kb_tree)
+    markdown_to_safe_html,
+    render_results,
+    extract_bot_contract,
+    normalize_contract_results,
+    extract_search_results_from_events,
+    build_menu_from_tree,
+    get_document_id,
+    get_kb_tree,
+)
 
 logger = setup_logger('handlers', 'handlers.log')
 # переменные для сохранения дерева папок в кэше
@@ -181,44 +192,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         logger.info(f"📨 Сообщение от user_id={user_id} (@{user['username']}): {user_text[:100]}")
 
         try:
-            # 1. follow-up: download by rank
-            ranks = parse_download_ranks(user_text)
-            if ranks:
-                handled = await handle_download_by_ranks(
-                    m=m,
-                    store=store,
-                    doc_handler=doc_handler,
-                    user_id=user_id,
-                    session_id=session_id,
-                    ranks=ranks,
-                )
-                if handled:
-                    return
-            
-            # 3. follow-up: show more
-            if Settings.SHOW_MORE_RE.match(user_text) and Settings.SHOW_BY_PAGE:
-                handled = await handle_show_more(
-                    m=m,
-                    store=store,
-                    user_id=user_id,
-                    session_id=session_id,
-                    page_size=Settings.SHOW_MAX,
-                )
-                if handled:
-                    return
+            # Список документов, пагинация и выбор document_id обрабатываются в doc_search (ADK).
 
-            # 2. follow-up: show all
-            if Settings.SHOW_ALL_RE.match(user_text):
-                handled = await handle_show_all(
-                    m=m,
-                    store=store,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                if handled:
-                    return
-
-            # 4. обычный запрос -> ADK
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
 
             # Загружаем данные пользователя в состояние ADK (на случай если сессия новая)
@@ -290,12 +265,48 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 except Exception as log_err:
                     logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")
 
+            work = answer or ""
+            work, doc_ids = extract_document_id_lines(work)
+            for did in doc_ids:
+                file_path = None
+                try:
+                    file_path = await doc_handler.download_document(did)
+                    if file_path and file_path.exists():
+                        await m.answer_document(
+                            FSInputFile(str(file_path), filename=file_path.name)
+                        )
+                    else:
+                        await m.answer("⚠️ Не удалось загрузить документ.")
+                except Exception as doc_err:
+                    logger.error(
+                        f"Ошибка отправки документа doc_id={did}: {doc_err}",
+                        exc_info=True,
+                    )
+                    await m.answer("❌ Ошибка при загрузке документа.")
+                finally:
+                    try:
+                        if file_path and file_path.exists():
+                            file_path.unlink()
+                    except Exception:
+                        pass
+
+            meta = extract_bot_search_meta(work)
+            if meta and meta.get("action") == "update_shown":
+                try:
+                    await store.update_shown_count(
+                        user_id, session_id, int(meta["count"])
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+            work = strip_bot_search_meta(work)
+
             # 5. сохраняем историю диалога
             await store.append(user_id, "user", user_text)
             await store.append(user_id, "model", answer)
 
             # 6. пробуем сначала вытащить bot_contract из ответа агента
-            contract = extract_bot_contract(answer)
+            contract = extract_bot_contract(work)
             if contract:
                 reranked_items = normalize_contract_results(contract)
 
@@ -316,8 +327,12 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     await m.answer("Не нашёл релевантных файлов по запросу.")
                 return
             
-            # 7. fallback: старая логика через events
-            extracted_items = extract_search_results_from_events(events)
+            # 7. fallback: kb_search из events (только если в ответе нет готового текста)
+            extracted_items = (
+                extract_search_results_from_events(events)
+                if not (work or "").strip()
+                else []
+            )
             if extracted_items:
                 await store.save_search_results(
                     user_id=user_id,
@@ -330,11 +345,14 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             else:
                 logger.info("ℹ️ Из events не удалось извлечь search-state")
 
-            # 8. answer пользователю — старый путь
-            clean_answer = doc_handler.remove_document_ids(answer)
+            # 8. ответ пользователю (в т.ч. HTML от «ещё» / «все» из doc_search)
+            clean_answer = doc_handler.remove_document_ids(work)
             if clean_answer.strip():
-                html_answer = markdown_to_safe_html(clean_answer)
-                await m.answer(html_answer, parse_mode="HTML") 
+                if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):
+                    await m.answer(clean_answer, parse_mode="HTML")
+                else:
+                    html_answer = markdown_to_safe_html(clean_answer)
+                    await m.answer(html_answer, parse_mode="HTML")
 
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)

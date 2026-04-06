@@ -15,6 +15,7 @@ logger = setup_logger("doc_search_agent", "agent.log")
 def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Валидация результата doc_search_agent.
+    Для mode=document_list обязателен непустой results (полный список после kb_search + LLM).
     """
     status = data.get("status")
     mode = data.get("mode")
@@ -29,10 +30,37 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
     if not message:
         raise ValueError("message is required")
 
+    results_raw = data.get("results")
+    validated: list[Dict[str, Any]] = []
+
+    if mode == "document_list":
+        if not isinstance(results_raw, list) or not results_raw:
+            raise ValueError("document_list requires non-empty results array")
+        for item in results_raw:
+            if not isinstance(item, dict):
+                continue
+            document_id = item.get("document_id")
+            source_name = item.get("source_name")
+            if not document_id or not source_name:
+                continue
+            validated.append(
+                {
+                    "document_id": document_id,
+                    "source_name": str(source_name),
+                    "source_path": str(item["source_path"]).strip()
+                    if item.get("source_path")
+                    else None,
+                    "snippet": str(item.get("snippet") or "").strip()[:500],
+                }
+            )
+        if not validated:
+            raise ValueError("document_list: no valid items in results")
+
     return {
         "status": status,
         "mode": mode,
         "message": message,
+        "results": validated,
     }
 
 
@@ -83,11 +111,14 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
 5. Возвращай только JSON без markdown fences.
 6. В message можно использовать выделение текста для имён файлов и заголовка списка.
 
-Формат ответа:
+Формат ответа (для document_list обязателен массив results — полный список документов):
 {
   "status": "ok",
   "mode": "document_list",
-  "message": "**Найденные файлы:**\\n1. **Имя файла** — краткий комментарий."
+  "message": "Краткое вводное предложение.",
+  "results": [
+    {"document_id": "...", "source_name": "...", "source_path": null, "snippet": "..."}
+  ]
 }
 """
 

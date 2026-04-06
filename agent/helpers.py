@@ -57,6 +57,19 @@ def format_search_results_contract(message: str, results: List[Dict[str, Any]]) 
     return f"<bot_contract>{json.dumps(payload, ensure_ascii=False)}</bot_contract>"
 
 
+def format_bot_contract_search_results(results: List[Dict[str, Any]]) -> str:
+    """
+    Контракт для сохранения списка в БД бота (mode=search_results).
+    """
+    payload = {"mode": "search_results", "results": results}
+    return f"<bot_contract>{json.dumps(payload, ensure_ascii=False)}</bot_contract>"
+
+
+def format_bot_search_meta(payload: Dict[str, Any]) -> str:
+    """Служебная разметка для обновления shown_count в БД бота."""
+    return f"<bot_search_meta>{json.dumps(payload, ensure_ascii=False)}</bot_search_meta>"
+
+
 def format_text_answer(message: str) -> str:
     """
     Форматирует текстовый ответ.
