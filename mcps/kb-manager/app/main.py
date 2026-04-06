@@ -1052,7 +1052,6 @@ async def get_prompt_file(filename: str, agent: str):
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        # prompt_file = PROMPTS_STORAGE_ROOT / filename
         prompt_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
@@ -1191,21 +1190,6 @@ async def get_agents():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/api/prompts/files")
-async def get_agent_files(agent: str):
-    """Получаем файлы для наших агентов"""
-    agent_path = PROMPTS_STORAGE_ROOT / agent
-
-    if not agent_path.exists():
-        raise HTTPException(404, "Agent not found")
-
-    files = [
-        f.name for f in agent_path.iterdir()
-        if f.is_file()
-    ]
-
-    return files
 ############################
 # Работа с настройками бота 
 ############################
