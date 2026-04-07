@@ -8,8 +8,7 @@ RUN pip install --no-cache-dir -r requirements-agent.txt
 # Копируем utils для логирования
 COPY utils/ ./utils/
 
-# Копируем только необходимые файлы из agent/, исключая кэш
-COPY agent/*.py ./agent/
+COPY agent/ ./agent/
 
 # Создаём директорию для логов
 RUN mkdir -p /app/logs

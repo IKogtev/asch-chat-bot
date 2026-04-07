@@ -1,0 +1,18 @@
+# Образ для запуска pytest внутри сети Docker (тот же стек зависимостей, что у adk-agent + тесты).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements-agent.txt tests/requirements-agent-tests.txt ./
+RUN pip install --no-cache-dir -r requirements-agent.txt \
+    && pip install --no-cache-dir -r requirements-agent-tests.txt
+
+COPY utils/ ./utils/
+COPY agent/ ./agent/
+COPY tests/ ./tests/
+COPY pytest.ini ./
+
+ENV PYTHONPATH=/app
+
+# Переопределяется в docker-compose (command)
+CMD ["python", "-m", "pytest", "tests/agent/", "-v", "--tb=short"]
