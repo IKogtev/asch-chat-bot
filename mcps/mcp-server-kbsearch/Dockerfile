@@ -4,6 +4,9 @@ FROM python:3.11-slim AS base
 # Создание рабочей директории
 WORKDIR /app
 
+# Копируем pip.conf для ускорения установки
+COPY pip.conf /etc/pip.conf
+
 # Копирование requirements.txt
 COPY app/requirements-server.txt .
 

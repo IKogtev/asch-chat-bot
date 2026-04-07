@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Копируем pip.conf для ускорения установки
+COPY pip.conf /etc/pip.conf
+
 COPY requirements-bot.txt .
 RUN pip install --no-cache-dir -r requirements-bot.txt
 
