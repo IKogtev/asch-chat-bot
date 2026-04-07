@@ -1,47 +1,41 @@
 from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 import threading
+import time
+from .config import PROMPTS_DIR
 
-class PromptManager(FileSystemEventHandler):
-    """Менеджер для автоматической перезагрузки промпта при изменении файла"""
-    
-    def __init__(self, prompt_path: Path, agent, logger):
-        self.prompt_path = prompt_path
-        self.agent = agent
-        self.logger = logger
-        self._load_prompt()
+def start_prompt_watcher(prompt_file: str, agent, logger):
+    """
+    Надёжный watcher через polling (без watchdog)
+    """
+    agent_name = prompt_file.split("_agent")[0]
+    prompt_path = PROMPTS_DIR / agent_name / prompt_file
 
-    def _load_prompt(self):
-        """Внутренний метод для чтения файла"""
-        try:
-            new_content = self.prompt_path.read_text(encoding="utf-8")
-            self.agent.instruction = new_content
-            if hasattr(self.agent, '_instruction'):
-                self.agent._instruction = new_content
-                
-            self.logger.info(f"🔄 Промпт успешно обновлен из файла: {self.prompt_path.name}")
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка при автоматической загрузке промпта: {e}")
+    logger.info(f"👀 Watching: {prompt_path}")
 
-    def on_modified(self, event):
-        if not event.is_directory and Path(event.src_path).resolve() == self.prompt_path.resolve():
-            self._load_prompt()
+    def watch():
+        last_mtime = 0
 
-def load_system_prompt(prompt_file: Path, logger) -> str:
-    """Загрузить системный промпт из файла"""
-    try:
-        system_prompt = prompt_file.read_text(encoding="utf-8")
-        logger.info(f"Системный промпт загружен из {prompt_file}")
-        return system_prompt
-    except Exception as e:
-        logger.error(f"Ошибка загрузки промпта: {e}")
-        return "Ты полезный ассистент в Telegram."
+        while True:
+            try:
+                if prompt_path.exists():
+                    mtime = prompt_path.stat().st_mtime
 
-def start_prompt_watcher(prompt_file: Path, agent, logger):
-    """Запустить слежение за изменениями файла промпта"""
-    event_handler = PromptManager(prompt_file, agent, logger)
-    observer = Observer()
-    observer.schedule(event_handler, path=str(prompt_file.parent), recursive=False)
-    threading.Thread(target=observer.start, daemon=True).start()
-    logger.info(f"✓ Запущено слежение за промптом: {prompt_file}")
+                    if mtime != last_mtime:
+                        last_mtime = mtime
+
+                        new_prompt = prompt_path.read_text(encoding="utf-8")
+                        agent.instruction = new_prompt
+
+                        logger.warning(f"🔥 PROMPT UPDATED: {prompt_file}")
+
+                time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Watcher error: {e}")
+                time.sleep(2)
+
+    thread = threading.Thread(target=watch, daemon=True)
+    thread.start()
+
+    # держим ссылку
+    agent._prompt_watcher_thread = thread

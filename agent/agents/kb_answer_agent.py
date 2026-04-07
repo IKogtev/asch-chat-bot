@@ -8,6 +8,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from utils.logger import setup_logger
 from ..config import KBSEARCH_MCP_URL, MCP_TOKEN, MCP_TIMEOUT_SEC
 from ..helpers import load_prompt
+from ..prompt_loader import start_prompt_watcher
 
 logger = setup_logger("kb_answer_agent", "agent.log")
 
@@ -94,11 +95,14 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
   "message": "Краткий ответ"
 }
 """
-
-    return LlmAgent(
+    prompt_file = "kb_answer_agent_prompt.md" 
+    instruction = load_prompt(prompt_file, fallback)
+    agent = LlmAgent(
         name="kb_answer_agent",
         model=model,
-        instruction=load_prompt("kb_answer_agent_prompt.md", fallback),
+        instruction=instruction,
         tools=tools,
         output_key="kb_answer_result_json",
     )
+    start_prompt_watcher(prompt_file, agent, logger)
+    return agent
