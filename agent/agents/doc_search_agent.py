@@ -8,6 +8,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from utils.logger import setup_logger
 from ..config import KBSEARCH_MCP_URL, MCP_TOKEN, MCP_TIMEOUT_SEC
 from ..helpers import load_prompt
+from ..prompt_loader import start_prompt_watcher
 
 logger = setup_logger("doc_search_agent", "agent.log")
 
@@ -121,11 +122,15 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
   ]
 }
 """
-
-    return LlmAgent(
+    
+    prompt_file = "doc_search_agent_prompt.md"
+    instruction = load_prompt(prompt_file, fallback)
+    agent = LlmAgent(
         name="doc_search_agent",
         model=model,
-        instruction=load_prompt("doc_search_agent_prompt.md", fallback),
+        instruction=instruction,
         tools=tools,
         output_key="doc_search_result_json",
     )
+    start_prompt_watcher(prompt_file, agent, logger)
+    return agent

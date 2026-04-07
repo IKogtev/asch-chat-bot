@@ -15,7 +15,6 @@ from .agents.doc_search_orchestrator import DocSearchOrchestrator
 
 logger = setup_logger("root_agent", "agent.log")
 
-
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
@@ -53,6 +52,16 @@ class RootAgent(BaseAgent):
                 kb_answer_agent,
             ],
         )
+
+    def _get_user_profile(self, ctx: InvocationContext) -> Dict[str, Any]:
+        """
+        Извлекает профиль пользователя из ctx.user.state.
+        """
+        profile = {}
+        if hasattr(ctx, "user") and hasattr(ctx.user, "state"):
+            for key, value in ctx.user.state.items():
+                profile[key] = value
+        return profile
 
     @staticmethod
     def _extract_user_text(ctx: InvocationContext) -> str:
@@ -224,12 +233,13 @@ class RootAgent(BaseAgent):
             intent: Тип запроса (kb_answer, smalltalk)
         """
         effective_search_query = (search_query or user_message).strip()
-        logger.info(
-            "kb_answer route: query=%s intent=%s",
-            truncate_for_log(effective_search_query, 300),
-            intent,
-        )
+        logger.info("kb_answer route: query=%s intent=%s", truncate_for_log(effective_search_query, 300), intent)
 
+        # Переменные для промпта kb_answer_agent
+        user_profile = self._get_user_profile(ctx)
+        # Распаковываем все поля профиля в корень state
+        for key, value in user_profile.items():
+            ctx.session.state[key] = value
         ctx.session.state["search_query"] = effective_search_query
         ctx.session.state["kb_answer_collection"] = self.kb_collection
         ctx.session.state["intent"] = intent

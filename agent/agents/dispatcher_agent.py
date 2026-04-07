@@ -4,7 +4,10 @@ from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
 from ..helpers import load_prompt
+from utils.logger import setup_logger
+from ..prompt_loader import start_prompt_watcher
 
+logger = setup_logger("dispatcher_agent", "agent.log")
 
 def validate_dispatcher_result(data: Dict[str, Any]) -> Dict[str, Any]:
     status = str(data.get("status", "")).strip()
@@ -77,9 +80,13 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
 - show_more / show_all / file_download — follow-up к списку документов, route=doc_search
 - используй только snake_case
 """
-    return LlmAgent(
+    prompt_file = "dispatcher_agent_prompt.md" 
+    instruction = load_prompt(prompt_file, fallback)
+    agent = LlmAgent(
         name="dispatcher_agent",
         model=model,
-        instruction=load_prompt("dispatcher_agent_prompt.md", fallback),
+        instruction=instruction,
         output_key="dispatcher_result_json",
     )
+    start_prompt_watcher(prompt_file, agent, logger)
+    return agent

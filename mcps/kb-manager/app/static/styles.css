@@ -29,12 +29,17 @@ body {
     color: var(--text-primary);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    height: 100%;
 }
 
 .container {
     max-width: 1200px;
     margin: 0 auto;
     padding: 20px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100vh; 
 }
 
 header {
@@ -43,11 +48,6 @@ header {
     border-radius: 12px;
     margin-bottom: 30px;
     box-shadow: var(--shadow);
-}
-
-header h1 {
-    font-size: 2rem;
-    margin-bottom: 10px;
 }
 
 .header-info {
@@ -68,6 +68,14 @@ header h1 {
 .search-options {
     display: flex;
     gap: 16px;
+    width: 100%;
+    max-width: 100%;
+    flex-wrap: wrap;
+}
+.search-options select {
+    min-width: 150px;
+    max-width: 300px;
+    flex: 1;
 }
 
 .search-options label {
@@ -75,6 +83,7 @@ header h1 {
     align-items: center;
     gap: 8px;
     color: var(--text-secondary);
+    flex: 1;
 }
 /* Buttons */
 .btn {
@@ -189,9 +198,149 @@ header h1 {
 .modal-body {
     padding: 24px;
     overflow-y: auto;
+    flex: 1;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 12px; /* ← комфортный минимальный отступ */
+}
+
+/* Layout */
+.app-layout {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+}
+
+/* Main content */
+.main-content {
+    margin-left: 70px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+
+/* sidebar styles */
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 70px;
+    background: var(--card-bg);
+    border-right: 1px solid var(--border-color);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: width 0.3s ease;
+     /* чтобы контент не прыгал при открытии */
+    z-index: 100;
+}
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px;
+}
+/* текст */
+.sidebar-header .title {
+    white-space: nowrap;
+    transition: opacity 0.2s;
+}
+
+/* иконка */
+.sidebar-header .logo {
+    font-size: 20px;
+}
+/* COLLAPSED STATE */
+.sidebar.collapsed {
+    width: 70px;
+}
+.sidebar.collapsed .label {
+    opacity: 0;
+    transform: translateX(-10px);
+    pointer-events: none;
+    width: 0;
+    overflow: hidden;
+}
+/* скрываем текст */
+.sidebar.collapsed .sidebar-header .title {
+    display: none;   
+}
+/* Центрируем иконки когда свернуто */
+.sidebar.collapsed .tab-button {
+    justify-content: center;
+    gap: 0;
+}
+/* expanded */
+.sidebar.expanded {
+    width: 220px;
+}
+/* toggle button */
+.sidebar-toggle {
+    position: absolute; 
+    top: 10px;
+    right: 10px;
+
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+
+    width: 32px;
+    height: 32px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+/* Поворот иконки */
+.sidebar.expanded .sidebar-toggle {
+    transform: rotate(180deg);
+}
+/* tabs inside sidebar */
+.sidebar-tabs {
+    margin-top: 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    padding: 10px;
+}
+.sidebar .tab-button {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+/* collapsed = только иконки */
+.sidebar:not(.expanded) .tab-button {
+    text-align: center;
+    font-size: 18px;
+}
+/* Icon */
+.icon {
+    font-size: 18px;
+    min-width: 24px;
+    text-align: center;
+    width: 24px;
+    flex-shrink: 0;
+}
+
+/* Label animation */
+.label {
+    opacity: 1;
+    transform: translateX(0);
+    transition: all 0.2s ease;
+    white-space: nowrap;
 }
 
 /* Tabs */
@@ -227,10 +376,14 @@ header h1 {
 .tab-content {
     display: none;
     animation: fadeIn 0.3s;
+    flex: 1; 
+    min-height: 0;
 }
 
 .tab-content.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
 }
 
 /* анимация */
@@ -260,10 +413,16 @@ header h1 {
     }
     .prompt-container {
         flex-direction: column;
+        display: flex;
+        width: 100%;
+        height: 100%;
     }
     .prompt-sidebar {
-        width: 100%;
+        /* width: 100%; */
         max-height: 200px;
+        width: 300px;
+        min-width: 250px;
+        max-width: 350px;
     }
     .tabs {
         overflow-x: auto;
@@ -284,9 +443,6 @@ header h1 {
     }
     header {
         padding: 20px;
-    }
-    header h1 {
-        font-size: 1.5rem;
     }
     .upload-options {
         grid-template-columns: 1fr;
@@ -339,6 +495,8 @@ header h1 {
     /* добавление нескольких колонок kb цифра задает число в будущем можно*/
     grid-template-columns: repeat(1, minmax(300px, 1fr));
     gap: 16px;
+    flex: 1;
+    overflow: auto;
 }
 
 .document-card {
@@ -406,12 +564,14 @@ header h1 {
     background: rgba(0,0,0,0.02);
     border-radius: 12px;
     border: 2px dashed var(--border-color);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 .empty-state .icon {
     font-size: 4rem;
     margin-bottom: 16px;
-    opacity: 0.3;
 }
 
 /* Knowledge Base Sections */
@@ -567,14 +727,20 @@ header h1 {
     border-radius: 12px;
     box-shadow: var(--shadow);
     margin-bottom: 24px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 .search-input-group {
     display: flex;
-    gap: 12px;
+    gap: 16px;
     margin-bottom: 16px;
+    width: 100%;
+    max-width: 100%;
 }
 .search-input-group input {
     flex: 1;
+    min-width: 0;
     padding: 10px 16px;
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -590,6 +756,8 @@ header h1 {
     display: grid;
     gap: 16px;
     margin-top: 10px;
+    width: 100%;
+    max-width: 100%;
 }
 .search-result {
     background: var(--card-bg);
@@ -827,6 +995,7 @@ select:focus {
     flex-direction: column;
     gap: 10px;
     min-width: 0;
+    height: 100%;
 }
 .prompt-header {
     display: flex;
@@ -860,6 +1029,7 @@ select:focus {
     gap: 5px;
 }
 .prompt-editor {
+    flex: 1;
     width: 100%;
     font-family: 'Courier New', 'Consolas', monospace;
     font-size: 13px;
@@ -883,17 +1053,42 @@ select:focus {
     opacity: 0.7;
 }
 
+/* редактор md формата */
+/* контейнер редактора */
+.EasyMDEContainer {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+/* сам редактор */
+.CodeMirror {
+    flex: 1;
+    height: 100% !important;
+    min-height: 0; /* важно для flex */
+}
+.editor-preview,
+.editor-preview-side {
+    height: 100%;
+    overflow: auto;
+}
+
 /* Стартовое сообщение бота - поменьше */
 #bot-start-editor {
     min-height: 150px;
     background: #fffbea;
 }
 .bot-settings-container {
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 .setting-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -946,7 +1141,12 @@ select:focus {
     min-height: 200px;
     box-sizing: border-box;
     background: #fffbea;
-    color: var(--text-primary)
+    color: var(--text-primary);
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    resize: none; 
+    overflow: auto;
 }
 .setting-editor:focus {
     outline: none;
@@ -995,13 +1195,18 @@ select:focus {
     background:var(--card-bg); 
     margin:50px auto; 
     padding:20px; 
-    width:80%; 
-    max-width:800px; 
+    /* width:80%;  */
+    width: 90vw;  
+    /* max-width:800px;  */
+    height: 90vh;
+    max-width:1400px; 
     border-radius:8px; 
     position:relative;
     box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+    display: flex;
+    flex-direction: column;
 }
-.news-editor{
+#news-editor .ql-editor{
     flex: 1;
     width: 100%;
     font-family: 'Fira Code', 'Consolas', monospace;
@@ -1014,13 +1219,16 @@ select:focus {
     min-height: 300px;
     color: var(--text-primary);
     background: var(--card-bg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
-.news-editor:focus {
+#news-editor:focus {
     outline: none;
     border-color: var(--primary-color);
     box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
-.news-editor:disabled {
+#news-editor:disabled {
     background: var(--bg-color);
     cursor: not-allowed;
     opacity: 0.7;
@@ -1047,7 +1255,8 @@ select:focus {
     text-decoration: underline;
 }
 .news-editor-container {
-    height: 300px;
+    width: 100%;
+    max-width: 100%;
 }
 .news-form-section {margin: 15px 0;}
 .news-form-label {
@@ -1098,6 +1307,12 @@ select:focus {
     margin-top: 8px;
     font-size: 13px;
     color: var(--text-secondary);
+}
+.news-list{
+    display: grid;
+    /* добавление нескольких колонок kb цифра задает число в будущем можно*/
+    grid-template-columns: repeat(1, minmax(300px, 1fr));
+    gap: 16px;
 }
 /* Стили для вкладки Groups */
 #user-groups-list table {
