@@ -46,10 +46,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         user_id = user["user_id"]
         logger.info(f"Команда /start от user_id={user_id} (@{user['username']}) - телефон уже есть.")
         # Если телефон есть - загружаем данные в ADK
+        # Убираем телефон из словаря передаваемых значений
+        user.pop("phone_number")
+
         session_id = f"session-{user_id}"
         await adk.ensure_session(user_id=str(user_id), session_id=session_id)
         await adk.set_user_state(str(user_id), session_id, user)
-        logger.info(f"📋 Данные пользователя загружены в ADK: {user['phone_number']}")
+        logger.info(f"📋 Данные пользователя загружены в ADK: {user['username']}")
     
         # строим меню для ответа
         tree = await get_tree_cached()
@@ -80,6 +83,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         await adk.ensure_session(user_id=str(user_id), session_id=session_id)
         
         user_data = await subscriber_store.get_user_data(user_id)
+        # Убираем телефон из словаря передаваемых значений
+        user_data.pop("phone_number")        
         if user_data:
             await adk.set_user_state(str(user_id), session_id, user_data)
         
@@ -141,6 +146,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             
             # после reset сразу вернуть профиль в state
             user_data = await subscriber_store.get_user_data(user_id)
+            user_data.pop("phone_number", None)
             if user_data:
                 await adk.set_user_state(str(user_id), session_id, user_data)
                 
@@ -223,6 +229,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
 
             # Загружаем данные пользователя в состояние ADK (на случай если сессия новая)
             user_data = await subscriber_store.get_user_data(int(user_id))
+            user_data.pop("phone_number", None)
             if user_data:
                 await adk.set_user_state(str(user_id), session_id, user_data)
     
