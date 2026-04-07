@@ -16,15 +16,11 @@ from utils import setup_logger
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
 from utils.doc_search_format import (
-    extract_bot_search_meta,
     extract_document_id_lines,
     strip_bot_search_meta,
 )
 from bot.services.utils import (
     markdown_to_safe_html,
-    render_results,
-    extract_bot_contract,
-    normalize_contract_results,
     extract_search_results_from_events,
     build_menu_from_tree,
     get_document_id,
@@ -133,13 +129,15 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
-        session_id = "default"
+        # Должен совпадать с session_id в on_text — иначе /reset не очищает реальную сессию ADK.
+        session_id = f"session-{user_id}"
         
         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
         
         try:
-            # Удаляем сессию в ADK
+            # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
             await adk.delete_session(user_id=str(user_id), session_id=session_id)
+            await adk.delete_session(user_id=str(user_id), session_id="default")
             
             # Создаём новую сессию
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
@@ -290,44 +288,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     except Exception:
                         pass
 
-            meta = extract_bot_search_meta(work)
-            if meta and meta.get("action") == "update_shown":
-                try:
-                    await store.update_shown_count(
-                        user_id, session_id, int(meta["count"])
-                    )
-                except (TypeError, ValueError):
-                    pass
-
             work = strip_bot_search_meta(work)
 
             # 5. сохраняем историю диалога
             await store.append(user_id, "user", user_text)
             await store.append(user_id, "model", answer)
 
-            # 6. пробуем сначала вытащить bot_contract из ответа агента
-            contract = extract_bot_contract(work)
-            if contract:
-                reranked_items = normalize_contract_results(contract)
-
-                await store.save_search_results(
-                    user_id=user_id,
-                    session_id=session_id,
-                    query=user_text,
-                    items=reranked_items,
-                    shown_count=min(Settings.SHOW_MAX, len(reranked_items)),
-                )
-                logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
-
-                if reranked_items:
-                    top_items = reranked_items[:Settings.SHOW_MAX]
-                    text = render_results(top_items, total=len(reranked_items), offset=0)
-                    await m.answer(text, parse_mode="HTML")
-                else:
-                    await m.answer("Не нашёл релевантных файлов по запросу.")
-                return
-            
-            # 7. fallback: kb_search из events (только если в ответе нет готового текста)
+            # 6. fallback: kb_search из events (список doc_search сохраняется в DocSearchOrchestrator → PostgreSQL)
             extracted_items = (
                 extract_search_results_from_events(events)
                 if not (work or "").strip()
@@ -345,7 +312,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             else:
                 logger.info("ℹ️ Из events не удалось извлечь search-state")
 
-            # 8. ответ пользователю (в т.ч. HTML от «ещё» / «все» из doc_search)
+            # 7. ответ пользователю (в т.ч. HTML от doc_search / kb_answer)
             clean_answer = doc_handler.remove_document_ids(work)
             if clean_answer.strip():
                 if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):

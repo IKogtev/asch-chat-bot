@@ -1,24 +1,95 @@
 """
-Композитный агент: поиск документов (LLM + kb_search), пагинация и выдача document_id без скачивания.
+Композитный агент: поиск документов (LLM + kb_search), пагинация, сохранение списка в БД,
+выдача HTML пользователю и строки document_id для скачивания ботом.
 """
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event
 
 from ..config import ACTIVE_DOCUMENTS_COLLECTION, DOC_SEARCH_PAGE_SIZE
-from ..helpers import (
-    format_bot_contract_search_results,
-    format_bot_search_meta,
-    format_text_answer,
-    truncate_for_log,
-)
+from ..helpers import format_text_answer, truncate_for_log
 from ..json_leaf_runner import run_json_leaf_agent
 from .doc_search_agent import validate_doc_search_result
 from utils.doc_search_format import parse_download_ranks, render_doc_list_html
 from utils.logger import setup_logger
 
 logger = setup_logger("doc_search_orchestrator", "agent.log")
+
+
+def _telegram_user_id(ctx: InvocationContext) -> Optional[int]:
+    """ID пользователя Telegram из ADK Session (тот же, что в /run)."""
+    raw = getattr(ctx.session, "user_id", None)
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return None
+
+
+async def _persist_full_list(
+    ctx: InvocationContext,
+    *,
+    query: str,
+    items: List[Dict[str, Any]],
+    shown_count: int,
+) -> None:
+    from utils.search_results_db import get_shared_pool, save_doc_search_results
+
+    pool = await get_shared_pool()
+    if pool is None:
+        logger.warning("DATABASE_URL не задан — список документов не сохранён в PostgreSQL")
+        return
+    uid = _telegram_user_id(ctx)
+    if uid is None:
+        logger.warning("session.user_id отсутствует — пропуск сохранения списка в БД")
+        return
+    sid = getattr(ctx.session, "id", None) or ""
+    if not sid:
+        logger.warning("session.id отсутствует — пропуск сохранения списка в БД")
+        return
+    db_items: List[Dict[str, Any]] = []
+    for it in items:
+        db_items.append(
+            {
+                "rank": int(it["rank"]),
+                "document_id": str(it["document_id"]),
+                "source_name": str(it["source_name"]),
+                "relatuve_path": it.get("relative_path"),
+                "score": it.get("score"),
+                "snippet": (it.get("snippet") or "")[:2000],
+            }
+        )
+    try:
+        await save_doc_search_results(pool, uid, sid, query, db_items, shown_count)
+        logger.info(
+            "doc_search: сохранено в БД user_id=%s session=%s rows=%s shown=%s",
+            uid,
+            sid,
+            len(db_items),
+            shown_count,
+        )
+    except Exception as e:
+        logger.error("doc_search: ошибка сохранения в БД: %s", e, exc_info=True)
+
+
+async def _persist_shown_count(ctx: InvocationContext, shown_count: int) -> None:
+    from utils.search_results_db import get_shared_pool, update_doc_search_shown_count
+
+    pool = await get_shared_pool()
+    if pool is None:
+        return
+    uid = _telegram_user_id(ctx)
+    if uid is None:
+        return
+    sid = getattr(ctx.session, "id", None) or ""
+    if not sid:
+        return
+    try:
+        await update_doc_search_shown_count(pool, uid, sid, shown_count)
+    except Exception as e:
+        logger.error("doc_search: update_shown_count: %s", e, exc_info=True)
 
 
 class DocSearchOrchestrator(BaseAgent):
@@ -80,9 +151,8 @@ class DocSearchOrchestrator(BaseAgent):
             end = min(start + page, len(items))
             chunk = items[start:end]
             ctx.session.state["doc_search_shown_count"] = end
-            html = render_doc_list_html(chunk, total=len(items), offset=start)
-            meta = format_bot_search_meta({"action": "update_shown", "count": end})
-            ctx.session.state["_root_final_text"] = f"{html}\n{meta}"
+            await _persist_shown_count(ctx, end)
+            ctx.session.state["_root_final_text"] = render_doc_list_html(chunk, total=len(items), offset=start)
             return
 
         if intent == "show_all":
@@ -95,9 +165,8 @@ class DocSearchOrchestrator(BaseAgent):
 
             n = len(items)
             ctx.session.state["doc_search_shown_count"] = n
-            html = render_doc_list_html(items, total=n, offset=0)
-            meta = format_bot_search_meta({"action": "update_shown", "count": n})
-            ctx.session.state["_root_final_text"] = f"{html}\n{meta}"
+            await _persist_shown_count(ctx, n)
+            ctx.session.state["_root_final_text"] = render_doc_list_html(items, total=n, offset=0)
             return
 
         if intent == "file_download":
@@ -170,21 +239,17 @@ class DocSearchOrchestrator(BaseAgent):
         shown = min(page, len(normalized))
         ctx.session.state["doc_search_shown_count"] = shown
 
-        contract_rows: List[Dict[str, Any]] = []
-        for i, item in enumerate(normalized, start=1):
-            contract_rows.append(
-                {
-                    "document_id": item["document_id"],
-                    "source_name": item["source_name"],
-                    "source_path": item.get("source_path"),
-                    "old_rank": i,
-                    "new_rank": i,
-                    "is_relevant": True,
-                    "snippet": item.get("snippet") or "",
-                }
-            )
+        first = normalized[:shown]
+        ctx.session.state["_root_final_text"] = render_doc_list_html(
+            first, total=len(normalized), offset=0
+        )
 
-        ctx.session.state["_root_final_text"] = format_bot_contract_search_results(contract_rows)
+        await _persist_full_list(
+            ctx,
+            query=effective_search_query,
+            items=normalized,
+            shown_count=shown,
+        )
 
 
 def create_doc_search_orchestrator(

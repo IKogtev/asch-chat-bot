@@ -2,7 +2,6 @@ import asyncpg
 import aiohttp
 import json
 from typing import Optional
-from uuid import uuid4
 # Импортируем логгер из 
 from utils import setup_logger
 from bot.services.config import Settings
@@ -157,47 +156,12 @@ class PostgresChatStore:
         if not self.pool:
             raise RuntimeError("Pool not initialized")
 
-        search_id = str(uuid4())
-        shown_count = min(shown_count, len(items))
+        from utils.search_results_db import save_doc_search_results
 
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "DELETE FROM search_results WHERE user_id = $1 AND session_id = $2",
-                    user_id, session_id
-                )
-                await conn.execute(
-                    "DELETE FROM search_meta WHERE user_id = $1 AND session_id = $2",
-                    user_id, session_id
-                )
-
-                await conn.execute(
-                    """
-                    INSERT INTO search_meta (user_id, session_id, search_id, query, total_count, shown_count)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    """,
-                    user_id, session_id, search_id, query, len(items), shown_count
-                )
-
-                for item in items:
-                    await conn.execute(
-                        """
-                        INSERT INTO search_results
-                        (user_id, session_id, search_id, rank, document_id, source_name, source_path, score, snippet)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        """,
-                        user_id,
-                        session_id,
-                        search_id,
-                        item["rank"],
-                        item["document_id"],
-                        item["source_name"],
-                        item.get("source_path"),
-                        item.get("score"),
-                        item.get("snippet"),
-                    )
-
-        return search_id
+        shown = min(shown_count, len(items))
+        return await save_doc_search_results(
+            self.pool, user_id, session_id, query, items, shown
+        )
 
 
     async def get_last_search_meta(self, user_id: int, session_id: str) -> dict | None:
@@ -251,13 +215,9 @@ class PostgresChatStore:
         if not self.pool:
             return
 
-        query = """
-        UPDATE search_meta
-        SET shown_count = $3
-        WHERE user_id = $1 AND session_id = $2
-        """
-        async with self.pool.acquire() as conn:
-            await conn.execute(query, user_id, session_id, shown_count)
+        from utils.search_results_db import update_doc_search_shown_count
+
+        await update_doc_search_shown_count(self.pool, user_id, session_id, shown_count)
 
 
     async def reset_search_state(self, user_id: int, session_id: str) -> None:
