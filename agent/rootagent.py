@@ -1,10 +1,12 @@
-from typing import AsyncGenerator, Callable, Dict, List, Any
+import re
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
+from utils.doc_search_format import extract_download_ranks
 from .config import KB_DOCUMENTS_COLLECTION, DEBUG_EXCEPTIONS
 from .helpers import truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import run_json_leaf_agent
@@ -98,6 +100,35 @@ class RootAgent(BaseAgent):
         for key in keys:
             ctx.session.state.pop(key, None)
 
+    @staticmethod
+    def _pagination_intent_from_message(user_text: str) -> Optional[str]:
+        """
+        Короткие реплики без новой темы — команды пагинации (show_more / show_all).
+        Не требует doc_search_list_items в state: при пустом списке оркестратор вернёт
+        понятную ошибку; зато не запускается ложный doc_search, если сессия не сохранилась.
+        """
+        t = user_text.strip().lower().replace("ё", "е")
+        t = re.sub(r"\s+", " ", t)
+        if not t:
+            return None
+        if re.fullmatch(r"все[!?.…]*", t):
+            return "show_all"
+        if re.fullmatch(r"(полностью|целиком)([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"all([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"(покажи|дай|выведи|открой)\s+все([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"(покажи|выведи)\s+полностью([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"(ещё|еще|больше|далее|следующие)([!?.…]*)", t):
+            return "show_more"
+        if re.fullmatch(r"(ещё|еще)\s+(файлы|документы)([!?.…]*)", t):
+            return "show_more"
+        if re.fullmatch(r"(next|more)([!?.…]*)", t):
+            return "show_more"
+        return None
+
     def _get_required_state_dict(self, ctx: InvocationContext, key: str) -> Dict[str, Any]:
         """Получение обязательного dict из state"""
         value = ctx.session.state.get(key)
@@ -170,23 +201,81 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event(ctx, format_reject_answer(owasp["user_message"]))
                 return
 
-            async for event in self._run_json_leaf_agent(
-                ctx=ctx,
-                agent=self.dispatcher_agent,
-                output_key="dispatcher_result_json",
-                parsed_state_key="_dispatcher_result_parsed",
-                validator=validate_dispatcher_result,
-                log_label="dispatcher_result_json",
-            ):
-                yield event
+            ranks = extract_download_ranks(user_text)
+            if ranks:
+                dispatch = validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "doc_search",
+                        "intent": "file_download",
+                        "reason": "download_by_rank_short_circuit",
+                        "search_query": "",
+                    }
+                )
+                ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                ctx.session.state.pop("dispatcher_result_json", None)
+                logger.info(
+                    "Dispatcher skipped (file_download by rank): ranks=%s",
+                    ranks,
+                )
+            else:
+                async for event in self._run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=self.dispatcher_agent,
+                    output_key="dispatcher_result_json",
+                    parsed_state_key="_dispatcher_result_parsed",
+                    validator=validate_dispatcher_result,
+                    log_label="dispatcher_result_json",
+                ):
+                    yield event
 
-            dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
-            logger.info(
-                "Dispatcher result: route=%s intent=%s search_query=%s",
-                dispatch["route"],
-                dispatch["intent"],
-                dispatch["search_query"],
-            )
+                dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
+                logger.info(
+                    "Dispatcher result: route=%s intent=%s search_query=%s",
+                    dispatch["route"],
+                    dispatch["intent"],
+                    dispatch["search_query"],
+                )
+
+                pin = self._pagination_intent_from_message(user_text)
+                if pin and (
+                    dispatch.get("route") != "doc_search" or dispatch.get("intent") != pin
+                ):
+                    dispatch = validate_dispatcher_result(
+                        {
+                            "status": "ok",
+                            "route": "doc_search",
+                            "intent": pin,
+                            "reason": "pagination_override_saved_doc_list",
+                            "search_query": "",
+                        }
+                    )
+                    ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                    logger.info("Dispatcher pagination override: intent=%s", pin)
+
+                if (
+                    dispatch.get("route") == "doc_search"
+                    and dispatch.get("intent") == "doc_search"
+                ):
+                    dr = extract_download_ranks(
+                        user_text, str(dispatch.get("search_query") or "")
+                    )
+                    if dr:
+                        dispatch = validate_dispatcher_result(
+                            {
+                                "status": "ok",
+                                "route": "doc_search",
+                                "intent": "file_download",
+                                "reason": "download_ranks_override_after_dispatcher",
+                                "search_query": "",
+                            }
+                        )
+                        ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                        ctx.session.state.pop("dispatcher_result_json", None)
+                        logger.info(
+                            "Dispatcher doc_search→file_download override: ranks=%s",
+                            dr,
+                        )
 
             if dispatch["route"] == "doc_search":
                 ctx.session.state["doc_search_intent"] = dispatch["intent"]
