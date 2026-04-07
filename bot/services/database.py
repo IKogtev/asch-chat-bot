@@ -641,90 +641,49 @@ class AdkApiClient:
     @staticmethod
     def _extract_model_text(events: list) -> str:
         """
-        Извлечение финального текста ответа из событий ADK.
-
-        Важно: ADK может вернуть parts вида:
-          {"text": "...", "thought": True}   # внутренние рассуждения
-          {"text": "..."}                   # финальный ответ пользователю
-
-        Поэтому:
-        - пропускаем part["thought"] == True
-        - собираем все оставшиеся text и склеиваем
+        Возвращает только финальный текст root_agent.
+        Игнорирует промежуточные события leaf-агентов и thought parts.
         """
         if not events:
             return ""
 
-        out: list[str] = []
-
-        # Проходим в прямом порядке: ответ может состоять из нескольких частей
-        for event in events:
+        # Ищем последнее финальное событие root_agent
+        for event in reversed(events):
             if not isinstance(event, dict):
                 continue
 
-            # Формат 1: model_turn
-            if "model_turn" in event and isinstance(event["model_turn"], dict):
-                parts = event["model_turn"].get("parts", []) or []
-                for part in parts:
-                    if not isinstance(part, dict):
-                        continue
-                    if part.get("thought") is True:
-                        continue
-                    text = part.get("text")
-                    if text:
-                        out.append(text)
+            author = event.get("author")
+            actions = event.get("actions") or {}
+            is_final = bool(
+                actions.get("end_of_agent")
+                or actions.get("endOfAgent")
+            )
 
-            # Формат 2: content (как в твоём логе: event["content"]["parts"]...)
-            if "content" in event:
-                content = event["content"]
+            # Берём только финальный ответ root_agent
+            if author != "root_agent" or not is_final:
+                continue
 
-                # иногда content может быть строкой
-                if isinstance(content, str):
-                    out.append(content)
+            content = event.get("content")
+            if not isinstance(content, dict):
+                continue
+
+            parts = content.get("parts") or []
+            out = []
+
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("thought") is True:
                     continue
 
-                if isinstance(content, dict):
-                    # content.text
-                    if "text" in content and isinstance(content["text"], str):
-                        out.append(content["text"])
+                text = part.get("text")
+                if text and text.strip():
+                    out.append(text.strip())
 
-                    # content.parts
-                    parts = content.get("parts", []) or []
-                    for part in parts:
-                        if not isinstance(part, dict):
-                            continue
-                        if part.get("thought") is True:
-                            continue
-                        text = part.get("text")
-                        if text:
-                            out.append(text)
+            if out:
+                return "\n".join(out).strip()
 
-            # Формат 3: прямой text (редко, но оставим)
-            if "text" in event and isinstance(event["text"], str):
-                out.append(event["text"])
-
-            # Формат 4: message.content
-            if "message" in event and isinstance(event["message"], dict):
-                msg = event["message"]
-                content = msg.get("content")
-
-                if isinstance(content, str):
-                    out.append(content)
-                elif isinstance(content, dict):
-                    if "text" in content and isinstance(content["text"], str):
-                        out.append(content["text"])
-                    parts = content.get("parts", []) or []
-                    for part in parts:
-                        if not isinstance(part, dict):
-                            continue
-                        if part.get("thought") is True:
-                            continue
-                        text = part.get("text")
-                        if text:
-                            out.append(text)
-
-        # Склеиваем и чистим
-        final = "\n".join(s.strip() for s in out if s and s.strip()).strip()
-        return final
+        return ""
     
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
         """Установка данных пользователя через system message"""
