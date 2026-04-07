@@ -67,6 +67,25 @@ def format_bot_contract_search_results(results: List[Dict[str, Any]]) -> str:
     return f"<bot_contract>{json.dumps(payload, ensure_ascii=False)}</bot_contract>"
 
 
+def format_bot_contract_doc_search_display(
+    results: List[Dict[str, Any]],
+    *,
+    total_count: int,
+    display_offset: int,
+) -> str:
+    """
+    Контракт для клиента (Telegram, web): только данные для отображения текущей порции.
+    Клиент сам рендерит HTML/Markdown/UI. results — слайс с глобальными номерами в old_rank/new_rank.
+    """
+    payload = {
+        "mode": "search_results",
+        "total_count": int(total_count),
+        "display_offset": int(display_offset),
+        "results": results,
+    }
+    return f"<bot_contract>{json.dumps(payload, ensure_ascii=False)}</bot_contract>"
+
+
 def format_bot_search_meta(payload: Dict[str, Any]) -> str:
     """Служебная разметка для обновления shown_count в БД бота."""
     return f"<bot_search_meta>{json.dumps(payload, ensure_ascii=False)}</bot_search_meta>"

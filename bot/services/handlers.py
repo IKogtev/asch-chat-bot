@@ -21,7 +21,9 @@ from utils.doc_search_format import (
 )
 from bot.services.utils import (
     markdown_to_safe_html,
+    extract_bot_contract,
     extract_search_results_from_events,
+    render_results,
     build_menu_from_tree,
     get_document_id,
     get_kb_tree,
@@ -301,7 +303,20 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             await store.append(user_id, "user", user_text)
             await store.append(user_id, "model", answer)
 
-            # 6. fallback: kb_search из events (список doc_search сохраняется в DocSearchOrchestrator → PostgreSQL)
+            # 6. doc_search: контракт со слайсом — рендер списка в Telegram (web может разобрать иначе)
+            contract = extract_bot_contract(work)
+            if contract:
+                slice_items = contract.get("results") or []
+                total = int(contract.get("total_count", len(slice_items)))
+                offset = int(contract.get("display_offset", 0))
+                if slice_items:
+                    text = render_results(slice_items, total=total, offset=offset)
+                    await m.answer(text, parse_mode="HTML")
+                else:
+                    await m.answer("Не нашёл релевантных файлов по запросу.")
+                return
+
+            # 7. fallback: kb_search из events (список doc_search сохраняется в DocSearchOrchestrator → PostgreSQL)
             extracted_items = (
                 extract_search_results_from_events(events)
                 if not (work or "").strip()
@@ -319,7 +334,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             else:
                 logger.info("ℹ️ Из events не удалось извлечь search-state")
 
-            # 7. ответ пользователю (в т.ч. HTML от doc_search / kb_answer)
+            # 8. ответ пользователю (kb_answer и прочее без bot_contract)
             clean_answer = doc_handler.remove_document_ids(work)
             if clean_answer.strip():
                 if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):
