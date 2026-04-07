@@ -5,437 +5,498 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UI Manager for Anastasia</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <!-- Quill editor редактор для html -->
     <link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
+    <!-- EasyMDE editor для markdown -->
+    <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
 </head>
 <body>
     <div class="container">
+        <!-- Collections view -->
         <header>
-            <h1>UI Manager for Anastasia</h1>
+            <div class="collection-selector">
+                <label for="collection-select">
+                    <strong>Active collection:</strong>
+                    <span id="current-collection" class="collection-current"></span>
+                    <button 
+                    id="delete-collection-btn" 
+                    class="btn btn-danger btn-small" 
+                    title="Delete collection">🗑️ Delete</button>            
+                </label>
+                <select id="collection-select">
+                    <option value="">Loading collections…</option>
+                </select>
+                <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Add collection</button>
+                <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Switch alias 🔄</button>
+            </div>
             <div class="header-info">
                 <span id="collection-info"></span>
             </div>
         </header>
-        
-        <!-- Collections view -->
-        <div class="collection-selector">
-            <label for="collection-select">
-                <strong>Active collection:</strong>
-                <span id="current-collection" class="collection-current"></span>
-                <button 
-                id="delete-collection-btn" 
-                class="btn btn-danger btn-small" 
-                title="Delete collection">🗑️ Delete</button>            
-            </label>
-            <select id="collection-select">
-                <option value="">Loading collections…</option>
-            </select>
-            <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Add collection</button>
-            <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Switch alias 🔄</button>
-        </div>
-        <!-- initialize tabs menu -->
-        <div class="tabs">
-            <button class="tab-button active" onclick="showTab('documents')">📄 Documents</button>
-            <button class="tab-button" onclick="showTab('search')">🔍 Search</button>
-            <button class="tab-button" onclick="showTab('upload')">📤 Upload</button>
-            <button class="tab-button" onclick="showTab('tree_files')">📁 Tree Files</button>
-            <button class="tab-button" onclick="showTab('news_send')">📢 News</button>
-            <button class="tab-button" onclick="showTab('prompts')">📝 Prompts</button>
-            <button class="tab-button" onclick="showTab('bot_settings')">⚙️ Bot Settings</button>
-            <button class="tab-button" onclick="showTab('user_groups')">👥 Groups</button>
-        </div>
+        <div class="app-layout">
+            <div class="main-content">
+                <!-- Documents Tab -->
+                <div id="documents-tab" class="tab-content active">
+                    <div class="section-header">
+                        <h2>Documents</h2>
+                        <button type="button" onclick="syncAll(this)" class="btn btn-primary">
+                            🔄Sync ALL KB
+                        </button>
+                        <button onclick="loadDocuments()" class="btn btn-secondary">
+                            Refresh
+                        </button>
+                    </div>
+                    <div class="sync-settings">
+                        Auto sync interval:
+                        <strong id="sync-interval">loading...</strong> hours
 
-        <!-- Documents Tab -->
-        <div id="documents-tab" class="tab-content active">
-            <div class="section-header">
-                <h2>Documents</h2>
-                <button type="button" onclick="syncAll(this)" class="btn btn-primary">
-                    🔄Sync ALL KB
-                </button>
-                <button onclick="loadDocuments()" class="btn btn-secondary">
-                    Refresh
-                </button>
-            </div>
-            <div class="sync-settings">
-                Auto sync interval:
-                <strong id="sync-interval">loading...</strong> hours
+                        <button onclick="changeSyncInterval()" class="btn btn-small">
+                            Change
+                        </button>
+                    </div>
+                    <div id="documents-list" class="documents-list">
+                        <div class="loading">Loading documents...</div>
+                    </div>
+                </div>
 
-                <button onclick="changeSyncInterval()" class="btn btn-small">
-                    Change
-                </button>
-            </div>
-            <div id="documents-list" class="documents-list">
-                <div class="loading">Loading documents...</div>
-            </div>
-        </div>
+                <!-- Search Tab -->
+                <div id="search-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>Search Documents</h2>
+                    </div>
+                    
+                    <div class="search-section">
+                        <div class="search-input-group">
+                            <input 
+                                type="text" 
+                                id="search-query" 
+                                placeholder="Enter search query..."
+                                onkeypress="handleSearchKeypress(event)"
+                            >
+                            <button onclick="performSearch()" class="btn btn-primary">
+                                Search
+                            </button>
+                        </div>
+                        
+                        <div class="search-options">
+                            <label>
+                                Knowledge Base:
+                                <select id="search-kb">
+                                    <option value="">All Knowledge Bases</option>
+                                </select>
+                            </label>
+                            <label>
+                                Results limit:
+                                <select id="search-limit">
+                                    <option value="5">5</option>
+                                    <option value="10" selected>10</option>
+                                    <option value="20">20</option>
+                                    <option value="50">50</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
 
-        <!-- Search Tab -->
-        <div id="search-tab" class="tab-content">
-            <div class="section-header">
-                <h2>Search Documents</h2>
-            </div>
+                    <div id="search-results" class="search-results"></div>
+                </div>
+
+                <!-- Upload Tab -->
+                <div id="upload-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>Upload Document</h2>
+                    </div>
+                    
+                    <div class="upload-section">
+                        <div class="upload-box" id="upload-box">
+                            <div class="upload-icon"></div>
+                            <p>Drag & drop a file here or click to select</p>
+                            <p class="upload-hint">Supported: TXT, MD, PDF, DOCX, EXCEL</p>
+                        </div>
+                        
+                        <input 
+                            type="file" 
+                            id="file-input" 
+                            accept=".txt,.md,.pdf,.docx,.doc,.csv,.xls,.xlsx" 
+                            onchange="handleFileSelect(event)"
+                            style="display: none;"
+                        >
+
+                        <div id="file-info" class="file-info" style="display: none;">
+                            <p><strong>Selected file:</strong> <span id="file-name"></span></p>
+                        </div>
+
+                        <div class="upload-options">
+                            <label>
+                                Knowledge Base ID:
+                                <input type="text" id="upload-kb-id" value="default" placeholder="e.g., default, kb1, kb2">
+                            </label>
+                            <label>
+                                User ID:
+                                <input type="text" id="upload-user-id" value="anonymous" placeholder="e.g., user123, anonymous">
+                            </label>
+                        </div>
+
+                        <button onclick="uploadDocument()" id="upload-btn" class="btn btn-primary btn-large" disabled>
+                            Upload Document
+                        </button>
+
+                        <div id="upload-progress" class="upload-progress" style="display: none;">
+                            <div class="progress-bar">
+                                <div class="progress-fill"></div>
+                            </div>
+                            <p>Processing document...</p>
+                        </div>
+
+                        <div id="upload-result" class="result-message"></div>
+                    </div>
+                </div>
+
+                <!-- Tree tab -->
+                <div id="tree_files-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>Tree Files</h2>
+                    </div>
+                    <div id="filesystem-tree"></div>
+                </div>
+
+                <!-- News Tab -->
+                <div id="news_send-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>Send News</h2>
+                    </div>
+                    <!-- tools to edit text -->
+                    <div id="news-toolbar">
+                        <span class="ql-formats">
+                            <button class="ql-bold"></button>
+                            <button class="ql-italic"></button>
+                            <button class="ql-underline"></button>
+                            <button class="ql-strike"></button>
+                        </span>
+
+                        <span class="ql-formats">
+                            <button class="ql-header" value="1"></button>
+                            <button class="ql-header" value="2"></button>
+                        </span>
+
+                        <span class="ql-formats">
+                            <button class="ql-list" value="ordered"></button>
+                            <button class="ql-list" value="bullet"></button>
+                        </span>
+
+                        <span class="ql-formats">
+                            <button class="ql-blockquote"></button>
+                            <button class="ql-code-block"></button>
+                        </span>
+
+                        <span class="ql-formats">
+                            <button class="ql-link"></button>
+                        </span>
+                    </div>
+                    <!-- window to edit text -->
+                    <div id="news-editor" class="news-editor-container"></div>
+                    <div class="news-upload-wrapper">            
+                        <div class="news-upload-box" id="news-upload-box">
+                            <span id="news-file-label">📎 Выбрать файл</span>
+                        </div>
+                        <input type="file" id="news-files" style="display: none;">
+                    </div>
+                    <div id="news-file-info" class="news-file-info" style="display: none;">
+                        <span id="news-file-name"></span>
+                        <span id="news-file-remove" class="news-file-remove">❌</span>
+                    </div>
+                    <!-- группы получателей -->
+                    <div class="news-form-section">
+                        <label class="news-form-label">👥 Группа получателей:</label>
+                        <div class="news-form-group">
+                            <label class="news-form-option">
+                                <input type="radio" name="news-target-group" value="all" checked>
+                                <span>Все пользователи</span>
+                            </label>
+                            <label class="news-form-option">
+                                <input type="radio" name="news-target-group" value="manager_group">
+                                <span>👔 Менеджеры</span>
+                            </label>
+                            <label class="news-form-option">
+                                <input type="radio" name="news-target-group" value="coach_group">
+                                <span>🎓 Коучи</span>
+                            </label>
+                        </div>
+                    </div>
+                    <!-- Schedule -->
+                    <div class="news-schedule">
+                        <label class="form-label">📅 Отложить отправку:</label>
+                        <input type="datetime-local" id="news-schedule-time" class="news-schedule-input">
+                        <label class="news-schedule-hint">⏰ Время отображается в Московском часовом поясе</label>
+                    </div>
+                    <br><br>
+
+                    <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
+                        📤 Отправить новость
+                    </button>
+
+                    <div id="news-result" class="result-message"></div>
+
+                    <hr>
+                    <div class="section-header">
+                        <h3>📚 История новостей</h3>
+                        <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
+                            🔄 Обновить
+                        </button>
+                    </div>
+
+                    <div id="news-history" class="news-list">
+                        <div class="loading">История не загружена</div>
+                    </div>
+                </div>
+
+                <!-- Prompts tab -->
+                <div id="prompts-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>🤖 Agents | 📝 Управление промптами</h2>
+                    </div>
+
+                    <div id="agents-list" class="documents-list">
+                        <div class="loading">Loading agents...</div>
+                    </div>
+                </div>
+
+                <!-- Bot settings tab -->
+                <div id="bot_settings-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>⚙️ Настройки бота</h2>
+                    </div>
+                    
+                    <div class="bot-settings-container">
+                        
+                        <!-- Стартовое сообщение -->
+                        <div class="setting-card">
+                            <div class="setting-header">
+                                <h3>💬 Стартовое сообщение (/start)</h3>
+                                <div class="setting-actions">
+                                    <button onclick="loadBotStartMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
+                                    <button onclick="saveBotStartMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
+                                </div>
+                            </div>
+                            
+                            <div class="setting-info">
+                                <span>📄 Файл: <strong>bot_start_message.md</strong></span>
+                                <span>📦 Размер: <strong id="bot-start-size">-</strong></span>
+                                <span>📅 Изменён: <strong id="bot-start-modified">-</strong></span>
+                            </div>
+                            
+                            <textarea id="bot-start-editor" class="setting-editor" placeholder="Загрузка стартового сообщения..."></textarea>
+                            
+                            <div id="bot-start-result" class="result-message" style="display:none;"></div>
+                        </div>
+                        
+                    </div>
+                </div>
+                
+                <!-- Groups Tab -->
+                <div id="user_groups-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>👥 Управление группами пользователей</h2>
+                    </div>
+                    
+                    <div class="groups-tab-header">
+                        <input type="text" id="user-search" class="groups-search-input" 
+                            placeholder="🔍 Поиск по user_id, username, имени или фамилии"
+                            onkeyup="loadUserGroups()">
+                        <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
+                        <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
+                    </div>
+                    
+                    <div id="user-groups-list">
+                        <div class="loading">Загрузка пользователей...</div>
+                    </div>
+                    
+                    <div id="user-groups-stats" class="groups-stats-container">
+                        <!-- Статистика будет загружена сюда -->
+                    </div>
+                </div>
+
+                <!-- Modal for viewing document chunks -->
+                <div id="chunks-modal" class="modal">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3 id="modal-title">Document Chunks</h3>
+                            <button class="modal-close" onclick="closeModal()">&times;</button>
+                        </div>
+                        <div id="modal-body" class="modal-body"></div>
+                    </div>
+                </div>
             
-            <div class="search-section">
-                <div class="search-input-group">
-                    <input 
-                        type="text" 
-                        id="search-query" 
-                        placeholder="Enter search query..."
-                        onkeypress="handleSearchKeypress(event)"
-                    >
-                    <button onclick="performSearch()" class="btn btn-primary">
-                        Search
+                <!-- Modal for creating collection -->
+                <div id="create-collection-modal" class="modal">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3>Create collection</h3>
+                            <button class="modal-close" onclick="closeCreateCollectionModal()">&times;</button>
+                        </div>
+
+                        <div class="modal-body">
+                            <input
+                                type="text"
+                                id="newCollectionVersion"
+                                placeholder="Version (e.g. v1)"
+                            />
+
+                            <div class="search-options">
+                                <select id="newCollectionType">
+                                    <option value="faq">FAQ</option>
+                                    <option value="kb">Knowledge Base</option>
+                                </select>
+                            </div>
+                            
+                            <div class="actions">
+                                <button onclick="createCollection()" class="btn btn-primary">Create</button>
+                            </div>
+
+                            <div id="create-collection-error" class="error hidden"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Modal for switching collection -->
+                <div id="switch-collection-modal" class="modal">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3>Switch collection alias</h3>
+                            <button class="modal-close" onclick="closeSwitchCollectionModal()">&times;</button>
+                        </div>
+
+                        <div class="modal-body">
+                            
+                            <div class="search-options">
+                                <label>Collection type</label>
+                                <select id="switchCollectionType" onchange="loadAliasCollections()">
+                                    <option value="faq">FAQ</option>
+                                    <option value="kb">Knowledge Base</option>
+                                </select>
+                            </div>
+
+                            <div class="search-options">
+                                <label>Target collection</label>
+                                <select id="switchCollectionTarget"></select>
+                            </div>
+                            
+                            <div class="actions">
+                                <button onclick="switchCollectionAlias()" class="btn btn-primary">Switch alias</button>
+                            </div>
+
+                            <div id="switch-collection-error" class="error hidden"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Modal for viewing file content-->
+                <div id="file-modal"  class="modal">
+                    <div class="file-content-modal">
+                        <div class="modal-header">
+                            <h3>Просмотр файла</h3>
+                            <button class="modal-close" onclick="closeFileModal()">&times;</button>
+                        </div>
+                        <div id="file-content"></div> 
+                    </div>
+                </div>
+                <!-- Agent Prompt Modal -->
+                <div id="agent-modal" class="modal">
+                    <div class="file-content-modal">
+                        <div class="modal-header">
+                            <h3 id="agent-modal-title">Agent</h3>
+                            <button class="modal-close" onclick="closeAgentModal()">&times;</button>
+                        </div>
+
+                        <div class="modal-body">
+                            <div class="prompt-container">
+                                <!-- Левая панель - история файлов -->
+                                <div class="prompt-sidebar">
+                                    <h3>📚 Files</h3>
+                                    <div id="prompt-files-list" class="prompt-files-list">
+                                        <div class="loading">Загрузка...</div>
+                                    </div>
+                                </div>
+
+                                <!-- Правая панель - редактор -->
+                                <div class="prompt-editor-panel">
+                                    <div class="prompt-header">
+                                        <h3>✏️ Editor</h3>
+                                        <div class="prompt-actions">
+                                            <button onclick="loadCurrentPrompt()" class="btn btn-secondary btn-small">
+                                                🔄
+                                            </button>
+                                            <button onclick="createBackup()" class="btn btn-warning btn-small">
+                                                💾 Бэкап
+                                            </button>
+                                            <button onclick="savePrompt()" class="btn btn-primary btn-small">
+                                                💾 Сохранить
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="prompt-meta" id="prompt-meta">
+                                        <span>Файл: <strong id="prompt-filename">-</strong></span>
+                                        <span>Размер: <strong id="prompt-size">-</strong></span>
+                                        <span>Изменён: <strong id="prompt-modified">-</strong></span>
+                                    </div>
+                                    
+                                    <textarea id="prompt-editor" class="prompt-editor" 
+                                            placeholder="Загрузка промпта..."></textarea>
+                                    
+                                    <div id="prompt-result" class="result-message" style="display:none;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="sidebar collapsed" id="sidebar">
+                <button class="sidebar-toggle" onclick="toggleSidebar()">
+                    <span id="toggle-icon">☰</span>
+                </button>
+                <div class="sidebar-header">
+                    <span class="title">NST / Admin</span>
+                </div>
+                <div class="sidebar-tabs">
+                    <button class="tab-button active" onclick="showTab('documents', event)">
+                        <span class="icon">📄</span>
+                        <span class="label">Documents</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('search', event)">
+                        <span class="icon">🔍</span>
+                        <span class="label">Search</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('upload', event)">
+                        <span class="icon">📤</span>
+                        <span class="label">Upload</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('tree_files', event)">
+                        <span class="icon">📁</span>
+                        <span class="label">Tree Files</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('news_send', event)">
+                        <span class="icon">📢</span>
+                        <span class="label">Send News</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('prompts', event)">
+                        <span class="icon">📝</span>
+                        <span class="label">Prompts</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('bot_settings', event)">
+                        <span class="icon">⚙️</span>
+                        <span class="label">Bot Settings</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('user_groups', event)">
+                        <span class="icon">👥</span>
+                        <span class="label">User Groups</span>
                     </button>
                 </div>
-                
-                <div class="search-options">
-                    <label>
-                        Knowledge Base:
-                        <select id="search-kb">
-                            <option value="">All Knowledge Bases</option>
-                        </select>
-                    </label>
-                    <label>
-                        Results limit:
-                        <select id="search-limit">
-                            <option value="5">5</option>
-                            <option value="10" selected>10</option>
-                            <option value="20">20</option>
-                            <option value="50">50</option>
-                        </select>
-                    </label>
-                </div>
-            </div>
-
-            <div id="search-results" class="search-results"></div>
-        </div>
-
-        <!-- Upload Tab -->
-        <div id="upload-tab" class="tab-content">
-            <div class="section-header">
-                <h2>Upload Document</h2>
-            </div>
-            
-            <div class="upload-section">
-                <div class="upload-box" id="upload-box">
-                    <div class="upload-icon"></div>
-                    <p>Drag & drop a file here or click to select</p>
-                    <p class="upload-hint">Supported: TXT, MD, PDF, DOCX, EXCEL</p>
-                </div>
-                
-                <input 
-                    type="file" 
-                    id="file-input" 
-                    accept=".txt,.md,.pdf,.docx,.doc,.csv,.xls,.xlsx" 
-                    onchange="handleFileSelect(event)"
-                    style="display: none;"
-                >
-
-                <div id="file-info" class="file-info" style="display: none;">
-                    <p><strong>Selected file:</strong> <span id="file-name"></span></p>
-                </div>
-
-                <div class="upload-options">
-                    <label>
-                        Knowledge Base ID:
-                        <input type="text" id="upload-kb-id" value="default" placeholder="e.g., default, kb1, kb2">
-                    </label>
-                    <label>
-                        User ID:
-                        <input type="text" id="upload-user-id" value="anonymous" placeholder="e.g., user123, anonymous">
-                    </label>
-                </div>
-
-                <button onclick="uploadDocument()" id="upload-btn" class="btn btn-primary btn-large" disabled>
-                     Upload Document
-                </button>
-
-                <div id="upload-progress" class="upload-progress" style="display: none;">
-                    <div class="progress-bar">
-                        <div class="progress-fill"></div>
-                    </div>
-                    <p>Processing document...</p>
-                </div>
-
-                <div id="upload-result" class="result-message"></div>
-            </div>
-        </div>
-
-        <!-- Tree tab -->
-        <div id="tree_files-tab" class="tab-content">
-            <div id="filesystem-tree"></div>
-        </div>
-
-        <!-- News Tab -->
-        <div id="news_send-tab" class="tab-content">
-            <div class="section-header">
-                <h2>Send News</h2>
-            </div>
-            <!-- tools to edit text -->
-            <div id="news-toolbar">
-                <span class="ql-formats">
-                    <button class="ql-bold"></button>
-                    <button class="ql-italic"></button>
-                    <button class="ql-underline"></button>
-                    <button class="ql-strike"></button>
-                </span>
-
-                <span class="ql-formats">
-                    <button class="ql-header" value="1"></button>
-                    <button class="ql-header" value="2"></button>
-                </span>
-
-                <span class="ql-formats">
-                    <button class="ql-list" value="ordered"></button>
-                    <button class="ql-list" value="bullet"></button>
-                </span>
-
-                <span class="ql-formats">
-                    <button class="ql-blockquote"></button>
-                    <button class="ql-code-block"></button>
-                </span>
-
-                <span class="ql-formats">
-                    <button class="ql-link"></button>
-                </span>
-            </div>
-            <!-- window to edit text -->
-            <div id="news-editor" class="news-editor-container"></div>
-            <div class="news-upload-wrapper">            
-                <div class="news-upload-box" id="news-upload-box">
-                    <span id="news-file-label">📎 Выбрать файл</span>
-                </div>
-                <input type="file" id="news-files" style="display: none;">
-            </div>
-            <div id="news-file-info" class="news-file-info" style="display: none;">
-                <span id="news-file-name"></span>
-                <span id="news-file-remove" class="news-file-remove">❌</span>
-            </div>
-            <!-- группы получателей -->
-            <div class="news-form-section">
-                <label class="news-form-label">👥 Группа получателей:</label>
-                <div class="news-form-group">
-                    <label class="news-form-option">
-                        <input type="radio" name="news-target-group" value="all" checked>
-                        <span>Все пользователи</span>
-                    </label>
-                    <label class="news-form-option">
-                        <input type="radio" name="news-target-group" value="manager_group">
-                        <span>👔 Менеджеры</span>
-                    </label>
-                    <label class="news-form-option">
-                        <input type="radio" name="news-target-group" value="coach_group">
-                        <span>🎓 Коучи</span>
-                    </label>
-                </div>
-            </div>
-            <!-- Schedule -->
-            <div class="news-schedule">
-                <label class="form-label">📅 Отложить отправку:</label>
-                <input type="datetime-local" id="news-schedule-time" class="news-schedule-input">
-                <label class="news-schedule-hint">⏰ Время отображается в Московском часовом поясе</label>
-            </div>
-            <br><br>
-
-            <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
-                📤 Отправить новость
-            </button>
-
-            <div id="news-result" class="result-message"></div>
-
-            <hr>
-            <div class="section-header">
-                <h3>📚 История новостей</h3>
-                <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
-                    🔄 Обновить
-                </button>
-            </div>
-
-            <div id="news-history" class="documents-list">
-                <div class="loading">История не загружена</div>
-            </div>
-        </div>
-
-        <!-- Prompts tab -->
-        <div id="prompts-tab" class="tab-content">
-            <h2>📝 Управление промптами</h2>
-            
-            <div class="prompt-container">
-                <!-- Левая панель - история файлов -->
-                <div class="prompt-sidebar">
-                    <h3>📚 Файлы промптов</h3>
-                    <div id="prompt-files-list" class="prompt-files-list">
-                        <div class="loading">Загрузка...</div>
-                    </div>
-                </div>
-                
-                <!-- Правая панель - редактор -->
-                <div class="prompt-editor-panel">
-                    <div class="prompt-header">
-                        <h3>✏️ Редактор промпта</h3>
-                        <div class="prompt-actions">
-                            <button onclick="loadCurrentPrompt()" class="btn btn-secondary btn-small">
-                                🔄 Обновить
-                            </button>
-                            <button onclick="createBackup()" class="btn btn-warning btn-small">
-                                💾 Бэкап
-                            </button>
-                            <button onclick="savePrompt()" class="btn btn-primary btn-small">
-                                💾 Сохранить
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div class="prompt-meta" id="prompt-meta">
-                        <span>Файл: <strong id="prompt-filename">-</strong></span>
-                        <span>Размер: <strong id="prompt-size">-</strong></span>
-                        <span>Изменён: <strong id="prompt-modified">-</strong></span>
-                    </div>
-                    
-                    <textarea id="prompt-editor" class="prompt-editor" 
-                            placeholder="Загрузка промпта..."></textarea>
-                    
-                    <div id="prompt-result" class="result-message" style="display:none;"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Bot settings tab -->
-        <div id="bot_settings-tab" class="tab-content">
-            <h2>⚙️ Настройки бота</h2>
-            
-            <div class="bot-settings-container">
-                
-                <!-- Стартовое сообщение -->
-                <div class="setting-card">
-                    <div class="setting-header">
-                        <h3>💬 Стартовое сообщение (/start)</h3>
-                        <div class="setting-actions">
-                            <button onclick="loadBotStartMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
-                            <button onclick="saveBotStartMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
-                        </div>
-                    </div>
-                    
-                    <div class="setting-info">
-                        <span>📄 Файл: <strong>bot_start_message.md</strong></span>
-                        <span>📦 Размер: <strong id="bot-start-size">-</strong></span>
-                        <span>📅 Изменён: <strong id="bot-start-modified">-</strong></span>
-                    </div>
-                    
-                    <textarea id="bot-start-editor" class="setting-editor" placeholder="Загрузка стартового сообщения..."></textarea>
-                    
-                    <div id="bot-start-result" class="result-message" style="display:none;"></div>
-                </div>
-                
-            </div>
-        </div>
-        
-        <!-- Groups Tab -->
-        <div id="user_groups-tab" class="tab-content">
-            <h2>👥 Управление группами пользователей</h2>
-            
-            <div class="groups-tab-header">
-                <input type="text" id="user-search" class="groups-search-input" 
-                    placeholder="🔍 Поиск по user_id, username или имени"
-                    onkeyup="loadUserGroups()">
-                <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
-                <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
-            </div>
-            
-            <div id="user-groups-list">
-                <div class="loading">Загрузка пользователей...</div>
-            </div>
-            
-            <div id="user-groups-stats" class="groups-stats-container">
-                <!-- Статистика будет загружена сюда -->
-            </div>
-        </div>
-
-        <!-- Modal for viewing document chunks -->
-        <div id="chunks-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3 id="modal-title">Document Chunks</h3>
-                    <button class="modal-close" onclick="closeModal()">&times;</button>
-                </div>
-                <div id="modal-body" class="modal-body"></div>
-            </div>
-        </div>
-    
-        <!-- Modal for creating collection -->
-        <div id="create-collection-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3>Create collection</h3>
-                    <button class="modal-close" onclick="closeCreateCollectionModal()">&times;</button>
-                </div>
-
-                <div class="modal-body">
-                    <input
-                        type="text"
-                        id="newCollectionVersion"
-                        placeholder="Version (e.g. v1)"
-                    />
-
-                    <div class="search-options">
-                        <select id="newCollectionType">
-                            <option value="faq">FAQ</option>
-                            <option value="kb">Knowledge Base</option>
-                        </select>
-                    </div>
-                    
-                    <div class="actions">
-                        <button onclick="createCollection()" class="btn btn-primary">Create</button>
-                    </div>
-
-                    <div id="create-collection-error" class="error hidden"></div>
-                </div>
-            </div>
-        </div>
-        <!-- Modal for switching collection -->
-        <div id="switch-collection-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3>Switch collection alias</h3>
-                    <button class="modal-close" onclick="closeSwitchCollectionModal()">&times;</button>
-                </div>
-
-                <div class="modal-body">
-                    
-                    <div class="search-options">
-                        <label>Collection type</label>
-                        <select id="switchCollectionType" onchange="loadAliasCollections()">
-                            <option value="faq">FAQ</option>
-                            <option value="kb">Knowledge Base</option>
-                        </select>
-                    </div>
-
-                    <div class="search-options">
-                        <label>Target collection</label>
-                        <select id="switchCollectionTarget"></select>
-                    </div>
-                    
-                    <div class="actions">
-                        <button onclick="switchCollectionAlias()" class="btn btn-primary">Switch alias</button>
-                    </div>
-
-                    <div id="switch-collection-error" class="error hidden"></div>
-                </div>
-            </div>
-        </div>
-        <!-- Modal for viewing file content-->
-        <div id="file-modal"  class="modal">
-            <div class="file-content-modal">
-                <div class="modal-header">
-                    <h3>Просмотр файла</h3>
-                    <button class="modal-close" onclick="closeFileModal()">&times;</button>
-                </div>
-                <div id="file-content"></div> 
             </div>
         </div>
 
     </div>
     <script src="/static/app.js?v=15" defer></script>
+    <!-- Quill editor редактор для html -->
     <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
+    <!-- EasyMDE editor для markdown -->
+    <script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
 </body>
 </html>
 

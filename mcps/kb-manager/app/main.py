@@ -405,7 +405,9 @@ async def filesystem_sync(
 
     return {"status": "sync_completed"}
 
-
+##################################
+# Авторизация и главная
+##################################
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main UI"""
@@ -991,31 +993,31 @@ async def send_news(
 ###############################
 
 @app.get("/api/prompts/list")
-async def list_prompts():
+async def list_prompts(agent: str):
     """Получить список всех файлов промптов"""
-    try:
+    try: 
+        agent_path = PROMPTS_STORAGE_ROOT/agent
+        if not agent_path.exists():
+            raise HTTPException(status_code=404, detail="Agent not found")
         prompts = []
-        if PROMPTS_STORAGE_ROOT.exists():
-            for file in PROMPTS_STORAGE_ROOT.iterdir():
-                if file.is_file() and file.suffix == ".md":
-                    stat = file.stat()
-                    prompts.append({
-                        "name": file.name,
-                        "size": stat.st_size,
-                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                        "is_current": file.name == "agent_prompt.md",
-                        "is_backup": file.name.startswith("agent_prompt_backup_")
-                    })
-        
-        # Сортировка: текущий первый, потом бэкапы, потом остальные
+        for file in agent_path.iterdir():
+            if file.is_file() and file.suffix == ".md":
+                stat = file.stat()
+                prompts.append({
+                    "name": file.name,
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "is_current": file.name == f"{agent}_agent_prompt.md",
+                    "is_backup": file.name.startswith(f"{agent}_agent_prompt_backup_")
+                })
         prompts.sort(key=lambda x: (
-            not x["is_current"],  # текущий первым
-            not x["is_backup"],   # потом бэкапы
-            x["modified"]         # по дате
+            not x["is_current"],
+            not x["is_backup"],
+            x["modified"]
         ))
-        
+
         return {
-            "current": "agent_prompt.md",
+            "current": f"{agent}_agent_prompt.md",
             "files": prompts
         }
     except Exception as e:
@@ -1023,10 +1025,10 @@ async def list_prompts():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/prompts/current")
-async def get_current_prompt():
-    """Получить текущий промпт (agent_prompt.md)"""
+async def get_current_prompt(agent: str):
+    """Получить текущий промпт (f'{agent}_agent_prompt.md')"""
     try:
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
         
@@ -1035,7 +1037,7 @@ async def get_current_prompt():
         
         stat = prompt_file.stat()
         return {
-            "name": "agent_prompt.md",
+            "name": f"{agent}_agent_prompt.md",
             "content": content,
             "size": stat.st_size,
             "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
@@ -1045,14 +1047,14 @@ async def get_current_prompt():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/prompts/file/{filename}")
-async def get_prompt_file(filename: str):
+async def get_prompt_file(filename: str, agent: str):
     """Получить содержимое конкретного файла промпта"""
     try:
         # Защита от path traversal
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / filename
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
         
@@ -1071,16 +1073,16 @@ async def get_prompt_file(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/prompts/backup")
-async def create_prompt_backup():
+async def create_prompt_backup(agent: str):
     """Создать бэкап текущего промпта"""
     try:
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT/ agent / f"{agent}_agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"agent_prompt_backup_{timestamp}.md"
-        backup_file = PROMPTS_STORAGE_ROOT / backup_name
+        backup_name = f"{agent}_agent_prompt_backup_{timestamp}.md"
+        backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
         
         shutil.copy2(prompt_file, backup_file)
         logger.info(f"Created prompt backup: {backup_name}")
@@ -1099,16 +1101,17 @@ async def save_prompt(data: dict):
     """Сохранить новый промпт с созданием бэкапа"""
     try:
         content = data.get("content")
+        agent = data.get("agent")
         if not content:
             raise HTTPException(status_code=400, detail="Content is required")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         
         # 1. Создать бэкап если файл существует
         if prompt_file.exists():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"agent_prompt_backup_{timestamp}.md"
-            backup_file = PROMPTS_STORAGE_ROOT / backup_name
+            backup_name = f"{agent}_agent_prompt_backup_{timestamp}.md"
+            backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
             shutil.copy2(prompt_file, backup_file)
             logger.info(f"Created backup before save: {backup_name}")
         
@@ -1128,17 +1131,17 @@ async def save_prompt(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/prompts/restore/{filename}")
-async def restore_prompt(filename: str):
+async def restore_prompt(filename: str, agent: str):
     """Восстановить промпт из бэкапа"""
     try:
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        backup_file = PROMPTS_STORAGE_ROOT / filename
+        backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="Backup file not found")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         shutil.copy2(backup_file, prompt_file)
         
         logger.info(f"Restored prompt from backup: {filename}")
@@ -1153,16 +1156,16 @@ async def restore_prompt(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/prompts/file/{filename}")
-async def delete_prompt_file(filename: str):
+async def delete_prompt_file(filename: str, agent: str):
     """Удалить файл бэкапа"""
     try:
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        if filename == "agent_prompt.md":
+        if filename == f"{agent}_agent_prompt.md":
             raise HTTPException(status_code=400, detail="Cannot delete current prompt")
         
-        backup_file = PROMPTS_STORAGE_ROOT / filename
+        backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
         
@@ -1175,6 +1178,18 @@ async def delete_prompt_file(filename: str):
         }
     except Exception as e:
         logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/prompts/agents")
+async def get_agents():
+    """Получаем агентов какие у нас есть"""
+    try:
+        agents = [
+            f.name for f in PROMPTS_STORAGE_ROOT.iterdir()
+            if f.is_dir()
+        ]
+        return agents
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 ############################
