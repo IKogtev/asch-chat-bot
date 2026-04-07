@@ -10,6 +10,7 @@ COPY utils/ ./utils/
 
 # Копируем только необходимые файлы из agent/, исключая кэш
 COPY agent/*.py ./agent/
+COPY agent/agents/*.py ./agent/agents/
 
 # Создаём директорию для логов
 RUN mkdir -p /app/logs
