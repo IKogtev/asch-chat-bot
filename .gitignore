@@ -18,7 +18,7 @@ kb_storage/archive_kb
 kb_storage/knowledge_base
 kb_storage/kb
 data/
-venv/
+venv*/
 
 *.env
 *.code-workspace
