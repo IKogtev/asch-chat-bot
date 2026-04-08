@@ -5,7 +5,6 @@ from typing import Optional
 from uuid import uuid4
 # Импортируем логгер из
 from utils import setup_logger
-from utils.bot_adk_profile import BOT_USER_PROFILE_MESSAGE_PREFIX
 from bot.services.config import Settings
 from datetime import datetime
 
