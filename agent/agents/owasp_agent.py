@@ -4,7 +4,10 @@ from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
 from ..helpers import load_prompt
+from utils.logger import setup_logger
+from ..prompt_loader import start_prompt_watcher
 
+logger = setup_logger("owasp_agent", "agent.log")
 
 def validate_owasp_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -53,9 +56,13 @@ def create_owasp_agent(model: LiteLlm) -> LlmAgent:
   "user_message": "Запрос отклонён по соображениям безопасности."
 }
 """
-    return LlmAgent(
+    prompt_file = "owasp_agent_prompt.md"
+    instruction = load_prompt(prompt_file, fallback)
+    agent = LlmAgent(
         name="owasp_agent",
         model=model,
-        instruction=load_prompt("owasp_agent_prompt.md", fallback),
+        instruction=instruction,
         output_key="owasp_result_json",
     )
+    start_prompt_watcher(prompt_file, agent, logger)
+    return agent
