@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
@@ -18,8 +18,68 @@ from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
 from datetime import datetime, timedelta
+# Auth dependencies
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, Cookie
+import secrets
 
 load_dotenv()
+
+# AUTH config
+SECRET_KEY = "super-secret-key-change-this"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+sessions: Dict[str, dict] = {}
+security = HTTPBearer()
+# temporary
+fake_users_db = {
+    "admin": {
+        "username": "admin",
+        "password": "admin123",
+        "role": "admin"
+    },
+    "manager": {
+        "username": "manager",
+        "password": "manager",
+        "role": "manager"
+    }
+}
+ROLE_PERMISSIONS = {
+    "admin": ["*"],
+
+    "manager": [
+        "/api/documents",
+        "/api/search",
+        "/api/knowledge-bases",
+        "/api/filesystem",
+        "/api/news",
+        "/api/user-groups"
+    ]
+}
+# auth functions
+def get_current_user(session_token: str = Cookie(None)):
+    if not session_token or session_token not in sessions:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return sessions[session_token]
+
+def require_role(allowed_roles: list):
+    def role_checker(user=Depends(get_current_user)):
+        if user["role"] not in allowed_roles:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return user
+    return role_checker
+
+def is_allowed(path: str, role: str) -> bool:
+    allowed_paths = ROLE_PERMISSIONS.get(role, [])
+
+    # admin — всё можно
+    if "*" in allowed_paths:
+        return True
+
+    # проверяем prefix match
+    return any(path.startswith(p) for p in allowed_paths)
 # Используем современный Lifespan вместо @app.on_event("startup")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -58,6 +118,34 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600,
 )
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    public_paths = [
+        "/api/login",
+        "/static",
+        "/"
+    ]
+
+    path = request.url.path
+
+    # публичные
+    if any(path.startswith(p) for p in public_paths):
+        return await call_next(request)
+
+    token = request.cookies.get("session_token")
+
+    if not token or token not in sessions:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    user = sessions[token]
+    role = user["role"]
+
+    # 🔥 RBAC проверка
+    if not is_allowed(path, role):
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+
+    return await call_next(request)
 
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
 
@@ -408,6 +496,41 @@ async def filesystem_sync(
 ##################################
 # Авторизация и главная
 ##################################
+@app.post("/api/login")
+async def login(username: str = Form(...), password: str = Form(...)):
+    user = fake_users_db.get(username)
+
+    if not user or user["password"] != password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = secrets.token_hex(32)
+    sessions[token] = {
+        "username": username,
+        "role": user["role"]
+    }
+
+    response = JSONResponse({"success": True})
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        samesite="lax"
+    )
+    return response
+
+@app.post("/api/logout")
+async def logout(session_token: str = Cookie(None)):
+    if session_token in sessions:
+        del sessions[session_token]
+
+    response = JSONResponse({"success": True})
+    response.delete_cookie("session_token")
+    return response
+
+@app.get("/api/me")
+async def me(user=Depends(get_current_user)):
+    return user
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main UI"""

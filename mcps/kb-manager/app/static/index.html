@@ -11,9 +11,18 @@
     <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
 </head>
 <body>
-    <div class="container">
+    <div id="login-screen" class="login-screen">
+        <div class="login-box">
+            <h2>🔐 Login</h2>
+            <input type="text" id="login-username" placeholder="Username">
+            <input type="password" id="login-password" placeholder="Password">
+            <button onclick="login()">Sign In</button>
+            <div id="login-error"></div>
+        </div>
+    </div>
+    <div class="container" id="app" style="display:none;">
         <!-- Collections view -->
-        <header>
+        <header id="collections-header">
             <div class="collection-selector">
                 <label for="collection-select">
                     <strong>Active collection:</strong>
@@ -455,37 +464,40 @@
                     <span class="title">NST / Admin</span>
                 </div>
                 <div class="sidebar-tabs">
-                    <button class="tab-button active" onclick="showTab('documents', event)">
+                    <button class="tab-button active" onclick="showTab('documents', event)" data-tab="documents">
                         <span class="icon">📄</span>
                         <span class="label">Documents</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('search', event)">
+                    <button class="tab-button" onclick="showTab('search', event)" data-tab="search">
                         <span class="icon">🔍</span>
                         <span class="label">Search</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('upload', event)">
+                    <button class="tab-button" onclick="showTab('upload', event)" data-tab="upload">
                         <span class="icon">📤</span>
                         <span class="label">Upload</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('tree_files', event)">
+                    <button class="tab-button" onclick="showTab('tree_files', event)" data-tab="tree_files">
                         <span class="icon">📁</span>
                         <span class="label">Tree Files</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('news_send', event)">
+                    <button class="tab-button" onclick="showTab('news_send', event)" data-tab="news_send">
                         <span class="icon">📢</span>
                         <span class="label">Send News</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('prompts', event)">
+                    <button class="tab-button" onclick="showTab('prompts', event)" data-tab="prompts">
                         <span class="icon">📝</span>
                         <span class="label">Prompts</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('bot_settings', event)">
+                    <button class="tab-button" onclick="showTab('bot_settings', event)" data-tab="bot_settings">
                         <span class="icon">⚙️</span>
                         <span class="label">Bot Settings</span>
                     </button>
-                    <button class="tab-button" onclick="showTab('user_groups', event)">
+                    <button class="tab-button" onclick="showTab('user_groups', event)" data-tab="user_groups">
                         <span class="icon">👥</span>
                         <span class="label">User Groups</span>
+                    </button>
+                    <button class="tab-button" onclick="logout()">
+                        <span class="label">Logout</span>
                     </button>
                 </div>
             </div>
