@@ -67,12 +67,25 @@ class RootAgent(BaseAgent):
 
     def _get_user_profile(self, ctx: InvocationContext) -> Dict[str, Any]:
         """
-        Извлекает профиль пользователя из ctx.user.state.
+        Извлекает профиль пользователя из ctx.session.state.
         """
         profile = {}
-        if hasattr(ctx, "user") and hasattr(ctx.user, "state"):
-            for key, value in ctx.user.state.items():
-                profile[key] = value
+        session_state = getattr(ctx.session, "state", None)
+        if not session_state:
+            return profile
+
+        for key in (
+            "first_name",
+            "last_name",
+            "full_name",
+            "username",
+            "region",
+            "manager_group",
+            "coach_group",
+        ):
+            if key in session_state:
+                profile[key] = session_state[key]
+
         return profile
 
     @staticmethod
