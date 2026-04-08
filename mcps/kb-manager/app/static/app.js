@@ -15,6 +15,8 @@ let currentPromptContent = "";
 let promptFiles = [];
 let botStartMessageContent = "";
 let newsEditor = null;
+let currentAgent = null;
+let promptEditorMDE = null;
 
 
 // Initialize on load
@@ -167,8 +169,8 @@ async function loadCollectionInfo() {
         const isFAQ = currentCollectionType === 'faq';
 
         document.getElementById('collection-info').innerHTML = 
-            `Collection: <strong>${data.name}</strong> 
-                | ${isFAQ? "Documents": "Points"} 
+            `
+                ${isFAQ? "Documents": "Points"} 
                 <strong>${data.points_count-1 || 0}</strong>
                 | Platform Version
                 <strong>${data.platform_version || 0}</strong>
@@ -177,7 +179,8 @@ async function loadCollectionInfo() {
                 | Next Synchronization
                 <strong>${data.next_sync? formatDate(data.next_sync): "Not set yet"}</strong>
             `;
-    } catch (error) {
+         
+        } catch (error) {
         console.error('Error loading collection info:', error);
     }
 }
@@ -405,9 +408,11 @@ async function switchCollectionAlias() {
 // Tab Management
 function showTab(tabName) {
     // Hide all tabs
+    // tabs
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.remove('active');
     });
+    // buttons
     document.querySelectorAll('.tab-button').forEach(btn => {
         btn.classList.remove('active');
     });
@@ -415,6 +420,9 @@ function showTab(tabName) {
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
     event.target.classList.add('active');
+
+    const button = event.currentTarget;
+    button.classList.add('active');
     
     // Load data if needed
     if (tabName === 'documents') {
@@ -437,6 +445,20 @@ function showTab(tabName) {
 // #############################
 // Utilities subsystem
 // #############################
+// функция для открытия и закрытия сайдбара
+function toggleSidebar() {
+    const sidebar = document.getElementById("sidebar");
+    const icon = document.getElementById("toggle-icon");
+    sidebar.classList.toggle("expanded");
+    sidebar.classList.toggle("collapsed");
+
+    // меняем иконку
+    if (sidebar.classList.contains("expanded")) {
+        icon.textContent = "✖";
+    } else {
+        icon.textContent = "☰";
+    }
+}
 // extract question from text
 function extractQuestionFromText(text){
     if (!text) return '';
@@ -1721,11 +1743,92 @@ function closeFileModal() {
 // #############################
 // PROMPTS TAB LOGIC
 // #############################
-
-// Загрузка вкладки Prompts
+// Загрузка вкладки Prompts новой логики
 async function loadPromptsTab() {
+    const container = document.getElementById("agents-list");
+    container.innerHTML = '<div class="loading">Loading agents...</div>';
+
+    try {
+        const res = await fetch("/api/prompts/agents");
+        const agents = await res.json();
+
+        if (!agents.length) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">🤖</div>
+                    <p>No agents found</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = agents.map(agent => `
+            <div class="document-card">
+                <div class="document-header">
+                    <div class="document-title">🤖 ${agent}</div>
+                    <div class="document-actions">
+                        <button 
+                            class="btn btn-primary btn-small"
+                            onclick="openAgent('${agent}')">
+                            👁️ View
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `).join("");
+
+    } catch (err) {
+        container.innerHTML = `<div class="result-message error">Error loading agents</div>`;
+        console.error(err);
+    }
+}
+// открытие агента 
+async function openAgent(agent) {
+    currentAgent = agent;
+    // инициализация редактора, если еще не создан
+    if (!promptEditorMDE) {
+        promptEditorMDE = new EasyMDE({
+            element: document.getElementById("prompt-editor"),
+            spellChecker: false,
+            status: false,
+            minHeight: "400px",
+        });
+    }
+    // открываем модалку
+    const modal = document.getElementById("agent-modal");
+    if (modal) {
+        modal.classList.add("active");
+    }
+
+    // заголовок модалки
+    const title = document.getElementById("agent-modal-title");
+    if (title) {
+        title.textContent = `🤖 ${agent}`;
+    }
+
+    // сбрасываем UI внутри
+    const filesList = document.getElementById("prompt-files-list");
+    if (filesList) {
+        filesList.innerHTML = '<div class="loading">Загрузка...</div>';
+    }
+
+    if (promptEditorMDE) {
+        promptEditorMDE.value("");
+    }
+    
+    // загружаем файлы агента
     await loadPromptFiles();
+    // грузим текущий промпт 
     await loadCurrentPrompt();
+}
+
+function closeAgentModal() {
+    const modal = document.getElementById("agent-modal");
+    if (modal) {
+        modal.classList.remove("active");
+    }
+
+    currentAgent = null;
 }
 // Загрузка списка файлов промптов
 async function loadPromptFiles() {
@@ -1733,7 +1836,7 @@ async function loadPromptFiles() {
     filesList.innerHTML = '<div class="loading">Загрузка...</div>';
     
     try {
-        const res = await fetch("/api/prompts/list");
+        const res = await fetch(`/api/prompts/list?agent=${currentAgent}`);
         const data = await res.json();
         promptFiles = data.files || [];
         
@@ -1771,21 +1874,21 @@ async function loadPromptFiles() {
 }
 // Загрузка текущего промпта
 async function loadCurrentPrompt() {
-    const editor = document.getElementById("prompt-editor");
+    // const editor = document.getElementById("prompt-editor");
     const metaFilename = document.getElementById("prompt-filename");
     const metaSize = document.getElementById("prompt-size");
     const metaModified = document.getElementById("prompt-modified");
     
-    editor.value = "Загрузка...";
-    editor.disabled = true;
+    promptEditorMDE.value("Загрузка...");
+    promptEditorMDE.codemirror.setOption("readOnly", true);
     
     try {
-        const res = await fetch("/api/prompts/current");
+        const res = await fetch(`/api/prompts/current?agent=${currentAgent}`);
         const data = await res.json();
         
         currentPromptContent = data.content;
-        editor.value = currentPromptContent;
-        editor.disabled = false;
+        promptEditorMDE.value(currentPromptContent);
+        promptEditorMDE.codemirror.setOption("readOnly", false);
         
         metaFilename.textContent = data.name;
         metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
@@ -1807,13 +1910,12 @@ async function loadCurrentPrompt() {
 }
 // Загрузка конкретного файла промпта
 async function loadPromptFile(filename) {
-    const editor = document.getElementById("prompt-editor");
     
     try {
-        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}`);
+        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`);
         const data = await res.json();
         
-        editor.value = data.content;
+        promptEditorMDE.value(data.content);
         currentPromptContent = data.content;
         
         // Обновление мета-информации
@@ -1842,7 +1944,7 @@ async function createBackup() {
     resultDiv.innerHTML = "⏳ Создание бэкапа...";
     
     try {
-        const res = await fetch("/api/prompts/backup", { method: "POST" });
+        const res = await fetch(`/api/prompts/backup?agent=${currentAgent}`, { method: "POST" });
         const data = await res.json();
         
         if (res.ok) {
@@ -1859,11 +1961,10 @@ async function createBackup() {
 }
 // Сохранение промпта
 async function savePrompt() {
-    const editor = document.getElementById("prompt-editor");
     const resultDiv = document.getElementById("prompt-result");
     
-    const newContent = editor.value;
-    
+    const newContent = promptEditorMDE.value();
+
     if (!newContent.trim()) {
         alert("Промпт не может быть пустым");
         return;
@@ -1881,7 +1982,10 @@ async function savePrompt() {
         const res = await fetch("/api/prompts/save", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: newContent })
+            body: JSON.stringify({
+                 content: newContent,
+                 agent: currentAgent 
+            })
         });
         
         const data = await res.json();
@@ -1907,7 +2011,7 @@ async function restorePrompt(filename) {
     }
     
     try {
-        const res = await fetch(`/api/prompts/restore/${encodeURIComponent(filename)}`, {
+        const res = await fetch(`/api/prompts/restore/${encodeURIComponent(filename)}?agent=${currentAgent}`, {
             method: "POST"
         });
         
@@ -1932,7 +2036,7 @@ async function deletePromptFile(filename) {
     }
     
     try {
-        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}`, {
+        const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`, {
             method: "DELETE"
         });
         
@@ -2079,9 +2183,9 @@ async function loadUserGroups() {
                         <th>User ID</th>
                         <th>Username</th>
                         <th>Имя</th>
+                        <th>Фамилия</th>
                         <th class="text-center">👔 Менеджер</th>
                         <th class="text-center">🎓 Коуч</th>
-                        <th>Телефон</th>
                         <th>Последний вход</th>
                     </tr>
                 </thead>
@@ -2090,7 +2194,8 @@ async function loadUserGroups() {
                         <tr>
                             <td class="font-monospace">${u.user_id}</td>
                             <td>${escapeHtml(u.username || '-')}</td>
-                            <td>${escapeHtml(u.first_name || '')} ${escapeHtml(u.last_name || '')}</td>
+                            <td>${escapeHtml(u.first_name || '')}</td>
+                            <td>${escapeHtml(u.last_name || '')}</td>
                             <td class="text-center">
                                 <input type="checkbox" 
                                       ${u.manager_group ? 'checked' : ''} 
@@ -2101,7 +2206,6 @@ async function loadUserGroups() {
                                       ${u.coach_group ? 'checked' : ''} 
                                       onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
                             </td>
-                            <td>${escapeHtml(u.phone_number || '-')}</td>
                             <td>${formatDate(u.last_seen)}</td>
                         </tr>
                     `).join('')}

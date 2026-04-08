@@ -75,10 +75,7 @@ services:
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
-      - ./agent:/app/agent
       - ./kb_storage/prompts:/app/agent/prompts
-    tmpfs:
-      - /app/agent/.adk:size=100M
     networks:
       - aszh-bot-network
     depends_on:
@@ -273,7 +270,6 @@ services:
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
-      - ./agent:/app/agent
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
       - aszh-bot-network

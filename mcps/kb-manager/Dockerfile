@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Копируем pip.conf для ускорения установки
+COPY pip.conf /etc/pip.conf
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
