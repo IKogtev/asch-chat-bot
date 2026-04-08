@@ -110,6 +110,10 @@ services:
       - PLATFORM_VERSION=0.6.0
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
+    # Run Alembic then the bot. Fresh volume: upgrade creates tables. If the DB already had
+    # tables from legacy ensure_schema but no alembic_version row, run once:
+    #   docker compose run --rm bot sh -c "cd /app && alembic stamp a1b2c3d4e5f6"
+    command: ["sh", "-c", "cd /app && alembic upgrade head && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
 
