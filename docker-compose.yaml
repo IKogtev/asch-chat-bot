@@ -86,50 +86,6 @@ services:
       kbsearch:
         condition: service_healthy
 
-  # AG-UI bridge for CopilotKit (same agent code + MCP as adk-agent; separate process)
-  ag-ui-adapter:
-    build:
-      context: .
-      dockerfile: Dockerfile.ag_ui
-    container_name: aszh-ag-ui-adapter
-    restart: unless-stopped
-    depends_on:
-      kbsearch:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_URL=${LLM_API_URL}
-      - LLM_API_MODEL=${LLM_API_MODEL}
-      - KBSEARCH_MCP_URL=${KBSEARCH_MCP_URL}
-      - MCP_TOKEN=${MCP_TOKEN}
-      - KB_DEFAULT_COLLECTION=${KB_COLLECTION:-kb_collection}
-      - ADK_APP_NAME=${ADK_APP_NAME:-agent}
-      - AG_UI_ADAPTER_API_KEY=${AG_UI_ADAPTER_API_KEY:-}
-    volumes:
-      - ./kb_storage/prompts:/app/agent/prompts
-    ports:
-      - "8010:8010"
-    networks:
-      - aszh-bot-network
-
-  copilot-web:
-    build:
-      context: ./web/copilot-web
-      dockerfile: Dockerfile
-    container_name: aszh-copilot-web
-    restart: unless-stopped
-    depends_on:
-      - ag-ui-adapter
-    environment:
-      - ADK_AG_UI_URL=http://ag-ui-adapter:8010
-      - ADK_AG_UI_API_KEY=${AG_UI_ADAPTER_API_KEY:-}
-    ports:
-      - "3000:3000"
-    networks:
-      - aszh-bot-network
-
   bot:
     build:
       context: .

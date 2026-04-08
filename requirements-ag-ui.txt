@@ -1,9 +1,0 @@
-# Same agent stack as requirements-agent.txt + AG-UI bridge for CopilotKit
-# LiteLlm in agent_v1 requires the extensions extra (google.adk.models.lite_llm)
-google-adk[extensions]>=1.16.0,<2.0.0
-litellm==1.81.15
-python-dotenv==1.0.1
-watchdog
-ag-ui-adk==0.5.2
-fastapi>=0.115.2
-uvicorn[standard]>=0.35.0
