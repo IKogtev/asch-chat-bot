@@ -418,6 +418,7 @@ class SubscriberStore:
             await conn.execute(query, value, user_id)
 
         logger.info(f"✓ Группа {group} обновлена для user_id={user_id}: {value}")
+
 # Хранилище новостей и рассылок
 class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
@@ -517,6 +518,7 @@ class NewsStore:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(query, news_id)
+
 # Хранилище для взаимодействия с ADK API
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
