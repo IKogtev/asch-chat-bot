@@ -6,7 +6,6 @@ from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
-from utils.bot_adk_profile import is_bot_user_profile_injection_message
 from utils.doc_search_format import extract_download_ranks
 from .config import KB_DOCUMENTS_COLLECTION, DEBUG_EXCEPTIONS
 from .helpers import truncate_for_log, format_text_answer, format_reject_answer
@@ -17,6 +16,12 @@ from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 
 logger = setup_logger("root_agent", "agent.log")
+
+BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
+
+def is_bot_user_profile_injection_message(text: str) -> bool:
+    t = (text or "").lstrip()
+    return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
 
 class RootAgent(BaseAgent):
     """
