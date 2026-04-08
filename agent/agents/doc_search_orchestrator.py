@@ -1,7 +1,12 @@
 """
-Композитный агент: поиск документов (LLM + kb_search), пагинация, сохранение списка в БД,
-выдача <bot_contract> со слайсом для рендера на стороне клиента (Telegram / web) и строк
-document_id для скачивания ботом.
+Композитный агент: поиск документов (LLM + kb_search), нормализация полного списка, сохранение в БД.
+
+Текст из JSON doc_search_agent (поле message при mode=document_list) пользователю как список не показывается:
+итоговый вывод — через UI бота из БД. Здесь при успехе выставляется краткий служебный _root_final_text
+(DOC_SEARCH_SUCCESS_HINT); в Telegram при смене search_id бот дополнительно шлёт отрендеренную первую порцию.
+
+Пагинация и скачивание по номеру — в Telegram-боте (handlers); прямой вызов ADK с intent show_more/show_all/file_download
+даёт краткую подсказку (для web без бота).
 """
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -9,37 +14,34 @@ from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event
 
 from ..config import ACTIVE_DOCUMENTS_COLLECTION, DOC_SEARCH_PAGE_SIZE
-from ..helpers import format_bot_contract_doc_search_display, format_text_answer, truncate_for_log
+from ..helpers import DOC_SEARCH_SUCCESS_HINT, format_text_answer, truncate_for_log
 from ..json_leaf_runner import run_json_leaf_agent
 from .doc_search_agent import validate_doc_search_result
-from utils.doc_search_format import parse_download_ranks
 from utils.logger import setup_logger
 
 logger = setup_logger("doc_search_orchestrator", "agent.log")
 
 
-def _contract_slice_rows(
-    slice_items: List[Dict[str, Any]],
-    *,
-    global_start_rank: int,
-) -> List[Dict[str, Any]]:
-    """Строки контракта для одной порции списка (rank — глобальный 1..N)."""
-    out: List[Dict[str, Any]] = []
-    for i, item in enumerate(slice_items):
-        rank = global_start_rank + i + 1
-        out.append(
-            {
-                "document_id": item["document_id"],
-                "source_name": item["source_name"],
-                "source_path": item.get("source_path"),
-                "snippet": (item.get("snippet") or "")[:500],
-                "old_rank": rank,
-                "new_rank": rank,
-                "is_relevant": True,
-            }
+def _follow_up_unhandled_in_agent_hint(intent: str) -> str:
+    """
+    Текст, если follow-up (ещё / все / номер) дошёл до оркестратора (не обработан клиентом).
+    Формулировки согласованы с bot.services.config (SHOW_MORE_RE, SHOW_ALL_RE) и parse_download_ranks.
+    """
+    if intent == "show_more":
+        return (
+            "Следующую порцию списка документов можно запросить отдельным сообщением, "
+            "например: «ещё», «покажи ещё», «дальше» или «ещё файлы»."
         )
-    return out
-
+    if intent == "show_all":
+        return (
+            "Весь список документов можно запросить отдельным сообщением, "
+            "например: «все», «покажи все», «всё», «да» или «полный список»."
+        )
+    if intent == "file_download":
+        return (
+            "Скачивание по номеру из списка выполняется так: отправьте номер документа "
+            "(например «3»), несколько номеров через запятую или фразу вида «скачай 1», «1 и 3»."
+        )
 
 def _telegram_user_id(ctx: InvocationContext) -> Optional[int]:
     """ID пользователя Telegram из ADK Session (тот же, что в /run)."""
@@ -98,66 +100,9 @@ async def _persist_full_list(
         logger.error("doc_search: ошибка сохранения в БД: %s", e, exc_info=True)
 
 
-async def _persist_shown_count(ctx: InvocationContext, shown_count: int) -> None:
-    from utils.search_results_db import get_shared_pool, update_doc_search_shown_count
-
-    pool = await get_shared_pool()
-    if pool is None:
-        return
-    uid = _telegram_user_id(ctx)
-    if uid is None:
-        return
-    sid = getattr(ctx.session, "id", None) or ""
-    if not sid:
-        return
-    try:
-        await update_doc_search_shown_count(pool, uid, sid, shown_count)
-    except Exception as e:
-        logger.error("doc_search: update_shown_count: %s", e, exc_info=True)
-
-
-async def _hydrate_doc_search_list_from_db(ctx: InvocationContext) -> bool:
-    """
-    Если в session.state нет списка (ADK не сохранил между /run), поднимаем из PostgreSQL.
-    """
-    items = ctx.session.state.get("doc_search_list_items")
-    if isinstance(items, list) and len(items) > 0:
-        return True
-    from utils.search_results_db import get_shared_pool, load_doc_search_list_from_db
-
-    pool = await get_shared_pool()
-    if pool is None:
-        return False
-    uid = _telegram_user_id(ctx)
-    if uid is None:
-        return False
-    sid = getattr(ctx.session, "id", None) or ""
-    if not sid:
-        return False
-    try:
-        loaded = await load_doc_search_list_from_db(pool, uid, sid)
-    except Exception as e:
-        logger.error("doc_search: hydrate из БД: %s", e, exc_info=True)
-        return False
-    if loaded is None:
-        return False
-    normalized, shown_count = loaded
-    ctx.session.state["doc_search_list_items"] = normalized
-    ctx.session.state["doc_search_shown_count"] = shown_count
-    logger.info(
-        "doc_search: список восстановлен из БД user=%s session=%s rows=%s shown=%s",
-        uid,
-        sid,
-        len(normalized),
-        shown_count,
-    )
-    return True
-
-
 class DocSearchOrchestrator(BaseAgent):
     """
-    intent из dispatcher (в state до вызова): doc_search | show_more | show_all | file_download.
-    user_query и doc_search_search_query выставляет RootAgent.
+    Только новый поиск (intent doc_search): LLM + kb_search → полный список → БД.
     """
 
     doc_search_agent: LlmAgent
@@ -194,88 +139,11 @@ class DocSearchOrchestrator(BaseAgent):
             truncate_for_log((search_query or user_message).strip(), 300),
         )
 
+        if intent in ("show_more", "show_all", "file_download"):
+            ctx.session.state["_root_final_text"] = _follow_up_unhandled_in_agent_hint(intent)
+            return
+
         page = DOC_SEARCH_PAGE_SIZE
-
-        if intent == "show_more":
-            await _hydrate_doc_search_list_from_db(ctx)
-            items = ctx.session.state.get("doc_search_list_items")
-            if not isinstance(items, list) or not items:
-                ctx.session.state["_root_final_text"] = (
-                    "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                )
-                return
-
-            shown = int(ctx.session.state.get("doc_search_shown_count") or 0)
-            start = shown
-            if start >= len(items):
-                ctx.session.state["_root_final_text"] = "Это уже все найденные файлы."
-                return
-
-            end = min(start + page, len(items))
-            chunk = items[start:end]
-            ctx.session.state["doc_search_shown_count"] = end
-            await _persist_shown_count(ctx, end)
-            slice_rows = _contract_slice_rows(chunk, global_start_rank=start)
-            ctx.session.state["_root_final_text"] = format_bot_contract_doc_search_display(
-                slice_rows,
-                total_count=len(items),
-                display_offset=start,
-            )
-            return
-
-        if intent == "show_all":
-            await _hydrate_doc_search_list_from_db(ctx)
-            items = ctx.session.state.get("doc_search_list_items")
-            if not isinstance(items, list) or not items:
-                ctx.session.state["_root_final_text"] = (
-                    "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                )
-                return
-
-            n = len(items)
-            ctx.session.state["doc_search_shown_count"] = n
-            await _persist_shown_count(ctx, n)
-            slice_rows = _contract_slice_rows(items, global_start_rank=0)
-            ctx.session.state["_root_final_text"] = format_bot_contract_doc_search_display(
-                slice_rows,
-                total_count=n,
-                display_offset=0,
-            )
-            return
-
-        if intent == "file_download":
-            ranks = parse_download_ranks(user_message)
-            if not ranks:
-                ctx.session.state["_root_final_text"] = (
-                    "Укажите номер документа из списка (например: «1» или «скачай 2»)."
-                )
-                return
-
-            await _hydrate_doc_search_list_from_db(ctx)
-            items = ctx.session.state.get("doc_search_list_items")
-            if not isinstance(items, list) or not items:
-                ctx.session.state["_root_final_text"] = (
-                    "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                )
-                return
-
-            lines: List[str] = []
-            for r in ranks:
-                if r < 1 or r > len(items):
-                    lines.append(f"Не нашёл документ №{r} в последнем списке.")
-                    continue
-                doc_id = items[r - 1].get("document_id")
-                if not doc_id:
-                    lines.append(f"Не удалось определить document_id для документа №{r}.")
-                    continue
-                lines.append(f"document_id:{doc_id}")
-
-            ctx.session.state["_root_final_text"] = "\n".join(lines)
-            return
-
-        # Новый поиск (intent == "doc_search")
-        ctx.session.state.pop("doc_search_list_items", None)
-        ctx.session.state.pop("doc_search_shown_count", None)
 
         effective_search_query = (search_query or user_message).strip()
         ctx.session.state["search_query"] = effective_search_query
@@ -310,17 +178,9 @@ class DocSearchOrchestrator(BaseAgent):
                 }
             )
 
-        ctx.session.state["doc_search_list_items"] = normalized
         shown = min(page, len(normalized))
-        ctx.session.state["doc_search_shown_count"] = shown
-
-        first = normalized[:shown]
-        slice_rows = _contract_slice_rows(first, global_start_rank=0)
-        ctx.session.state["_root_final_text"] = format_bot_contract_doc_search_display(
-            slice_rows,
-            total_count=len(normalized),
-            display_offset=0,
-        )
+        # Не текст LLM из doc_search — список пользователю строит UI из БД (см. handlers: render_results).
+        ctx.session.state["_root_final_text"] = DOC_SEARCH_SUCCESS_HINT
 
         await _persist_full_list(
             ctx,

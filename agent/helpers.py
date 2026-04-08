@@ -67,23 +67,9 @@ def format_bot_contract_search_results(results: List[Dict[str, Any]]) -> str:
     return f"<bot_contract>{json.dumps(payload, ensure_ascii=False)}</bot_contract>"
 
 
-def format_bot_contract_doc_search_display(
-    results: List[Dict[str, Any]],
-    *,
-    total_count: int,
-    display_offset: int,
-) -> str:
-    """
-    Контракт для клиента (Telegram, web): только данные для отображения текущей порции.
-    Клиент сам рендерит HTML/Markdown/UI. results — слайс с глобальными номерами в old_rank/new_rank.
-    """
-    payload = {
-        "mode": "search_results",
-        "total_count": int(total_count),
-        "display_offset": int(display_offset),
-        "results": results,
-    }
-    return f"<bot_contract>{json.dumps(payload, ensure_ascii=False)}</bot_contract>"
+# Заглушка для _root_final_text при успешном doc_search: список пользователю не из этого текста,
+# а из БД через UI бота (render_results). Может попасть в историю/не-Telegram клиенты без отдельного рендера.
+DOC_SEARCH_SUCCESS_HINT = "Найдены документы по запросу."
 
 
 def format_bot_search_meta(payload: Dict[str, Any]) -> str:

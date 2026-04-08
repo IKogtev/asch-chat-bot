@@ -17,13 +17,15 @@ from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
 from utils.doc_search_format import (
     extract_document_id_lines,
+    parse_download_ranks,
     strip_bot_search_meta,
 )
 from bot.services.utils import (
     markdown_to_safe_html,
-    extract_bot_contract,
-    extract_search_results_from_events,
     render_results,
+    handle_show_more,
+    handle_show_all,
+    handle_download_by_ranks,
     build_menu_from_tree,
     get_document_id,
     get_kb_tree,
@@ -182,9 +184,51 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         logger.info(f"📨 Сообщение от user_id={user_id} (@{user['username']}): {user_text[:100]}")
 
         try:
-            # Список документов, пагинация и выбор document_id обрабатываются в doc_search (ADK).
-
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
+
+            # Пагинация и скачивание по номеру — из БД, без вызова ADK
+            if Settings.SHOW_MORE_RE.match(user_text):
+                ok = await handle_show_more(m, store, user_id, session_id)
+                if not ok:
+                    await m.answer(
+                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    )
+                await store.append(user_id, "user", user_text)
+                await store.append(
+                    user_id,
+                    "model",
+                    "Показана следующая порция списка документов."
+                    if ok
+                    else "Список документов не найден.",
+                )
+                return
+
+            if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(
+                user_text
+            ):
+                ok = await handle_show_all(m, store, user_id, session_id)
+                if not ok:
+                    await m.answer(
+                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    )
+                await store.append(user_id, "user", user_text)
+                await store.append(
+                    user_id,
+                    "model",
+                    "Показан полный список документов."
+                    if ok
+                    else "Список документов не найден.",
+                )
+                return
+
+            dl_ranks = parse_download_ranks(user_text)
+            if dl_ranks:
+                await handle_download_by_ranks(
+                    m, store, doc_handler, user_id, session_id, dl_ranks
+                )
+                await store.append(user_id, "user", user_text)
+                await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
+                return
 
             # Загружаем данные пользователя в ADK только здесь
             user_data = await subscriber_store.get_user_data(int(user_id))
@@ -192,84 +236,16 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 user_data.pop("phone_number", None)
                 await adk.set_user_state(str(user_id), session_id, user_data)
 
-            answer, events = await adk.run(
+            meta_before = await store.get_last_search_meta(user_id, session_id)
+            search_id_before = meta_before["search_id"] if meta_before else None
+
+            answer, _ = await adk.run(
                 user_id=str(user_id),
                 session_id=session_id,
                 text=user_text
             )
 
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
-
-            # DEBUG-логирование
-            if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG" and events:
-                try:
-                    for event in events:
-                        if not isinstance(event, dict):
-                            logger.debug("Event not a dict")
-                            continue
-
-                        if "usageMetadata" in event:
-                            usage = event["usageMetadata"]
-                            logger.debug(
-                                f"📊 Использование токенов: "
-                                f"prompt={usage.get('promptTokenCount', 0)}, "
-                                f"response={usage.get('candidatesTokenCount', 0)}, "
-                                f"total={usage.get('totalTokenCount', 0)}, "
-                                f"cached={usage.get('cachedContentTokenCount', 0)}"
-                            )
-
-                        if "actions" in event and event["actions"]:
-                            actions = event["actions"]
-
-                            if actions.get("stateDelta"):
-                                logger.debug(
-                                    f"🔄 State delta: {json.dumps(actions['stateDelta'], indent=2, ensure_ascii=False)}"
-                                )
-
-                            if actions.get("artifactDelta"):
-                                logger.debug(
-                                    f"📦 Artifact delta: {json.dumps(actions['artifactDelta'], indent=2, ensure_ascii=False)}"
-                                )
-
-                            if actions.get("requestedToolConfirmations"):
-                                logger.debug(
-                                    f"🔧 Tool confirmations: {json.dumps(actions['requestedToolConfirmations'], indent=2, ensure_ascii=False)}"
-                                )
-
-                        if "author" in event:
-                            logger.debug(f"👤 Author: {event['author']}")
-
-                        if "invocationId" in event:
-                            logger.debug(f"🆔 Invocation ID: {event['invocationId']}")
-
-                        if "content" in event and isinstance(event["content"], dict):
-                            parts = event["content"].get("parts", [])
-                            for part in parts:
-                                if not isinstance(part, dict):
-                                    continue
-
-                                if "tool_use" in part:
-                                    logger.debug(
-                                        f"🔧 Tool use: {json.dumps(part['tool_use'], indent=2, ensure_ascii=False)}"
-                                    )
-
-                                if "tool_response" in part:
-                                    logger.debug(
-                                        f"📥 Tool response: {json.dumps(part['tool_response'], indent=2, ensure_ascii=False)}"
-                                    )
-
-                                if "function_call" in part:
-                                    logger.debug(
-                                        f"🔧 Function call: {json.dumps(part['function_call'], indent=2, ensure_ascii=False)}"
-                                    )
-
-                                if "function_response" in part:
-                                    logger.debug(
-                                        f"📥 Function response: {json.dumps(part['function_response'], indent=2, ensure_ascii=False)}"
-                                    )
-
-                except Exception as log_err:
-                    logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")
 
             work = answer or ""
             work, doc_ids = extract_document_id_lines(work)
@@ -302,38 +278,24 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             await store.append(user_id, "user", user_text)
             await store.append(user_id, "model", answer)
 
-            # 6. doc_search: контракт со слайсом — рендер списка в Telegram (web может разобрать иначе)
-            contract = extract_bot_contract(work)
-            if contract:
-                slice_items = contract.get("results") or []
-                total = int(contract.get("total_count", len(slice_items)))
-                offset = int(contract.get("display_offset", 0))
-                if slice_items:
-                    text = render_results(slice_items, total=total, offset=offset)
+            # 6. Новый doc_search: список в БД — признак смены search_id, первая порция рендерится здесь
+            meta_after = await store.get_last_search_meta(user_id, session_id)
+            search_id_after = meta_after["search_id"] if meta_after else None
+            if (
+                search_id_after
+                and search_id_after != search_id_before
+                and meta_after
+            ):
+                items = await store.get_last_search_results(user_id, session_id)
+                if items:
+                    shown = int(meta_after["shown_count"])
+                    shown = min(max(shown, 0), len(items))
+                    chunk = items[:shown]
+                    text = render_results(chunk, total=len(items), offset=0)
                     await m.answer(text, parse_mode="HTML")
-                else:
-                    await m.answer("Не нашёл релевантных файлов по запросу.")
-                return
+                    return
 
-            # 7. fallback: kb_search из events (список doc_search сохраняется в DocSearchOrchestrator → PostgreSQL)
-            extracted_items = (
-                extract_search_results_from_events(events)
-                if not (work or "").strip()
-                else []
-            )
-            if extracted_items:
-                await store.save_search_results(
-                    user_id=user_id,
-                    session_id=session_id,
-                    query=user_text,
-                    items=extracted_items,
-                    shown_count=min(8, len(extracted_items)),
-                )
-                logger.info(f"💾 Сохранён search-state: {len(extracted_items)} документов для user_id={user_id}")
-            else:
-                logger.info("ℹ️ Из events не удалось извлечь search-state")
-
-            # 8. ответ пользователю (kb_answer и прочее без bot_contract)
+            # 7. ответ пользователю (kb_answer и прочее)
             clean_answer = doc_handler.remove_document_ids(work)
             if clean_answer.strip():
                 if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):

@@ -4,6 +4,7 @@ import json
 from typing import Optional
 # Импортируем логгер из 
 from utils import setup_logger
+from utils.bot_adk_profile import BOT_USER_PROFILE_MESSAGE_PREFIX
 from bot.services.config import Settings
 from datetime import datetime
 
@@ -646,7 +647,10 @@ class AdkApiClient:
         return ""
     
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
-        """Установка данных пользователя через system message"""
+        """
+        Передаёт профиль в ADK через POST /run (system message).
+        root_agent распознаёт префикс и не запускает owasp/dispatcher/doc_search (см. utils.bot_adk_profile).
+        """
         if not self.http:
             raise RuntimeError("HTTP session not initialized")
 
@@ -660,9 +664,9 @@ class AdkApiClient:
 
         display_name = first_name or username or "пользователь"
 
-        # Формируем структурированное сообщение с данными
+        # Формируем структурированное сообщение с данными (префикс согласован с root_agent)
         user_context = (
-            f"Контекст пользователя:\n"
+            f"{BOT_USER_PROFILE_MESSAGE_PREFIX}\n"
             f"Имя: {display_name}\n"
             f"Полное имя: {first_name} {last_name}\n"
             f"Username: @{username if username else 'не указан'}\n"

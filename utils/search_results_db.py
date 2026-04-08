@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import asyncpg
@@ -114,51 +114,3 @@ async def update_doc_search_shown_count(
     async with pool.acquire() as conn:
         await conn.execute(q, user_id, session_id, shown_count)
 
-
-async def load_doc_search_list_from_db(
-    pool: asyncpg.Pool,
-    user_id: int,
-    session_id: str,
-) -> Optional[Tuple[List[Dict[str, Any]], int]]:
-    """
-    Восстанавливает полный список документов и shown_count из search_meta/search_results
-    (тот же контракт, что пишет save_doc_search_results).
-    """
-    async with pool.acquire() as conn:
-        meta = await conn.fetchrow(
-            """
-            SELECT shown_count
-            FROM search_meta
-            WHERE user_id = $1 AND session_id = $2
-            """,
-            user_id,
-            session_id,
-        )
-        if not meta:
-            return None
-        shown_count = int(meta["shown_count"])
-        rows = await conn.fetch(
-            """
-            SELECT rank, document_id, source_name, source_path, score, snippet
-            FROM search_results
-            WHERE user_id = $1 AND session_id = $2
-            ORDER BY rank ASC
-            """,
-            user_id,
-            session_id,
-        )
-    if not rows:
-        return None
-    normalized: List[Dict[str, Any]] = []
-    for r in rows:
-        normalized.append(
-            {
-                "document_id": str(r["document_id"]),
-                "source_name": str(r["source_name"]),
-                "source_path": r.get("source_path"),
-                "snippet": (r.get("snippet") or "")[:2000],
-                "rank": int(r["rank"]),
-                "score": r.get("score"),
-            }
-        )
-    return normalized, shown_count
