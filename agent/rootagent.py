@@ -6,6 +6,7 @@ from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
+from utils.bot_adk_profile import is_bot_user_profile_injection_message
 from utils.doc_search_format import extract_download_ranks
 from .config import KB_DOCUMENTS_COLLECTION, DEBUG_EXCEPTIONS
 from .helpers import truncate_for_log, format_text_answer, format_reject_answer
@@ -170,6 +171,12 @@ class RootAgent(BaseAgent):
         try:
             if not user_text:
                 yield self._build_final_event(ctx, "Пустой запрос. Напишите сообщение ещё раз.")
+                return
+
+            # Синхронизация профиля из бота (AdkApiClient.set_user_state) — не пользовательский запрос.
+            if is_bot_user_profile_injection_message(user_text):
+                logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
+                yield self._build_final_event(ctx, "")
                 return
 
             ctx.session.state["user_query"] = user_text

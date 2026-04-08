@@ -17,9 +17,52 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Валидация результата doc_search_agent.
     Для mode=document_list обязателен непустой results (полный список после kb_search + LLM).
+    Для document_list поле message не предназначено для показа пользователю: список сохраняется в БД,
+    вывод формирует UI бота. Для no_data / info / app_command message — текст, который может уйти пользователю.
+
+    Нормализация: старые/ошибочные промпты просили формат bot_contract с mode=search_results
+    без status — приводим к document_list + status=ok.
+    Элементы с is_relevant=false (если поле есть) отбрасываются.
     """
-    status = data.get("status")
+    if not isinstance(data, dict):
+        raise ValueError("doc_search result must be a dict")
+
     mode = data.get("mode")
+    # Устаревший формат из kb_storage (search_results + <bot_contract>) без status
+    if mode == "search_results":
+        results_raw = data.get("results")
+        if not isinstance(results_raw, list):
+            results_raw = []
+        msg = str(data.get("message") or "").strip()
+        kept: list[Dict[str, Any]] = []
+        for item in results_raw:
+            if not isinstance(item, dict):
+                continue
+            if item.get("is_relevant") is False:
+                continue
+            kept.append(item)
+        if not kept:
+            data = {
+                "status": "ok",
+                "mode": "no_data",
+                "message": msg or "Подходящих документов не найдено.",
+                "results": [],
+            }
+            mode = "no_data"
+        else:
+            data = {
+                "status": "ok",
+                "mode": "document_list",
+                "message": msg,
+                "results": kept,
+            }
+            mode = "document_list"
+
+    status = data.get("status")
+    if status is None and mode in ("document_list", "no_data", "info", "app_command"):
+        status = "ok"
+        data = {**data, "status": status}
+
     message = str(data.get("message", "")).strip()
 
     if status != "ok":
@@ -28,8 +71,8 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
     if mode not in ("document_list", "no_data", "info", "app_command"):
         raise ValueError(f"Invalid mode: {mode}")
 
-    if not message:
-        raise ValueError("message is required")
+    if mode != "document_list" and not message:
+        raise ValueError("message is required for this mode")
 
     results_raw = data.get("results")
     validated: list[Dict[str, Any]] = []
@@ -39,6 +82,8 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError("document_list requires non-empty results array")
         for item in results_raw:
             if not isinstance(item, dict):
+                continue
+            if item.get("is_relevant") is False:
                 continue
             document_id = item.get("document_id")
             source_name = item.get("source_name")
@@ -110,13 +155,13 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
 3. Если {search_query} пустой, используй {user_query}.
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
-6. В message можно использовать выделение текста для имён файлов и заголовка списка.
+6. При mode=document_list пользователю список не показываешь ты: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
 
 Формат ответа (для document_list обязателен массив results — полный список документов):
 {
   "status": "ok",
   "mode": "document_list",
-  "message": "Краткое вводное предложение.",
+  "message": "",
   "results": [
     {"document_id": "...", "source_name": "...", "source_path": null, "snippet": "..."}
   ]
