@@ -38,7 +38,12 @@ def upgrade() -> None:
         sa.Column("search_id", sa.Text(), nullable=False),
         sa.Column("query", sa.Text(), nullable=False),
         sa.Column("total_count", sa.Integer(), nullable=False),
-        sa.Column("shown_count", sa.Integer(), server_default="0", nullable=False),
+        sa.Column(
+            "shown_count",
+            sa.Integer(),
+            server_default=sa.text("0"),
+            nullable=False,
+        ),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=True),
         sa.PrimaryKeyConstraint("user_id", "session_id"),
     )
@@ -86,13 +91,13 @@ def upgrade() -> None:
             "manager_group",
             sa.Boolean(),
             server_default=sa.text("false"),
-            nullable=False,
+            nullable=True,
         ),
         sa.Column(
             "coach_group",
             sa.Boolean(),
             server_default=sa.text("false"),
-            nullable=False,
+            nullable=True,
         ),
         sa.Column(
             "created_at",
