@@ -480,8 +480,13 @@ class AdkApiClient:
         self.base_url = base_url.rstrip('/')
         self.app_name = app_name
         self.http: Optional[aiohttp.ClientSession] = None
+
+        # Буфер stateDelta до ближайшего run()
+        # ключ: (user_id, session_id)
+        self._pending_state_delta: dict[tuple[str, str], dict] = {}
+
         logger.info(f"Инициализация ADK клиента: {base_url}, app={app_name}")
-    
+
     async def open(self) -> None:
         """Открытие HTTP сессии"""
         self.http = aiohttp.ClientSession()
@@ -535,6 +540,9 @@ class AdkApiClient:
         try:
             async with self.http.delete(url) as resp:
                 if resp.status in (200, 204, 404):
+                    # Почистим контекст сессии
+                    key = (str(user_id), str(session_id))
+                    self._pending_state_delta.pop(key, None)
                     logger.info(f"🗑️ Сессия удалена для user={user_id}, session={session_id}")
                 else:
                     text = await resp.text()
@@ -550,6 +558,9 @@ class AdkApiClient:
         
         url = f"{self.base_url}/run"
     
+        key = (str(user_id), str(session_id))
+        state_delta = self._pending_state_delta.pop(key, None)
+
         payload = {
             "app_name": self.app_name,
             "user_id": user_id,
@@ -559,7 +570,10 @@ class AdkApiClient:
                 "parts": [{"text": text}]
             }
         }
-        
+
+        if state_delta:
+            payload["stateDelta"] = state_delta        
+
         try:
             logger.debug(f"=== ADK REQUEST ===")
             logger.debug(f"URL: {url}")
@@ -648,54 +662,51 @@ class AdkApiClient:
     
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
         """
-        Передаёт профиль в ADK через POST /run (system message).
-        root_agent распознаёт префикс и не запускает owasp/dispatcher/doc_search (см. utils.bot_adk_profile).
+        Готовит stateDelta для штатной записи в ADK session.state.
+        Сам по себе запрос в ADK не выполняет.
+
+        stateDelta будет отправлен вместе со следующим run().
         """
-        if not self.http:
-            raise RuntimeError("HTTP session not initialized")
 
         first_name = (user_data.get("first_name") or "").strip()
         last_name = (user_data.get("last_name") or "").strip()
         username = (user_data.get("username") or "").strip()
-        phone = user_data.get("phone_number") or "не указан"
-        region = user_data.get("region") or "не указан"
-        is_manager = "да" if user_data.get("manager_group") else "нет"
-        is_coach = "да" if user_data.get("coach_group") else "нет"
+        region = (user_data.get("region") or "").strip()
 
-        display_name = first_name or username or "пользователь"
-
-        # Формируем структурированное сообщение с данными (префикс согласован с root_agent)
-        user_context = (
-            f"{BOT_USER_PROFILE_MESSAGE_PREFIX}\n"
-            f"Имя: {display_name}\n"
-            f"Полное имя: {first_name} {last_name}\n"
-            f"Username: @{username if username else 'не указан'}\n"
-            f"Телефон: {phone}\n"
-            f"Регион: {region}\n"
-            f"Роль менеджера: {is_manager}\n"
-            f"Роль коуча: {is_coach}\n\n"
-            f"Обращайся к пользователю по имени '{display_name}' в дальнейшем диалоге."
-        )
-
-        url = f"{self.base_url}/run"
-        
-        payload = {
-            "app_name": self.app_name,
-            "user_id": user_id,
-            "session_id": session_id,
-            "new_message": {
-                "role": "system",
-                "parts": [{"text": user_context}]
-            }
+        # Нормализуем значения
+        normalized_state = {
+            "first_name": first_name,
+            "last_name": last_name,
+            "full_name": f"{first_name} {last_name}".strip(),
+            "username": username,
+            "region": region,
+            "manager_group": bool(user_data.get("manager_group")),
+            "coach_group": bool(user_data.get("coach_group")),
         }
 
-        try:
-            async with self.http.post(url, json=payload) as resp:
-                if resp.status == 200:
-                    logger.info(f"✅ Контекст пользователя установлен для user={user_id} ({display_name})")
-                    logger.debug(f"Отправлен контекст: {user_context}")
-                else:
-                    text = await resp.text()
-                    logger.warning(f"⚠️ Не удалось установить контекст: {resp.status} - {text}")
-        except aiohttp.ClientError as e:
-            logger.error(f"Ошибка при установке контекста: {e}", exc_info=True)
+        # Удаляем пустые строки, чтобы не засорять session.state
+        normalized_state = {
+            key: value
+            for key, value in normalized_state.items()
+            if value not in ("", None)
+        }
+
+        # Ленивая инициализация буфера stateDelta
+        if not hasattr(self, "_pending_state_delta"):
+            self._pending_state_delta: dict[tuple[str, str], dict] = {}
+
+        key = (str(user_id), str(session_id))
+        current = self._pending_state_delta.get(key, {})
+        current.update(normalized_state)
+        self._pending_state_delta[key] = current
+
+        logger.info(
+            "Подготовлен stateDelta для ADK: user=%s, session=%s, keys=%s",
+            user_id,
+            session_id,
+            sorted(normalized_state.keys()),
+        )
+        logger.debug(
+            "stateDelta payload: %s",
+            json.dumps(normalized_state, ensure_ascii=False),
+        )
