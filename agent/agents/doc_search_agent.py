@@ -15,62 +15,45 @@ logger = setup_logger("doc_search_agent", "agent.log")
 
 def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Валидация результата doc_search_agent.
-    Для mode=document_list обязателен непустой results (полный список после kb_search + LLM).
-    Для document_list поле message не предназначено для показа пользователю: список сохраняется в БД,
-    вывод формирует UI бота. Для no_data / info / app_command message — текст, который может уйти пользователю.
+    Проверяет и нормализует результат выдачи от doc_search_agent в соответствии с бот-контрактом.
 
-    Нормализация: старые/ошибочные промпты просили формат bot_contract с mode=search_results
-    без status — приводим к document_list + status=ok.
-    Элементы с is_relevant=false (если поле есть) отбрасываются.
+    Валидация и обработка:
+      - Ожидается dict с ключами: status, mode, message, results.
+      - Для mode = "document_list" обязательно: status="ok", results - непустой список документов.
+        Каждый документ требует ключей document_id и source_name, остальные поля опциональны.
+        Не валидные или помеченные is_relevant=false — игнорируются.
+        Поле message не предназначено для показа пользователю при mode=document_list, оставляется пустым или служебным.
+      - Для mode = "no_data", "info", "app_command": message обязателен и может быть показан пользователю.
+      - Любой статус, отличный от "ok", считается ошибкой.
+
+    Исключены устаревшие форматы (mode="search_results") — допускается только стандартизованный контракт.
+
+    :param data: dict — ответ doc_search_agent (разобранный JSON).
+    :return: dict — нормализованный результат, подходящий для дальнейшей обработки.
+    :raises: ValueError при несоответствии контракта.
     """
     if not isinstance(data, dict):
         raise ValueError("doc_search result must be a dict")
 
     mode = data.get("mode")
-    # Устаревший формат из kb_storage (search_results + <bot_contract>) без status
-    if mode == "search_results":
-        results_raw = data.get("results")
-        if not isinstance(results_raw, list):
-            results_raw = []
-        msg = str(data.get("message") or "").strip()
-        kept: list[Dict[str, Any]] = []
-        for item in results_raw:
-            if not isinstance(item, dict):
-                continue
-            if item.get("is_relevant") is False:
-                continue
-            kept.append(item)
-        if not kept:
-            data = {
-                "status": "ok",
-                "mode": "no_data",
-                "message": msg or "Подходящих документов не найдено.",
-                "results": [],
-            }
-            mode = "no_data"
-        else:
-            data = {
-                "status": "ok",
-                "mode": "document_list",
-                "message": msg,
-                "results": kept,
-            }
-            mode = "document_list"
+
+    # Строго принимаем только актуальные режимы
+    allowed_modes = ("document_list", "no_data", "info", "app_command")
+    if mode not in allowed_modes:
+        raise ValueError(f"Invalid mode: {mode}")
 
     status = data.get("status")
-    if status is None and mode in ("document_list", "no_data", "info", "app_command"):
+    # Если статус не прописан, проставим "ok" для штатных режимов (doc_search_agent всегда работает штатно)
+    if status is None and mode in allowed_modes:
         status = "ok"
         data = {**data, "status": status}
-
-    message = str(data.get("message", "")).strip()
 
     if status != "ok":
         raise ValueError(f"Invalid status: {status}")
 
-    if mode not in ("document_list", "no_data", "info", "app_command"):
-        raise ValueError(f"Invalid mode: {mode}")
+    message = str(data.get("message", "")).strip()
 
+    # Для не-document_list message обязателен (для UI)
     if mode != "document_list" and not message:
         raise ValueError("message is required for this mode")
 
@@ -78,11 +61,13 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
     validated: list[Dict[str, Any]] = []
 
     if mode == "document_list":
+        # Для document_list: "results" — массив документов, не пустой
         if not isinstance(results_raw, list) or not results_raw:
             raise ValueError("document_list requires non-empty results array")
         for item in results_raw:
             if not isinstance(item, dict):
                 continue
+            # Пропускаем нерелевантные (если присутствует is_relevant)
             if item.get("is_relevant") is False:
                 continue
             document_id = item.get("document_id")
@@ -93,9 +78,7 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "document_id": document_id,
                     "source_name": str(source_name),
-                    "source_path": str(item["source_path"]).strip()
-                    if item.get("source_path")
-                    else None,
+                    "source_path": str(item["source_path"]).strip() if item.get("source_path") else None,
                     "snippet": str(item.get("snippet") or "").strip()[:500],
                 }
             )
@@ -112,8 +95,16 @@ def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
     """
-    Создаёт агента для поиска документов с подключением MCP kb_search.
-    Возвращает только JSON по контракту.
+    Создаёт и возвращает агента doc_search_agent для поиска документов.
+
+    Особенности и детали:
+      - Агент интегрируется с MCP kb_search через инструмент McpToolset (если указан KBSEARCH_MCP_URL).
+      - Ожидает всегда контракт, подходящий под validate_doc_search_result.
+      - Возвращаемый агент — только JSON (не текст!), используемый следующими слоями (БД/UI).
+      - При ошибке подключения kb_search логирует, но не падает.
+
+    :param model: LiteLlm — модель для LlmAgent
+    :return: LlmAgent — настроенный агент для поиска документов
     """
     tools = []
 
@@ -167,7 +158,7 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
   ]
 }
 """
-    
+
     prompt_file = "doc_search_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     agent = LlmAgent(
