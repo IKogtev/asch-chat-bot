@@ -1,40 +1,38 @@
-import json
-from typing import AsyncGenerator, Callable, Dict, List, Any
+import re
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
-from .config import (
-    ACTIVE_DOCUMENTS_COLLECTION,
-    KB_DOCUMENTS_COLLECTION,
-    DEBUG_EXCEPTIONS,
-)
-from .helpers import (
-    truncate_for_log,
-    extract_json,
-    format_text_answer,
-    format_reject_answer,
-)
+from utils.doc_search_format import extract_download_ranks
+from .config import KB_DOCUMENTS_COLLECTION, DEBUG_EXCEPTIONS
+from .helpers import truncate_for_log, format_text_answer, format_reject_answer
+from .json_leaf_runner import run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
-from .agents.doc_search_agent import validate_doc_search_result
+from .agents.doc_search_orchestrator import DocSearchOrchestrator
 
 logger = setup_logger("root_agent", "agent.log")
+
+BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
+
+def is_bot_user_profile_injection_message(text: str) -> bool:
+    t = (text or "").lstrip()
+    return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
 
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
-    owasp_agent -> dispatcher_agent -> (doc_search_agent | kb_answer_agent)
+    owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
     """
 
     owasp_agent: LlmAgent
     dispatcher_agent: LlmAgent
-    doc_search_agent: LlmAgent
+    doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
-    doc_collection: str
     kb_collection: str
 
     model_config = {"arbitrary_types_allowed": True}
@@ -44,23 +42,21 @@ class RootAgent(BaseAgent):
         *,
         owasp_agent: LlmAgent,
         dispatcher_agent: LlmAgent,
-        doc_search_agent: LlmAgent,
+        doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
-        doc_collection: str = ACTIVE_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
     ):
         super().__init__(
             name="root_agent",
             owasp_agent=owasp_agent,
             dispatcher_agent=dispatcher_agent,
-            doc_search_agent=doc_search_agent,
+            doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
-            doc_collection=doc_collection,
             kb_collection=kb_collection,
             sub_agents=[
                 owasp_agent,
                 dispatcher_agent,
-                doc_search_agent,
+                doc_search_orchestrator,
                 kb_answer_agent,
             ],
         )
@@ -104,7 +100,7 @@ class RootAgent(BaseAgent):
                 return "\n".join(out).strip()
 
         return ""
-    
+
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
         """Финальное событие root-агента"""
@@ -122,6 +118,35 @@ class RootAgent(BaseAgent):
         """Очистка указанных ключей из state"""
         for key in keys:
             ctx.session.state.pop(key, None)
+
+    @staticmethod
+    def _pagination_intent_from_message(user_text: str) -> Optional[str]:
+        """
+        Короткие реплики без новой темы — команды пагинации (show_more / show_all).
+        Не требует doc_search_list_items в state: при пустом списке оркестратор вернёт
+        понятную ошибку; зато не запускается ложный doc_search, если сессия не сохранилась.
+        """
+        t = user_text.strip().lower().replace("ё", "е")
+        t = re.sub(r"\s+", " ", t)
+        if not t:
+            return None
+        if re.fullmatch(r"все[!?.…]*", t):
+            return "show_all"
+        if re.fullmatch(r"(полностью|целиком)([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"all([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"(покажи|дай|выведи|открой)\s+все([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"(покажи|выведи)\s+полностью([!?.…]*)", t):
+            return "show_all"
+        if re.fullmatch(r"(ещё|еще|больше|далее|следующие)([!?.…]*)", t):
+            return "show_more"
+        if re.fullmatch(r"(ещё|еще)\s+(файлы|документы)([!?.…]*)", t):
+            return "show_more"
+        if re.fullmatch(r"(next|more)([!?.…]*)", t):
+            return "show_more"
+        return None
 
     def _get_required_state_dict(self, ctx: InvocationContext, key: str) -> Dict[str, Any]:
         """Получение обязательного dict из state"""
@@ -146,17 +171,17 @@ class RootAgent(BaseAgent):
         validator: Callable[[Dict[str, Any]], Dict[str, Any]],
         log_label: str,
     ) -> AsyncGenerator[Event, None]:
-        """Запуск leaf-агента с JSON-валидацией"""
-        async for event in agent.run_async(ctx):
+        """Запуск leaf-агента с JSON-валидацией (делегирует json_leaf_runner)."""
+        async for event in run_json_leaf_agent(
+            ctx=ctx,
+            agent=agent,
+            output_key=output_key,
+            parsed_state_key=parsed_state_key,
+            validator=validator,
+            log_label=log_label,
+        ):
             yield event
-        
-        raw = str(ctx.session.state.get(output_key) or "").strip()
-        logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))
-        
-        parsed = validator(extract_json(raw))
-        ctx.session.state[parsed_state_key] = parsed
-        logger.debug("%s parsed: %s", log_label, json.dumps(parsed, ensure_ascii=False))
-        
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
@@ -164,6 +189,12 @@ class RootAgent(BaseAgent):
         try:
             if not user_text:
                 yield self._build_final_event(ctx, "Пустой запрос. Напишите сообщение ещё раз.")
+                return
+
+            # Синхронизация профиля из бота (AdkApiClient.set_user_state) — не пользовательский запрос.
+            if is_bot_user_profile_injection_message(user_text):
+                logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
+                yield self._build_final_event(ctx, "")
                 return
 
             ctx.session.state["user_query"] = user_text
@@ -195,36 +226,96 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event(ctx, format_reject_answer(owasp["user_message"]))
                 return
 
-            async for event in self._run_json_leaf_agent(
-                ctx=ctx,
-                agent=self.dispatcher_agent,
-                output_key="dispatcher_result_json",
-                parsed_state_key="_dispatcher_result_parsed",
-                validator=validate_dispatcher_result,
-                log_label="dispatcher_result_json",
-            ):
-                yield event
+            ranks = extract_download_ranks(user_text)
+            if ranks:
+                dispatch = validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "doc_search",
+                        "intent": "file_download",
+                        "reason": "download_by_rank_short_circuit",
+                        "search_query": "",
+                    }
+                )
+                ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                ctx.session.state.pop("dispatcher_result_json", None)
+                logger.info(
+                    "Dispatcher skipped (file_download by rank): ranks=%s",
+                    ranks,
+                )
+            else:
+                async for event in self._run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=self.dispatcher_agent,
+                    output_key="dispatcher_result_json",
+                    parsed_state_key="_dispatcher_result_parsed",
+                    validator=validate_dispatcher_result,
+                    log_label="dispatcher_result_json",
+                ):
+                    yield event
 
-            dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
-            logger.info(
-                "Dispatcher result: route=%s intent=%s search_query=%s",
-                dispatch["route"],
-                dispatch["intent"],
-                dispatch["search_query"],
-            )
+                dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
+                logger.info(
+                    "Dispatcher result: route=%s intent=%s search_query=%s",
+                    dispatch["route"],
+                    dispatch["intent"],
+                    dispatch["search_query"],
+                )
+
+                pin = self._pagination_intent_from_message(user_text)
+                if pin and (
+                    dispatch.get("route") != "doc_search" or dispatch.get("intent") != pin
+                ):
+                    dispatch = validate_dispatcher_result(
+                        {
+                            "status": "ok",
+                            "route": "doc_search",
+                            "intent": pin,
+                            "reason": "pagination_override_saved_doc_list",
+                            "search_query": "",
+                        }
+                    )
+                    ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                    logger.info("Dispatcher pagination override: intent=%s", pin)
+
+                if (
+                    dispatch.get("route") == "doc_search"
+                    and dispatch.get("intent") == "doc_search"
+                ):
+                    dr = extract_download_ranks(
+                        user_text, str(dispatch.get("search_query") or "")
+                    )
+                    if dr:
+                        dispatch = validate_dispatcher_result(
+                            {
+                                "status": "ok",
+                                "route": "doc_search",
+                                "intent": "file_download",
+                                "reason": "download_ranks_override_after_dispatcher",
+                                "search_query": "",
+                            }
+                        )
+                        ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                        ctx.session.state.pop("dispatcher_result_json", None)
+                        logger.info(
+                            "Dispatcher doc_search→file_download override: ranks=%s",
+                            dr,
+                        )
 
             if dispatch["route"] == "doc_search":
-                async for event in self._handle_doc_search(ctx, user_text, dispatch["search_query"]):
+                ctx.session.state["doc_search_intent"] = dispatch["intent"]
+                ctx.session.state["doc_search_search_query"] = dispatch["search_query"]
+                async for event in self.doc_search_orchestrator.run_async(ctx):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event(ctx, final_text)
                 return
 
             async for event in self._handle_kb_answer(
-                ctx, 
-                user_text, 
+                ctx,
+                user_text,
                 dispatch["search_query"],
-                dispatch["intent"]
+                dispatch["intent"],
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
@@ -238,34 +329,6 @@ class RootAgent(BaseAgent):
                 else "Произошла ошибка при обработке запроса. Попробуйте позже."
             )
             yield self._build_final_event(ctx, message)
-    async def _handle_doc_search(
-        self,
-        ctx: InvocationContext,
-        user_message: str,
-        search_query: str,
-    ) -> AsyncGenerator[Event, None]:
-        """
-        Запуск doc_search_agent с JSON-валидацией.
-        """
-        effective_search_query = (search_query or user_message).strip()
-        logger.info("doc_search route: query=%s", truncate_for_log(effective_search_query, 300))
-
-        # Переменные для промпта doc_search_agent
-        ctx.session.state["search_query"] = effective_search_query
-        ctx.session.state["doc_search_collection"] = self.doc_collection
-
-        async for event in self._run_json_leaf_agent(
-            ctx=ctx,
-            agent=self.doc_search_agent,
-            output_key="doc_search_result_json",
-            parsed_state_key="_doc_search_result_parsed",
-            validator=validate_doc_search_result,
-            log_label="doc_search_result_json",
-        ):
-            yield event
-
-        doc_search = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
-        ctx.session.state["_root_final_text"] = format_text_answer(doc_search["message"])
 
     async def _handle_kb_answer(
         self,
@@ -273,10 +336,10 @@ class RootAgent(BaseAgent):
         user_message: str,
         search_query: str,
         intent: str,
-        ) -> AsyncGenerator[Event, None]:
+    ) -> AsyncGenerator[Event, None]:
         """
         Запуск kb_answer_agent с прямым MCP-поиском или smalltalk.
-        
+
         Args:
             ctx: Контекст выполнения
             user_message: Исходный вопрос пользователя
@@ -293,7 +356,7 @@ class RootAgent(BaseAgent):
             ctx.session.state[key] = value
         ctx.session.state["search_query"] = effective_search_query
         ctx.session.state["kb_answer_collection"] = self.kb_collection
-        ctx.session.state["intent"] = intent  # Передаём intent в состояние
+        ctx.session.state["intent"] = intent
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
