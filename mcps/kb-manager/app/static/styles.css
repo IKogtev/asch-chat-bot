@@ -1039,7 +1039,7 @@ select:focus {
     border-radius: 8px;
     resize: vertical;
     min-height: 250px;
-    background: #ffffff;
+    background: var(--card-bg);
     color: var(--text-primary);
 }
 .prompt-editor:focus {
@@ -1473,7 +1473,7 @@ select:focus {
     z-index: 9999;
 }
 .login-box {
-    background: #ffffff;
+    background: var(--card-bg);
     padding: 32px;
     border-radius: 16px;
 
@@ -1526,7 +1526,7 @@ select:focus {
     border-radius: 8px;
 
     background: #4a90e2;
-    color: white;
+    color: var(--card-bg);
 
     font-size: 14px;
     font-weight: 500;
@@ -1543,7 +1543,7 @@ select:focus {
     transform: scale(0.98);
 }
 #login-error {
-    color: #e53935;
+    color: var(--danger-color);
     font-size: 13px;
     text-align: center;
 }

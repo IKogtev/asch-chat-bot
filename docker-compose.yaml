@@ -149,8 +149,10 @@ services:
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
       - PLATFORM_VERSION=0.6.0
       - BOT_TELEGRAM_API=http://bot:8001
+      - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
     depends_on:
       - qdrant
+      - postgres
     networks:
       - aszh-bot-network
     healthcheck:
