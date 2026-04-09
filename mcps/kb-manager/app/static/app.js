@@ -17,10 +17,12 @@ let botStartMessageContent = "";
 let newsEditor = null;
 let currentAgent = null;
 let promptEditorMDE = null;
+let currentUser = null;
 
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
     loadAliasData();
     loadCollections();
     loadActiveCollections();
@@ -406,7 +408,7 @@ async function switchCollectionAlias() {
     }
 }
 // Tab Management
-function showTab(tabName) {
+function showTab(tabName, event=null) {
     // Hide all tabs
     // tabs
     document.querySelectorAll('.tab-content').forEach(tab => {
@@ -419,10 +421,15 @@ function showTab(tabName) {
     
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
-    event.target.classList.add('active');
-
-    const button = event.currentTarget;
-    button.classList.add('active');
+    if (event && event.target) {
+        event.target.classList.add('active');
+    }
+    else {
+        const button = document.querySelector(`[data-tab="${tabName}"]`);
+        if (button) button.classList.add('active');
+    }
+    
+    updateHeaderVisibility(tabName);
     
     // Load data if needed
     if (tabName === 'documents') {
@@ -445,6 +452,23 @@ function showTab(tabName) {
 // #############################
 // Utilities subsystem
 // #############################
+// функция управления видимостью заголовка управления коллекциями
+function updateHeaderVisibility(tabName) {
+    const header = document.getElementById("collections-header");
+
+    const allowedTabs = [
+        "documents",
+        "search",
+        "upload",
+        "tree_files"
+    ];
+
+    if (allowedTabs.includes(tabName)) {
+        header.style.display = "block";
+    } else {
+        header.style.display = "none";
+    }
+}
 // функция для открытия и закрытия сайдбара
 function toggleSidebar() {
     const sidebar = document.getElementById("sidebar");
@@ -2326,4 +2350,117 @@ function exportUsers() {
     link.click();
     
     showNotification("Экспорт выполнен успешно", "success");
+}
+
+// authorization logic
+async function checkAuth() {
+    try {
+        const res = await fetch("/api/me", {
+            credentials: "include"
+        });
+
+        if (!res.ok) throw new Error();
+        const user = await res.json();
+        currentUser = user;
+        document.getElementById("login-screen").style.display = "none";
+        document.getElementById("app").style.display = "block";
+        applyRoleAccess();
+    } catch {
+        document.getElementById("login-screen").style.display = "flex";
+        document.getElementById("app").style.display = "none";
+    }
+}
+
+async function login() {
+    const username = document.getElementById("login-username").value;
+    const password = document.getElementById("login-password").value;
+
+    const formData = new FormData();
+    formData.append("username", username);
+    formData.append("password", password);
+
+    const res = await fetch("/api/login", {
+        method: "POST",
+        body: formData
+    });
+
+    if (res.ok) {
+        checkAuth();
+    } else {
+        document.getElementById("login-error").innerText = "Invalid credentials";
+    }
+}
+async function logout() {
+    await fetch("/api/logout", { method: "POST" });
+    checkAuth();
+}
+
+function applyRoleAccess() {
+    if (!currentUser) return;
+
+    const role = currentUser.role;
+
+    // Все вкладки
+    const tabNames = [
+        "documents",
+        "search",
+        "upload",
+        "tree_files",
+        "news_send",
+        "prompts",
+        "bot_settings",
+        "user_groups"
+    ];
+    tabNames.forEach(name => {
+        const tab = document.getElementById(`${name}-tab`);
+        if (tab) tab.classList.remove("active");
+
+        hideTabButton(name);
+    });
+
+    if (role === "admin") {
+        // admin видит всё
+        tabNames.forEach(name => {
+            showTabButton(name);
+        });
+    }
+
+    if (role === "manager") {
+        // manager ограничен
+        const allowed = [
+            "documents",
+            "search",
+            "tree_files",
+            "news_send",
+            "user_groups"
+        ];
+
+        allowed.forEach(name => {
+            showTabButton(name);
+        });
+    }
+    openFirstAvailableTab();
+}
+
+
+function hideTabButton(tabName) {
+    const btn = document.querySelector(`[data-tab="${tabName}"]`);
+    if (btn) btn.style.display = "none";
+}
+
+function showTabButton(tabName) {
+    const btn = document.querySelector(`[data-tab="${tabName}"]`);
+    if (btn) btn.style.display = "block";
+}
+
+function openFirstAvailableTab() {
+    const buttons = document.querySelectorAll(".tab-button");
+
+    for (let btn of buttons) {
+        if (btn.style.display !== "none") {
+            const tabName = btn.dataset.tab;
+            showTab(tabName); // без event
+            return;
+        }
+    }
 }

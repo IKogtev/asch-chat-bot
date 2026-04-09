@@ -1039,7 +1039,7 @@ select:focus {
     border-radius: 8px;
     resize: vertical;
     min-height: 250px;
-    background: #ffffff;
+    background: var(--card-bg);
     color: var(--text-primary);
 }
 .prompt-editor:focus {
@@ -1459,4 +1459,94 @@ select:focus {
     height: 600px;
     border: none;
     border-radius: 5px;
+}
+/* аунтификация стили */
+.login-screen {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5); /* затемнение */
+    
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    z-index: 9999;
+}
+.login-box {
+    background: var(--card-bg);
+    padding: 32px;
+    border-radius: 16px;
+
+    width: 100%;
+    max-width: 360px;
+
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    animation: fadeInScale 0.2s ease;
+}
+@keyframes fadeInScale {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+.login-box h2 {
+    margin: 0;
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+}
+.login-box input {
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+
+    font-size: 14px;
+
+    transition: border 0.2s, box-shadow 0.2s;
+}
+
+.login-box input:focus {
+    outline: none;
+    border-color: #4a90e2;
+    box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
+}
+
+.login-box button {
+    padding: 10px;
+    border: none;
+    border-radius: 8px;
+
+    background: #4a90e2;
+    color: var(--card-bg);
+
+    font-size: 14px;
+    font-weight: 500;
+
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.login-box button:hover {
+    background: #357abd;
+}
+
+.login-box button:active {
+    transform: scale(0.98);
+}
+#login-error {
+    color: var(--danger-color);
+    font-size: 13px;
+    text-align: center;
+}
+.login-box input::placeholder {
+    color: #aaa;
 }
