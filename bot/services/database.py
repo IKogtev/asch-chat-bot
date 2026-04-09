@@ -573,10 +573,13 @@ class AdkApiClient:
 
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
         """
-        Готовит stateDelta для штатной записи в ADK session.state.
-        Сам по себе запрос в ADK не выполняет.
+        Подготавливает профиль пользователя для передачи в ADK через stateDelta
+        вместе со следующим run().
 
-        stateDelta будет отправлен вместе со следующим run().
+        ВАЖНО:
+        - метод не делает отдельный HTTP-запрос в ADK;
+        - метод не пишет данные в БД;
+        - в текущей реализации данные попадают в session.state следующего запуска.
         """
 
         first_name = (user_data.get("first_name") or "").strip()
@@ -584,7 +587,6 @@ class AdkApiClient:
         username = (user_data.get("username") or "").strip()
         region = (user_data.get("region") or "").strip()
 
-        # Нормализуем значения
         normalized_state = {
             "first_name": first_name,
             "last_name": last_name,
@@ -595,14 +597,12 @@ class AdkApiClient:
             "coach_group": bool(user_data.get("coach_group")),
         }
 
-        # Удаляем пустые строки, чтобы не засорять session.state
         normalized_state = {
             key: value
             for key, value in normalized_state.items()
             if value not in ("", None)
         }
 
-        # Ленивая инициализация буфера stateDelta
         if not hasattr(self, "_pending_state_delta"):
             self._pending_state_delta: dict[tuple[str, str], dict] = {}
 
