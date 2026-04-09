@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, List, Optional
+from typing import List, Optional
 from dotenv import load_dotenv
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
@@ -17,74 +17,27 @@ from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 # Auth dependencies
 from jose import JWTError, jwt
+from fastapi import Depends
+import asyncpg
 from passlib.context import CryptContext
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Depends, Cookie
-import secrets
 
 load_dotenv()
 
-# AUTH config
-SECRET_KEY = "super-secret-key-change-this"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-sessions: Dict[str, dict] = {}
-security = HTTPBearer()
-# temporary
-fake_users_db = {
-    "admin": {
-        "username": "admin",
-        "password": "admin123",
-        "role": "admin"
-    },
-    "manager": {
-        "username": "manager",
-        "password": "manager",
-        "role": "manager"
-    }
-}
-ROLE_PERMISSIONS = {
-    "admin": ["*"],
-
-    "manager": [
-        "/api/documents",
-        "/api/search",
-        "/api/knowledge-bases",
-        "/api/filesystem",
-        "/api/news",
-        "/api/user-groups"
-    ]
-}
-# auth functions
-def get_current_user(session_token: str = Cookie(None)):
-    if not session_token or session_token not in sessions:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return sessions[session_token]
-
-def require_role(allowed_roles: list):
-    def role_checker(user=Depends(get_current_user)):
-        if user["role"] not in allowed_roles:
-            raise HTTPException(status_code=403, detail="Forbidden")
-        return user
-    return role_checker
-
-def is_allowed(path: str, role: str) -> bool:
-    allowed_paths = ROLE_PERMISSIONS.get(role, [])
-
-    # admin — всё можно
-    if "*" in allowed_paths:
-        return True
-
-    # проверяем prefix match
-    return any(path.startswith(p) for p in allowed_paths)
 # Используем современный Lifespan вместо @app.on_event("startup")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Qdrant collection on startup"""
     global http_client
+    app.state.db_pool = await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=5,
+        max_size=20
+    )
+    # инициализация базы данных для пользователей UI
+    await init_db(app.state.db_pool)
     # создаем глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
     http_client = httpx.AsyncClient(timeout=60)
     # создаем коллекцию в qdrant 
@@ -103,6 +56,7 @@ async def lifespan(app: FastAPI):
     sync_task.cancel()
     scheduler_task.cancel()
     await http_client.aclose()
+    await app.state.db_pool.close()
 
 app = FastAPI(
     title="UI Manager for Anastasia",
@@ -118,11 +72,12 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600,
 )
-
+# обертка для проверки разрешений по ролям
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     public_paths = [
         "/api/login",
+        "/api/refresh",
         "/static",
         "/"
     ]
@@ -133,22 +88,68 @@ async def auth_middleware(request: Request, call_next):
     if any(path.startswith(p) for p in public_paths):
         return await call_next(request)
 
-    token = request.cookies.get("session_token")
+    access_token = request.cookies.get("access_token")
+    payload = decode_token(access_token) if access_token else None
+    # 1. если access_token валиден
+    if payload and payload.get("type") == "access":
+        role = payload.get("role")
 
-    if not token or token not in sessions:
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        if not is_allowed(path, role):
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
-    user = sessions[token]
-    role = user["role"]
+        return await call_next(request)
+    # 2. если access умер → пробуем refresh
+    refresh_token = request.cookies.get("refresh_token")
+    if refresh_token:
+        refresh_payload = decode_token(refresh_token)
 
-    # 🔥 RBAC проверка
-    if not is_allowed(path, role):
-        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+        if refresh_payload and refresh_payload.get("type") == "refresh":
+            username = refresh_payload.get("sub")
 
-    return await call_next(request)
+            # берём роль из БД
+            user = await get_user_from_db(username, request.app.state.db_pool)
 
+            if user:
+                new_access = create_access_token({
+                    "sub": username,
+                    "role": user["role"]
+                })
+                response = await call_next(request)
+
+                # обновляем access_token
+                response.set_cookie(
+                    key="access_token",
+                    value=new_access,
+                    httponly=True,
+                    samesite="lax"
+                )
+
+                return response
+        
+    return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+# AUTH config
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
+ALGORITHM = "HS256"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_HOURS = 5
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# доступные эндпоинты для ролей
+ROLE_PERMISSIONS = {
+    "admin": ["*"],
+
+    "manager": [
+        "/api/documents",
+        "/api/search",
+        "/api/knowledge-bases",
+        "/api/filesystem",
+        "/api/news",
+        "/api/user-groups"
+    ]
+}
+# Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
-
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
@@ -492,43 +493,209 @@ async def filesystem_sync(
         return {"status": "error", "message": str(e)}
 
     return {"status": "sync_completed"}
+##################################
+# DATABASE & AUTH utils
+##################################
+def get_users_from_env() -> list[tuple[str, str, str]]:
+    """
+    Парсит переменную окружения UI_USERS_DATA.
+    Возвращает список кортежей (username, password, role).
+    """
+    raw_data = os.getenv("UI_USERS_DATA", "")
+    
+    if not raw_data:
+        logger.warning("UI_USERS_DATA is empty. Using default admin.")
+        return [('admin', 'admin123', 'admin')]
+
+    users = []
+    # Разбиваем строку по запятой на отдельных юзеров
+    for entry in raw_data.split(","):
+        parts = entry.strip().split(":")
+        
+        if len(parts) == 3:
+            users.append(tuple(parts))
+        else:
+            logger.error(f"Invalid user format in ENV: {entry}. Expected user:pass:role")
+            
+    return users
+
+async def get_db_pool():
+    """Создает пул соединений DB."""
+    return await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=5,
+        max_size=20,
+        command_timeout=60
+    )
+
+def hash_password(password: str) -> str:
+    """Хеширование пароля"""
+    return pwd_context.hash(password)
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Проверка пароля с нормализацией"""
+    return pwd_context.verify(password, hashed)
+
+async def init_db(pool: asyncpg.Pool):
+    """Инициализация базы данных"""
+    logger.info("Initializing database...")
+    # Получаем список пользователей динамически
+    users_to_init = get_users_from_env()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ui_users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            );
+        """)
+        for username, password, role in users_to_init:
+            hashed = hash_password(password)
+            await conn.execute("""
+                INSERT INTO ui_users (username, password, role)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (username) DO NOTHING;
+            """, username, hashed, role)
+            
+    logger.info(f"Database initialized with {len(users_to_init)} users.")
+
+async def get_user_from_db(username: str, pool: asyncpg.Pool):
+    """Получение пользователя из базы данных по имени"""
+    async with pool.acquire() as conn:
+
+        user = await conn.fetchrow(
+            "SELECT username, password, role FROM ui_users WHERE username=$1",
+            username
+        )
+
+    return dict(user) if user else None
+
+def _generate_jwt(data: dict, expires_delta: timedelta, token_type: str) -> str:
+    """Внутренняя база для создания любых токенов"""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + expires_delta
+    to_encode.update({"exp": expire, "type": token_type})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_access_token(data: dict):
+    """Создание JWT access токена с типом и временем жизни"""
+    return _generate_jwt(data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), "access")
+
+def create_refresh_token(data: dict):
+    """Создание JWT refresh токена с типом и временем жизни"""
+    return _generate_jwt(data, timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS), "refresh")
+
+def decode_token(token: str):
+    """Декодирование JWT токена и проверка его типа"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+def get_current_user(request: Request):
+    """Получение текущего пользователя из access токена в cookies"""
+    token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload = decode_token(token)
+
+    if not payload or payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    return {
+        "username": payload.get("sub"),
+        "role": payload.get("role")
+    }
+
+def is_allowed(path: str, role: str) -> bool:
+    """Проверка разрешений по роли для доступа к пути"""
+    allowed_paths = ROLE_PERMISSIONS.get(role, [])
+
+    # admin — всё можно
+    if "*" in allowed_paths:
+        return True
+
+    # проверяем prefix match
+    return any(path.startswith(p) for p in allowed_paths)
 
 ##################################
 # Авторизация и главная
 ##################################
-@app.post("/api/login")
-async def login(username: str = Form(...), password: str = Form(...)):
-    user = fake_users_db.get(username)
 
-    if not user or user["password"] != password:
+@app.post("/api/login")
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    """Эндпоинт для логина. Принимает username и password, проверяет их и возвращает JWT токены в cookies"""
+    user = await get_user_from_db(username, request.app.state.db_pool)
+
+    if not user or not verify_password(password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = secrets.token_hex(32)
-    sessions[token] = {
-        "username": username,
+    access_token = create_access_token({
+        "sub": username,
         "role": user["role"]
-    }
+    })
+
+    refresh_token = create_refresh_token({
+        "sub": username
+    })
 
     response = JSONResponse({"success": True})
+    for k, v in [("access_token", access_token), ("refresh_token", refresh_token)]:
+        response.set_cookie(key=k, value=v, httponly=True, samesite="lax")
+
+    return response
+
+@app.post("/api/refresh")
+async def refresh(request: Request):
+    """Эндпоинт для обновления access токена с помощью refresh токена"""
+    refresh_token = request.cookies.get("refresh_token")
+
+    if not refresh_token:
+        raise HTTPException(status_code=401)
+
+    payload = decode_token(refresh_token)
+
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(status_code=401)
+
+    username = payload.get("sub")
+
+    user = await get_user_from_db(username, request.app.state.db_pool)
+
+    if not user:
+        raise HTTPException(status_code=401)
+
+    new_access = create_access_token({
+        "sub": username,
+        "role": user["role"]
+    })
+
+    response = JSONResponse({"success": True})
+
     response.set_cookie(
-        key="session_token",
-        value=token,
+        key="access_token",
+        value=new_access, 
         httponly=True,
         samesite="lax"
     )
     return response
 
 @app.post("/api/logout")
-async def logout(session_token: str = Cookie(None)):
-    if session_token in sessions:
-        del sessions[session_token]
-
+async def logout():
+    """Эндпоинт для логаута. Удаляет токены из cookies"""
     response = JSONResponse({"success": True})
-    response.delete_cookie("session_token")
-    return response
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
 
+    return response
 @app.get("/api/me")
 async def me(user=Depends(get_current_user)):
+    """Эндпоинт для получения информации о текущем пользователе"""
     return user
 
 @app.get("/", response_class=HTMLResponse)
