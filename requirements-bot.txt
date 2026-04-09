@@ -6,6 +6,7 @@ litellm==1.81.15
 # Database
 python-dotenv==1.0.1
 asyncpg==0.31.0
+psycopg2-binary==2.9.11
 
 # FastAPI для broadcast API
 fastapi>=0.109.0
@@ -18,3 +19,4 @@ httpx>=0.24.0
 # Proxy support (опционально)
 aiohttp-socks>=0.8.0
 pysocks>=1.7.1
+
