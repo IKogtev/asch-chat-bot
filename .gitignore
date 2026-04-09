@@ -14,14 +14,18 @@ kb_storage/knowledge_base
 kb_storage/faq
 kb_storage/wait
 kb_storage/bot/upload
+kb_storage/archive_kb
+kb_storage/knowledge_base
+kb_storage/kb
 data/
-venv/
+venv*/
 
 *.env
 *.code-workspace
 .env
 agent/__pycache__/
 agent/agent/
+agent/.adk/
 filebrowser_data/database.db
 filebrowser_data/settings.json
 filegator_data
@@ -40,3 +44,20 @@ __pycache__
 *.png
 *.csv
 *.parquet
+
+# Next.js / Copilot web (generated & deps — do not commit)
+web/copilot-web/node_modules/
+web/copilot-web/.next/
+web/copilot-web/out/
+web/copilot-web/.turbo/
+web/copilot-web/*.tsbuildinfo
+
+# CopilotKit web (repo-wide ignores for package.json/tsconfig above would hide this app)
+!web/copilot-web/package.json
+!web/copilot-web/package-lock.json
+!web/copilot-web/tsconfig.json
+!web/copilot-web/next.config.ts
+!web/copilot-web/next-env.d.ts
+
+web/copilot-web/.next/
+web/copilot-web/node_modules/
