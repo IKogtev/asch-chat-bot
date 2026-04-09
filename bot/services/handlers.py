@@ -230,11 +230,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
                 return
 
-            # Загружаем данные пользователя в ADK только здесь
-            user_data = await subscriber_store.get_user_data(int(user_id))
-            if user_data:
-                user_data.pop("phone_number", None)
-                await adk.set_user_state(str(user_id), session_id, user_data)
+            # Синхронизируем профиль пользователя в ADK перед run()
+            await sync_user_profile_to_adk(
+                adk=adk,
+                subscriber_store=subscriber_store,
+                user_id=int(user_id),
+                session_id=session_id,
+            )
 
             meta_before = await store.get_last_search_meta(user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
@@ -374,7 +376,29 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 finally:
                     if tmp_name and os.path.exists(tmp_name):
                         os.remove(tmp_name)
- 
+
+async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str) -> None:
+    """
+    Загружает профиль пользователя из БД и подготавливает его для передачи в ADK.
+    """
+    user_data = await subscriber_store.get_user_data(user_id)
+    if not user_data:
+        return
+
+    # Лишние персональные данные в ADK не передаем
+    user_data.pop("phone_number", None)
+    
+    # Убеждаемся, что имя не пустое (иначе агент не обратится по имени)
+    if not user_data.get("first_name"):
+        logger.warning(f"first_name пуст для user_id={user_id}")
+    if not user_data.get("last_name"):
+        logger.warning(f"last_name пуст для user_id={user_id}")
+
+    await adk.set_user_state(
+        user_id=str(user_id),
+        session_id=session_id,
+        user_data=user_data,
+    )
 async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
     """
     Проверяет регистрацию и наличие телефона.
@@ -384,7 +408,7 @@ async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
     # 1. Разруливаем фоллбеки ОДИН раз для всех
     user_id = int(m.from_user.id)
     username = m.from_user.username or "unknown"
-    first_name = m.from_user.first_name
+    first_name = m.from_user.first_name or "Гость"
     last_name = m.from_user.last_name
     last_seen = datetime.now()
     # проверяем есть ли телефон у пользователя в базе

@@ -63,12 +63,14 @@ class RootAgent(BaseAgent):
 
     def _get_user_profile(self, ctx: InvocationContext) -> Dict[str, Any]:
         """
-        Извлекает профиль пользователя из ctx.session.state.
+        Извлекает профиль пользователя:
+        1) сначала из ctx.user.state — долгоживущее состояние пользователя,
+        2) затем fallback из ctx.session.state — если профиль приехал только в сессию.
         """
-        profile = {}
-        session_state = getattr(ctx.session, "state", None)
-        if not session_state:
-            return profile
+        profile: Dict[str, Any] = {}
+
+        user_state = getattr(getattr(ctx, "user", None), "state", None) or {}
+        session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
 
         for key in (
             "first_name",
@@ -79,11 +81,15 @@ class RootAgent(BaseAgent):
             "manager_group",
             "coach_group",
         ):
-            if key in session_state:
-                profile[key] = session_state[key]
+            value = user_state.get(key)
+            if value in (None, ""):
+                value = session_state.get(key)
+
+            if value not in (None, ""):
+                profile[key] = value
 
         return profile
-
+    
     @staticmethod
     def _extract_user_text(ctx: InvocationContext) -> str:
         """
