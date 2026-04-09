@@ -61,33 +61,58 @@ async def _persist_full_list(
     items: List[Dict[str, Any]],
     shown_count: int,
 ) -> None:
+    """
+    Сохраняет полный список найденных документов по поисковому запросу пользователя в базе данных (PostgreSQL).
+
+    Аргументы:
+        ctx (InvocationContext): Контекст вызова агента, использующийся для получения пользовательских и сессионных данных.
+        query (str): Текст поискового запроса пользователя.
+        items (List[Dict[str, Any]]): Список документов для сохранения (каждый документ в виде словаря).
+        shown_count (int): Количество документов, показанных пользователю (может отличаться от общего числа найденных).
+
+    Процедура:
+        - Получает пул соединения с базой данных.
+        - Проверяет наличие DATABASE_URL, user_id и session.id в контексте; если какого-либо параметра нет — логирует варнинг и пропускает сохранение.
+        - Экранирует и нормализует поля документов для записи.
+        - Сохраняет результат поиска через функцию save_doc_search_results.
+        - В случае ошибки логирует её с трассировкой.
+    """
     from utils.search_results_db import get_shared_pool, save_doc_search_results
 
+    # Получаем пул соединения с БД, если переменная окружения не установлена — пропускаем сохранение
     pool = await get_shared_pool()
     if pool is None:
         logger.warning("DATABASE_URL не задан — список документов не сохранён в PostgreSQL")
         return
+
+    # Получаем ID пользователя Telegram из сессии
     uid = _telegram_user_id(ctx)
     if uid is None:
         logger.warning("session.user_id отсутствует — пропуск сохранения списка в БД")
         return
+
+    # Получаем идентификатор сессии
     sid = getattr(ctx.session, "id", None) or ""
     if not sid:
         logger.warning("session.id отсутствует — пропуск сохранения списка в БД")
         return
+
+    # Формируем список документов для сохранения в БД
     db_items: List[Dict[str, Any]] = []
     for it in items:
         db_items.append(
             {
-                "rank": int(it["rank"]),
-                "document_id": str(it["document_id"]),
-                "source_name": str(it["source_name"]),
-                "source_path": it.get("source_path"),
-                "score": it.get("score"),
-                "snippet": (it.get("snippet") or "")[:2000],
+                "rank": int(it["rank"]),  # Позиция документа в результате
+                "document_id": str(it["document_id"]),  # Уникальный идентификатор документа
+                "source_name": str(it["source_name"]),  # Название источника
+                "source_path": it.get("source_path"),   # Путь к файлу (может быть None)
+                "score": it.get("score"),               # Оценка релевантности (опционально)
+                "snippet": (it.get("snippet") or "")[:2000],  # Краткий фрагмент содержимого (не более 2000 символов)
             }
         )
+
     try:
+        # Сохраняем результаты поиска пользователя в БД
         await save_doc_search_results(pool, uid, sid, query, db_items, shown_count)
         logger.info(
             "doc_search: сохранено в БД user_id=%s session=%s rows=%s shown=%s",
@@ -97,12 +122,26 @@ async def _persist_full_list(
             shown_count,
         )
     except Exception as e:
+        # Логируем ошибку с подробностями и трассировкой исключения
         logger.error("doc_search: ошибка сохранения в БД: %s", e, exc_info=True)
 
 
 class DocSearchOrchestrator(BaseAgent):
     """
-    Только новый поиск (intent doc_search): LLM + kb_search → полный список → БД.
+    Агрегатор поиска документов:
+    Этот агент отвечает только за новый поиск документов (intent = "doc_search").
+    Оркестрация следующая: LLM-агент -> kb_search -> полный список документов -> сохранение в БД.
+    Не обрабатывает follow-up команды, скачивание и др. — только выдаёт новый список и записывает его.
+
+    Атрибуты:
+        doc_search_agent (LlmAgent): агент, выполняющий LLM+kb_search для поиска документов.
+        doc_collection (str): название коллекции документов для поиска.
+        model_config (dict): дополнительная конфигурация pydantic-модели.
+
+    Методы:
+        __init__: конструктор класса, принимает агента поиска и коллекцию документов.
+        _get_required_state_dict: вспомогательный метод для извлечения словаря из state.
+        _run_async_impl: основная асинхронная исполняющая корутина-генератор.
     """
 
     doc_search_agent: LlmAgent
@@ -115,6 +154,13 @@ class DocSearchOrchestrator(BaseAgent):
         doc_search_agent: LlmAgent,
         doc_collection: str = ACTIVE_DOCUMENTS_COLLECTION,
     ):
+        """
+        Инициализация оркестратора поиска документов.
+
+        Аргументы:
+            doc_search_agent (LlmAgent): агент, выполняющий LLM+kb_search поиск.
+            doc_collection (str): имя коллекции документов для поиска (по умолчанию активная).
+        """
         super().__init__(
             name="doc_search_orchestrator",
             doc_search_agent=doc_search_agent,
@@ -123,32 +169,52 @@ class DocSearchOrchestrator(BaseAgent):
         )
 
     def _get_required_state_dict(self, ctx: InvocationContext, key: str) -> Dict[str, Any]:
+        """
+        Вытаскивает из state словарь по ключу, иначе бросает ValueError.
+
+        :param ctx: Контекст вызова агента.
+        :param key: Ключ для поиска в state.
+        :return: Значение из state, если это dict.
+        """
         value = ctx.session.state.get(key)
         if not isinstance(value, dict):
             raise ValueError(f"State key '{key}' must be dict, got {type(value)}")
         return value
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        """
+        Основная логика асинхронного запуска агента:
+        - Проверяет intent. Если это doc_search — запускает поиск документов через LLM+kb_search.
+        - Если intent относится к follow-up (show_more и др.) — просто ставит хинт и возвращает результат.
+        - Сохраняет список документов в базу данных.
+        Генерирует события Event для внешнего обработчика.
+
+        :param ctx: Контекст сессии пользователя, содержит все данные сессии.
+        """
         user_message = str(ctx.session.state.get("user_query") or "").strip()
         intent = str(ctx.session.state.get("doc_search_intent") or "doc_search").strip()
         search_query = str(ctx.session.state.get("doc_search_search_query") or "").strip()
 
+        # Логирование полученного интента и запроса
         logger.info(
             "doc_search_orchestrator: intent=%s query=%s",
             intent,
             truncate_for_log((search_query or user_message).strip(), 300),
         )
 
+        # Обрабатываем только новый поиск, для других интентов — возвращаем обработанное сообщение
         if intent in ("show_more", "show_all", "file_download"):
             ctx.session.state["_root_final_text"] = _follow_up_unhandled_in_agent_hint(intent)
             return
 
-        page = DOC_SEARCH_PAGE_SIZE
+        page = DOC_SEARCH_PAGE_SIZE  # Количество результатов на страницу (см. конфиг)
 
+        # Итоговый поисковый запрос для LLM/kb_search
         effective_search_query = (search_query or user_message).strip()
         ctx.session.state["search_query"] = effective_search_query
         ctx.session.state["doc_search_collection"] = self.doc_collection
 
+        # Запуск агента поиска документов по контракту JSON -> (запись результата в state)
         async for event in run_json_leaf_agent(
             ctx=ctx,
             agent=self.doc_search_agent,
@@ -159,29 +225,34 @@ class DocSearchOrchestrator(BaseAgent):
         ):
             yield event
 
+        # Получаем результат поиска из state
         doc_search = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
 
+        # Если агент вернул не список, а какой-то особый режим (нет данных/сообщение)
         if doc_search["mode"] != "document_list":
             ctx.session.state["_root_final_text"] = format_text_answer(doc_search["message"])
             return
 
+        # Нормализуем список документов (добавляем ранги, отрезаем snippet и т.п.)
         results_raw = doc_search["results"]
         normalized: List[Dict[str, Any]] = []
         for i, item in enumerate(results_raw, start=1):
             normalized.append(
                 {
-                    "document_id": item["document_id"],
-                    "source_name": item["source_name"],
-                    "source_path": item.get("source_path"),
-                    "snippet": item.get("snippet") or "",
-                    "rank": i,
+                    "document_id": item["document_id"],       # ID документа
+                    "source_name": item["source_name"],       # Название документа
+                    "source_path": item.get("source_path"),   # Путь (может быть None)
+                    "snippet": item.get("snippet") or "",     # Краткий фрагмент
+                    "rank": i,                                # Место в списке
                 }
             )
 
-        shown = min(page, len(normalized))
-        # Не текст LLM из doc_search — список пользователю строит UI из БД (см. handlers: render_results).
+        shown = min(page, len(normalized))  # Число показанных пользователю документов
+
+        # Основной хинт пользователю: список скоро появится в UI (строится из БД)
         ctx.session.state["_root_final_text"] = DOC_SEARCH_SUCCESS_HINT
 
+        # Асинхронное сохранение результата поиска пользователя в БД
         await _persist_full_list(
             ctx,
             query=effective_search_query,
@@ -189,12 +260,17 @@ class DocSearchOrchestrator(BaseAgent):
             shown_count=shown,
         )
 
-
 def create_doc_search_orchestrator(
     doc_search_agent: LlmAgent,
     *,
     doc_collection: str = ACTIVE_DOCUMENTS_COLLECTION,
 ) -> DocSearchOrchestrator:
+    """
+    Фабрика для создания DocSearchOrchestrator с нужным агентом и коллекцией.
+    :param doc_search_agent: Агент поиска документов (LLM+kb_search).
+    :param doc_collection: Имя коллекции документов.
+    :return: DocSearchOrchestrator
+    """
     return DocSearchOrchestrator(
         doc_search_agent=doc_search_agent,
         doc_collection=doc_collection,
