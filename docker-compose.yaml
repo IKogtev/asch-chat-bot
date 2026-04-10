@@ -158,6 +158,10 @@ services:
       - PLATFORM_VERSION=0.6.1
       - BOT_TELEGRAM_API=http://bot:8001
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
+      # шифрование паролей в postges
+      - SECRET_KEY=super-secret-key-change-this
+      # путь к базе данных
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
     depends_on:
       - qdrant
       - postgres
