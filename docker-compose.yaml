@@ -111,7 +111,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.6.0
+      - PLATFORM_VERSION=0.6.1
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
     # Run Alembic then the bot. Fresh volume: upgrade creates tables. If the DB already had
@@ -155,7 +155,7 @@ services:
       - LOG_TO_FILE=false
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.6.0
+      - PLATFORM_VERSION=0.6.1
       - BOT_TELEGRAM_API=http://bot:8001
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
     depends_on:
