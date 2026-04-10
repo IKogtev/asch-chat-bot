@@ -87,7 +87,7 @@ async def main() -> None:
         news_store=news_store,
         subscriber_store=subscriber_store,
         load_bot_start_message=load_bot_start_message,
-        TITLE_START=TITLE_START
+        get_start_message=get_start_message
     )
 
     # Инициализация DocumentHandler
@@ -105,7 +105,7 @@ async def main() -> None:
         subscriber_store=subscriber_store,
         adk=adk,
         doc_handler=doc_handler,
-        TITLE_START=TITLE_START
+        get_start_message=get_start_message
     )
 
     logger.info("Все компоненты инициализированы")
@@ -221,6 +221,10 @@ def load_bot_start_message():
         logger.error(f"Error loading starting message: {e}")
 # загрузка стартового сообщения
 load_bot_start_message()
+
+def get_start_message():
+    """Получение стартового сообщения"""
+    return TITLE_START
 
 # Запуск HTTP сервера в отдельной задаче
 async def run_http_server(app):

@@ -46,7 +46,7 @@ PHONE_KEYBOARD = ReplyKeyboardMarkup(
 ######################################
 # обработчики сообщений и команд бота
 ######################################
-def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler, TITLE_START) -> None:
+def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler, get_start_message) -> None:
     """Регистрация всех обработчиков сообщений"""
 
     # Обработчик команды /start
@@ -64,7 +64,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         # и показываем стартовое меню.
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-        await m.answer(TITLE_START, reply_markup=menu)
+        await m.answer(get_start_message(), reply_markup=menu)
         return
 
     # обработчик получения контакта (номера телефона)
@@ -97,7 +97,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             "✅ Спасибо! Теперь вы можете пользоваться ботом.",
             reply_markup=ReplyKeyboardRemove()
         )
-        await m.answer(TITLE_START, reply_markup=menu)
+        await m.answer(get_start_message(), reply_markup=menu)
 
     # обработчик команды /version для получения версии
     @dp.message(Command("version"))
@@ -117,7 +117,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         menu = build_menu_from_tree(tree, [])
 
         await callback.message.edit_text(
-            TITLE_START,
+            get_start_message(),
             reply_markup=menu
         )
 
@@ -357,7 +357,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         tree = await get_tree_cached()
 
         menu = build_menu_from_tree(tree, path_list)
-        title = "📁 /".join(path_list) or TITLE_START
+        title = "📁 /".join(path_list) or get_start_message()
         await callback.message.edit_text(
             title,
             reply_markup=menu
