@@ -18,7 +18,7 @@ def create_broadcast_app(
     news_store,
     subscriber_store,
     load_bot_start_message,
-    TITLE_START
+    get_start_message
 ):
     app = FastAPI(title="Bot Broadcast API")
 
@@ -100,7 +100,7 @@ def create_broadcast_app(
         """Перезагрузить стартовое сообщение из файла"""
         try:
             load_bot_start_message()
-            return {"success": True, "message": "Start message reloaded", "length": len(TITLE_START)}
+            return {"success": True, "message": "Start message reloaded", "length": len(get_start_message())}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
