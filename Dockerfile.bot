@@ -13,6 +13,8 @@ COPY utils/ ./utils/
 
 COPY bot/ ./bot/
 
+COPY kb_storage/bot/ ./data
+
 COPY alembic.ini .
 COPY alembic/ ./alembic/
 

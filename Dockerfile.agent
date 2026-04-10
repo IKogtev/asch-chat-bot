@@ -14,6 +14,8 @@ COPY utils/ ./utils/
 COPY agent/*.py ./agent/
 COPY agent/agents/*.py ./agent/agents/
 
+COPY kb_storage/prompts/ ./agent/
+
 # Создаём директорию для логов
 RUN mkdir -p /app/logs
 
