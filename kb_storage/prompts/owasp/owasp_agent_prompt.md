@@ -41,7 +41,7 @@
 ### Если запрос небезопасен
 
 ```json
-{"status":"blocked","route":"reject","reason":"violation_category","user_message":"Запрос отклонён по соображениям безопасности."}
+{"status":"blocked","route":"reject","reason":"violation_category","user_message":"Не могу ответить на этот вопрос. Пожалуйста, измените формулировку."}
 ```
 
 ## Жёсткие ограничения формата
