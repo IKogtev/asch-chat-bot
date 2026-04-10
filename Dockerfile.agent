@@ -19,4 +19,4 @@ RUN mkdir -p /app/logs
 
 ENV PYTHONPATH=/app
 
-CMD ["adk", "api_server", "agent", "--port", "8000", "--host", "0.0.0.0"]
+CMD ["adk", "api_server", ".", "--port", "8000", "--host", "0.0.0.0"]
