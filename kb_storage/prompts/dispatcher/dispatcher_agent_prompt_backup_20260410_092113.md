@@ -60,12 +60,7 @@
 
 ### intent
 Допустимы только:
-
 - `"doc_search"`
-- `"file_download"`
-- `"show_more"`
-- `"show_all"`
-
 - `"kb_answer"`
 - `"smalltalk"`
 
@@ -133,10 +128,6 @@
 - "eot"
 - "dtcm"
 
-В этом случае:
-- `route = "doc_search"`
-- `intent = "show_more"`
-
 ### intent = "show_all"
 Если пользователь хочет вывести весь список:
 
@@ -148,10 +139,6 @@
 - "выведм все"
 - "dct"
 - "dtcm cgbcjr"
-
-В этом случае:
-- `route = "doc_search"`
-- `intent = "show_all"`
 
 ### intent = "file_download"
 Если пользователь хочет получить файл из списка:
@@ -165,10 +152,6 @@
 - "1.2.3.4"
 - "первый"
 - "первый, второй"
-
-В этом случае:
-- `route = "doc_search"`
-- `intent = "file_download"`
 
 ---
 
