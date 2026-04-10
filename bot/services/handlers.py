@@ -187,12 +187,24 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
 
             # Пагинация и скачивание по номеру — из БД, без вызова ADK
+            """
+            Основной блок обработки пользовательских текстовых сообщений.
+            Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
+            поиск по базе знаний (через ADK), а также отправка найденных документов.
+
+            Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
+            """
+
+            # --- Пагинация: показать следующую порцию сохранённого списка документов ---
             if Settings.SHOW_MORE_RE.match(user_text):
+                # Если пользователь запросил "показать еще", возвращаем следующую порцию из сохраненного поиска.
                 ok = await handle_show_more(m, store, user_id, session_id)
                 if not ok:
+                    # Сообщение для пользователя, если списка нет
                     await m.answer(
                         "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
                     )
+                # Логируем пользовательский запрос и результат в историю
                 await store.append(user_id, "user", user_text)
                 await store.append(
                     user_id,
@@ -203,9 +215,9 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 )
                 return
 
-            if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(
-                user_text
-            ):
+            # --- Пагинация: показать полный список сохранённых документов ---
+            if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
+                # Только если это не "показать еще"
                 ok = await handle_show_all(m, store, user_id, session_id)
                 if not ok:
                     await m.answer(
@@ -221,8 +233,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 )
                 return
 
+            # --- Обработка запроса на скачивание файлов по номерам из списка ---
             dl_ranks = parse_download_ranks(user_text)
             if dl_ranks:
+                """
+                Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
+                вызываем обработчик отправки файлов.
+                """
                 await handle_download_by_ranks(
                     m, store, doc_handler, user_id, session_id, dl_ranks
                 )
@@ -230,15 +247,19 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
                 return
 
-            # Загружаем данные пользователя в ADK только здесь
-            user_data = await subscriber_store.get_user_data(int(user_id))
-            if user_data:
-                user_data.pop("phone_number", None)
-                await adk.set_user_state(str(user_id), session_id, user_data)
+            # Синхронизируем профиль пользователя в ADK перед run()
+            await sync_user_profile_to_adk(
+                adk=adk,
+                subscriber_store=subscriber_store,
+                user_id=int(user_id),
+                session_id=session_id,
+            )
 
+            # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
             meta_before = await store.get_last_search_meta(user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
 
+            # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, _ = await adk.run(
                 user_id=str(user_id),
                 session_id=session_id,
@@ -247,13 +268,18 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
 
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
 
+            # Обрабатываем сырой ответ: выделяем id документов и "очищаем" текст для вывода
             work = answer or ""
             work, doc_ids = extract_document_id_lines(work)
+
+            # --- Автоматически отправляем документы, которые были найдены и отмечены в ответе ---
             for did in doc_ids:
                 file_path = None
                 try:
+                    # Скачиваем файл документа по id
                     file_path = await doc_handler.download_document(did)
                     if file_path and file_path.exists():
+                        # Отправляем документ пользователю в TG
                         await m.answer_document(
                             FSInputFile(str(file_path), filename=file_path.name)
                         )
@@ -266,19 +292,21 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     )
                     await m.answer("❌ Ошибка при загрузке документа.")
                 finally:
+                    # После отправки, всегда пытаемся удалить временный файл
                     try:
                         if file_path and file_path.exists():
                             file_path.unlink()
                     except Exception:
                         pass
 
+            # --- Удаляем технические метаданные поиска из текста ответа для корректного отображения ---
             work = strip_bot_search_meta(work)
 
-            # 5. сохраняем историю диалога
+            # сохраняем историю диалога
             await store.append(user_id, "user", user_text)
             await store.append(user_id, "model", answer)
 
-            # 6. Новый doc_search: список в БД — признак смены search_id, первая порция рендерится здесь
+            # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
             meta_after = await store.get_last_search_meta(user_id, session_id)
             search_id_after = meta_after["search_id"] if meta_after else None
             if (
@@ -295,7 +323,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     await m.answer(text, parse_mode="HTML")
                     return
 
-            # 7. ответ пользователю (kb_answer и прочее)
+            # ответ пользователю (kb_answer и прочее)
             clean_answer = doc_handler.remove_document_ids(work)
             if clean_answer.strip():
                 if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):
@@ -374,7 +402,29 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 finally:
                     if tmp_name and os.path.exists(tmp_name):
                         os.remove(tmp_name)
- 
+
+async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str) -> None:
+    """
+    Загружает профиль пользователя из БД и подготавливает его для передачи в ADK.
+    """
+    user_data = await subscriber_store.get_user_data(user_id)
+    if not user_data:
+        return
+
+    # Лишние персональные данные в ADK не передаем
+    user_data.pop("phone_number", None)
+    
+    # Убеждаемся, что имя не пустое (иначе агент не обратится по имени)
+    if not user_data.get("first_name"):
+        logger.warning(f"first_name пуст для user_id={user_id}")
+    if not user_data.get("last_name"):
+        logger.warning(f"last_name пуст для user_id={user_id}")
+
+    await adk.set_user_state(
+        user_id=str(user_id),
+        session_id=session_id,
+        user_data=user_data,
+    )
 async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
     """
     Проверяет регистрацию и наличие телефона.
@@ -384,7 +434,7 @@ async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
     # 1. Разруливаем фоллбеки ОДИН раз для всех
     user_id = int(m.from_user.id)
     username = m.from_user.username or "unknown"
-    first_name = m.from_user.first_name
+    first_name = m.from_user.first_name or "Гость"
     last_name = m.from_user.last_name
     last_seen = datetime.now()
     # проверяем есть ли телефон у пользователя в базе
