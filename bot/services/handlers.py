@@ -15,10 +15,21 @@ from utils import setup_logger
 # импортируем конфиг
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
+from utils.doc_search_format import (
+    extract_document_id_lines,
+    parse_download_ranks,
+    strip_bot_search_meta,
+)
 from bot.services.utils import (
-    markdown_to_safe_html, parse_download_ranks, render_results, extract_bot_contract, 
-    normalize_contract_results, extract_search_results_from_events, handle_download_by_ranks,
-    handle_show_all, handle_show_more, build_menu_from_tree, get_document_id, get_kb_tree)
+    markdown_to_safe_html,
+    render_results,
+    handle_show_more,
+    handle_show_all,
+    handle_download_by_ranks,
+    build_menu_from_tree,
+    get_document_id,
+    get_kb_tree,
+)
 
 logger = setup_logger('handlers', 'handlers.log')
 # переменные для сохранения дерева папок в кэше
@@ -35,26 +46,26 @@ PHONE_KEYBOARD = ReplyKeyboardMarkup(
 ######################################
 # обработчики сообщений и команд бота
 ######################################
-def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler, TITLE_START) -> None:
+def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler, get_start_message) -> None:
     """Регистрация всех обработчиков сообщений"""
+
     # Обработчик команды /start
     @dp.message(Command("start"))
     async def start(m: Message) -> None:
         user = await get_authenticated_user(m, subscriber_store)
-        if not user: 
+        if not user:
             return
+
         user_id = user["user_id"]
-        logger.info(f"Команда /start от user_id={user_id} (@{user['username']}) - телефон уже есть.")
-        # Если телефон есть - загружаем данные в ADK
-        session_id = f"session-{user_id}"
-        await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-        await adk.set_user_state(str(user_id), session_id, user)
-        logger.info(f"📋 Данные пользователя загружены в ADK: {user['phone_number']}")
-    
-        # строим меню для ответа
+        logger.info(f"Команда /start от user_id={user_id} (@{user['username']})")
+
+        # На /start не вызываем ADK.
+        # Только обновляем пользователя в БД через get_authenticated_user()
+        # и показываем стартовое меню.
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-        await m.answer(TITLE_START, reply_markup=menu)           
+        await m.answer(get_start_message(), reply_markup=menu)
+        return
 
     # обработчик получения контакта (номера телефона)
     @dp.message(F.contact)
@@ -62,36 +73,31 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         """Обработка получения номера телефона"""
         if not m.contact:
             return
-        
+
         user_id = m.from_user.id
+
         # Проверяем, что пользователь отправил свой контакт
         if m.contact.user_id != user_id:
             await m.answer("⚠️ Пожалуйста, отправьте свой номер телефона")
             return
-        
+
         phone = m.contact.phone_number
-        
+
         # Сохраняем телефон в БД
         await subscriber_store.update_phone(user_id, phone)
-        
+
         logger.info(f"✓ Получен телефон от user_id={user_id}.")
-        # Создаём сессию и загружаем данные в ADK
-        session_id = f"session-{user_id}"
-        await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-        
-        user_data = await subscriber_store.get_user_data(user_id)
-        if user_data:
-            await adk.set_user_state(str(user_id), session_id, user_data)
-        
-        # Убираем клавиатуру и показываем меню
+
+        # После получения телефона тоже не вызываем ADK.
+        # ADK будет инициализирован лениво при первом текстовом сообщении.
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
-        
+
         await m.answer(
             "✅ Спасибо! Теперь вы можете пользоваться ботом.",
             reply_markup=ReplyKeyboardRemove()
         )
-        await m.answer(TITLE_START, reply_markup=menu)
+        await m.answer(get_start_message(), reply_markup=menu)
 
     # обработчик команды /version для получения версии
     @dp.message(Command("version"))
@@ -99,21 +105,19 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         """Команда для получения версии платформы/бота"""
         user_id = m.from_user.id
         logger.info(f"Команда /version от user_id={user_id}")
-        await m.answer(
-            f"Текущая версия бота: {Settings.PLATFORM_VERSION}"
-        )
+        await m.answer(f"Текущая версия бота: {Settings.PLATFORM_VERSION}")
 
-    #домашняя страница
+    # домашняя страница
     @dp.callback_query(lambda c: c.data == "home")
     async def go_home(callback: CallbackQuery):
-        # обработчик перехода на главную страницу кнопка home
+        """Обработчик перехода на главную страницу"""
         await callback.answer()
-        # строим меню для ответа
+
         tree = await get_tree_cached()
         menu = build_menu_from_tree(tree, [])
 
         await callback.message.edit_text(
-            TITLE_START,
+            get_start_message(),
             reply_markup=menu
         )
 
@@ -122,40 +126,38 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
-        session_id = "default"
-        
+        session_id = f"session-{user_id}"
+
         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
-        
+
         try:
-            # Удаляем сессию в ADK
+            # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
             await adk.delete_session(user_id=str(user_id), session_id=session_id)
-            
-            # Создаём новую сессию
-            await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-            
+
             # Очищаем историю в БД
             await store.reset(user_id)
-            
+
             # Удаляем состояние результатов поиска
             await store.reset_search_state(user_id, session_id)
-            
-            # после reset сразу вернуть профиль в state
-            user_data = await subscriber_store.get_user_data(user_id)
-            if user_data:
-                await adk.set_user_state(str(user_id), session_id, user_data)
-                
+
+            # После /reset не создаем новую ADK-сессию
+            # и не вызываем set_user_state.
+            # Новая session и state будут созданы при первом обычном сообщении.
             await m.answer("✅ История диалога и сессия сброшены")
             logger.info(f"История и сессия сброшены для user_id={user_id}")
+
         except Exception as e:
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
-    
-    #  обработчик команды /help для отображения справки
+
+        return
+
+    # обработчик команды /help для отображения справки
     @dp.message(Command("help"))
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
         logger.info(f"Команда /help от user_id={user_id}")
-        
+
         await m.answer(
             "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
             "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
@@ -164,13 +166,14 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             "/reset — сбросить историю\n"
             "/help — эта справка"
         )
-    
+
     # обработчик всех текстовых сообщений (основной диалог)
     @dp.message(F.text)
     async def on_text(m: Message) -> None:
         user = await get_authenticated_user(m, subscriber_store)
         if not user:
             return
+
         user_id = user["user_id"]
         session_id = f"session-{user_id}"
         user_text = (m.text or "").strip()
@@ -181,52 +184,83 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         logger.info(f"📨 Сообщение от user_id={user_id} (@{user['username']}): {user_text[:100]}")
 
         try:
-            # 1. follow-up: download by rank
-            ranks = parse_download_ranks(user_text)
-            if ranks:
-                handled = await handle_download_by_ranks(
-                    m=m,
-                    store=store,
-                    doc_handler=doc_handler,
-                    user_id=user_id,
-                    session_id=session_id,
-                    ranks=ranks,
-                )
-                if handled:
-                    return
-            
-            # 3. follow-up: show more
-            if Settings.SHOW_MORE_RE.match(user_text) and Settings.SHOW_BY_PAGE:
-                handled = await handle_show_more(
-                    m=m,
-                    store=store,
-                    user_id=user_id,
-                    session_id=session_id,
-                    page_size=Settings.SHOW_MAX,
-                )
-                if handled:
-                    return
-
-            # 2. follow-up: show all
-            if Settings.SHOW_ALL_RE.match(user_text):
-                handled = await handle_show_all(
-                    m=m,
-                    store=store,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                if handled:
-                    return
-
-            # 4. обычный запрос -> ADK
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
 
-            # Загружаем данные пользователя в состояние ADK (на случай если сессия новая)
-            user_data = await subscriber_store.get_user_data(int(user_id))
-            if user_data:
-                await adk.set_user_state(str(user_id), session_id, user_data)
-    
-            answer, events = await adk.run(
+            # Пагинация и скачивание по номеру — из БД, без вызова ADK
+            """
+            Основной блок обработки пользовательских текстовых сообщений.
+            Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
+            поиск по базе знаний (через ADK), а также отправка найденных документов.
+
+            Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
+            """
+
+            # --- Пагинация: показать следующую порцию сохранённого списка документов ---
+            if Settings.SHOW_MORE_RE.match(user_text):
+                # Если пользователь запросил "показать еще", возвращаем следующую порцию из сохраненного поиска.
+                ok = await handle_show_more(m, store, user_id, session_id)
+                if not ok:
+                    # Сообщение для пользователя, если списка нет
+                    await m.answer(
+                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    )
+                # Логируем пользовательский запрос и результат в историю
+                await store.append(user_id, "user", user_text)
+                await store.append(
+                    user_id,
+                    "model",
+                    "Показана следующая порция списка документов."
+                    if ok
+                    else "Список документов не найден.",
+                )
+                return
+
+            # --- Пагинация: показать полный список сохранённых документов ---
+            if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
+                # Только если это не "показать еще"
+                ok = await handle_show_all(m, store, user_id, session_id)
+                if not ok:
+                    await m.answer(
+                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    )
+                await store.append(user_id, "user", user_text)
+                await store.append(
+                    user_id,
+                    "model",
+                    "Показан полный список документов."
+                    if ok
+                    else "Список документов не найден.",
+                )
+                return
+
+            # --- Обработка запроса на скачивание файлов по номерам из списка ---
+            dl_ranks = parse_download_ranks(user_text)
+            if dl_ranks:
+                """
+                Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
+                вызываем обработчик отправки файлов.
+                """
+                await handle_download_by_ranks(
+                    m, store, doc_handler, user_id, session_id, dl_ranks
+                )
+                await store.append(user_id, "user", user_text)
+                await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
+                return
+
+            # Синхронизируем профиль пользователя в ADK перед run()
+            await sync_user_profile_to_adk(
+                adk=adk,
+                subscriber_store=subscriber_store,
+                user_id=int(user_id),
+                session_id=session_id,
+            )
+
+            # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
+            meta_before = await store.get_last_search_meta(user_id, session_id)
+            search_id_before = meta_before["search_id"] if meta_before else None
+
+            # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
+            answer, _ = await adk.run(
                 user_id=str(user_id),
                 session_id=session_id,
                 text=user_text
@@ -234,107 +268,69 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
 
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
 
-            # DEBUG-логирование оставляем
-            if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG" and events:
+            # Обрабатываем сырой ответ: выделяем id документов и "очищаем" текст для вывода
+            work = answer or ""
+            work, doc_ids = extract_document_id_lines(work)
+
+            # --- Автоматически отправляем документы, которые были найдены и отмечены в ответе ---
+            for did in doc_ids:
+                file_path = None
                 try:
-                    for event in events:
-                        if not isinstance(event, dict):
-                            logger.debug("Event not a dict")
-                            continue
-                        if "usageMetadata" in event:
-                            usage = event["usageMetadata"]
-                            logger.debug(
-                                f"📊 Использование токенов: "
-                                f"prompt={usage.get('promptTokenCount', 0)}, "
-                                f"response={usage.get('candidatesTokenCount', 0)}, "
-                                f"total={usage.get('totalTokenCount', 0)}, "
-                                f"cached={usage.get('cachedContentTokenCount', 0)}"
-                            )
+                    # Скачиваем файл документа по id
+                    file_path = await doc_handler.download_document(did)
+                    if file_path and file_path.exists():
+                        # Отправляем документ пользователю в TG
+                        await m.answer_document(
+                            FSInputFile(str(file_path), filename=file_path.name)
+                        )
+                    else:
+                        await m.answer("⚠️ Не удалось загрузить документ.")
+                except Exception as doc_err:
+                    logger.error(
+                        f"Ошибка отправки документа doc_id={did}: {doc_err}",
+                        exc_info=True,
+                    )
+                    await m.answer("❌ Ошибка при загрузке документа.")
+                finally:
+                    # После отправки, всегда пытаемся удалить временный файл
+                    try:
+                        if file_path and file_path.exists():
+                            file_path.unlink()
+                    except Exception:
+                        pass
 
-                        if "actions" in event and event["actions"]:
-                            actions = event["actions"]
+            # --- Удаляем технические метаданные поиска из текста ответа для корректного отображения ---
+            work = strip_bot_search_meta(work)
 
-                            if actions.get("stateDelta"):
-                                logger.debug(f"🔄 State delta: {json.dumps(actions['stateDelta'], indent=2, ensure_ascii=False)}")
-
-                            if actions.get("artifactDelta"):
-                                logger.debug(f"📦 Artifact delta: {json.dumps(actions['artifactDelta'], indent=2, ensure_ascii=False)}")
-
-                            if actions.get("requestedToolConfirmations"):
-                                logger.debug(f"🔧 Tool confirmations: {json.dumps(actions['requestedToolConfirmations'], indent=2, ensure_ascii=False)}")
-
-                        if "author" in event:
-                            logger.debug(f"👤 Author: {event['author']}")
-
-                        if "invocationId" in event:
-                            logger.debug(f"🆔 Invocation ID: {event['invocationId']}")
-
-                        if "content" in event and isinstance(event["content"], dict):
-                            parts = event["content"].get("parts", [])
-                            for part in parts:
-                                if not isinstance(part, dict):
-                                    continue
-
-                                if "tool_use" in part:
-                                    logger.debug(f"🔧 Tool use: {json.dumps(part['tool_use'], indent=2, ensure_ascii=False)}")
-
-                                if "tool_response" in part:
-                                    logger.debug(f"📥 Tool response: {json.dumps(part['tool_response'], indent=2, ensure_ascii=False)}")
-
-                                if "function_call" in part:
-                                    logger.debug(f"🔧 Function call: {json.dumps(part['function_call'], indent=2, ensure_ascii=False)}")
-
-                                if "function_response" in part:
-                                    logger.debug(f"📥 Function response: {json.dumps(part['function_response'], indent=2, ensure_ascii=False)}")
-
-                except Exception as log_err:
-                    logger.debug(f"Не удалось извлечь метаданные из events: {log_err}")
-
-            # 5. сохраняем историю диалога
+            # сохраняем историю диалога
             await store.append(user_id, "user", user_text)
             await store.append(user_id, "model", answer)
 
-            # 6. пробуем сначала вытащить bot_contract из ответа агента
-            contract = extract_bot_contract(answer)
-            if contract:
-                reranked_items = normalize_contract_results(contract)
-
-                await store.save_search_results(
-                    user_id=user_id,
-                    session_id=session_id,
-                    query=user_text,
-                    items=reranked_items,
-                    shown_count=min(Settings.SHOW_MAX, len(reranked_items)),
-                )
-                logger.info(f"💾 Сохранён search-state из bot_contract: {len(reranked_items)} документов для user_id={user_id}")
-
-                if reranked_items:
-                    top_items = reranked_items[:Settings.SHOW_MAX]
-                    text = render_results(top_items, total=len(reranked_items), offset=0)
+            # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
+            meta_after = await store.get_last_search_meta(user_id, session_id)
+            search_id_after = meta_after["search_id"] if meta_after else None
+            if (
+                search_id_after
+                and search_id_after != search_id_before
+                and meta_after
+            ):
+                items = await store.get_last_search_results(user_id, session_id)
+                if items:
+                    shown = int(meta_after["shown_count"])
+                    shown = min(max(shown, 0), len(items))
+                    chunk = items[:shown]
+                    text = render_results(chunk, total=len(items), offset=0)
                     await m.answer(text, parse_mode="HTML")
-                else:
-                    await m.answer("Не нашёл релевантных файлов по запросу.")
-                return
-            
-            # 7. fallback: старая логика через events
-            extracted_items = extract_search_results_from_events(events)
-            if extracted_items:
-                await store.save_search_results(
-                    user_id=user_id,
-                    session_id=session_id,
-                    query=user_text,
-                    items=extracted_items,
-                    shown_count=min(8, len(extracted_items)),
-                )
-                logger.info(f"💾 Сохранён search-state: {len(extracted_items)} документов для user_id={user_id}")
-            else:
-                logger.info("ℹ️ Из events не удалось извлечь search-state")
+                    return
 
-            # 8. answer пользователю — старый путь
-            clean_answer = doc_handler.remove_document_ids(answer)
+            # ответ пользователю (kb_answer и прочее)
+            clean_answer = doc_handler.remove_document_ids(work)
             if clean_answer.strip():
-                html_answer = markdown_to_safe_html(clean_answer)
-                await m.answer(html_answer, parse_mode="HTML") 
+                if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):
+                    await m.answer(clean_answer, parse_mode="HTML")
+                else:
+                    html_answer = markdown_to_safe_html(clean_answer)
+                    await m.answer(html_answer, parse_mode="HTML")
 
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
@@ -343,7 +339,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 "Попробуйте позже или используйте /reset для сброса диалога."
             )
 
-    #  обработчик открытия папки в меню бота
+    # обработчик открытия папки в меню бота
     @dp.callback_query(F.data.startswith("d:"))
     async def open_dir(callback: CallbackQuery):
         """Команда обработчик открытия папки"""
@@ -355,13 +351,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         if path is None:
             await callback.answer("Кнопка устарела", show_alert=True)
             return
-        # делаем обращение к пути снова свежим
+
         Settings.CALLBACK_MAP.move_to_end(pid)
         path_list = path.split("/") if path else []
         tree = await get_tree_cached()
-        # строим дерево папок относительно текущей папки
+
         menu = build_menu_from_tree(tree, path_list)
-        title = "📁 /".join(path_list) or TITLE_START
+        title = "📁 /".join(path_list) or get_start_message()
         await callback.message.edit_text(
             title,
             reply_markup=menu
@@ -379,7 +375,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         if not path:
             await callback.answer("Файл не найден", show_alert=True)
             return
-        # делаем обращение к пути снова свежим
+
         Settings.CALLBACK_MAP.move_to_end(pid)
         doc_id = await get_document_id(path)
         if not doc_id:
@@ -388,7 +384,6 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             url = f"{Settings.KB_MANAGER_URL}/api/documents/download/{doc_id}"
         filename = path.split("/")[-1]
 
-        # скачиваем файл
         tmp_name = None
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
@@ -401,15 +396,35 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     tmp.write(await resp.read())
                     tmp.close()
 
-                    # отправляем
                     await callback.message.answer_document(
                         document=FSInputFile(tmp_name, filename=filename),
-                        # caption=filename
                     )
                 finally:
                     if tmp_name and os.path.exists(tmp_name):
                         os.remove(tmp_name)
- 
+
+async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str) -> None:
+    """
+    Загружает профиль пользователя из БД и подготавливает его для передачи в ADK.
+    """
+    user_data = await subscriber_store.get_user_data(user_id)
+    if not user_data:
+        return
+
+    # Лишние персональные данные в ADK не передаем
+    user_data.pop("phone_number", None)
+    
+    # Убеждаемся, что имя не пустое (иначе агент не обратится по имени)
+    if not user_data.get("first_name"):
+        logger.warning(f"first_name пуст для user_id={user_id}")
+    if not user_data.get("last_name"):
+        logger.warning(f"last_name пуст для user_id={user_id}")
+
+    await adk.set_user_state(
+        user_id=str(user_id),
+        session_id=session_id,
+        user_data=user_data,
+    )
 async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
     """
     Проверяет регистрацию и наличие телефона.
@@ -419,7 +434,7 @@ async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
     # 1. Разруливаем фоллбеки ОДИН раз для всех
     user_id = int(m.from_user.id)
     username = m.from_user.username or "unknown"
-    first_name = m.from_user.first_name
+    first_name = m.from_user.first_name or "Гость"
     last_name = m.from_user.last_name
     last_seen = datetime.now()
     # проверяем есть ли телефон у пользователя в базе
