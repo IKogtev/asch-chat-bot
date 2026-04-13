@@ -14,7 +14,6 @@ pipeline {
     choice(
       choices: [
         'Qwen/Qwen3-30B-A3B',
-        'Qwen/Qwen3-Embedding-0.6B',
         'openai/gpt-oss-20b',
       ],
       name: 'LLM_API_MODEL',
@@ -46,7 +45,7 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.1-amd64
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.2-amd64
                   command:
                     - cat
                   tty: true

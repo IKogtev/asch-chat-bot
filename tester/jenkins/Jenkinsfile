@@ -50,8 +50,8 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.2-amd64
-                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:865d3dca39fb8a8cc3006871feddab35723952a8ade9b1dd7055581df1cdc6b1
+                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.2-amd64
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:865d3dca39fb8a8cc3006871feddab35723952a8ade9b1dd7055581df1cdc6b1
                   command:
                     - cat
                   tty: true
