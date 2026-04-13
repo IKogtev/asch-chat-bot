@@ -60,7 +60,10 @@ def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
                         f"✅ ADK reachable (non-2xx but non-5xx): GET {url} -> {r.status_code}"
                     )
                 return True
-        except Exception:
+        except requests.RequestException as e:
+            logger.debug(
+                f"ADK health check: GET {url} failed ({type(e).__name__}: {e}), trying next URL"
+            )
             continue
     logger.error(f"❌ ADK not reachable via {candidates}")
     return False
@@ -88,8 +91,16 @@ class AdkApiClient:
                 detail = str(data.get("detail") or "").lower()
                 if "exists" in detail or "already" in detail:
                     return
-            except Exception:
-                pass
+            except json.JSONDecodeError as e:
+                logger.debug(
+                    f"ensure_session: {r.status_code} body is not JSON ({e}); "
+                    "will treat as failure if not success"
+                )
+            except (TypeError, ValueError) as e:
+                logger.debug(
+                    f"ensure_session: {r.status_code} JSON parsed but unexpected shape "
+                    f"({type(e).__name__}: {e})"
+                )
         raise RuntimeError(f"ADK ensure_session failed: {r.status_code} {r.text[:300]}")
 
     @staticmethod
@@ -103,7 +114,10 @@ class AdkApiClient:
             return s
         try:
             obj, end = json.JSONDecoder().raw_decode(s)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.debug(
+                f"_strip_leading_json_blob: prefix is not valid JSON ({e}), leaving text unchanged"
+            )
             return s
         tail = s[end:].strip()
         if tail:
@@ -129,7 +143,13 @@ class AdkApiClient:
             events = r.json()
             if not isinstance(events, list):
                 events = [{"text": str(events)}]
-        except Exception:
+        except json.JSONDecodeError as e:
+            logger.debug(f"ADK /run: response body is not JSON ({e}), using raw text")
+            return r.text.strip(), []
+        except (TypeError, ValueError) as e:
+            logger.debug(
+                f"ADK /run: JSON decoded but invalid structure ({type(e).__name__}: {e}), using raw text"
+            )
             return r.text.strip(), []
         answer = self._extract_model_text(events)
         return (answer or "Агент не вернул ответ"), events
@@ -234,8 +254,12 @@ def interrogate_agent(
         try:
             answer, _events = client.run(user_id=user_id, session_id=session_id, text=question)
             tc_df.loc[i, "answer"] = answer
+        except (RuntimeError, requests.RequestException, OSError) as e:
+            tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
+            tc_df.loc[i, "answer"] = ""
         except Exception as e:
-            tc_df.loc[i, "adk_error"] = str(e)
+            logger.exception(f"Неожиданная ошибка при запросе к ADK (вопрос {q_num})")
+            tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
             tc_df.loc[i, "answer"] = ""
         finally:
             tc_df.loc[i, "response_time"] = round(time.time() - start_time, 2)
@@ -252,7 +276,14 @@ def interrogate_agent(
         else:
             tc_df.to_csv(answers_file_path, index=False, encoding="utf-8-sig")
     except Exception as e:
-        logger.warning(f"Не удалось сохранить parquet/csv ({e}). Сохраняем CSV рядом.")
+        if isinstance(e, (OSError, PermissionError, ImportError, ValueError)):
+            logger.warning(
+                f"Не удалось сохранить parquet/csv ({type(e).__name__}: {e}). Сохраняем CSV рядом."
+            )
+        else:
+            logger.warning(
+                f"Неожиданная ошибка сохранения ответов ({type(e).__name__}: {e}). Сохраняем CSV рядом."
+            )
         fallback = answers_file_path.with_suffix(".csv")
         tc_df.to_csv(fallback, index=False, encoding="utf-8-sig")
         answers_file_path = fallback
@@ -266,7 +297,8 @@ def _iter_rows(df, desc: str):
         from tqdm import tqdm  # type: ignore
 
         return tqdm(df.iterrows(), total=df.shape[0], desc=desc)
-    except Exception:
+    except ImportError as e:
+        logger.debug(f"tqdm не установлен, прогресс-бар отключен: {e}")
         return df.iterrows()
 
 
@@ -425,7 +457,11 @@ def evaluate_answer(
             json_str = json_match.group(0)
             try:
                 result = json.loads(json_str)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.debug(
+                    f"evaluate_answer: matched segment is not valid JSON "
+                    f"(попытка {attempt + 1}/{max_retries}): {e}"
+                )
                 time.sleep(1)
                 continue
 
@@ -445,7 +481,9 @@ def evaluate_answer(
                     "LLM_API_KEY / LLM_API_URL / LLM_API_MODEL."
                 )
                 return create_default_evaluation("LLM 401 Unauthorized: отсутствует или неверный ключ/endpoint")
-            logging.warning(f"Ошибка запроса к LLM (попытка {attempt+1}/{max_retries}): {msg}")
+            logging.warning(
+                f"Ошибка запроса к LLM ({type(e).__name__}, попытка {attempt + 1}/{max_retries}): {msg}"
+            )
             time.sleep(2)
             continue
 
@@ -458,7 +496,8 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
         from tqdm import tqdm  # type: ignore
 
         iterator = tqdm(tc_df.iterrows(), total=tc_df.shape[0], desc="Оценка ответов")
-    except Exception:
+    except ImportError as e:
+        logger.debug(f"tqdm не установлен, прогресс-бар оценки отключен: {e}")
         iterator = tc_df.iterrows()
 
     for i, row in iterator:
@@ -502,7 +541,7 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
             tc_df.loc[i, "overall_score"] = evaluation.get("overall_score", 0)
             tc_df.loc[i, "explanation"] = evaluation.get("explanation", "")
         except Exception as e:
-            logger.error(f"❌ Ошибка при оценке вопроса {q_num}: {e}")
+            logger.error(f"❌ Ошибка при оценке вопроса {q_num} ({type(e).__name__}): {e}")
             tc_df.loc[i, "accuracy"] = 0
             tc_df.loc[i, "completeness"] = 0
             tc_df.loc[i, "relevance"] = 0
@@ -592,11 +631,32 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
         image_path = output_dir / f"REPORT_{base_filename}_{timestamp}.png"
         try:
             fig.write_image(str(image_path), scale=0.7)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"Не удалось сохранить PNG отчёта ({type(e).__name__}: {e}), пробуем HTML"
+            )
             html_path = output_dir / f"REPORT_{base_filename}_{timestamp}.html"
-            fig.write_html(str(html_path), include_plotlyjs="cdn", full_html=True)
-            image_path = html_path
-    except Exception:
+            try:
+                fig.write_html(str(html_path), include_plotlyjs="cdn", full_html=True)
+                image_path = html_path
+            except (OSError, PermissionError, ValueError) as e2:
+                logger.warning(
+                    f"Не удалось сохранить HTML визуализации ({type(e2).__name__}: {e2})"
+                )
+                image_path = None
+            except Exception as e2:
+                logger.warning(
+                    f"Неожиданная ошибка сохранения HTML ({type(e2).__name__}: {e2})"
+                )
+                image_path = None
+    except ImportError as e:
+        logger.info(f"Plotly не установлен, график пропущен: {e}")
+        image_path = None
+    except (ValueError, KeyError, TypeError) as e:
+        logger.warning(f"Некорректные данные для графика ({type(e).__name__}: {e})")
+        image_path = None
+    except Exception as e:
+        logger.warning(f"Не удалось построить визуализацию ({type(e).__name__}: {e})")
         image_path = None
 
     return report_path, image_path
