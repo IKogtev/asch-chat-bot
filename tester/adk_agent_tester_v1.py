@@ -103,31 +103,6 @@ class AdkApiClient:
                 )
         raise RuntimeError(f"ADK ensure_session failed: {r.status_code} {r.text[:300]}")
 
-    @staticmethod
-    def _strip_leading_json_blob(text: str) -> str:
-        """
-        ADK /run may concatenate leaf JSON (e.g. owasp_result) with the final user-facing line.
-        RootAgent only surfaces plain text (format_reject_answer / _root_final_text); mirror that here.
-        """
-        s = (text or "").strip()
-        if not s.startswith("{"):
-            return s
-        try:
-            obj, end = json.JSONDecoder().raw_decode(s)
-        except json.JSONDecodeError as e:
-            logger.debug(
-                f"_strip_leading_json_blob: prefix is not valid JSON ({e}), leaving text unchanged"
-            )
-            return s
-        tail = s[end:].strip()
-        if tail:
-            return tail
-        if isinstance(obj, dict):
-            um = obj.get("user_message")
-            if isinstance(um, str) and um.strip():
-                return um.strip()
-        return s
-
     def run(self, user_id: str, session_id: str, text: str) -> Tuple[str, List[Dict[str, Any]]]:
         url = f"{self.base_url}/run"
         payload = {
@@ -197,8 +172,7 @@ class AdkApiClient:
             if isinstance(event.get("text"), str):
                 out.append(event["text"])
 
-        joined = "\n".join(s.strip() for s in out if s and s.strip()).strip()
-        return AdkApiClient._strip_leading_json_blob(joined)
+        return "\n".join(s.strip() for s in out if s and s.strip()).strip()
 
 
 def load_test_cases(file_name: Path):
