@@ -14,7 +14,6 @@ pipeline {
     choice(
       choices: [
         'Qwen/Qwen3-30B-A3B',
-        'Qwen/Qwen3-Embedding-0.6B',
         'openai/gpt-oss-20b',
       ],
       name: 'LLM_API_MODEL',
@@ -51,8 +50,8 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.1-amd64
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:18c0278b33431417402372c0dd27a9d2377e80db10f4477a361cfdd83f99b68e
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.2-amd64
+                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:865d3dca39fb8a8cc3006871feddab35723952a8ade9b1dd7055581df1cdc6b1
                   command:
                     - cat
                   tty: true
@@ -76,7 +75,7 @@ pipeline {
 
       steps {
         withCredentials([
-          string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
+          string(credentialsId: 'LLM_API_KEY_GOOGLE_ADK_AGENT', variable: 'LLM_API_KEY')
         ]) {
           container('adk-agent-tester') {
             sh '''
