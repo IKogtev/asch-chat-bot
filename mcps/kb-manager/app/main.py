@@ -17,14 +17,27 @@ from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+# Auth dependencies
+from jose import JWTError, jwt
+from fastapi import Depends
+import asyncpg
+from passlib.context import CryptContext
 
 load_dotenv()
+
 # Используем современный Lifespan вместо @app.on_event("startup")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Qdrant collection on startup"""
     global http_client
+    app.state.db_pool = await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=5,
+        max_size=20
+    )
+    # инициализация базы данных для пользователей UI
+    await init_db(app.state.db_pool)
     # создаем глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
     http_client = httpx.AsyncClient(timeout=60)
     # создаем коллекцию в qdrant 
@@ -43,6 +56,7 @@ async def lifespan(app: FastAPI):
     sync_task.cancel()
     scheduler_task.cancel()
     await http_client.aclose()
+    await app.state.db_pool.close()
 
 app = FastAPI(
     title="UI Manager for Anastasia",
@@ -58,9 +72,84 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600,
 )
+# обертка для проверки разрешений по ролям
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    public_paths = [
+        "/api/login",
+        "/api/refresh",
+        "/static",
+        "/"
+    ]
 
+    path = request.url.path
+
+    # публичные
+    if any(path.startswith(p) for p in public_paths):
+        return await call_next(request)
+
+    access_token = request.cookies.get("access_token")
+    payload = decode_token(access_token) if access_token else None
+    # 1. если access_token валиден
+    if payload and payload.get("type") == "access":
+        role = payload.get("role")
+
+        if not is_allowed(path, role):
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+
+        return await call_next(request)
+    # 2. если access умер → пробуем refresh
+    refresh_token = request.cookies.get("refresh_token")
+    if refresh_token:
+        refresh_payload = decode_token(refresh_token)
+
+        if refresh_payload and refresh_payload.get("type") == "refresh":
+            username = refresh_payload.get("sub")
+
+            # берём роль из БД
+            user = await get_user_from_db(username, request.app.state.db_pool)
+
+            if user:
+                new_access = create_access_token({
+                    "sub": username,
+                    "role": user["role"]
+                })
+                response = await call_next(request)
+
+                # обновляем access_token
+                response.set_cookie(
+                    key="access_token",
+                    value=new_access,
+                    httponly=True,
+                    samesite="lax"
+                )
+
+                return response
+        
+    return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+# AUTH config
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
+ALGORITHM = "HS256"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_HOURS = 5
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# доступные эндпоинты для ролей
+ROLE_PERMISSIONS = {
+    "admin": ["*"],
+
+    "manager": [
+        "/api/documents",
+        "/api/search",
+        "/api/knowledge-bases",
+        "/api/filesystem",
+        "/api/news",
+        "/api/user-groups"
+    ]
+}
+# Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
-
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
@@ -404,7 +493,210 @@ async def filesystem_sync(
         return {"status": "error", "message": str(e)}
 
     return {"status": "sync_completed"}
+##################################
+# DATABASE & AUTH utils
+##################################
+def get_users_from_env() -> list[tuple[str, str, str]]:
+    """
+    Парсит переменную окружения UI_USERS_DATA.
+    Возвращает список кортежей (username, password, role).
+    """
+    raw_data = os.getenv("UI_USERS_DATA", "")
+    
+    if not raw_data:
+        logger.warning("UI_USERS_DATA is empty. Using default admin.")
+        return [('admin', 'admin123', 'admin')]
 
+    users = []
+    # Разбиваем строку по запятой на отдельных юзеров
+    for entry in raw_data.split(","):
+        parts = entry.strip().split(":")
+        
+        if len(parts) == 3:
+            users.append(tuple(parts))
+        else:
+            logger.error(f"Invalid user format in ENV: {entry}. Expected user:pass:role")
+            
+    return users
+
+async def get_db_pool():
+    """Создает пул соединений DB."""
+    return await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=5,
+        max_size=20,
+        command_timeout=60
+    )
+
+def hash_password(password: str) -> str:
+    """Хеширование пароля"""
+    return pwd_context.hash(password)
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Проверка пароля с нормализацией"""
+    return pwd_context.verify(password, hashed)
+
+async def init_db(pool: asyncpg.Pool):
+    """Инициализация базы данных"""
+    logger.info("Initializing database...")
+    # Получаем список пользователей динамически
+    users_to_init = get_users_from_env()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ui_users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            );
+        """)
+        for username, password, role in users_to_init:
+            hashed = hash_password(password)
+            await conn.execute("""
+                INSERT INTO ui_users (username, password, role)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (username) DO NOTHING;
+            """, username, hashed, role)
+            
+    logger.info(f"Database initialized with {len(users_to_init)} users.")
+
+async def get_user_from_db(username: str, pool: asyncpg.Pool):
+    """Получение пользователя из базы данных по имени"""
+    async with pool.acquire() as conn:
+
+        user = await conn.fetchrow(
+            "SELECT username, password, role FROM ui_users WHERE username=$1",
+            username
+        )
+
+    return dict(user) if user else None
+
+def _generate_jwt(data: dict, expires_delta: timedelta, token_type: str) -> str:
+    """Внутренняя база для создания любых токенов"""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + expires_delta
+    to_encode.update({"exp": expire, "type": token_type})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_access_token(data: dict):
+    """Создание JWT access токена с типом и временем жизни"""
+    return _generate_jwt(data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), "access")
+
+def create_refresh_token(data: dict):
+    """Создание JWT refresh токена с типом и временем жизни"""
+    return _generate_jwt(data, timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS), "refresh")
+
+def decode_token(token: str):
+    """Декодирование JWT токена и проверка его типа"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+def get_current_user(request: Request):
+    """Получение текущего пользователя из access токена в cookies"""
+    token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload = decode_token(token)
+
+    if not payload or payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    return {
+        "username": payload.get("sub"),
+        "role": payload.get("role")
+    }
+
+def is_allowed(path: str, role: str) -> bool:
+    """Проверка разрешений по роли для доступа к пути"""
+    allowed_paths = ROLE_PERMISSIONS.get(role, [])
+
+    # admin — всё можно
+    if "*" in allowed_paths:
+        return True
+
+    # проверяем prefix match
+    return any(path.startswith(p) for p in allowed_paths)
+
+##################################
+# Авторизация и главная
+##################################
+
+@app.post("/api/login")
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    """Эндпоинт для логина. Принимает username и password, проверяет их и возвращает JWT токены в cookies"""
+    user = await get_user_from_db(username, request.app.state.db_pool)
+
+    if not user or not verify_password(password, user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    access_token = create_access_token({
+        "sub": username,
+        "role": user["role"]
+    })
+
+    refresh_token = create_refresh_token({
+        "sub": username
+    })
+
+    response = JSONResponse({"success": True})
+    for k, v in [("access_token", access_token), ("refresh_token", refresh_token)]:
+        response.set_cookie(key=k, value=v, httponly=True, samesite="lax")
+
+    return response
+
+@app.post("/api/refresh")
+async def refresh(request: Request):
+    """Эндпоинт для обновления access токена с помощью refresh токена"""
+    refresh_token = request.cookies.get("refresh_token")
+
+    if not refresh_token:
+        raise HTTPException(status_code=401)
+
+    payload = decode_token(refresh_token)
+
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(status_code=401)
+
+    username = payload.get("sub")
+
+    user = await get_user_from_db(username, request.app.state.db_pool)
+
+    if not user:
+        raise HTTPException(status_code=401)
+
+    new_access = create_access_token({
+        "sub": username,
+        "role": user["role"]
+    })
+
+    response = JSONResponse({"success": True})
+
+    response.set_cookie(
+        key="access_token",
+        value=new_access, 
+        httponly=True,
+        samesite="lax"
+    )
+    return response
+
+@app.post("/api/logout")
+async def logout():
+    """Эндпоинт для логаута. Удаляет токены из cookies"""
+    response = JSONResponse({"success": True})
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
+
+    return response
+@app.get("/api/me")
+async def me(user=Depends(get_current_user)):
+    """Эндпоинт для получения информации о текущем пользователе"""
+    return user
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -991,31 +1283,31 @@ async def send_news(
 ###############################
 
 @app.get("/api/prompts/list")
-async def list_prompts():
+async def list_prompts(agent: str):
     """Получить список всех файлов промптов"""
-    try:
+    try: 
+        agent_path = PROMPTS_STORAGE_ROOT/agent
+        if not agent_path.exists():
+            raise HTTPException(status_code=404, detail="Agent not found")
         prompts = []
-        if PROMPTS_STORAGE_ROOT.exists():
-            for file in PROMPTS_STORAGE_ROOT.iterdir():
-                if file.is_file() and file.suffix == ".md":
-                    stat = file.stat()
-                    prompts.append({
-                        "name": file.name,
-                        "size": stat.st_size,
-                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                        "is_current": file.name == "agent_prompt.md",
-                        "is_backup": file.name.startswith("agent_prompt_backup_")
-                    })
-        
-        # Сортировка: текущий первый, потом бэкапы, потом остальные
+        for file in agent_path.iterdir():
+            if file.is_file() and file.suffix == ".md":
+                stat = file.stat()
+                prompts.append({
+                    "name": file.name,
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "is_current": file.name == f"{agent}_agent_prompt.md",
+                    "is_backup": file.name.startswith(f"{agent}_agent_prompt_backup_")
+                })
         prompts.sort(key=lambda x: (
-            not x["is_current"],  # текущий первым
-            not x["is_backup"],   # потом бэкапы
-            x["modified"]         # по дате
+            not x["is_current"],
+            not x["is_backup"],
+            x["modified"]
         ))
-        
+
         return {
-            "current": "agent_prompt.md",
+            "current": f"{agent}_agent_prompt.md",
             "files": prompts
         }
     except Exception as e:
@@ -1023,10 +1315,10 @@ async def list_prompts():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/prompts/current")
-async def get_current_prompt():
-    """Получить текущий промпт (agent_prompt.md)"""
+async def get_current_prompt(agent: str):
+    """Получить текущий промпт (f'{agent}_agent_prompt.md')"""
     try:
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
         
@@ -1035,7 +1327,7 @@ async def get_current_prompt():
         
         stat = prompt_file.stat()
         return {
-            "name": "agent_prompt.md",
+            "name": f"{agent}_agent_prompt.md",
             "content": content,
             "size": stat.st_size,
             "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
@@ -1045,14 +1337,14 @@ async def get_current_prompt():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/prompts/file/{filename}")
-async def get_prompt_file(filename: str):
+async def get_prompt_file(filename: str, agent: str):
     """Получить содержимое конкретного файла промпта"""
     try:
         # Защита от path traversal
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / filename
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
         
@@ -1071,16 +1363,16 @@ async def get_prompt_file(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/prompts/backup")
-async def create_prompt_backup():
+async def create_prompt_backup(agent: str):
     """Создать бэкап текущего промпта"""
     try:
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT/ agent / f"{agent}_agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"agent_prompt_backup_{timestamp}.md"
-        backup_file = PROMPTS_STORAGE_ROOT / backup_name
+        backup_name = f"{agent}_agent_prompt_backup_{timestamp}.md"
+        backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
         
         shutil.copy2(prompt_file, backup_file)
         logger.info(f"Created prompt backup: {backup_name}")
@@ -1099,16 +1391,17 @@ async def save_prompt(data: dict):
     """Сохранить новый промпт с созданием бэкапа"""
     try:
         content = data.get("content")
+        agent = data.get("agent")
         if not content:
             raise HTTPException(status_code=400, detail="Content is required")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         
         # 1. Создать бэкап если файл существует
         if prompt_file.exists():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"agent_prompt_backup_{timestamp}.md"
-            backup_file = PROMPTS_STORAGE_ROOT / backup_name
+            backup_name = f"{agent}_agent_prompt_backup_{timestamp}.md"
+            backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
             shutil.copy2(prompt_file, backup_file)
             logger.info(f"Created backup before save: {backup_name}")
         
@@ -1128,17 +1421,17 @@ async def save_prompt(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/prompts/restore/{filename}")
-async def restore_prompt(filename: str):
+async def restore_prompt(filename: str, agent: str):
     """Восстановить промпт из бэкапа"""
     try:
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        backup_file = PROMPTS_STORAGE_ROOT / filename
+        backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="Backup file not found")
         
-        prompt_file = PROMPTS_STORAGE_ROOT / "agent_prompt.md"
+        prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         shutil.copy2(backup_file, prompt_file)
         
         logger.info(f"Restored prompt from backup: {filename}")
@@ -1153,16 +1446,16 @@ async def restore_prompt(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/prompts/file/{filename}")
-async def delete_prompt_file(filename: str):
+async def delete_prompt_file(filename: str, agent: str):
     """Удалить файл бэкапа"""
     try:
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
         
-        if filename == "agent_prompt.md":
+        if filename == f"{agent}_agent_prompt.md":
             raise HTTPException(status_code=400, detail="Cannot delete current prompt")
         
-        backup_file = PROMPTS_STORAGE_ROOT / filename
+        backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
         
@@ -1175,6 +1468,18 @@ async def delete_prompt_file(filename: str):
         }
     except Exception as e:
         logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/prompts/agents")
+async def get_agents():
+    """Получаем агентов какие у нас есть"""
+    try:
+        agents = [
+            f.name for f in PROMPTS_STORAGE_ROOT.iterdir()
+            if f.is_dir()
+        ]
+        return agents
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 ############################

@@ -1,3 +1,4 @@
 google-adk
 litellm==1.81.15
 python-dotenv==1.0.1
+asyncpg==0.31.0

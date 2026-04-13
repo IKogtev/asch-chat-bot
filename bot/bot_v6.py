@@ -42,7 +42,7 @@ class BotHolder:
         self.instance: Optional[Bot] = None
 #####################################
 # Главная функция и обработчики бота
-#####################################        
+#####################################
 async def main() -> None:
     """Главная функция бота"""
     logger.info("=" * 60)
@@ -53,19 +53,19 @@ async def main() -> None:
     if not tg_token:
         logger.error("TELEGRAM_BOT_TOKEN отсутствует в .env")
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
-    
+
     dsn = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_DSN") or "").strip()
     if not dsn:
         logger.error("DATABASE_URL отсутствует в .env")
         raise RuntimeError("DATABASE_URL (or POSTGRES_DSN) is missing in .env")
-    
+
     adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
-    
+
     # Конфигурация для DocumentHandler
     kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
-    
+
     logger.info(f"Конфигурация:")
     logger.info(f"  ADK Base: {adk_base}")
     logger.info(f"  ADK App: {adk_app}")
@@ -76,23 +76,20 @@ async def main() -> None:
     proxy_url = os.getenv("TELEGRAM_PROXY")
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
-    await store.ensure_schema()
     # инициализируем хранилище пользователей
     subscriber_store = SubscriberStore(store.pool)
-    await subscriber_store.ensure_schema()
     # инициализируем хранилище новостей
     news_store = NewsStore(store.pool)
-    await news_store.ensure_schema()
-    
+
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
     broadcast_app = create_broadcast_app(
         news_store=news_store,
         subscriber_store=subscriber_store,
         load_bot_start_message=load_bot_start_message,
-        TITLE_START=TITLE_START
+        get_start_message=get_start_message
     )
-    
+
     # Инициализация DocumentHandler
     doc_handler = DocumentHandler(
         kb_manager_url=Settings.KB_MANAGER_URL,
@@ -108,9 +105,9 @@ async def main() -> None:
         subscriber_store=subscriber_store,
         adk=adk,
         doc_handler=doc_handler,
-        TITLE_START=TITLE_START
+        get_start_message=get_start_message
     )
-                
+
     logger.info("Все компоненты инициализированы")
     bot_holder = BotHolder()
     http_task = asyncio.create_task(run_http_server(broadcast_app))
@@ -133,10 +130,10 @@ async def main() -> None:
 
                 me = await bot_instance.get_me()
                 logger.info(f"✅ Успешное подключение к Telegram API. Бот: @{me.username}")
-                
+
                 # Инициализация компонентов
                 bot_holder.instance = bot_instance
-                
+
                 logger.info("✓ Диспетчер инициализирован")
 
                 logger.info(f"🚀 Бот запущен и готов к работе (версия {Settings.PLATFORM_VERSION})")
@@ -176,7 +173,7 @@ async def main() -> None:
                         await bot_instance.session.close()
                     except Exception as e:
                         logger.warning(f"Ошибка при закрытии сессии бота: {e}")
-        
+
     except KeyboardInterrupt:
         logger.info("Получен сигнал прерывания (Ctrl+C)")
 
@@ -225,6 +222,10 @@ def load_bot_start_message():
 # загрузка стартового сообщения
 load_bot_start_message()
 
+def get_start_message():
+    """Получение стартового сообщения"""
+    return TITLE_START
+
 # Запуск HTTP сервера в отдельной задаче
 async def run_http_server(app):
     """Запуск HTTP сервера"""
@@ -239,7 +240,7 @@ async def run_http_server(app):
         await server.serve()
     except asyncio.CancelledError:
         logger.info("HTTP сервер остановлен")
-        
+
 
 if __name__ == "__main__":
     try:

@@ -16,3 +16,7 @@ pdfplumber
 python-docx
 watchdog
 aiofiles
+python-jose 
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+asyncpg==0.31.0
