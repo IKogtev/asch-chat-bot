@@ -44,8 +44,9 @@ TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
 
 def strip_adk_leaf_json_stack(text: str) -> str:
     """
-    /run often concatenates leaf JSON (owasp, dispatcher, kb_answer) before the user-visible line.
-    Keep only the final human text (or user_message / message from the last lone JSON object).
+    Fallback when /run events do not include a final root_agent turn: legacy concat of all parts
+    often chains leaf JSON (owasp, dispatcher, kb_answer) before the user-visible line.
+    Prefer bot/services/database.py-style extraction (final root_agent only) first.
     """
     s = (text or "").strip().lstrip("\ufeff")
     if not s:
@@ -194,7 +195,9 @@ class AdkApiClient:
                 )
         raise RuntimeError(f"ADK ensure_session failed: {r.status_code} {r.text[:300]}")
 
-    def run(self, user_id: str, session_id: str, text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def run(
+        self, user_id: str, session_id: str, text: str
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
         url = f"{self.base_url}/run"
         payload: Dict[str, Any] = {
             "app_name": self.app_name,
@@ -213,17 +216,58 @@ class AdkApiClient:
                 events = [{"text": str(events)}]
         except json.JSONDecodeError as e:
             logger.debug(f"ADK /run: response body is not JSON ({e}), using raw text")
-            return r.text.strip(), []
+            t = r.text.strip()
+            return t, t, []
         except (TypeError, ValueError) as e:
             logger.debug(
                 f"ADK /run: JSON decoded but invalid structure ({type(e).__name__}: {e}), using raw text"
             )
-            return r.text.strip(), []
-        answer = self._extract_model_text(events)
-        return (answer or "Агент не вернул ответ"), events
+            t = r.text.strip()
+            return t, t, []
+        clean, raw = AdkApiClient._compose_display_and_raw(events)
+        text = clean or "Агент не вернул ответ"
+        return text, raw, events
 
     @staticmethod
     def _extract_model_text(events: list) -> str:
+        """Final user-visible text from root_agent only (same as bot.services.database.AdkApiClient._extract_model_text)."""
+        if not events:
+            return ""
+
+        for event in reversed(events):
+            if not isinstance(event, dict):
+                continue
+
+            author = event.get("author")
+            actions = event.get("actions") or {}
+            is_final = bool(actions.get("end_of_agent") or actions.get("endOfAgent"))
+
+            if author != "root_agent" or not is_final:
+                continue
+
+            content = event.get("content")
+            if not isinstance(content, dict):
+                continue
+
+            parts = content.get("parts") or []
+            out: list[str] = []
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("thought") is True:
+                    continue
+                t = part.get("text")
+                if t and str(t).strip():
+                    out.append(str(t).strip())
+
+            if out:
+                return "\n".join(out).strip()
+
+        return ""
+
+    @staticmethod
+    def _concat_all_model_text_parts_for_diagnostics(events: list) -> str:
+        """Join every non-thought text part from all events (full trace for answer_raw / fallback)."""
         if not events:
             return ""
 
@@ -232,7 +276,6 @@ class AdkApiClient:
             if not isinstance(event, dict):
                 continue
 
-            # model_turn.parts
             if "model_turn" in event and isinstance(event["model_turn"], dict):
                 parts = event["model_turn"].get("parts", []) or []
                 for part in parts:
@@ -244,7 +287,6 @@ class AdkApiClient:
                     if txt:
                         out.append(txt)
 
-            # content.parts
             content = event.get("content")
             if isinstance(content, dict):
                 if isinstance(content.get("text"), str):
@@ -261,11 +303,19 @@ class AdkApiClient:
             elif isinstance(content, str) and content.strip():
                 out.append(content)
 
-            # fallback
             if isinstance(event.get("text"), str):
                 out.append(event["text"])
 
         return "\n".join(s.strip() for s in out if s and s.strip()).strip()
+
+    @staticmethod
+    def _compose_display_and_raw(events: list) -> Tuple[str, str]:
+        raw = AdkApiClient._concat_all_model_text_parts_for_diagnostics(events)
+        root = AdkApiClient._extract_model_text(events)
+        if root:
+            return root, raw
+        cleaned = strip_adk_leaf_json_stack(raw)
+        return cleaned, raw
 
 
 def load_test_cases(file_name: Path):
@@ -280,7 +330,7 @@ def initialize_session(client: AdkApiClient, user_id: str, session_id: str) -> s
     logger.info("🚀 Инициализация сессии с ADK агентом...")
     client.ensure_session(user_id=user_id, session_id=session_id)
     init_q = "Привет! Ты готов отвечать на вопросы ?"
-    ans, _events = client.run(user_id=user_id, session_id=session_id, text=init_q)
+    ans, _raw, _events = client.run(user_id=user_id, session_id=session_id, text=init_q)
     logger.info(f"💬 Ответ на инициализацию: {ans[:120]}..." if len(ans) > 120 else f"💬 Ответ: {ans}")
     return session_id
 
@@ -327,9 +377,11 @@ def interrogate_agent(
         logger.info(f"\nВопрос {q_num}: {question}")
         start_time = time.time()
         try:
-            answer_raw, _events = client.run(user_id=user_id, session_id=session_id, text=question)
+            answer, answer_raw, _events = client.run(
+                user_id=user_id, session_id=session_id, text=question
+            )
             tc_df.loc[i, "answer_raw"] = answer_raw
-            tc_df.loc[i, "answer"] = strip_adk_leaf_json_stack(answer_raw)
+            tc_df.loc[i, "answer"] = answer
         except (RuntimeError, requests.RequestException, OSError) as e:
             tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
             tc_df.loc[i, "answer"] = ""
