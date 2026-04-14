@@ -51,7 +51,7 @@ pipeline {
               containers:
                 - name: adk-agent-tester
                   # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.2-amd64
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:42b47c476f5a0aafa930f1567e1bd316561ff386dea7b77c07359240124a94c7
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:915698cf7520a3f1f658ac7442c232a62855b46cf0dad86950cbb4e7d040596a
                   command:
                     - cat
                   tty: true
