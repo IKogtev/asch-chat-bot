@@ -1815,7 +1815,6 @@ async function openAgent(agent) {
             element: document.getElementById("prompt-editor"),
             spellChecker: false,
             status: false,
-            minHeight: "400px",
         });
     }
     // открываем модалку
