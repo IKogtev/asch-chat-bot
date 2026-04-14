@@ -42,6 +42,56 @@ TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "NST-cons use cases pack.xlsx
 TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
 
 
+def strip_adk_leaf_json_stack(text: str) -> str:
+    """
+    /run often concatenates leaf JSON (owasp, dispatcher, kb_answer) before the user-visible line.
+    Keep only the final human text (or user_message / message from the last lone JSON object).
+    """
+    s = (text or "").strip().lstrip("\ufeff")
+    if not s:
+        return s
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        try:
+            inner = json.loads(s)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(inner, str):
+                s = inner.strip()
+    if s.startswith('"'):
+        i = 1
+        while i < len(s) and s[i] in " \n\r\t":
+            i += 1
+        if i < len(s) and s[i] == "{":
+            s = s[i:]
+
+    for _ in range(24):
+        head = s.lstrip()
+        if not head.startswith("{"):
+            s = head
+            break
+        try:
+            obj, end = json.JSONDecoder().raw_decode(head)
+        except json.JSONDecodeError:
+            s = head
+            break
+        tail = head[end:].strip()
+        if tail:
+            s = tail
+            continue
+        if isinstance(obj, dict):
+            um = obj.get("user_message")
+            if isinstance(um, str) and um.strip():
+                s = um.strip()
+                break
+            msg = obj.get("message")
+            if isinstance(msg, str) and msg.strip():
+                s = msg.strip()
+                break
+        break
+    return s.strip()
+
+
 def build_adk_profile_state_delta(
     *,
     first_name: Optional[str] = None,
@@ -248,14 +298,22 @@ def interrogate_agent(
         if answers_file_path.exists():
             logger.info(f"Загружаем данные из файла: {answers_file_path}")
             if answers_file_path.suffix.lower() == ".parquet":
-                return pd.read_parquet(answers_file_path)
-            if answers_file_path.suffix.lower() == ".csv":
-                return pd.read_csv(answers_file_path)
+                df = pd.read_parquet(answers_file_path)
+            elif answers_file_path.suffix.lower() == ".csv":
+                df = pd.read_csv(answers_file_path)
+            else:
+                raise RuntimeError(f"Неподдерживаемый формат ответов: {answers_file_path}")
+            if "answer_raw" not in df.columns:
+                df = df.copy()
+                df["answer_raw"] = df["answer"].fillna("").astype(str)
+                df["answer"] = df["answer_raw"].map(strip_adk_leaf_json_stack)
+            return df
         raise RuntimeError(f"Файл с ответами не найден: {answers_file_path}")
 
     logger.info(f"Задаем вопросы. Всего вопросов в списке тестирования: {len(tc_df)}")
 
     tc_df["answer"] = ""
+    tc_df["answer_raw"] = ""
     tc_df["response_time"] = 0.0
     tc_df["adk_error"] = ""
 
@@ -269,20 +327,25 @@ def interrogate_agent(
         logger.info(f"\nВопрос {q_num}: {question}")
         start_time = time.time()
         try:
-            answer, _events = client.run(user_id=user_id, session_id=session_id, text=question)
-            tc_df.loc[i, "answer"] = answer
+            answer_raw, _events = client.run(user_id=user_id, session_id=session_id, text=question)
+            tc_df.loc[i, "answer_raw"] = answer_raw
+            tc_df.loc[i, "answer"] = strip_adk_leaf_json_stack(answer_raw)
         except (RuntimeError, requests.RequestException, OSError) as e:
             tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
             tc_df.loc[i, "answer"] = ""
+            tc_df.loc[i, "answer_raw"] = ""
         except Exception as e:
             logger.exception(f"Неожиданная ошибка при запросе к ADK (вопрос {q_num})")
             tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
             tc_df.loc[i, "answer"] = ""
+            tc_df.loc[i, "answer_raw"] = ""
         finally:
             tc_df.loc[i, "response_time"] = round(time.time() - start_time, 2)
 
         logger.info(
-            f"Ответ: {str(tc_df.loc[i, 'answer'])[:120]}..." if len(str(tc_df.loc[i, "answer"])) > 120 else f"Ответ: {tc_df.loc[i, 'answer']}"
+            f"Ответ: {str(tc_df.loc[i, 'answer'])[:120]}..."
+            if len(str(tc_df.loc[i, "answer"])) > 120
+            else f"Ответ: {tc_df.loc[i, 'answer']}"
         )
         logger.info(f"⏱️ Время ответа: {tc_df.loc[i, 'response_time']} сек.")
 
@@ -592,10 +655,15 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     report_path = output_dir / f"REPORT_{base_filename}_{timestamp}.xlsx"
 
+    if "answer_raw" not in tc_df.columns:
+        tc_df = tc_df.copy()
+        tc_df["answer_raw"] = tc_df["answer"]
+
     report_df = tc_df.rename(
         columns={
             "Use case": "Код use case",
             "answer": "Ответ чат-бота",
+            "answer_raw": "Ответ бота (raw)",
             "response_time": "Время ответа (сек)",
             "accuracy": "Точность",
             "completeness": "Полнота",
@@ -616,6 +684,7 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
             "Ожидаемые ответы",
             "Критерий успеха",
             "Ответ чат-бота",
+            "Ответ бота (raw)",
             "Время ответа (сек)",
             "Точность",
             "Полнота",
