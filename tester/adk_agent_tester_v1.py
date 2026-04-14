@@ -42,6 +42,39 @@ TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "NST-cons use cases pack.xlsx
 TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
 
 
+def build_adk_profile_state_delta(
+    *,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    username: Optional[str] = None,
+    region: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Session/user fields sent as stateDelta on each /run (same contract as bot AdkApiClient.set_user_state).
+    Prompts reference e.g. {first_name}; without it ADK raises KeyError for missing context variables.
+    """
+    fn = (first_name if first_name is not None else os.getenv("ADK_TEST_FIRST_NAME", "Jenkins")).strip()
+    ln = (last_name if last_name is not None else os.getenv("ADK_TEST_LAST_NAME", "Smoke")).strip()
+    un = (username if username is not None else os.getenv("ADK_TEST_USERNAME", "jenkins_smoke_test")).strip()
+    rg = (region if region is not None else os.getenv("ADK_TEST_REGION", "ru")).strip()
+
+    out: Dict[str, Any] = {
+        "first_name": fn,
+        "last_name": ln,
+        "full_name": f"{fn} {ln}".strip(),
+        "username": un,
+        "region": rg,
+    }
+    mg = os.getenv("ADK_TEST_MANAGER_GROUP", "").strip().lower()
+    if mg in ("1", "true", "yes"):
+        out["manager_group"] = True
+    cg = os.getenv("ADK_TEST_COACH_GROUP", "").strip().lower()
+    if cg in ("1", "true", "yes"):
+        out["coach_group"] = True
+
+    return {k: v for k, v in out.items() if v not in ("", None)}
+
+
 def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
     """
     Lightweight reachability check for ADK runtime from this machine.
@@ -71,13 +104,21 @@ def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
 
 class AdkApiClient:
     """
-    Minimal sync client matching bot_v6.py semantics (ensure_session + run).
+    Minimal sync client matching bot_v6.py semantics (ensure_session + run + stateDelta profile).
     """
 
-    def __init__(self, base_url: str, app_name: str, timeout_sec: int):
+    def __init__(
+        self,
+        base_url: str,
+        app_name: str,
+        timeout_sec: int,
+        *,
+        profile_state_delta: Optional[Dict[str, Any]] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.app_name = app_name
         self.timeout_sec = timeout_sec
+        self.profile_state_delta: Dict[str, Any] = dict(profile_state_delta or {})
 
     def ensure_session(self, user_id: str, session_id: str) -> None:
         url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}"
@@ -105,12 +146,14 @@ class AdkApiClient:
 
     def run(self, user_id: str, session_id: str, text: str) -> Tuple[str, List[Dict[str, Any]]]:
         url = f"{self.base_url}/run"
-        payload = {
+        payload: Dict[str, Any] = {
             "app_name": self.app_name,
             "user_id": user_id,
             "session_id": session_id,
             "new_message": {"role": "user", "parts": [{"text": text}]},
         }
+        if self.profile_state_delta:
+            payload["stateDelta"] = dict(self.profile_state_delta)
         r = requests.post(url, json=payload, timeout=self.timeout_sec)
         if r.status_code != 200:
             raise RuntimeError(f"ADK run failed: {r.status_code} {r.text[:500]}")
@@ -654,6 +697,11 @@ def main() -> None:
     parser.add_argument("--out", default=str(SCRIPT_DIR))
     parser.add_argument("--user-id", default=os.getenv("ADK_TEST_USER_ID", "tester"))
     parser.add_argument("--session-id", default=os.getenv("ADK_TEST_SESSION_ID", f"test_{int(time.time())}"))
+    parser.add_argument(
+        "--fake-first-name",
+        default=os.getenv("ADK_TEST_FIRST_NAME"),  # None → build_adk_profile_state_delta uses default "Тестер"
+        help="Имя для stateDelta (плейсхолдер {first_name} в промптах ADK). По умолчанию ADK_TEST_FIRST_NAME или Тестер.",
+    )
     args = parser.parse_args()
 
     excel_path = Path(args.excel).expanduser().resolve()
@@ -664,7 +712,16 @@ def main() -> None:
 
     tc_df = load_test_cases(excel_path)
 
-    client = AdkApiClient(ADK_API_BASE, ADK_APP_NAME, timeout_sec=ADK_TIMEOUT_SEC)
+    profile = build_adk_profile_state_delta(
+        first_name=args.fake_first_name.strip() if args.fake_first_name else None
+    )
+    logger.info(f"ADK stateDelta profile keys: {sorted(profile.keys())}")
+    client = AdkApiClient(
+        ADK_API_BASE,
+        ADK_APP_NAME,
+        timeout_sec=ADK_TIMEOUT_SEC,
+        profile_state_delta=profile,
+    )
     session_id = initialize_session(client, user_id=str(args.user_id), session_id=str(args.session_id))
 
     answers_file_path = SCRIPT_DIR / ("answers_" + excel_path.stem + (".parquet" if ASK_QUESTIONS else ".parquet"))
