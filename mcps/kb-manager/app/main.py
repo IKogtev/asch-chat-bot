@@ -519,15 +519,6 @@ def get_users_from_env() -> list[tuple[str, str, str]]:
             
     return users
 
-async def get_db_pool():
-    """Создает пул соединений DB."""
-    return await asyncpg.create_pool(
-        dsn=DATABASE_URL,
-        min_size=5,
-        max_size=20,
-        command_timeout=60
-    )
-
 def hash_password(password: str) -> str:
     """Хеширование пароля"""
     return pwd_context.hash(password)
@@ -626,6 +617,7 @@ def is_allowed(path: str, role: str) -> bool:
 ##################################
 # Авторизация и главная
 ##################################
+
 
 @app.post("/api/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
@@ -1591,6 +1583,42 @@ async def update_subscriber_group(data: dict):
         logger.error(f"Error updating subscriber group: {e}")
         raise HTTPException(500, f"Failed to update group: {str(e)}")
 
+##################################
+# Работа с логами для мониторинга
+##################################
+@app.get("/api/events")
+async def get_events(request: Request):
+    """Получить последние события для мониторинга состояния бота и системы"""
+    limit = int(request.query_params.get("limit", 100))
+    since = request.query_params.get("since")
+    if since:
+        since = datetime.fromisoformat(since)
+    async with request.app.state.db_pool.acquire() as conn:
+        if since:
+            rows = await conn.fetch("""
+                    SELECT user_id, event_type, channel, payload, created_at
+                    FROM events
+                    WHERE created_at > $1
+                    ORDER BY created_at ASC
+                    LIMIT $2
+                """, since, limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT user_id, event_type, channel, payload, created_at
+                FROM events
+                ORDER BY created_at DESC
+                LIMIT $1
+            """, limit)
+    return [
+        {
+            "user_id": r["user_id"],
+            "event_type": r["event_type"],
+            "channel": r["channel"],
+            "payload": r["payload"],
+            "created_at": r["created_at"].isoformat()
+        }
+        for r in rows
+    ]
 
 if __name__ == "__main__":
     import uvicorn

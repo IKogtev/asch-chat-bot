@@ -18,6 +18,8 @@ let newsEditor = null;
 let currentAgent = null;
 let promptEditorMDE = null;
 let currentUser = null;
+let lastTimestamp = null;
+let isLoadingLogs = false;
 
 
 // Initialize on load
@@ -32,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSyncSettings();
     subscribeToSync();
     loadFilesystemTree();
+    startLogsAutoRefresh();
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
     const fileInfo = document.getElementById("news-file-info");
@@ -2408,7 +2411,8 @@ function applyRoleAccess() {
         "news_send",
         "prompts",
         "bot_settings",
-        "user_groups"
+        "user_groups",
+        "logs"
     ];
     tabNames.forEach(name => {
         const tab = document.getElementById(`${name}-tab`);
@@ -2462,4 +2466,69 @@ function openFirstAvailableTab() {
             return;
         }
     }
+}
+
+// #############################
+// LOGS TAB LOGIC
+// #############################
+async function loadLogs(initial = false) {
+    if (isLoadingLogs) return;
+    isLoadingLogs = true;
+
+    let url = "/api/events?limit=100";
+
+    if (!initial && lastTimestamp) {
+        url = `/api/events?since=${encodeURIComponent(lastTimestamp)}&limit=50`;
+    }
+
+    const res = await fetch(url);
+    const data = await res.json();
+
+    const table = document.getElementById("logs-table");
+
+    if (initial) {
+        table.innerHTML = `
+            <table id="logs-table-inner" border="1" style="width:100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Event</th>
+                        <th>Channel</th>
+                        <th>Time</th>
+                        <th>Payload</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-body"></tbody>
+            </table>
+        `;
+    }
+
+    const tbody = document.getElementById("logs-body");
+
+    data.forEach(row => {
+        const tr = document.createElement("tr");
+
+        tr.innerHTML = `
+            <td>${row.user_id || "-"}</td>
+            <td>${row.event_type}</td>
+            <td>${row.channel || "-"}</td>
+            <td>${new Date(row.created_at).toLocaleString()}</td>
+            <td>${JSON.stringify(row.payload).slice(0, 100)}</td>
+        `;
+
+        // новые сверху
+        tbody.prepend(tr);
+
+        lastTimestamp = row.created_at;
+    });
+
+    isLoadingLogs = false;
+}
+
+function startLogsAutoRefresh() {
+    loadLogs(true); // первый запуск
+
+    setInterval(() => {
+        loadLogs(false);
+    }, 10000); // каждые 10 секунд
 }
