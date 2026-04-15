@@ -67,6 +67,11 @@ services:
       - MCP_TOKEN=${MCP_TOKEN}
       - MCP_TIMEOUT_SEC=${MCP_TIMEOUT_SEC:-60}
 
+      # MCP faq_search
+      - FAQSEARCH_MCP_URL=http://faq:7000/faq_rag/mcp
+      - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN}
+      - FAQSEARCH_MCP_TIMEOUT_SEC=${FAQSEARCH_MCP_TIMEOUT_SEC:-60}
+
       # Documents paths
       - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
       - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
@@ -84,6 +89,8 @@ services:
       postgres:
         condition: service_healthy
       kbsearch:
+        condition: service_healthy
+      faq:
         condition: service_healthy
 
   bot:
@@ -153,6 +160,8 @@ services:
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
+      - FAQ_DOCUMENTS_PATH=${FAQ_DOCUMENTS_PATH:-faq/}
+      - FAQ_COLLECTION_NAME=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
       - PLATFORM_VERSION=0.6.1
@@ -296,13 +305,14 @@ services:
       - MCP_TOKEN=${MCP_TOKEN}
       - MCP_TIMEOUT_SEC=${MCP_TIMEOUT_SEC:-60}
 
-      # Documents paths
-      - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
+      # MCP faq_search
+      - FAQSEARCH_MCP_URL=http://faq:7000/faq_rag/mcp
+      - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN}
+      - FAQSEARCH_MCP_TIMEOUT_SEC=${FAQSEARCH_MCP_TIMEOUT_SEC:-60}
+
       - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
-      - ARCHIVE_DOCUMENTS_PATH=${ARCHIVE_DOCUMENTS_PATH:-archive_kb/}
-      - ARCHIVE_DOCUMENTS_COLLECTION=${ARCHIVE_DOCUMENTS_COLLECTION:-archive_kb_collection}
-      - KB_DOCUMENTS_PATH=${KB_DOCUMENTS_PATH:-knowledge_base/}
       - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
+      - FAQ_DOCUMENTS_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
@@ -311,6 +321,8 @@ services:
       - aszh-bot-network
     depends_on:
       kbsearch:
+        condition: service_healthy
+      faq:
         condition: service_healthy
 
 volumes:
