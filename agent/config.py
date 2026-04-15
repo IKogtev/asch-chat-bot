@@ -23,6 +23,7 @@ LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 # =============================================================================
 ACTIVE_DOCUMENTS_COLLECTION = os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb").strip()
 KB_DOCUMENTS_COLLECTION = os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base").strip()
+FAQ_DOCUMENTS_COLLECTION = os.getenv("FAQ_DOCUMENTS_COLLECTION", "faq").strip()
 KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
 # Сколько документов показывать в первом ответе и шаг «ещё»
 DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")))
@@ -33,6 +34,15 @@ DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAG
 KBSEARCH_MCP_URL = os.getenv("KBSEARCH_MCP_URL", "http://kbsearch:7001/kbsearch/mcp").strip()
 MCP_TOKEN = os.getenv("MCP_TOKEN", "").strip()
 MCP_TIMEOUT_SEC = float(os.getenv("MCP_TIMEOUT_SEC", "30"))
+
+# =============================================================================
+# FAQ_SEARCH MCP SETTINGS
+# =============================================================================
+FAQSEARCH_MCP_URL = os.getenv("FAQSEARCH_MCP_URL", "http://faq:7000/faq_rag/mcp").strip()
+FAQSEARCH_MCP_TOKEN = os.getenv("FAQSEARCH_MCP_TOKEN", MCP_TOKEN).strip()
+FAQSEARCH_MCP_TIMEOUT_SEC = float(
+    os.getenv("FAQSEARCH_MCP_TIMEOUT_SEC", str(MCP_TIMEOUT_SEC))
+)
 
 # =============================================================================
 # LOGGING

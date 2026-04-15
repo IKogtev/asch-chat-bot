@@ -1,42 +1,46 @@
-# Как подключить mcp из контейнера к ChatBox и получить к ним доступ: 
-У нас есть 2 mcp:
-mcp-filesystem - для управления файловой системой, сейчас запущен с доступом на чтение, без возможности редактировать файлы.
-mcp-server-kbsearch - для поиска по документам семантического, с возможностью использовать фильтры
+﻿# Подключение MCP
 
-Для того чтобы добавить mcp внутри chatbox заходим в Settings: 
+В проекте используются следующие MCP-сервисы:
 
-![alt text](images/instruction1.png)
+- `mcp-filesystem` — доступ к файловой системе.
+- `mcp-server-kbsearch` — поиск по базе документов через `kb_search`.
+- `mcp-server-faq` — поиск по FAQ через `faq_search`.
 
-Дальше выбираем MCP, листаем до Custom MCP Servers нажимаем => Add Server => Add Custom Server
+## Примеры подключения
 
-![alt text](images/instruction2.png)
-
-где прописываем имя сервера 
-Тип выбираем всегда Remote(http/sse)
-прописываем соответствующий URL 
-и если требуется то прописываем HTTP Header
-Все что прописывать берем из настроек конфигурации для разных mcp
-
-После того как прописали обязательно нажимаем кнопку test, и если у нас успешно виден mcp мы увидим перечисления инструментов доступных: 
-
- ![alt text](images/instruction3.png)
-
-## возможные настройки конфигурации для разных mcp: 
-
-### mcp-kb: 
-```
+### KB MCP
+```text
 Name: Kb
 URL: http://localhost:7001/kbsearch/mcp
-HTTP Header: Authorization=Bearer REDACTED_EXAMPLE-here
+HTTP Header: Authorization=Bearer <token>
 ```
-### mcp-filesystem:
+
+### FAQ MCP
+```text
+Name: FAQ
+URL: http://localhost:7000/faq_rag/mcp
+HTTP Header: Authorization=Bearer <token>
 ```
+
+### FAQ MCP (remote example)
+```text
+Name: FAQ_Blue
+URL: https://mcp-server-faq-blue.sandbox-2.wwwnstcloud.ru/faq_rag/mcp
+HTTP Header: Authorization=Bearer <token>
+```
+
+### Filesystem MCP
+```text
 Name: filesystem
 URL: http://localhost:7002/mcp
 ```
-### mcp-faq-blue:
-```
-Name: FAQ_Blue
-URL: https://mcp-server-faq-blue.sandbox-2.wwwnstcloud.ru/faq_rag/mcp
-HTTP Header: Authorization=Bearer REDACTED_EXAMPLE-here
-```
+
+## Что использует агент
+
+`kb_answer_agent`:
+- сначала вызывает `faq_search`;
+- при недостаточном результате FAQ вызывает `kb_search`;
+- при конфликте данных считает FAQ более приоритетным источником.
+
+`doc_search_agent`:
+- использует только `kb_search`.
