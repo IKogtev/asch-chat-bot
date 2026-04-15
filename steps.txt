@@ -141,3 +141,146 @@ kb_documents_collection
 Изучи лог в терминале. Вопросы:
 - где и зачем выводится фраза aszh-adk-agent     | Обращайся к пользователю по имени 'Vitaly...? 
 - я очистил командой /reset и написал в бот "Что ты умеешь?", но на вход агенту пошло что-то другое. Что пошло ? Почему ? Почему не очистилось командой /reset ?
+================
+kubernetes.pod_namespace := "chatbot-test1" AND kubernetes.pod_labels.app :="chatbot"
+pod_namespace - chatbot-test1 / chatbot-dev
+app - chatbot / kb-manager / adk-agent / mcp-server-kbsearch
+=================
+Сейчас при тестировании цепочки агентов появляется ошибка.
+При тестировании выполняется вызов:
+BASE="http://adk-agent.chatbot-test1:8000"   # or chatbot-test1, or your ingress URL
+APP="agent"
+USER="jenkins-smoke"
+SESSION="smoke-$(date +%s)"
+
+curl -sS -X POST "${BASE}/apps/${APP}/users/${USER}/sessions/${SESSION}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+curl -sS -X POST "${BASE}/run" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"app_name\": \"${APP}\",
+    \"user_id\": \"${USER}\",
+    \"session_id\": \"${SESSION}\",
+    \"new_message\": {
+      \"role\": \"user\",
+      \"parts\": [{\"text\": \"hello\"}]
+    }
+  }"
+================
+фрагмент лога с ошибкой:
+
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+2026-04-13 14:52:50 | root_agent | INFO | Dispatcher result: route=kb_answer intent=kb_answer search_query=защищенный капитал определение
+2026-04-13 14:52:50,163 - INFO - rootagent.py:264 - Dispatcher result: route=kb_answer intent=kb_answer search_query=защищенный капитал определение
+2026-04-13 14:52:50 | root_agent | INFO | kb_answer route: query=защищенный капитал определение intent=kb_answer
+2026-04-13 14:52:50,163 - INFO - rootagent.py:356 - kb_answer route: query=защищенный капитал определение intent=kb_answer
+2026-04-13 14:52:50,178 - INFO - utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+[92m14:52:50 - LiteLLM:INFO[0m: utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+[92m14:52:52 - LiteLLM:INFO[0m: utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+2026-04-13 14:52:52,781 - INFO - utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+2026-04-13 14:52:56,354 - INFO - adk_web_server.py:1907 - Generated 6 events in agent run
+INFO:     172.16.131.58:40460 - "POST /run HTTP/1.1" 200 OK
+2026-04-13 16:49:32,850 - INFO - adk_web_server.py:867 - New session created: smoke-1776098966
+INFO:     172.16.132.218:33756 - "POST /apps/agent/users/jenkins-smoke/sessions/smoke-1776098966 HTTP/1.1" 200 OK
+2026-04-13 16:49:33 | root_agent | INFO | Processing message: hello
+2026-04-13 16:49:33,151 - INFO - rootagent.py:193 - Processing message: hello
+[92m16:49:33 - LiteLLM:INFO[0m: utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+2026-04-13 16:49:33,156 - INFO - utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+2026-04-13 16:49:34 | root_agent | INFO | OWASP result: status=ok route=continue
+2026-04-13 16:49:34,253 - INFO - rootagent.py:229 - OWASP result: status=ok route=continue
+2026-04-13 16:49:34,256 - INFO - utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+[92m16:49:34 - LiteLLM:INFO[0m: utils.py:3895 - 
+LiteLLM completion() model= nst-3; provider = litellm_proxy
+2026-04-13 16:49:36 | root_agent | INFO | Dispatcher result: route=kb_answer intent=smalltalk search_query=приветствие пользователя
+2026-04-13 16:49:36,255 - INFO - rootagent.py:264 - Dispatcher result: route=kb_answer intent=smalltalk search_query=приветствие пользователя
+2026-04-13 16:49:36 | root_agent | INFO | kb_answer route: query=приветствие пользователя intent=smalltalk
+2026-04-13 16:49:36,255 - INFO - rootagent.py:356 - kb_answer route: query=приветствие пользователя intent=smalltalk
+2026-04-13 16:49:36 | root_agent | ERROR | RootAgent failure: 'Context variable not found: `first_name`.'
+Traceback (most recent call last):
+  File "/app/agent/rootagent.py", line 320, in _run_async_impl
+    async for event in self._handle_kb_answer(
+  File "/app/agent/rootagent.py", line 367, in _handle_kb_answer
+    async for event in self._run_json_leaf_agent(
+  File "/app/agent/rootagent.py", line 181, in _run_json_leaf_agent
+    async for event in run_json_leaf_agent(
+  File "/app/agent/json_leaf_runner.py", line 24, in run_json_leaf_agent
+    async for event in agent.run_async(ctx):
+  File "/usr/local/lib/python3.11/site-packages/google/adk/agents/base_agent.py", line 297, in run_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/agents/llm_agent.py", line 487, in _run_async_impl
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/base_llm_flow.py", line 803, in run_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/base_llm_flow.py", line 822, in _run_one_step_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/base_llm_flow.py", line 911, in _preprocess_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/instructions.py", line 129, in run_async
+    await _build_instructions(invocation_context, llm_request)
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/instructions.py", line 110, in _build_instructions
+    si = await _process_agent_instruction(agent, invocation_context)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/instructions.py", line 56, in _process_agent_instruction
+    si = await instructions_utils.inject_session_state(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/utils/instructions_utils.py", line 124, in inject_session_state
+    return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/utils/instructions_utils.py", line 75, in _async_sub
+    replacement = await repl_async_fn(match)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/utils/instructions_utils.py", line 122, in _replace_match
+    raise KeyError(f'Context variable not found: `{var_name}`.')
+KeyError: 'Context variable not found: `first_name`.'
+2026-04-13 16:49:36,257 - ERROR - rootagent.py:331 - RootAgent failure: 'Context variable not found: `first_name`.'
+Traceback (most recent call last):
+  File "/app/agent/rootagent.py", line 320, in _run_async_impl
+    async for event in self._handle_kb_answer(
+  File "/app/agent/rootagent.py", line 367, in _handle_kb_answer
+    async for event in self._run_json_leaf_agent(
+  File "/app/agent/rootagent.py", line 181, in _run_json_leaf_agent
+    async for event in run_json_leaf_agent(
+  File "/app/agent/json_leaf_runner.py", line 24, in run_json_leaf_agent
+    async for event in agent.run_async(ctx):
+  File "/usr/local/lib/python3.11/site-packages/google/adk/agents/base_agent.py", line 297, in run_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/agents/llm_agent.py", line 487, in _run_async_impl
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/base_llm_flow.py", line 803, in run_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/base_llm_flow.py", line 822, in _run_one_step_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/base_llm_flow.py", line 911, in _preprocess_async
+    async for event in agen:
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/instructions.py", line 129, in run_async
+    await _build_instructions(invocation_context, llm_request)
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/instructions.py", line 110, in _build_instructions
+    si = await _process_agent_instruction(agent, invocation_context)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/flows/llm_flows/instructions.py", line 56, in _process_agent_instruction
+    si = await instructions_utils.inject_session_state(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/utils/instructions_utils.py", line 124, in inject_session_state
+    return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/utils/instructions_utils.py", line 75, in _async_sub
+    replacement = await repl_async_fn(match)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/google/adk/utils/instructions_utils.py", line 122, in _replace_match
+    raise KeyError(f'Context variable not found: `{var_name}`.')
+KeyError: 'Context variable not found: `first_name`.'
+2026-04-13 16:49:36,258 - INFO - adk_web_server.py:1907 - Generated 3 events in agent run
+INFO:     172.16.132.218:33760 - "POST /run HTTP/1.1" 200 OK
+================
+Решаю задачу подключения mcp mcp-server-faq к агенту kb_answer_agent
+Добавил папку mcps\mcp-server-faq из другого проекта
+Вижу там дублирование утилит. Это не помешает совместной работе ? Будут ли нормально работать логи и indexer ?
