@@ -262,7 +262,7 @@ class Indexer:
             # строим retriever
             self.retriever = self.index.as_retriever(similarity_top_k=self.cfg.similarity_top_k, similarity_cutoff=self.cfg.similarity_cutoff)
             # Записываем файл с методанными
-            self.metadata = self.load_metadata()
+            self.metadata = self.load_metadata_for_collection(actual_collection)
             self.metadata.update({
                              'last_updated': datetime.now().isoformat(),
                              'documents_count': doc_counter,
@@ -351,32 +351,36 @@ class Indexer:
                 self.index = None
                 self.retriever = None
                 # обновляем метаданные
-                self.metadata = self._get_default_metadata()
+                self.metadata = self.load_metadata_for_collection(target)
                 self.metadata['index_status'] = 'cleared'
-                self.save_metadata()
+                self.save_metadata(target)
             result['success'] = True
             return result
         except Exception as e:
             self.logger.error(f"Ошибка при очистке FAQ индекса: {e}")
             return result
         
-    def load_metadata(self) -> Dict:
-        """Загрузить метаданные FAQ или KB из файла или qdrant."""
+    def load_metadata_for_collection(self, collection_name: str) -> Dict:
+        """Загрузить метаданные для конкретной physical collection."""
         default_meta = self._get_default_metadata()
-        if self.cfg.use_qdrant:
-            try:
-                client = self._get_qdrant_client()
-                target = self.cfg.qdrant_alias
-                meta_id = meta_id_for_collection(target)
-                res = client.retrieve(target, ids=[meta_id])
-                if res and res[0].payload:
-                    return res[0].payload
-                else:
-                    self.logger.info("Metadata point not found in Qdrant. Using defaults.")
-                    return default_meta
-            except Exception as e:
-                self.logger.warning(f"Failed to load metadata from Qdrant: {e}. Using defaults")
-                return default_meta
+        if not self.cfg.use_qdrant:
+            return default_meta
+        try:
+            client = self._get_qdrant_client()
+            meta_id = meta_id_for_collection(collection_name)
+            res = client.retrieve(collection_name, ids=[meta_id])
+            if res and res[0].payload:
+                return res[0].payload
+            self.logger.info(f"Metadata point not found in collection '{collection_name}'. Using defaults.")
+            return default_meta
+        except Exception as e:
+            self.logger.warning(f"Failed to load metadata from Qdrant collection '{collection_name}': {e}. Using defaults")
+            return default_meta
+
+    def load_metadata(self) -> Dict:
+        """Загрузить metadata для активной collection."""
+        target = self.get_active_collection() or self.cfg.qdrant_collection
+        return self.load_metadata_for_collection(target)
 
     def _get_default_metadata(self):
         """Функция для получения пустой структуры метаданных"""
@@ -400,31 +404,15 @@ class Indexer:
         if not self.cfg.use_qdrant:
             return self.metadata
 
-        client = self._get_qdrant_client()
         target_alias = self.cfg.qdrant_alias
         try:
-            aliases = client.get_aliases()
-            aliases_exists = any(a.alias_name==target_alias for a in aliases.aliases)
-            if not aliases_exists:
+            active_collection = self.get_active_collection()
+            if not active_collection:
                 self.logger.info(f"Alias '{target_alias}' not found yet.")
                 return {}
-            scroll = client.scroll(
-                collection_name=target_alias,
-                scroll_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="__type__",
-                            match=MatchValue(value=self.collection_meta_type)
-                        )
-                    ]
-                ),
-                limit=1,
-                with_payload=True, 
-                with_vectors=False
-            )
-            points, _ = scroll
-            if points:
-                return points[0].payload or {}
+            metadata = self.load_metadata_for_collection(active_collection)
+            if metadata.get("__type__") == self.collection_meta_type:
+                return metadata
             self.logger.warning(f"Alias '{target_alias}' exists, but metadata point is missing.")
             return {}
         except Exception as e:
@@ -436,7 +424,7 @@ class Indexer:
         if not self.cfg.use_qdrant:
             return
         try:
-            qdrant_collection = collection or self.cfg.qdrant_collection
+            qdrant_collection = collection or self.get_active_collection() or self.cfg.qdrant_collection
             self._update_collection_meta(qdrant_collection, **self.metadata)
             self.logger.debug("Metadata saved to Qdrant.")
         except Exception as e:
@@ -452,6 +440,8 @@ class Indexer:
         else:
             payload={}
         payload.update(updates)
+        payload["text"] = payload.get("text") or "__collection_meta__"
+        payload["__type__"] = self.collection_meta_type
         payload["last_updated"] = datetime.now().isoformat()
         client.upsert(
             collection_name=collection_name,
@@ -497,10 +487,12 @@ class Indexer:
         limit = int(payload.get("limit", 10))
         offset = payload.get("offset", None) # добавление пагинации
         conditions = []
-        must_not_conditions =FieldCondition(
-                        key="__type__",
-                        match=MatchValue(value=self.collection_meta_type),
-                    )
+        must_not_conditions = [
+            FieldCondition(
+                key="__type__",
+                match=MatchValue(value=self.collection_meta_type),
+            )
+        ]
         if category:
             conditions.append(
                 FieldCondition(
@@ -515,7 +507,7 @@ class Indexer:
                     match=MatchValue(value=kb_id)
                 )
             )
-        q_filter = Filter(must=conditions, must_not=must_not_conditions) if conditions else None
+        q_filter = Filter(must=conditions, must_not=must_not_conditions)
         try:
             client = self._get_qdrant_client()
             #  scroll листает базу
@@ -578,6 +570,7 @@ class Indexer:
         vector_size = self._resolve_embedding_dim()
         meta_id = meta_id_for_collection(collection_name)
         payload = {
+            "text": "__collection_meta__",
             "__type__": self.collection_meta_type,
             "index_status": "empty",
             "documents_count": 0,
@@ -754,6 +747,16 @@ class Indexer:
                 )
             if conditions:
                 qdrant_filter = Filter(must=conditions)
+        meta_exclusion = [
+            FieldCondition(
+                key="__type__",
+                match=MatchValue(value=self.collection_meta_type)
+            )
+        ]
+        if qdrant_filter:
+            qdrant_filter.must_not = (qdrant_filter.must_not or []) + meta_exclusion
+        else:
+            qdrant_filter = Filter(must_not=meta_exclusion)
         vector_store = QdrantVectorStore(
             client=client,
             collection_name=collection_name,
@@ -775,8 +778,9 @@ class Indexer:
         if not self.cfg.use_qdrant:
             self.logger.warning("Qdrant disabled.")
             return False
-        target = target_collection or self.cfg.qdrant_alias
-        if target == self.cfg.qdrant_alias and self.alias_exists(self.cfg.qdrant_alias):
+        if target_collection:
+            target = target_collection
+        elif self.alias_exists(self.cfg.qdrant_alias):
             target = self.get_active_collection()
         else:
             target = self.cfg.qdrant_collection
