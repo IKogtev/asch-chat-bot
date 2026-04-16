@@ -1,9 +1,19 @@
 from pathlib import Path
 import os
+import warnings
 from dotenv import load_dotenv
 from utils.logger import setup_logger
 
 load_dotenv(override=True)
+
+# LiteLLM / Pydantic в некоторых версиях создают безвредный UserWarning при
+# сериализации ответа провайдера. На поведение агента это не влияет, но
+# засоряет логи на каждом вызове модели.
+warnings.filterwarnings(
+    "ignore",
+    message=r"^Pydantic serializer warnings:",
+    category=UserWarning,
+)
 
 # =============================================================================
 # PATHS
@@ -56,6 +66,7 @@ logger = setup_logger("agent_chain", "agent.log")
 # MODEL FACTORY
 # =============================================================================
 from google.adk.models.lite_llm import LiteLlm
+
 
 def build_common_model() -> LiteLlm:
     """

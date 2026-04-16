@@ -135,9 +135,7 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 
 2. Если {intent} != "smalltalk":
    - сначала ОБЯЗАТЕЛЬНО вызови faq_search
-   - передай: query={search_query}, collection={faq_collection}
-   - если {search_query} не пустой, используй его
-   - иначе используй {user_query}
+   - передай: query={user_query}, collection={faq_collection}
 
 3. Если faq_search дал точный или достаточно уверенный прямой ответ на вопрос:
    - используй только faq_search
