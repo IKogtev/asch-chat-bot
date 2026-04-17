@@ -60,3 +60,66 @@ python adk_agent_tester_v1.py --fake-first-name "Иван"
 - **`--excel`** — путь к файлу с тест-кейсами (по умолчанию: `tester/` + имя из `TC_TASK_FILE_NAME` или встроенное в коде имя по умолчанию). Файл должен существовать.
 - **`--out`** — каталог для отчетов (по умолчанию каталог `tester`).
 - Остальные флаги см. в `python adk_agent_tester_v1.py --help`.
+
+---
+
+# Примеры запросов в adk-agent
+
+## Kubernetes
+
+- Установить переменные окружения
+```sh
+ADK_AGENT_URL="http://adk-agent.chatbot-test1:8000"
+ADK_AGENT_APP="agent"
+USER="jenkins-smoke"
+SESSION="smoke-$(date +%s)"
+FIRST_NAME="Jenkins"
+FULL_NAME="Jenkins"
+```
+
+- Инициализировать сессию
+```sh
+curl -sS -X POST "${ADK_AGENT_URL}/apps/${APP}/users/${USER}/sessions/${SESSION}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+- Пример smalltalk
+```sh
+curl -sS -X POST "${ADK_AGENT_URL}/run" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "app_name": "${ADK_AGENT_APP}",
+  "user_id": "${USER}",
+  "session_id": "${SESSION}",
+  "stateDelta": {
+    "first_name":"${FIRST_NAME}",
+    "full_name":"${FULL_NAME}"
+  },
+  "new_message": {
+    "role": "user",
+    "parts": [{"text": "Привет! Что ты умеешь?"}]
+  }
+}
+EOF
+```
+
+- Пример Fort Knox
+```sh
+curl -sS -X POST "${ADK_AGENT_URL}/run" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"app_name\": \"${ADK_AGENT_APP}\",
+        \"user_id\": \"${USER}\",
+        \"session_id\": \"${SESSION}\",
+        \"stateDelta\": {
+            \"first_name\": \"${FIRST_NAME}\",
+            \"full_name\": \"${FULL_NAME}\"
+        },
+        \"new_message\": {
+            \"role\": \"user\",
+            \"parts\": [{\"text\": \"В каких документах рассказывают про Fort Knox\"}]
+        }
+    }"
+```
