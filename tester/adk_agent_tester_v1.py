@@ -38,7 +38,7 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "Qwen/Qwen3-30B-A3B").strip()
 
 # Test cases
-TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "NST-cons use cases pack.xlsx")
+TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "")
 TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
 
 
@@ -105,9 +105,9 @@ def build_adk_profile_state_delta(
     Prompts reference e.g. {first_name}; without it ADK raises KeyError for missing context variables.
     """
     fn = (first_name if first_name is not None else os.getenv("ADK_TEST_FIRST_NAME", "Jenkins")).strip()
-    ln = (last_name if last_name is not None else os.getenv("ADK_TEST_LAST_NAME", "Smoke")).strip()
-    un = (username if username is not None else os.getenv("ADK_TEST_USERNAME", "jenkins_smoke_test")).strip()
-    rg = (region if region is not None else os.getenv("ADK_TEST_REGION", "ru")).strip()
+    ln = (last_name if last_name is not None else os.getenv("ADK_TEST_LAST_NAME", "")).strip()
+    un = (username if username is not None else os.getenv("ADK_TEST_USERNAME", "")).strip()
+    rg = (region if region is not None else os.getenv("ADK_TEST_REGION", "")).strip()
 
     out: Dict[str, Any] = {
         "first_name": fn,
@@ -820,8 +820,8 @@ def main() -> None:
     parser.add_argument("--session-id", default=os.getenv("ADK_TEST_SESSION_ID", f"test_{int(time.time())}"))
     parser.add_argument(
         "--fake-first-name",
-        default=os.getenv("ADK_TEST_FIRST_NAME"),  # None → build_adk_profile_state_delta uses default "Тестер"
-        help="Имя для stateDelta (плейсхолдер {first_name} в промптах ADK). По умолчанию ADK_TEST_FIRST_NAME или Тестер.",
+        default=os.getenv("ADK_TEST_FIRST_NAME"),  # None → build_adk_profile_state_delta uses default "Jenkins"
+        help="Имя для stateDelta (плейсхолдер {first_name} в промптах ADK). По умолчанию ADK_TEST_FIRST_NAME или Jenkins.",
     )
     args = parser.parse_args()
 
