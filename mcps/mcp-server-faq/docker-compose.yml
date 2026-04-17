@@ -1,0 +1,45 @@
+services:
+  # app server сервер приложения
+  faq-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcp-faq-rag:latest
+    container_name: mcp-faq-server
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      # MCP
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7000 
+      - MCP_FAQPATH=/faq_rag
+      # embedding params
+      - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=20
+      - SIMILARITY_TOP_K=10
+      - SIMILARITY_CUTOFF=0.5
+      - FAQ_DEFAULT_SOURCE=/faq_local
+      - MCP_TOKEN=${MCP_TOKEN:-REDACTED_EXAMPLE}
+      - IN_DOCKER=true
+      - LOG_TO_FILE=false
+      # Qdrant
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=faq_collection
+      - USE_QDRANT=true
+
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:7000/faq/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  
+networks:
+  mcp-network:
+    external: true

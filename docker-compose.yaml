@@ -67,6 +67,11 @@ services:
       - MCP_TOKEN=${MCP_TOKEN}
       - MCP_TIMEOUT_SEC=${MCP_TIMEOUT_SEC:-60}
 
+      # MCP faq_search
+      - FAQSEARCH_MCP_URL=http://faq:7000/faq_rag/mcp
+      - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN}
+      - FAQSEARCH_MCP_TIMEOUT_SEC=${FAQSEARCH_MCP_TIMEOUT_SEC:-60}
+
       # Documents paths
       - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
       - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
@@ -84,6 +89,8 @@ services:
       postgres:
         condition: service_healthy
       kbsearch:
+        condition: service_healthy
+      faq:
         condition: service_healthy
 
   bot:
@@ -153,6 +160,8 @@ services:
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
+      - FAQ_DOCUMENTS_PATH=${FAQ_DOCUMENTS_PATH:-faq/}
+      - FAQ_COLLECTION_NAME=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
       - PLATFORM_VERSION=0.6.1
@@ -218,20 +227,46 @@ services:
       retries: 3
       start_period: 60s
 
-  mcp-filesystem:
+  faq:
     build:
-      context: ./mcps/mcp-filesystem-http
-    container_name: mcp-filesystem
+      context: ./mcps/mcp-server-faq
+      dockerfile: Dockerfile
+    image: mcp-faq-rag:latest
+    container_name: mcp-faq
     restart: unless-stopped
     ports:
-      - "7002:8080"
-    volumes:
-      - ./kb_storage:/mcp-filesystem/kb:ro
+      - "7000:7000"
+    environment:
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7000
+      - MCP_FAQPATH=/faq_rag
+      - MCP_TOKEN=${FAQSEARCH_MCP_TOKEN:-REDACTED_EXAMPLE}
+      - IN_DOCKER=true
+      - LOG_TO_FILE=false
+      - LOG_LEVEL=${FAQ_LOG_LEVEL:-INFO}
+
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=20
+      - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-10}
+      - SIMILARITY_CUTOFF=${FAQ_SIMILARITY_CUTOFF:-0.5}
+      
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
+      - USE_QDRANT=true
+    depends_on:
+      - qdrant
     networks:
       - aszh-bot-network
-    environment:
-      - NODE_ENV=production
-
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:7000/faq/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  
   file-manager:
     image: filegator/filegator:latest
     container_name: kb-file-ui
@@ -270,13 +305,14 @@ services:
       - MCP_TOKEN=${MCP_TOKEN}
       - MCP_TIMEOUT_SEC=${MCP_TIMEOUT_SEC:-60}
 
-      # Documents paths
-      - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
+      # MCP faq_search
+      - FAQSEARCH_MCP_URL=http://faq:7000/faq_rag/mcp
+      - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN}
+      - FAQSEARCH_MCP_TIMEOUT_SEC=${FAQSEARCH_MCP_TIMEOUT_SEC:-60}
+
       - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
-      - ARCHIVE_DOCUMENTS_PATH=${ARCHIVE_DOCUMENTS_PATH:-archive_kb/}
-      - ARCHIVE_DOCUMENTS_COLLECTION=${ARCHIVE_DOCUMENTS_COLLECTION:-archive_kb_collection}
-      - KB_DOCUMENTS_PATH=${KB_DOCUMENTS_PATH:-knowledge_base/}
       - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
+      - FAQ_DOCUMENTS_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
@@ -285,6 +321,8 @@ services:
       - aszh-bot-network
     depends_on:
       kbsearch:
+        condition: service_healthy
+      faq:
         condition: service_healthy
 
 volumes:
