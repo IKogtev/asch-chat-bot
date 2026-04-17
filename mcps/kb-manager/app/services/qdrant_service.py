@@ -70,7 +70,51 @@ class QdrantService:
         )
         # initialize collection dict 
         self.collections_config = collections_config
-    
+
+    def _alias_name_for_type(self, collection_type: CollectionType | CollectionTypeAlias) -> str:
+        return f"{collection_type.value}_collection_active"
+
+    def _ensure_collection_meta(
+        self,
+        collection_name: str,
+        collection_type: CollectionType | CollectionTypeAlias,
+    ) -> None:
+        meta_id = meta_id_for_collection(collection_name)
+        points = self.qdrant_client.retrieve(collection_name, [meta_id])
+        if points:
+            return
+
+        alias_name = self._alias_name_for_type(collection_type)
+        payload = {
+            "__type__": "collection_meta",
+            "index_status": "empty",
+            "documents_count": 0,
+            "document_count": 0,
+            "created_at": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat(),
+            "last_update": datetime.now().isoformat(),
+            "embedding": {
+                "chunk_size": self.text_splitter.chunk_size,
+                "chunk_overlap": self.text_splitter.chunk_overlap,
+            },
+            "qdrant": {
+                "collection": collection_name,
+                "alias": alias_name,
+                "distance": Distance.COSINE.name,
+                "vector_size": self.vector_size,
+            },
+        }
+        self.qdrant_client.upsert(
+            collection_name=collection_name,
+            points=[
+                PointStruct(
+                    id=meta_id,
+                    vector=[0.0] * self.vector_size,
+                    payload=payload,
+                )
+            ],
+        )
+
     def _generate_alias_name(self, collection_name: str) -> str:
         """
         archive_kb_collection -> archive_kb_collection_active
@@ -103,6 +147,8 @@ class QdrantService:
                 else:
                     print(f"[INIT] Exists: {name}")
 
+                self._ensure_collection_meta(name, ctype)
+
                 # 2. set alias
                 try:
                     self.switch_alias(name, ctype)
@@ -132,6 +178,7 @@ class QdrantService:
                 print(f"Created collection: {self.collection_name}")
             else:
                 print(f"Collection {self.collection_name} already exists")
+            self._ensure_collection_meta(self.collection_name, CollectionTypeAlias.kb)
             # self.switch_alias(self.collection_name, self.collection_type)
             self.switch_alias(self.collection_name, CollectionTypeAlias.kb)
         except Exception as e:
@@ -711,6 +758,7 @@ class QdrantService:
                 distance=Distance.COSINE
             )
         )
+        self._ensure_collection_meta(collection_name, CollectionTypeAlias.kb)
 
         return True
     
