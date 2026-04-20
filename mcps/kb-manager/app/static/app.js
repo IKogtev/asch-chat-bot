@@ -18,6 +18,9 @@ let newsEditor = null;
 let currentAgent = null;
 let promptEditorMDE = null;
 let currentUser = null;
+// Логи: фильтры и кэш
+let logFilters = {};
+let logsCache = []; // кэш последних записей для быстрой фильтрации
 let lastTimestamp = null;
 let isLoadingLogs = false;
 let hourChart = null;
@@ -2530,50 +2533,146 @@ async function loadLogs(initial = false) {
         url = `/api/events?since=${encodeURIComponent(lastTimestamp)}&limit=50`;
     }
 
-    const res = await fetch(url);
-    const data = await res.json();
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
 
-    const table = document.getElementById("logs-table");
+        const table = document.getElementById("logs-table");
 
-    if (initial) {
-        table.innerHTML = `
-            <table id="logs-table-inner" border="1" style="width:100%; border-collapse: collapse;">
-                <thead>
-                    <tr>
-                        <th> User ID</th>
-                        <th> User name</th>
-                        <th>Event</th>
-                        <th>Channel</th>
-                        <th>Time</th>
-                        <th>Payload</th>
-                    </tr>
-                </thead>
-                <tbody id="logs-body"></tbody>
-            </table>
-        `;
-    }
+        // Инициализация таблицы и фильтров (только при первом запуске)
+        if (initial) {
+            table.innerHTML = `
+                <table id="logs-table-inner" border="1" style="width:100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th>User ID</th>
+                            <th>User name</th>
+                            <th>Event</th>
+                            <th>Channel</th>
+                            <th>Time</th>
+                            <th>Payload</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logs-body"></tbody>
+                </table>
+            `;
+            // Навешиваем обработчики на фильтры
+            setupLogFilters();
+        }
 
-    const tbody = document.getElementById("logs-body");
+        // Обновляем кэш: новые записи добавляем в начало
+        if (initial) {
+            logsCache = data;
+        } else {
+            // Добавляем только новые (которые не дублируются)
+            const existingIds = new Set(logsCache.map(r => r.created_at));
+            data.forEach(row => {
+                if (!existingIds.has(row.created_at)) {
+                    logsCache.unshift(row);
+                }
 
-    data.forEach(row => {
-        const tr = document.createElement("tr");
-
-        tr.innerHTML = `
-            <td>${row.user_id || "-"}</td>
-            <td>${row.user_name || "-"}</td>
-            <td>${row.event_type}</td>
-            <td>${row.channel || "-"}</td>
-            <td>${new Date(row.created_at).toLocaleString()}</td>
-            <td>${JSON.stringify(row.payload).slice(0, 100)}</td>
-        `;
-
-        // новые сверху
-        tbody.prepend(tr);
-
-        lastTimestamp = row.created_at;
     });
+            // Ограничиваем кэш, чтобы не рос бесконечно
+            if (logsCache.length > 500) {
+                logsCache = logsCache.slice(0, 500);
+            }
+        }
 
-    isLoadingLogs = false;
+        // Применяем фильтры и рендерим
+        renderFilteredLogs();
+
+        // Обновляем метку времени для инкрементальной загрузки
+        if (data.length > 0) {
+            lastTimestamp = data[data.length - 1].created_at;
+        }
+
+    } catch (err) {
+        console.error("Error loading logs:", err);
+    } finally {
+        isLoadingLogs = false;
+    }
+}
+
+function renderFilteredLogs() {
+    const tbody = document.getElementById("logs-body");
+    if (!tbody) return;
+
+    const filtered = applyLogFilters(logsCache);
+    
+    // Очищаем и рендерим (новые сверху)
+    tbody.innerHTML = '';
+    
+    filtered.forEach(row => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td>${escapeHtml(row.user_id || "-")}</td>
+            <td>${escapeHtml(row.user_name || "-")}</td>
+            <td>${escapeHtml(row.event_type)}</td>
+            <td>${escapeHtml(row.channel || "-")}</td>
+            <td>${new Date(row.created_at).toLocaleString()}</td>
+            <td>${escapeHtml(JSON.stringify(row.payload).slice(0, 100))}${JSON.stringify(row.payload).length > 100 ? '...' : ''}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+    
+    // Показываем сообщение, если ничего не найдено
+    if (filtered.length === 0 && logsCache.length > 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="6" style="text-align:center; padding: 20px; color: var(--text-secondary);">🔍 Ничего не найдено по текущим фильтрам</td>`;
+        tbody.appendChild(tr);
+    }
+}
+
+// Применяет фильтры к массиву логов
+function applyLogFilters(rows) {
+    return rows.filter(row => {
+        for (const [column, value] of Object.entries(logFilters)) {
+            if (!value) continue; // пустой фильтр — пропускаем
+            
+            let cellValue = '';
+            if (column === 'payload') {
+                cellValue = JSON.stringify(row.payload || '').toLowerCase();
+            } else if (column === 'created_at') {
+                cellValue = new Date(row.created_at).toLocaleString().toLowerCase();
+            } else {
+                cellValue = String(row[column] || '').toLowerCase();
+            }
+            
+            if (!cellValue.includes(value.toLowerCase())) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
+function setupLogFilters() {
+    document.querySelectorAll('.log-filter').forEach(input => {
+        // Восстанавливаем значение из памяти (если было)
+        const column = input.dataset.column;
+        if (logFilters[column]) {
+            input.value = logFilters[column];
+        }
+        
+        // Debounce: не фильтровать при каждом нажатии клавиши
+        let timeout;
+        input.addEventListener('input', (e) => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                logFilters[column] = e.target.value.trim();
+                renderFilteredLogs(); // перерисовываем без перезагрузки с сервера
+            }, 300);
+        });
+    });
+}
+
+// Очистка всех фильтров (опционально)
+function clearLogFilters() {
+    logFilters = {};
+    document.querySelectorAll('.log-filter').forEach(input => {
+        input.value = '';
+    });
+    renderFilteredLogs();
 }
 
 // функция автоматического обновления логов каждые 10 секунд
