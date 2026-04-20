@@ -147,7 +147,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
-        session_id = f"session-{user_id}"
+        session_id = str(user_id)
 
         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
         await eventlogger.log_event(
@@ -214,7 +214,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             return
 
         user_id = user["user_id"]
-        session_id = f"session-{user_id}"
+        session_id = str(user_id)
         user_text = (m.text or "").strip()
 
         if not user_text:
@@ -338,6 +338,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
 
             # --- Автоматически отправляем документы, которые были найдены и отмечены в ответе ---
             for did in doc_ids:
+                # BUG question используем ли это для выгрузки
                 # логируем запрос на скачивание документа и его id
                 logger.debug(f"Запрос на отправку документа doc_id={did} для user_id={user_id}")
                 await eventlogger.log_event(
@@ -346,7 +347,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     session_id=session_id,
                     channel="telegram",
                     payload={
-                        "document_id": did
+                        "document_id": did,
+                        "source": "search"
                     }
                 )
                 file_path = None
@@ -481,11 +483,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             event_type="document_download_menu",
             user_id=str(user_id),
             session_id=str(user_id),
+            user_name=callback.from_user.username,
             channel="telegram",
             payload={
                 "filename": filename,
-                "path": path,
-                "doc_id": doc_id
+                "file_path": path,
+                "doc_id": doc_id,
+                "source": "menu"
             }
         )
         tmp_name = None
