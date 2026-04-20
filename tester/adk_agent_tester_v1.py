@@ -38,8 +38,92 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "Qwen/Qwen3-30B-A3B").strip()
 
 # Test cases
-TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "NST-cons use cases pack.xlsx")
+TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "")
 TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
+
+
+def strip_adk_leaf_json_stack(text: str) -> str:
+    """
+    Fallback when /run events do not include a final root_agent turn: legacy concat of all parts
+    often chains leaf JSON (owasp, dispatcher, kb_answer) before the user-visible line.
+    Prefer bot/services/database.py-style extraction (final root_agent only) first.
+    """
+    s = (text or "").strip().lstrip("\ufeff")
+    if not s:
+        return s
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        try:
+            inner = json.loads(s)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(inner, str):
+                s = inner.strip()
+    if s.startswith('"'):
+        i = 1
+        while i < len(s) and s[i] in " \n\r\t":
+            i += 1
+        if i < len(s) and s[i] == "{":
+            s = s[i:]
+
+    for _ in range(24):
+        head = s.lstrip()
+        if not head.startswith("{"):
+            s = head
+            break
+        try:
+            obj, end = json.JSONDecoder().raw_decode(head)
+        except json.JSONDecodeError:
+            s = head
+            break
+        tail = head[end:].strip()
+        if tail:
+            s = tail
+            continue
+        if isinstance(obj, dict):
+            um = obj.get("user_message")
+            if isinstance(um, str) and um.strip():
+                s = um.strip()
+                break
+            msg = obj.get("message")
+            if isinstance(msg, str) and msg.strip():
+                s = msg.strip()
+                break
+        break
+    return s.strip()
+
+
+def build_adk_profile_state_delta(
+    *,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    username: Optional[str] = None,
+    region: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Session/user fields sent as stateDelta on each /run (same contract as bot AdkApiClient.set_user_state).
+    Prompts reference e.g. {first_name}; without it ADK raises KeyError for missing context variables.
+    """
+    fn = (first_name if first_name is not None else os.getenv("ADK_TEST_FIRST_NAME", "Jenkins")).strip()
+    ln = (last_name if last_name is not None else os.getenv("ADK_TEST_LAST_NAME", "")).strip()
+    un = (username if username is not None else os.getenv("ADK_TEST_USERNAME", "")).strip()
+    rg = (region if region is not None else os.getenv("ADK_TEST_REGION", "")).strip()
+
+    out: Dict[str, Any] = {
+        "first_name": fn,
+        "last_name": ln,
+        "full_name": f"{fn} {ln}".strip(),
+        "username": un,
+        "region": rg,
+    }
+    mg = os.getenv("ADK_TEST_MANAGER_GROUP", "").strip().lower()
+    if mg in ("1", "true", "yes"):
+        out["manager_group"] = True
+    cg = os.getenv("ADK_TEST_COACH_GROUP", "").strip().lower()
+    if cg in ("1", "true", "yes"):
+        out["coach_group"] = True
+
+    return {k: v for k, v in out.items() if v not in ("", None)}
 
 
 def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
@@ -60,7 +144,10 @@ def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
                         f"✅ ADK reachable (non-2xx but non-5xx): GET {url} -> {r.status_code}"
                     )
                 return True
-        except Exception:
+        except requests.RequestException as e:
+            logger.debug(
+                f"ADK health check: GET {url} failed ({type(e).__name__}: {e}), trying next URL"
+            )
             continue
     logger.error(f"❌ ADK not reachable via {candidates}")
     return False
@@ -68,13 +155,21 @@ def check_adk_health(base_url: str, timeout_sec: int = 5) -> bool:
 
 class AdkApiClient:
     """
-    Minimal sync client matching bot_v6.py semantics (ensure_session + run).
+    Minimal sync client matching bot_v6.py semantics (ensure_session + run + stateDelta profile).
     """
 
-    def __init__(self, base_url: str, app_name: str, timeout_sec: int):
+    def __init__(
+        self,
+        base_url: str,
+        app_name: str,
+        timeout_sec: int,
+        *,
+        profile_state_delta: Optional[Dict[str, Any]] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.app_name = app_name
         self.timeout_sec = timeout_sec
+        self.profile_state_delta: Dict[str, Any] = dict(profile_state_delta or {})
 
     def ensure_session(self, user_id: str, session_id: str) -> None:
         url = f"{self.base_url}/apps/{self.app_name}/users/{user_id}/sessions/{session_id}"
@@ -88,18 +183,30 @@ class AdkApiClient:
                 detail = str(data.get("detail") or "").lower()
                 if "exists" in detail or "already" in detail:
                     return
-            except Exception:
-                pass
+            except json.JSONDecodeError as e:
+                logger.debug(
+                    f"ensure_session: {r.status_code} body is not JSON ({e}); "
+                    "will treat as failure if not success"
+                )
+            except (TypeError, ValueError) as e:
+                logger.debug(
+                    f"ensure_session: {r.status_code} JSON parsed but unexpected shape "
+                    f"({type(e).__name__}: {e})"
+                )
         raise RuntimeError(f"ADK ensure_session failed: {r.status_code} {r.text[:300]}")
 
-    def run(self, user_id: str, session_id: str, text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def run(
+        self, user_id: str, session_id: str, text: str
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
         url = f"{self.base_url}/run"
-        payload = {
+        payload: Dict[str, Any] = {
             "app_name": self.app_name,
             "user_id": user_id,
             "session_id": session_id,
             "new_message": {"role": "user", "parts": [{"text": text}]},
         }
+        if self.profile_state_delta:
+            payload["stateDelta"] = dict(self.profile_state_delta)
         r = requests.post(url, json=payload, timeout=self.timeout_sec)
         if r.status_code != 200:
             raise RuntimeError(f"ADK run failed: {r.status_code} {r.text[:500]}")
@@ -107,13 +214,60 @@ class AdkApiClient:
             events = r.json()
             if not isinstance(events, list):
                 events = [{"text": str(events)}]
-        except Exception:
-            return r.text.strip(), []
-        answer = self._extract_model_text(events)
-        return (answer or "Агент не вернул ответ"), events
+        except json.JSONDecodeError as e:
+            logger.debug(f"ADK /run: response body is not JSON ({e}), using raw text")
+            t = r.text.strip()
+            return t, t, []
+        except (TypeError, ValueError) as e:
+            logger.debug(
+                f"ADK /run: JSON decoded but invalid structure ({type(e).__name__}: {e}), using raw text"
+            )
+            t = r.text.strip()
+            return t, t, []
+        clean, raw = AdkApiClient._compose_display_and_raw(events)
+        text = clean or "Агент не вернул ответ"
+        return text, raw, events
 
     @staticmethod
     def _extract_model_text(events: list) -> str:
+        """Final user-visible text from root_agent only (same as bot.services.database.AdkApiClient._extract_model_text)."""
+        if not events:
+            return ""
+
+        for event in reversed(events):
+            if not isinstance(event, dict):
+                continue
+
+            author = event.get("author")
+            actions = event.get("actions") or {}
+            is_final = bool(actions.get("end_of_agent") or actions.get("endOfAgent"))
+
+            if author != "root_agent" or not is_final:
+                continue
+
+            content = event.get("content")
+            if not isinstance(content, dict):
+                continue
+
+            parts = content.get("parts") or []
+            out: list[str] = []
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("thought") is True:
+                    continue
+                t = part.get("text")
+                if t and str(t).strip():
+                    out.append(str(t).strip())
+
+            if out:
+                return "\n".join(out).strip()
+
+        return ""
+
+    @staticmethod
+    def _concat_all_model_text_parts_for_diagnostics(events: list) -> str:
+        """Join every non-thought text part from all events (full trace for answer_raw / fallback)."""
         if not events:
             return ""
 
@@ -122,7 +276,6 @@ class AdkApiClient:
             if not isinstance(event, dict):
                 continue
 
-            # model_turn.parts
             if "model_turn" in event and isinstance(event["model_turn"], dict):
                 parts = event["model_turn"].get("parts", []) or []
                 for part in parts:
@@ -134,7 +287,6 @@ class AdkApiClient:
                     if txt:
                         out.append(txt)
 
-            # content.parts
             content = event.get("content")
             if isinstance(content, dict):
                 if isinstance(content.get("text"), str):
@@ -151,11 +303,19 @@ class AdkApiClient:
             elif isinstance(content, str) and content.strip():
                 out.append(content)
 
-            # fallback
             if isinstance(event.get("text"), str):
                 out.append(event["text"])
 
         return "\n".join(s.strip() for s in out if s and s.strip()).strip()
+
+    @staticmethod
+    def _compose_display_and_raw(events: list) -> Tuple[str, str]:
+        raw = AdkApiClient._concat_all_model_text_parts_for_diagnostics(events)
+        root = AdkApiClient._extract_model_text(events)
+        if root:
+            return root, raw
+        cleaned = strip_adk_leaf_json_stack(raw)
+        return cleaned, raw
 
 
 def load_test_cases(file_name: Path):
@@ -170,7 +330,7 @@ def initialize_session(client: AdkApiClient, user_id: str, session_id: str) -> s
     logger.info("🚀 Инициализация сессии с ADK агентом...")
     client.ensure_session(user_id=user_id, session_id=session_id)
     init_q = "Привет! Ты готов отвечать на вопросы ?"
-    ans, _events = client.run(user_id=user_id, session_id=session_id, text=init_q)
+    ans, _raw, _events = client.run(user_id=user_id, session_id=session_id, text=init_q)
     logger.info(f"💬 Ответ на инициализацию: {ans[:120]}..." if len(ans) > 120 else f"💬 Ответ: {ans}")
     return session_id
 
@@ -188,14 +348,22 @@ def interrogate_agent(
         if answers_file_path.exists():
             logger.info(f"Загружаем данные из файла: {answers_file_path}")
             if answers_file_path.suffix.lower() == ".parquet":
-                return pd.read_parquet(answers_file_path)
-            if answers_file_path.suffix.lower() == ".csv":
-                return pd.read_csv(answers_file_path)
+                df = pd.read_parquet(answers_file_path)
+            elif answers_file_path.suffix.lower() == ".csv":
+                df = pd.read_csv(answers_file_path)
+            else:
+                raise RuntimeError(f"Неподдерживаемый формат ответов: {answers_file_path}")
+            if "answer_raw" not in df.columns:
+                df = df.copy()
+                df["answer_raw"] = df["answer"].fillna("").astype(str)
+                df["answer"] = df["answer_raw"].map(strip_adk_leaf_json_stack)
+            return df
         raise RuntimeError(f"Файл с ответами не найден: {answers_file_path}")
 
     logger.info(f"Задаем вопросы. Всего вопросов в списке тестирования: {len(tc_df)}")
 
     tc_df["answer"] = ""
+    tc_df["answer_raw"] = ""
     tc_df["response_time"] = 0.0
     tc_df["adk_error"] = ""
 
@@ -209,16 +377,27 @@ def interrogate_agent(
         logger.info(f"\nВопрос {q_num}: {question}")
         start_time = time.time()
         try:
-            answer, _events = client.run(user_id=user_id, session_id=session_id, text=question)
+            answer, answer_raw, _events = client.run(
+                user_id=user_id, session_id=session_id, text=question
+            )
+            tc_df.loc[i, "answer_raw"] = answer_raw
             tc_df.loc[i, "answer"] = answer
-        except Exception as e:
-            tc_df.loc[i, "adk_error"] = str(e)
+        except (RuntimeError, requests.RequestException, OSError) as e:
+            tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
             tc_df.loc[i, "answer"] = ""
+            tc_df.loc[i, "answer_raw"] = ""
+        except Exception as e:
+            logger.exception(f"Неожиданная ошибка при запросе к ADK (вопрос {q_num})")
+            tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
+            tc_df.loc[i, "answer"] = ""
+            tc_df.loc[i, "answer_raw"] = ""
         finally:
             tc_df.loc[i, "response_time"] = round(time.time() - start_time, 2)
 
         logger.info(
-            f"Ответ: {str(tc_df.loc[i, 'answer'])[:120]}..." if len(str(tc_df.loc[i, "answer"])) > 120 else f"Ответ: {tc_df.loc[i, 'answer']}"
+            f"Ответ: {str(tc_df.loc[i, 'answer'])[:120]}..."
+            if len(str(tc_df.loc[i, "answer"])) > 120
+            else f"Ответ: {tc_df.loc[i, 'answer']}"
         )
         logger.info(f"⏱️ Время ответа: {tc_df.loc[i, 'response_time']} сек.")
 
@@ -229,7 +408,14 @@ def interrogate_agent(
         else:
             tc_df.to_csv(answers_file_path, index=False, encoding="utf-8-sig")
     except Exception as e:
-        logger.warning(f"Не удалось сохранить parquet/csv ({e}). Сохраняем CSV рядом.")
+        if isinstance(e, (OSError, PermissionError, ImportError, ValueError)):
+            logger.warning(
+                f"Не удалось сохранить parquet/csv ({type(e).__name__}: {e}). Сохраняем CSV рядом."
+            )
+        else:
+            logger.warning(
+                f"Неожиданная ошибка сохранения ответов ({type(e).__name__}: {e}). Сохраняем CSV рядом."
+            )
         fallback = answers_file_path.with_suffix(".csv")
         tc_df.to_csv(fallback, index=False, encoding="utf-8-sig")
         answers_file_path = fallback
@@ -243,7 +429,8 @@ def _iter_rows(df, desc: str):
         from tqdm import tqdm  # type: ignore
 
         return tqdm(df.iterrows(), total=df.shape[0], desc=desc)
-    except Exception:
+    except ImportError as e:
+        logger.debug(f"tqdm не установлен, прогресс-бар отключен: {e}")
         return df.iterrows()
 
 
@@ -402,7 +589,11 @@ def evaluate_answer(
             json_str = json_match.group(0)
             try:
                 result = json.loads(json_str)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.debug(
+                    f"evaluate_answer: matched segment is not valid JSON "
+                    f"(попытка {attempt + 1}/{max_retries}): {e}"
+                )
                 time.sleep(1)
                 continue
 
@@ -422,7 +613,9 @@ def evaluate_answer(
                     "LLM_API_KEY / LLM_API_URL / LLM_API_MODEL."
                 )
                 return create_default_evaluation("LLM 401 Unauthorized: отсутствует или неверный ключ/endpoint")
-            logging.warning(f"Ошибка запроса к LLM (попытка {attempt+1}/{max_retries}): {msg}")
+            logging.warning(
+                f"Ошибка запроса к LLM ({type(e).__name__}, попытка {attempt + 1}/{max_retries}): {msg}"
+            )
             time.sleep(2)
             continue
 
@@ -435,7 +628,8 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
         from tqdm import tqdm  # type: ignore
 
         iterator = tqdm(tc_df.iterrows(), total=tc_df.shape[0], desc="Оценка ответов")
-    except Exception:
+    except ImportError as e:
+        logger.debug(f"tqdm не установлен, прогресс-бар оценки отключен: {e}")
         iterator = tc_df.iterrows()
 
     for i, row in iterator:
@@ -479,7 +673,7 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
             tc_df.loc[i, "overall_score"] = evaluation.get("overall_score", 0)
             tc_df.loc[i, "explanation"] = evaluation.get("explanation", "")
         except Exception as e:
-            logger.error(f"❌ Ошибка при оценке вопроса {q_num}: {e}")
+            logger.error(f"❌ Ошибка при оценке вопроса {q_num} ({type(e).__name__}): {e}")
             tc_df.loc[i, "accuracy"] = 0
             tc_df.loc[i, "completeness"] = 0
             tc_df.loc[i, "relevance"] = 0
@@ -513,10 +707,15 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     report_path = output_dir / f"REPORT_{base_filename}_{timestamp}.xlsx"
 
+    if "answer_raw" not in tc_df.columns:
+        tc_df = tc_df.copy()
+        tc_df["answer_raw"] = tc_df["answer"]
+
     report_df = tc_df.rename(
         columns={
             "Use case": "Код use case",
             "answer": "Ответ чат-бота",
+            "answer_raw": "Ответ бота (raw)",
             "response_time": "Время ответа (сек)",
             "accuracy": "Точность",
             "completeness": "Полнота",
@@ -537,6 +736,7 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
             "Ожидаемые ответы",
             "Критерий успеха",
             "Ответ чат-бота",
+            "Ответ бота (raw)",
             "Время ответа (сек)",
             "Точность",
             "Полнота",
@@ -569,11 +769,32 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
         image_path = output_dir / f"REPORT_{base_filename}_{timestamp}.png"
         try:
             fig.write_image(str(image_path), scale=0.7)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"Не удалось сохранить PNG отчёта ({type(e).__name__}: {e}), пробуем HTML"
+            )
             html_path = output_dir / f"REPORT_{base_filename}_{timestamp}.html"
-            fig.write_html(str(html_path), include_plotlyjs="cdn", full_html=True)
-            image_path = html_path
-    except Exception:
+            try:
+                fig.write_html(str(html_path), include_plotlyjs="cdn", full_html=True)
+                image_path = html_path
+            except (OSError, PermissionError, ValueError) as e2:
+                logger.warning(
+                    f"Не удалось сохранить HTML визуализации ({type(e2).__name__}: {e2})"
+                )
+                image_path = None
+            except Exception as e2:
+                logger.warning(
+                    f"Неожиданная ошибка сохранения HTML ({type(e2).__name__}: {e2})"
+                )
+                image_path = None
+    except ImportError as e:
+        logger.info(f"Plotly не установлен, график пропущен: {e}")
+        image_path = None
+    except (ValueError, KeyError, TypeError) as e:
+        logger.warning(f"Некорректные данные для графика ({type(e).__name__}: {e})")
+        image_path = None
+    except Exception as e:
+        logger.warning(f"Не удалось построить визуализацию ({type(e).__name__}: {e})")
         image_path = None
 
     return report_path, image_path
@@ -597,6 +818,11 @@ def main() -> None:
     parser.add_argument("--out", default=str(SCRIPT_DIR))
     parser.add_argument("--user-id", default=os.getenv("ADK_TEST_USER_ID", "tester"))
     parser.add_argument("--session-id", default=os.getenv("ADK_TEST_SESSION_ID", f"test_{int(time.time())}"))
+    parser.add_argument(
+        "--fake-first-name",
+        default=os.getenv("ADK_TEST_FIRST_NAME"),  # None → build_adk_profile_state_delta uses default "Jenkins"
+        help="Имя для stateDelta (плейсхолдер {first_name} в промптах ADK). По умолчанию ADK_TEST_FIRST_NAME или Jenkins.",
+    )
     args = parser.parse_args()
 
     excel_path = Path(args.excel).expanduser().resolve()
@@ -607,7 +833,16 @@ def main() -> None:
 
     tc_df = load_test_cases(excel_path)
 
-    client = AdkApiClient(ADK_API_BASE, ADK_APP_NAME, timeout_sec=ADK_TIMEOUT_SEC)
+    profile = build_adk_profile_state_delta(
+        first_name=args.fake_first_name.strip() if args.fake_first_name else None
+    )
+    logger.info(f"ADK stateDelta profile keys: {sorted(profile.keys())}")
+    client = AdkApiClient(
+        ADK_API_BASE,
+        ADK_APP_NAME,
+        timeout_sec=ADK_TIMEOUT_SEC,
+        profile_state_delta=profile,
+    )
     session_id = initialize_session(client, user_id=str(args.user_id), session_id=str(args.session_id))
 
     answers_file_path = SCRIPT_DIR / ("answers_" + excel_path.stem + (".parquet" if ASK_QUESTIONS else ".parquet"))

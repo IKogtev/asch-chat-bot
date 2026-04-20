@@ -16,11 +16,8 @@ from utils.event_logger import EventLogger
 # импортируем конфиг
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
-from utils.doc_search_format import (
-    extract_document_id_lines,
-    parse_download_ranks,
-    strip_bot_search_meta,
-)
+from utils.doc_search_format import parse_download_ranks
+
 from bot.services.utils import (
     markdown_to_safe_html,
     render_results,
@@ -320,73 +317,8 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             )
             response_time = int((time.time() - start_time) * 1000)
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
-            # сохраняем в логах событие ответа и его латентность
-            await eventlogger.log_event(
-                event_type="response",
-                user_id=str(user_id),
-                session_id=session_id,
-                channel="telegram",
-                payload={
-                    "turn_id": turn_id,
-                    "text": answer[:500],  # не логируем слишком длинные
-                    "response_time_ms": response_time
-                }
-            )
-            # Обрабатываем сырой ответ: выделяем id документов и "очищаем" текст для вывода
+
             work = answer or ""
-            work, doc_ids = extract_document_id_lines(work)
-
-            # --- Автоматически отправляем документы, которые были найдены и отмечены в ответе ---
-            for did in doc_ids:
-                # BUG question используем ли это для выгрузки
-                # логируем запрос на скачивание документа и его id
-                logger.debug(f"Запрос на отправку документа doc_id={did} для user_id={user_id}")
-                await eventlogger.log_event(
-                    event_type="document_download",
-                    user_id=str(user_id),
-                    session_id=session_id,
-                    channel="telegram",
-                    payload={
-                        "document_id": did,
-                        "source": "search"
-                    }
-                )
-                file_path = None
-                try:
-                    # Скачиваем файл документа по id
-                    file_path = await doc_handler.download_document(did)
-                    if file_path and file_path.exists():
-                        # Отправляем документ пользователю в TG
-                        await m.answer_document(
-                            FSInputFile(str(file_path), filename=file_path.name)
-                        )
-                    else:
-                        await m.answer("⚠️ Не удалось загрузить документ.")
-                except Exception as doc_err:
-                    await eventlogger.log_event(
-                        event_type="error",
-                        user_id=str(user_id),
-                        session_id=session_id,
-                        channel="telegram",
-                        payload={
-                            "error": str(doc_err)
-                        }
-                    )
-                    logger.error(
-                        f"Ошибка отправки документа doc_id={did}: {doc_err}",
-                        exc_info=True,
-                    )
-                    await m.answer("❌ Ошибка при загрузке документа.")
-                finally:
-                    # После отправки, всегда пытаемся удалить временный файл
-                    try:
-                        if file_path and file_path.exists():
-                            file_path.unlink()
-                    except Exception:
-                        pass
-
-            # --- Удаляем технические метаданные поиска из текста ответа для корректного отображения ---
-            work = strip_bot_search_meta(work)
 
             # сохраняем историю диалога
             await store.append(user_id, "user", user_text)
@@ -410,12 +342,11 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     return
 
             # ответ пользователю (kb_answer и прочее)
-            clean_answer = doc_handler.remove_document_ids(work)
-            if clean_answer.strip():
-                if "<b>" in clean_answer or clean_answer.lstrip().startswith("<"):
-                    await m.answer(clean_answer, parse_mode="HTML")
+            if work.strip():
+                if "<b>" in work or work.lstrip().startswith("<"):
+                    await m.answer(work, parse_mode="HTML")
                 else:
-                    html_answer = markdown_to_safe_html(clean_answer)
+                    html_answer = markdown_to_safe_html(work)
                     await m.answer(html_answer, parse_mode="HTML")
 
         except Exception as e:
