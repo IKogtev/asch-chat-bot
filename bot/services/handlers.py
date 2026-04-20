@@ -317,6 +317,18 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             )
             response_time = int((time.time() - start_time) * 1000)
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+            # сохраняем в логах событие ответа и его латентность
+            await eventlogger.log_event(
+                event_type="response",
+                user_id=str(user_id),
+                session_id=session_id,
+                channel="telegram",
+                payload={
+                    "turn_id": turn_id,
+                    "text": answer[:500],  # не логируем слишком длинные
+                    "response_time_ms": response_time
+                }
+            )
 
             work = answer or ""
 

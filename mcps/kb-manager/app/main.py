@@ -1842,6 +1842,61 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
 
     return [{"text": w, "value": c} for w, c in top]
 
+# аналитика фраз топ
+@app.get("/api/analytics/top-phrases")
+async def top_phrases(from_ts: str, to_ts: str, request: Request):
+    pool = request.app.state.db_pool
+
+    from_ts = datetime.fromisoformat(from_ts)
+    to_ts = datetime.fromisoformat(to_ts)
+
+    query = """
+    SELECT payload->>'text' as text
+    FROM events
+    WHERE event_type = 'message_received'
+      AND payload ? 'text'
+      AND created_at BETWEEN $1 AND $2
+    """
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, from_ts, to_ts)
+
+    texts = [r["text"] for r in rows if r["text"]]
+
+    stopwords = {
+        "и", "в", "на", "что", "как", "а", "с", "по",
+        "это", "файл", "документ", "скачать"
+    }
+
+    all_phrases = []
+
+    for t in texts:
+        words = re.findall(r'\b\w+\b', t.lower())
+
+        # чистка + лемматизация
+        clean = []
+        for w in words:
+            if len(w) < 3 or w in stopwords:
+                continue
+            lemma = morph.parse(w)[0].normal_form
+            clean.append(lemma)
+
+        # ===== биграммы =====
+        for i in range(len(clean) - 1):
+            phrase = f"{clean[i]} {clean[i+1]}"
+            all_phrases.append(phrase)
+
+        # ===== триграммы (опционально) =====
+        for i in range(len(clean) - 2):
+            phrase = f"{clean[i]} {clean[i+1]} {clean[i+2]}"
+            all_phrases.append(phrase)
+
+    counter = Counter(all_phrases)
+
+    top = counter.most_common(50)
+
+    return [{"text": p, "value": c} for p, c in top]
+
 # статистика по пользователям
 @app.get("/api/analytics/stats")
 async def get_stats(from_ts: str, to_ts: str, request: Request):

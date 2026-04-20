@@ -1599,7 +1599,7 @@ select:focus {
     max-height: 250px;
     margin-bottom: 20px;
 }
-#word-cloud {
+#word-cloud, #phrase-cloud {
     width: 100%;
     height: 300px;
 }
