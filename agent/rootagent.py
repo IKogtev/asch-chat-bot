@@ -1,4 +1,4 @@
-import re
+﻿import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from google.genai import types as genai_types
@@ -7,7 +7,7 @@ from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
-from .config import KB_DOCUMENTS_COLLECTION, DEBUG_EXCEPTIONS
+from .config import DEBUG_EXCEPTIONS, FAQ_DOCUMENTS_COLLECTION, KB_DOCUMENTS_COLLECTION
 from .helpers import truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
@@ -17,7 +17,7 @@ from .agents.doc_search_orchestrator import DocSearchOrchestrator
 
 logger = setup_logger("root_agent", "agent.log")
 
-BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
+BOT_USER_PROFILE_MESSAGE_PREFIX = "РљРѕРЅС‚РµРєСЃС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ:"
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
@@ -25,7 +25,7 @@ def is_bot_user_profile_injection_message(text: str) -> bool:
 
 class RootAgent(BaseAgent):
     """
-    Оркестратор цепочки:
+    РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ С†РµРїРѕС‡РєРё:
     owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
     """
 
@@ -33,6 +33,7 @@ class RootAgent(BaseAgent):
     dispatcher_agent: LlmAgent
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
+    faq_collection: str
     kb_collection: str
 
     model_config = {"arbitrary_types_allowed": True}
@@ -44,6 +45,7 @@ class RootAgent(BaseAgent):
         dispatcher_agent: LlmAgent,
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
+        faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
     ):
         super().__init__(
@@ -52,6 +54,7 @@ class RootAgent(BaseAgent):
             dispatcher_agent=dispatcher_agent,
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
+            faq_collection=faq_collection,
             kb_collection=kb_collection,
             sub_agents=[
                 owasp_agent,
@@ -63,9 +66,9 @@ class RootAgent(BaseAgent):
 
     def _get_user_profile(self, ctx: InvocationContext) -> Dict[str, Any]:
         """
-        Извлекает профиль пользователя:
-        1) сначала из ctx.user.state — долгоживущее состояние пользователя,
-        2) затем fallback из ctx.session.state — если профиль приехал только в сессию.
+        РР·РІР»РµРєР°РµС‚ РїСЂРѕС„РёР»СЊ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ:
+        1) СЃРЅР°С‡Р°Р»Р° РёР· ctx.user.state вЂ” РґРѕР»РіРѕР¶РёРІСѓС‰РµРµ СЃРѕСЃС‚РѕСЏРЅРёРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ,
+        2) Р·Р°С‚РµРј fallback РёР· ctx.session.state вЂ” РµСЃР»Рё РїСЂРѕС„РёР»СЊ РїСЂРёРµС…Р°Р» С‚РѕР»СЊРєРѕ РІ СЃРµСЃСЃРёСЋ.
         """
         profile: Dict[str, Any] = {}
 
@@ -93,7 +96,7 @@ class RootAgent(BaseAgent):
     @staticmethod
     def _extract_user_text(ctx: InvocationContext) -> str:
         """
-        Извлекаем текст текущего пользовательского сообщения из InvocationContext.
+        РР·РІР»РµРєР°РµРј С‚РµРєСЃС‚ С‚РµРєСѓС‰РµРіРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ РёР· InvocationContext.
         """
         user_content = getattr(ctx, "user_content", None)
         if user_content and getattr(user_content, "parts", None):
@@ -109,7 +112,7 @@ class RootAgent(BaseAgent):
 
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
-        """Финальное событие root-агента"""
+        """Р¤РёРЅР°Р»СЊРЅРѕРµ СЃРѕР±С‹С‚РёРµ root-Р°РіРµРЅС‚Р°"""
         return Event(
             author="root_agent",
             invocation_id=ctx.invocation_id,
@@ -121,48 +124,48 @@ class RootAgent(BaseAgent):
         )
 
     def _clear_state_keys(self, ctx: InvocationContext, keys: List[str]) -> None:
-        """Очистка указанных ключей из state"""
+        """РћС‡РёСЃС‚РєР° СѓРєР°Р·Р°РЅРЅС‹С… РєР»СЋС‡РµР№ РёР· state"""
         for key in keys:
             ctx.session.state.pop(key, None)
 
     @staticmethod
     def _pagination_intent_from_message(user_text: str) -> Optional[str]:
         """
-        Короткие реплики без новой темы — команды пагинации (show_more / show_all).
-        Не требует doc_search_list_items в state: при пустом списке оркестратор вернёт
-        понятную ошибку; зато не запускается ложный doc_search, если сессия не сохранилась.
+        РљРѕСЂРѕС‚РєРёРµ СЂРµРїР»РёРєРё Р±РµР· РЅРѕРІРѕР№ С‚РµРјС‹ вЂ” РєРѕРјР°РЅРґС‹ РїР°РіРёРЅР°С†РёРё (show_more / show_all).
+        РќРµ С‚СЂРµР±СѓРµС‚ doc_search_list_items РІ state: РїСЂРё РїСѓСЃС‚РѕРј СЃРїРёСЃРєРµ РѕСЂРєРµСЃС‚СЂР°С‚РѕСЂ РІРµСЂРЅС‘С‚
+        РїРѕРЅСЏС‚РЅСѓСЋ РѕС€РёР±РєСѓ; Р·Р°С‚Рѕ РЅРµ Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ Р»РѕР¶РЅС‹Р№ doc_search, РµСЃР»Рё СЃРµСЃСЃРёСЏ РЅРµ СЃРѕС…СЂР°РЅРёР»Р°СЃСЊ.
         """
-        t = user_text.strip().lower().replace("ё", "е")
+        t = user_text.strip().lower().replace("С‘", "Рµ")
         t = re.sub(r"\s+", " ", t)
         if not t:
             return None
-        if re.fullmatch(r"все[!?.…]*", t):
+        if re.fullmatch(r"РІСЃРµ[!?.вЂ¦]*", t):
             return "show_all"
-        if re.fullmatch(r"(полностью|целиком)([!?.…]*)", t):
+        if re.fullmatch(r"(РїРѕР»РЅРѕСЃС‚СЊСЋ|С†РµР»РёРєРѕРј)([!?.вЂ¦]*)", t):
             return "show_all"
-        if re.fullmatch(r"all([!?.…]*)", t):
+        if re.fullmatch(r"all([!?.вЂ¦]*)", t):
             return "show_all"
-        if re.fullmatch(r"(покажи|дай|выведи|открой)\s+все([!?.…]*)", t):
+        if re.fullmatch(r"(РїРѕРєР°Р¶Рё|РґР°Р№|РІС‹РІРµРґРё|РѕС‚РєСЂРѕР№)\s+РІСЃРµ([!?.вЂ¦]*)", t):
             return "show_all"
-        if re.fullmatch(r"(покажи|выведи)\s+полностью([!?.…]*)", t):
+        if re.fullmatch(r"(РїРѕРєР°Р¶Рё|РІС‹РІРµРґРё)\s+РїРѕР»РЅРѕСЃС‚СЊСЋ([!?.вЂ¦]*)", t):
             return "show_all"
-        if re.fullmatch(r"(ещё|еще|больше|далее|следующие)([!?.…]*)", t):
+        if re.fullmatch(r"(РµС‰С‘|РµС‰Рµ|Р±РѕР»СЊС€Рµ|РґР°Р»РµРµ|СЃР»РµРґСѓСЋС‰РёРµ)([!?.вЂ¦]*)", t):
             return "show_more"
-        if re.fullmatch(r"(ещё|еще)\s+(файлы|документы)([!?.…]*)", t):
+        if re.fullmatch(r"(РµС‰С‘|РµС‰Рµ)\s+(С„Р°Р№Р»С‹|РґРѕРєСѓРјРµРЅС‚С‹)([!?.вЂ¦]*)", t):
             return "show_more"
-        if re.fullmatch(r"(next|more)([!?.…]*)", t):
+        if re.fullmatch(r"(next|more)([!?.вЂ¦]*)", t):
             return "show_more"
         return None
 
     def _get_required_state_dict(self, ctx: InvocationContext, key: str) -> Dict[str, Any]:
-        """Получение обязательного dict из state"""
+        """РџРѕР»СѓС‡РµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕРіРѕ dict РёР· state"""
         value = ctx.session.state.get(key)
         if not isinstance(value, dict):
             raise ValueError(f"State key '{key}' must be dict, got {type(value)}")
         return value
 
     def _get_required_state_text(self, ctx: InvocationContext, key: str) -> str:
-        """Получение обязательного текста из state"""
+        """РџРѕР»СѓС‡РµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕРіРѕ С‚РµРєСЃС‚Р° РёР· state"""
         value = ctx.session.state.get(key)
         if not isinstance(value, str):
             raise ValueError(f"State key '{key}' must be str, got {type(value)}")
@@ -177,7 +180,7 @@ class RootAgent(BaseAgent):
         validator: Callable[[Dict[str, Any]], Dict[str, Any]],
         log_label: str,
     ) -> AsyncGenerator[Event, None]:
-        """Запуск leaf-агента с JSON-валидацией (делегирует json_leaf_runner)."""
+        """Р—Р°РїСѓСЃРє leaf-Р°РіРµРЅС‚Р° СЃ JSON-РІР°Р»РёРґР°С†РёРµР№ (РґРµР»РµРіРёСЂСѓРµС‚ json_leaf_runner)."""
         async for event in run_json_leaf_agent(
             ctx=ctx,
             agent=agent,
@@ -194,10 +197,10 @@ class RootAgent(BaseAgent):
 
         try:
             if not user_text:
-                yield self._build_final_event(ctx, "Пустой запрос. Напишите сообщение ещё раз.")
+                yield self._build_final_event(ctx, "РџСѓСЃС‚РѕР№ Р·Р°РїСЂРѕСЃ. РќР°РїРёС€РёС‚Рµ СЃРѕРѕР±С‰РµРЅРёРµ РµС‰С‘ СЂР°Р·.")
                 return
 
-            # Синхронизация профиля из бота (AdkApiClient.set_user_state) — не пользовательский запрос.
+            # РЎРёРЅС…СЂРѕРЅРёР·Р°С†РёСЏ РїСЂРѕС„РёР»СЏ РёР· Р±РѕС‚Р° (AdkApiClient.set_user_state) вЂ” РЅРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёР№ Р·Р°РїСЂРѕСЃ.
             if is_bot_user_profile_injection_message(user_text):
                 logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
                 yield self._build_final_event(ctx, "")
@@ -304,7 +307,7 @@ class RootAgent(BaseAgent):
                         ctx.session.state["_dispatcher_result_parsed"] = dispatch
                         ctx.session.state.pop("dispatcher_result_json", None)
                         logger.info(
-                            "Dispatcher doc_search→file_download override: ranks=%s",
+                            "Dispatcher doc_searchв†’file_download override: ranks=%s",
                             dr,
                         )
 
@@ -332,7 +335,7 @@ class RootAgent(BaseAgent):
             message = (
                 f"DEBUG: {type(exc).__name__}: {exc}"
                 if DEBUG_EXCEPTIONS
-                else "Произошла ошибка при обработке запроса. Попробуйте позже."
+                else "РџСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР° РїСЂРё РѕР±СЂР°Р±РѕС‚РєРµ Р·Р°РїСЂРѕСЃР°. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
             )
             yield self._build_final_event(ctx, message)
 
@@ -344,23 +347,24 @@ class RootAgent(BaseAgent):
         intent: str,
     ) -> AsyncGenerator[Event, None]:
         """
-        Запуск kb_answer_agent с прямым MCP-поиском или smalltalk.
+        Запуск kb_answer_agent для FAQ/KB-ответа или smalltalk.
 
         Args:
-            ctx: Контекст выполнения
-            user_message: Исходный вопрос пользователя
-            search_query: Нормализованный поисковый запрос
-            intent: Тип запроса (kb_answer, smalltalk)
+            ctx: Контекст выполнения.
+            user_message: Исходный вопрос пользователя.
+            search_query: Нормализованный поисковый запрос.
+            intent: Тип запроса (kb_answer, smalltalk).
         """
         effective_search_query = (search_query or user_message).strip()
         logger.info("kb_answer route: query=%s intent=%s", truncate_for_log(effective_search_query, 300), intent)
 
-        # Переменные для промпта kb_answer_agent
+        # РџРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РїСЂРѕРјРїС‚Р° kb_answer_agent
         user_profile = self._get_user_profile(ctx)
-        # Распаковываем все поля профиля в корень state
+        # Р Р°СЃРїР°РєРѕРІС‹РІР°РµРј РІСЃРµ РїРѕР»СЏ РїСЂРѕС„РёР»СЏ РІ РєРѕСЂРµРЅСЊ state
         for key, value in user_profile.items():
             ctx.session.state[key] = value
         ctx.session.state["search_query"] = effective_search_query
+        ctx.session.state["faq_collection"] = self.faq_collection
         ctx.session.state["kb_answer_collection"] = self.kb_collection
         ctx.session.state["intent"] = intent
 
@@ -376,3 +380,4 @@ class RootAgent(BaseAgent):
 
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
+

@@ -8,9 +8,8 @@ from utils import setup_logger
 # логер событий
 from utils.event_logger import EventLogger
 from utils.document_handler import DocumentHandler
-from utils.doc_search_format import (
-    render_doc_list_html,
-)
+from utils.doc_search_format import render_doc_list_html
+
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
 from bot.services.database import PostgresChatStore

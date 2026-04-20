@@ -1,0 +1,163 @@
+{
+  "timestamp": "2026-01-29T14:54:26.297028",
+  "tests": {
+    "healthcheck": {
+      "name": "Server Availability",
+      "status": "PASSED",
+      "details": {
+        "http_status": 200,
+        "response": {
+          "success": true,
+          "status": {
+            "initialized": true,
+            "index_exists": true,
+            "documents_count": 176,
+            "metadata": {
+              "storage_type": "qdrant",
+              "points_count": 176,
+              "qdrant": {
+                "alias": "faq_collection_active",
+                "vector_size": 1024,
+                "distance": "COSINE",
+                "collection": "faq_collection"
+              },
+              "embedding": {
+                "chunk_overlap": 20,
+                "model": "Qwen/Qwen3-Embedding-0.6B",
+                "chunk_size": 512
+              },
+              "llm_using": "Qwen/Qwen3-Embedding-0.6B",
+              "__type__": "collection_meta",
+              "created_at": "2026-01-29T11:42:20.216465",
+              "documents_count": 176,
+              "source": "/app/faq_service/faq_documents",
+              "last_updated": "2026-01-29T11:42:20.222249",
+              "version": "1",
+              "index_status": "initialized"
+            },
+            "last_update": "2026-01-29T11:42:20.236389"
+          }
+        }
+      },
+      "timestamp": "2026-01-29T14:54:26.299029"
+    },
+    "mcp_client": {
+      "name": "MCP Client Connection",
+      "status": "PASSED",
+      "details": {
+        "tools_count": 2,
+        "tools": [
+          {
+            "name": "faq_search",
+            "description": "FAQ Answers.\nget releavnt answers from FAQ index.\nArgs:\n- query: Question from user\n- collection: Qdrant collection name to use\nReturns: Dict with answer and sources\n{\n    \"contexts\": [\n        {\n        \"question\": \"The most relevant question\",\n        \"answer\": \"answer from index,\",\n        \"score\": 0.87\n        }\n    ]\n}\n\n{\n    \"question\": The most relevant question,\n    \"answer\": answer from index,\n    \"sources\": source of information,\n}",
+            "parameters": {}
+          },
+          {
+            "name": "get_faq_info",
+            "description": "Получить информацию о статусе FAQ.",
+            "parameters": {}
+          }
+        ],
+        "faq_search_found": true
+      },
+      "timestamp": "2026-01-29T14:54:26.311029"
+    },
+    "langchain_agent": {
+      "name": "LangChain Agent",
+      "status": "PASSED",
+      "details": {
+        "available_tools": [
+          "faq_search",
+          "get_faq_info"
+        ],
+        "tools_count": 2,
+        "agent_type": "Tool-calling (2-step)",
+        "agent_test_call": {
+          "query": "Можно ли взять отпуск без сохранения зарплаты во время  испытательного срока?",
+          "planning_message": "content='\\n\\n' additional_kwargs={'refusal': None} response_metadata={'token_usage': {'completion_tokens': 394, 'prompt_tokens': 641, 'total_tokens': 1035, 'completion_tokens_details': None, 'prompt_tokens_details': None}, 'model_provider': 'openai', 'model_name': 'hosted_vllm/Qwen/Qwen3-30B-A3B', 'system_fingerprint': None, 'id': 'chatcmpl-c743a028fa15478da7a02902387ac667', 'finish_reason': 'tool_calls', 'logprobs': None} id='lc_run--019c099a-d155-7ac0-bf9e-9ada38b85aef-0' tool_calls=[{'name': 'faq_search', 'args': {'query': 'Можно ли взять отпуск без сохранения зарплаты во время испытательного срока?', 'collection': 'faq_collection', 'filters': {'kb_id': 'workers_inside'}}, 'id': 'chatcmpl-tool-db5594bc7dcc4667a63ea87a8defa84e', 'type': 'tool_call'}] usage_metadata={'input_tokens': 641, 'output_tokens': 394, 'total_tokens': 1035, 'input_token_details': {}, 'output_token_details': {}}",
+          "tool_calls": [
+            {
+              "tool": "faq_search",
+              "args": {
+                "query": "Можно ли взять отпуск без сохранения зарплаты во время испытательного срока?",
+                "collection": "faq_collection",
+                "filters": {
+                  "kb_id": "workers_inside"
+                }
+              },
+              "result": "{\"success\":true,\"contexts\":[{\"question\":\"Можно ли взять отпуск без сохранения зарплаты во время испытательного срока?\",\"answer\":\"Контекст:\\n\\n\\nВопрос:\\nМожно ли взять отпуск без сохранения зарплаты во время испытательного срока?\\n\\nОтвет:\\n\",\"categories\":[],\"sections\":[],\"context_blocks_count\":0,\"source_files\":[],\"sources\":[]}]}"
+            }
+          ],
+          "final_response": "\n\n### Ход рассуждений\nВызван инструмент faq_search для поиска информации о возможностях взятия отпуска без сохранения зарплаты во время испытательного срока. В результатах запроса был найден контекст с вопросом, но ответ отсутствовал. Учитывая это, был предоставлен общий ответ на основе стандартных трудовых норм.\n\n### Результат запроса вопросно-ответную базу\nКонтекст: \"Можно ли взять отпуск без сохранения зарплаты во время испытательного срока?\" (ответ отсутствует в данных).\n\n### Ответ\nДа, сотрудник может запросить отпуск без сохранения зарплаты во время испытательного срока, но работодатель вправе отказать в этом. Точное регулирование зависит от внутренних политик компании и трудового законодательства. Рекомендуется уточнить условия в трудовом договоре или коллективном соглашении.",
+          "response_length": 792,
+          "status": "PASSED"
+        }
+      },
+      "timestamp": "2026-01-29T14:54:26.549591"
+    },
+    "faq_queries": {
+      "name": "FAQ Functional Tests",
+      "status": "PASSED_PARTIAL",
+      "details": {
+        "total_queries": 3,
+        "passed_queries": 0,
+        "partial_queries": 1,
+        "failed_queries": 2,
+        "success_rate": "0.0%"
+      },
+      "queries": [
+        {
+          "test_name": "Увольнение",
+          "query": "Кому сдавать технику?",
+          "status": "FAILED",
+          "response": "В текущем FAQ нет информации о том, кому сдавать технику. Пожалуйста, проверьте исходные файлы или свяжитесь с поддержкой для получения дополнительных сведений.",
+          "response_length": 160,
+          "keywords_found": [],
+          "keywords_expected": [
+            "304",
+            "3 этаж",
+            "техника"
+          ],
+          "elapsed_time": 5.4162633419036865,
+          "tool_calls_count": 1
+        },
+        {
+          "test_name": "Выплаты",
+          "query": "Что необходимо предоставить для оформления единовременной выплаты при рождении ребенка?",
+          "status": "ERROR",
+          "response": null,
+          "response_length": 0,
+          "keywords_found": [],
+          "keywords_expected": [
+            "выплата",
+            "ребенка",
+            "оформление"
+          ],
+          "elapsed_time": 0,
+          "tool_calls_count": 0,
+          "error": "Got unsupported early_stopping_method `generate`"
+        },
+        {
+          "test_name": "Свободной форме вопрос Воинский Учет",
+          "query": "как встать на воинский учет и зачем вставать?",
+          "status": "PASSED_PARTIAL",
+          "response": "К сожалению, в доступных мне источниках информации не найдено конкретных сведений о процедуре вставки на воинский учет и ее целях. Рекомендуется обратиться в военное комиссариат или посетить официальный сайт Министерства обороны РФ для получения актуальной информации. Обычно воинский учет связан с обязательной регистрацией граждан для возможного призыва на военную службу, а также для учета личных данных в военных целях.",
+          "response_length": 423,
+          "keywords_found": [
+            "воинский учет"
+          ],
+          "keywords_expected": [
+            "регистрации",
+            "проживания",
+            "военкомат",
+            "воинский учет"
+          ],
+          "elapsed_time": 7.088728427886963,
+          "tool_calls_count": 3
+        }
+      ],
+      "timestamp": "2026-01-29T14:54:34.853384"
+    }
+  },
+  "metrics": {}
+}

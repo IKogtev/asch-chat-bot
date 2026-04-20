@@ -24,12 +24,6 @@ class DocumentHandler:
         logger.debug(f"Найдено {len(matches)} document_id в тексте")
         return matches
     
-    def remove_document_ids(self, text: str) -> str:
-        """Удалить все [document_id:...] из текста"""
-        pattern = r'\s*\[document_id:\s*doc_[a-f0-9\-]+\]'
-        cleaned_text = re.sub(pattern, '', text).strip()
-        logger.debug("Удалены document_id из текста")
-        return cleaned_text
     
     async def download_document(self, document_id: str) -> Optional[Path]:
         """Скачать документ через KB Manager API"""
