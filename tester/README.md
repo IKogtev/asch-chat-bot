@@ -79,7 +79,7 @@ FULL_NAME="Jenkins"
 
 - Инициализировать сессию
 ```sh
-curl -sS -X POST "${ADK_AGENT_URL}/apps/${APP}/users/${USER}/sessions/${SESSION}" \
+curl -sS -X POST "${ADK_AGENT_URL}/apps/${ADK_AGENT_APP}/users/${USER}/sessions/${SESSION}" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
