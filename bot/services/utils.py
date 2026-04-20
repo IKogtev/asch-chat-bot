@@ -5,6 +5,8 @@ import html as html_module
 import re
 from bot.services.config import Settings
 from utils import setup_logger
+# логер событий
+from utils.event_logger import EventLogger
 from utils.document_handler import DocumentHandler
 from utils.doc_search_format import render_doc_list_html
 
@@ -14,6 +16,7 @@ from bot.services.database import PostgresChatStore
 
 # Настройка логгера
 logger = setup_logger('utils_processing', 'utils_processing.log')
+eventlogger = EventLogger()
 
 def markdown_to_safe_html(text: str) -> str:
     """Конвертация Markdown в безопасный HTML для Telegram"""
@@ -50,7 +53,6 @@ async def handle_download_by_ranks(
     ) -> bool:
     if not ranks:
         return False
-
     sent_any = False
     for rank in ranks:
         item = await store.get_result_by_rank(user_id, session_id, rank)
@@ -66,6 +68,19 @@ async def handle_download_by_ranks(
         file_path = None
         try:
             file_path = await doc_handler.download_document(doc_id)
+            await eventlogger.log_event(
+                event_type="document_download",
+                user_id=str(user_id),
+                user_name=m.from_user.username,
+                session_id=session_id,
+                channel="telegram",
+                payload={
+                    "file_path": str(file_path),
+                    "doc_id": doc_id,
+                    "rank": rank,
+                    "source": "search"
+                }
+            )
             if file_path and file_path.exists():
                 await m.answer_document(
                     FSInputFile(str(file_path), filename=file_path.name)
