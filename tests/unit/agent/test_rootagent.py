@@ -263,6 +263,18 @@ def test_get_required_state_dict_raises_for_non_dict() -> None:
 
 
 @pytest.mark.unit
+def test_owasp_invalid_contract_fallback_returns_blocked_contract() -> None:
+    result = RootAgent._owasp_invalid_contract_fallback("not-json", ValueError("Invalid JSON"))
+
+    assert result == {
+        "status": "blocked",
+        "route": "reject",
+        "reason": rootagent_module.OWASP_INVALID_CONTRACT_REASON,
+        "user_message": rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE,
+    }
+
+
+@pytest.mark.unit
 def test_get_required_state_text_returns_string_value() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={"payload": "value"})
