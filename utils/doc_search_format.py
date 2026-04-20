@@ -2,7 +2,6 @@
 Форматирование списка документов и разбор follow-up команд (общее для бота и агента).
 """
 import html as html_module
-import json
 import re
 from typing import List, Optional
 
@@ -108,47 +107,3 @@ def render_doc_list_html(items: list[dict], total: int, offset: int = 0) -> str:
         text += "\n\nНапишите номер документа, чтобы скачать его."
 
     return text
-
-
-def strip_bot_search_meta(text: str) -> str:
-    """Удаляет служебный блок meta из ответа агента."""
-    return re.sub(
-        r"<bot_search_meta>\s*.*?\s*</bot_search_meta>",
-        "",
-        text,
-        flags=re.DOTALL,
-    ).strip()
-
-
-def extract_bot_search_meta(text: str) -> dict | None:
-    """Парсит <bot_search_meta>{...}</bot_search_meta>."""
-    m = re.search(
-        r"<bot_search_meta>\s*(\{.*?\})\s*</bot_search_meta>",
-        text,
-        flags=re.DOTALL,
-    )
-    if not m:
-        return None
-
-    try:
-        data = json.loads(m.group(1).strip())
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def extract_document_id_lines(text: str) -> tuple[str, list[str]]:
-    """
-    Возвращает (текст без строк document_id, список id).
-    Формат строк: document_id:12345
-    """
-    lines: list[str] = []
-    ids: list[str] = []
-    for line in (text or "").splitlines():
-        s = line.strip()
-        m = re.match(r"^document_id:\s*(\S+)\s*$", s, re.IGNORECASE)
-        if m:
-            ids.append(m.group(1))
-            continue
-        lines.append(line)
-    return "\n".join(lines).strip(), ids
