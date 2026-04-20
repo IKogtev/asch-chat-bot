@@ -72,12 +72,14 @@ async def handle_download_by_ranks(
             await eventlogger.log_event(
                 event_type="document_download",
                 user_id=str(user_id),
+                user_name=m.from_user.username,
                 session_id=session_id,
                 channel="telegram",
                 payload={
                     "file_path": str(file_path),
                     "doc_id": doc_id,
-                    "rank": rank
+                    "rank": rank,
+                    "source": "search"
                 }
             )
             if file_path and file_path.exists():
