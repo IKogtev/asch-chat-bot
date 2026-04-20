@@ -1637,3 +1637,23 @@ select:focus {
     word-break: break-word;
     white-space: pre-wrap;
 }
+
+/* Фильтры логов */
+.logs-filters input {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 0.875rem;
+    transition: border-color 0.2s;
+}
+
+.logs-filters input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.logs-filters input::placeholder {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}

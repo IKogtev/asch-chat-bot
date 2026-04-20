@@ -321,7 +321,16 @@
                 <div id="logs-tab" class="tab-content">
                     <div class="section-header">
                         <h2>🧾 Логи</h2>
-                        <button onclick="loadLogs()" class="btn btn-secondary">Загрузить логи</button>
+                        <button onclick="loadLogs()" class="btn btn-secondary">🔄 Обновить логи</button>
+                    </div>
+                    <!-- Фильтры по столбцам -->
+                    <div class="logs-filters" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 12px;">
+                        <input type="text" id="filter-user-id" placeholder="🔍 User ID" class="log-filter" data-column="user_id">
+                        <input type="text" id="filter-user-name" placeholder="🔍 User name" class="log-filter" data-column="user_name">
+                        <input type="text" id="filter-event" placeholder="🔍 Event" class="log-filter" data-column="event_type">
+                        <input type="text" id="filter-channel" placeholder="🔍 Channel" class="log-filter" data-column="channel">
+                        <input type="text" id="filter-time" placeholder="🔍 Time" class="log-filter" data-column="created_at">
+                        <input type="text" id="filter-payload" placeholder="🔍 Payload" class="log-filter" data-column="payload">
                     </div>
                     <div id="logs-table"></div>
                 </div>
