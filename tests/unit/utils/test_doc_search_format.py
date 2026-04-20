@@ -1,13 +1,10 @@
 import pytest
 
 from utils.doc_search_format import (
-    extract_bot_search_meta,
-    extract_document_id_lines,
     extract_download_ranks,
     extract_loose_tail_ranks,
     parse_download_ranks,
     render_doc_list_html,
-    strip_bot_search_meta,
 )
 
 
@@ -89,33 +86,4 @@ def test_render_doc_list_html_contains_pagination_hint_when_not_all_items_shown(
     assert "<b>ещё</b>" in result
 
 
-@pytest.mark.unit
-def test_strip_and_extract_bot_search_meta() -> None:
-    text = 'Ответ\n<bot_search_meta>{"search_id":"42","shown_count":2}</bot_search_meta>'
 
-    assert strip_bot_search_meta(text) == "Ответ"
-    assert extract_bot_search_meta(text) == {"search_id": "42", "shown_count": 2}
-
-
-@pytest.mark.unit
-def test_extract_bot_search_meta_returns_none_for_invalid_json() -> None:
-    text = "<bot_search_meta>{not-json}</bot_search_meta>"
-
-    assert extract_bot_search_meta(text) is None
-
-
-@pytest.mark.unit
-def test_extract_document_id_lines_returns_text_without_service_lines_and_all_ids() -> None:
-    text = "\n".join(
-        [
-            "Первая строка",
-            "document_id: abc-123",
-            "document_id:XYZ",
-            "Финальная строка",
-        ]
-    )
-
-    clean_text, ids = extract_document_id_lines(text)
-
-    assert clean_text == "Первая строка\nФинальная строка"
-    assert ids == ["abc-123", "XYZ"]
