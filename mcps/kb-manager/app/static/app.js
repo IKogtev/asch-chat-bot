@@ -2829,15 +2829,16 @@ function renderTopDocs(docs, sources) {
 
 // загрузка аналитической активности 
 async function loadActivity(from, to) {
-    const [activity, words] = await Promise.all([
+    const [activity, words, phrases] = await Promise.all([
         fetch(`/api/analytics/activity?from_ts=${from}&to_ts=${to}`).then(r => r.json()),
-        fetch(`/api/analytics/top-words?from_ts=${from}&to_ts=${to}`).then(r => r.json())
+        fetch(`/api/analytics/top-words?from_ts=${from}&to_ts=${to}`).then(r => r.json()),
+        fetch(`/api/analytics/top-phrases?from_ts=${from}&to_ts=${to}`).then(r => r.json())
     ]);
 
-    renderActivity(activity, words);
+    renderActivity(activity, words, phrases);
 }
 // отрисовка графиков активности
-function renderActivity(activity, words) {
+function renderActivity(activity, words, phrases) {
 
     // ===== ЧАСЫ =====
     const hours = Array.from({ length: 24 }, (_, i) => i);
@@ -2879,17 +2880,23 @@ function renderActivity(activity, words) {
 
 
     // ===== ДНИ =====
-    const days = ["ВС","ПН","ВТ","СР","ЧТ","ПТ","СБ"];
+    const days = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
 
     const dayMap = {};
-    days.forEach((_, i) => dayMap[i] = 0);
+    // Инициализируем счётчики для всех дней (0-6, где 0=ВС по стандарту JS)
+    for (let i = 0; i < 7; i++) {
+        dayMap[i] = 0;
+    }
 
     activity.forEach(a => {
         const day = Number(a.day);
         dayMap[day] += Number(a.messages);
     });
 
-    const dayData = days.map((_, i) => dayMap[i]);
+    const dayData = days.map((_, displayIndex) => {
+        const dataIndex = (displayIndex + 1) % 7;
+        return dayMap[dataIndex];
+    });
 
     if (dayChart) {
         dayChart.destroy();
@@ -2911,35 +2918,68 @@ function renderActivity(activity, words) {
 
 
     // ===== WORD CLOUD =====
-    const list = words.map(w => [w.text, w.value]);
+    // const list = words.map(w => [w.text, w.value]);
 
-    const cloudEl = document.getElementById("word-cloud");
+    // const cloudEl = document.getElementById("word-cloud");
 
-    // очищаем перед рендером
-    cloudEl.innerHTML = "";
+    // // очищаем перед рендером
+    // cloudEl.innerHTML = "";
+
+    // if (list.length === 0) {
+    //     cloudEl.innerHTML = "<div>Нет данных</div>";
+    //     return;
+    // }
+    // // если контейнер ещё не готов для отрисовки
+    // if (cloudEl.offsetWidth === 0) {
+    //     setTimeout(() => renderActivity(activity, words, phrases), 100);
+    //     return;
+    // }
+    // // отложенный рендер word cloud он требует
+    // setTimeout(() => {
+    //     WordCloud(cloudEl, {
+    //         list: list,
+    //         gridSize: 8,
+    //         weightFactor: 10,
+    //         fontFamily: "Arial",
+    //         color: "random-dark",
+    //         backgroundColor: "#fff",
+    //         rotateRatio: 0.5
+    //     });
+    // }, 100);
+    renderCloud("word-cloud", words);
+    // phrases
+    renderCloud("phrase-cloud", phrases);
+}
+
+function renderCloud(id, data) {
+    const el = document.getElementById(id);
+
+    const list = data.map(w => [w.text, w.value]);
+
+    el.innerHTML = "";
 
     if (list.length === 0) {
-        cloudEl.innerHTML = "<div>Нет данных</div>";
+        el.innerHTML = "<div>Нет данных</div>";
         return;
     }
-    // если контейнер ещё не готов для отрисовки
-    if (cloudEl.offsetWidth === 0) {
-        setTimeout(() => renderActivity(activity, words), 100);
+
+    if (el.offsetWidth === 0) {
+        setTimeout(() => renderCloud(id, data), 100);
         return;
     }
-    // отложенный рендер word cloud он требует
+
     setTimeout(() => {
-        WordCloud(cloudEl, {
+        WordCloud(el, {
             list: list,
             gridSize: 8,
             weightFactor: 10,
             fontFamily: "Arial",
             color: "random-dark",
-            backgroundColor: "#fff",
-            rotateRatio: 0.5
+            backgroundColor: "#fff"
         });
-    }, 100);
+    }, 50);
 }
+
 // загрузка всей аналитики
 async function loadAnalytics() {
     const fromRaw = document.getElementById("from").value;
