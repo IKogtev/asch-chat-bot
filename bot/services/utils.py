@@ -6,14 +6,8 @@ import re
 from bot.services.config import Settings
 from utils import setup_logger
 from utils.document_handler import DocumentHandler
-from utils.doc_search_format import (
-    render_doc_list_html,
-    parse_download_ranks,
-    extract_bot_search_meta,
-    strip_bot_search_meta,
-    extract_document_id_lines,
-)
-import json
+from utils.doc_search_format import render_doc_list_html
+
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
 from bot.services.database import PostgresChatStore
