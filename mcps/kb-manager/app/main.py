@@ -29,6 +29,7 @@ from collections import Counter
 import re
 from collections import Counter
 import pymorphy3
+import json
 
 load_dotenv()
 
@@ -1597,27 +1598,48 @@ async def update_subscriber_group(data: dict):
 # логирование событий в ui для аналитики
 @app.get("/api/events")
 async def get_events(request: Request):
-    """Получить последние события для мониторинга состояния бота и системы"""
     limit = int(request.query_params.get("limit", 100))
-    since = request.query_params.get("since")
-    if since:
-        since = datetime.fromisoformat(since)
+    offset = int(request.query_params.get("offset", 0))
+
+    filters = {
+        "user_id": request.query_params.get("user_id"),
+        "user_name": request.query_params.get("user_name"),
+        "event_type": request.query_params.get("event_type"),
+        "channel": request.query_params.get("channel"),
+        "created_at": request.query_params.get("created_at"),
+        "payload": request.query_params.get("payload"),
+    }
+
+    conditions = []
+    values = []
+    i = 1
+
+    for key, value in filters.items():
+        if value:
+            if key == "payload":
+                conditions.append(f"payload::text ILIKE ${i}")
+            else:
+                conditions.append(f"{key} ILIKE ${i}")
+            values.append(f"%{value}%")
+            i += 1
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    query = f"""
+        SELECT user_id, user_name, event_type, channel, payload, created_at
+        FROM events
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT ${i} OFFSET ${i+1}
+    """
+
+    values.extend([limit, offset])
+
     async with request.app.state.db_pool.acquire() as conn:
-        if since:
-            rows = await conn.fetch("""
-                    SELECT user_id, user_name, event_type, channel, payload, created_at
-                    FROM events
-                    WHERE created_at > $1
-                    ORDER BY created_at ASC
-                    LIMIT $2
-                """, since, limit)
-        else:
-            rows = await conn.fetch("""
-                SELECT user_id, user_name, event_type, channel, payload, created_at
-                FROM events
-                ORDER BY created_at DESC
-                LIMIT $1
-            """, limit)
+        rows = await conn.fetch(query, *values)
+
     return [
         {
             "user_id": r["user_id"],
