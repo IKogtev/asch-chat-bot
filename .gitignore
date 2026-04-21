@@ -33,7 +33,6 @@ filegator_data
 node_modules/
 package-lock.json
 package.json
-tests/
 tsconfig.json
 test-results/
 playwright.config.ts

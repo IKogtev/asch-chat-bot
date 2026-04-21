@@ -1,4 +1,5 @@
-﻿import re
+import json
+import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from google.genai import types as genai_types
@@ -17,15 +18,24 @@ from .agents.doc_search_orchestrator import DocSearchOrchestrator
 
 logger = setup_logger("root_agent", "agent.log")
 
-BOT_USER_PROFILE_MESSAGE_PREFIX = "РљРѕРЅС‚РµРєСЃС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ:"
+OWASP_INVALID_CONTRACT_REASON = "invalid_contract"
+OWASP_INVALID_CONTRACT_USER_MESSAGE = (
+    "Извините, ваш запрос не может быть обработан. Пожалуйста, переформулируйте вопрос."
+)
+
+BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
+OWASP_CONTEXT_WINDOW = 4
+OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
+
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
     return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
 
+
 class RootAgent(BaseAgent):
     """
-    РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ С†РµРїРѕС‡РєРё:
+    Оркестратор цепочки:
     owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
     """
 
@@ -66,9 +76,9 @@ class RootAgent(BaseAgent):
 
     def _get_user_profile(self, ctx: InvocationContext) -> Dict[str, Any]:
         """
-        РР·РІР»РµРєР°РµС‚ РїСЂРѕС„РёР»СЊ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ:
-        1) СЃРЅР°С‡Р°Р»Р° РёР· ctx.user.state вЂ” РґРѕР»РіРѕР¶РёРІСѓС‰РµРµ СЃРѕСЃС‚РѕСЏРЅРёРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ,
-        2) Р·Р°С‚РµРј fallback РёР· ctx.session.state вЂ” РµСЃР»Рё РїСЂРѕС„РёР»СЊ РїСЂРёРµС…Р°Р» С‚РѕР»СЊРєРѕ РІ СЃРµСЃСЃРёСЋ.
+        Извлекает профиль пользователя:
+        1) сначала из `ctx.user.state` как из основного хранилища;
+        2) затем fallback из `ctx.session.state`, если профиль есть только в сессии.
         """
         profile: Dict[str, Any] = {}
 
@@ -92,11 +102,11 @@ class RootAgent(BaseAgent):
                 profile[key] = value
 
         return profile
-    
+
     @staticmethod
     def _extract_user_text(ctx: InvocationContext) -> str:
         """
-        РР·РІР»РµРєР°РµРј С‚РµРєСЃС‚ С‚РµРєСѓС‰РµРіРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ РёР· InvocationContext.
+        Извлекает текст текущего пользовательского сообщения из `InvocationContext`.
         """
         user_content = getattr(ctx, "user_content", None)
         if user_content and getattr(user_content, "parts", None):
@@ -112,7 +122,7 @@ class RootAgent(BaseAgent):
 
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
-        """Р¤РёРЅР°Р»СЊРЅРѕРµ СЃРѕР±С‹С‚РёРµ root-Р°РіРµРЅС‚Р°"""
+        """Финальное событие root-агента."""
         return Event(
             author="root_agent",
             invocation_id=ctx.invocation_id,
@@ -123,53 +133,125 @@ class RootAgent(BaseAgent):
             actions=EventActions(end_of_agent=True),
         )
 
+    def _build_final_event_with_history(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+        text: str,
+    ) -> Event:
+        """Формирует финальный ответ и обновляет bounded history текущего диалога."""
+        self._append_recent_message(ctx, "user", user_text)
+        self._append_recent_message(ctx, "assistant", text)
+        return self._build_final_event(ctx, text)
+
     def _clear_state_keys(self, ctx: InvocationContext, keys: List[str]) -> None:
-        """РћС‡РёСЃС‚РєР° СѓРєР°Р·Р°РЅРЅС‹С… РєР»СЋС‡РµР№ РёР· state"""
+        """Очищает указанные ключи из `state`."""
         for key in keys:
             ctx.session.state.pop(key, None)
+
+    def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
+        """Возвращает сохраненное ограниченное окно недавних сообщений."""
+        value = ctx.session.state.get(OWASP_HISTORY_STATE_KEY)
+        if not isinstance(value, list):
+            return []
+
+        items: List[Dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if role in {"user", "assistant"} and text:
+                items.append({"role": role, "text": text})
+        return items
+
+    def _store_recent_messages(self, ctx: InvocationContext, messages: List[Dict[str, str]]) -> None:
+        """Сохраняет ограниченное окно истории для bounded-context проверки."""
+        ctx.session.state[OWASP_HISTORY_STATE_KEY] = messages[-OWASP_CONTEXT_WINDOW:]
+
+    def _append_recent_message(self, ctx: InvocationContext, role: str, text: str) -> None:
+        """Добавляет сообщение в bounded history, игнорируя пустые записи."""
+        normalized_role = str(role or "").strip()
+        normalized_text = str(text or "").strip()
+        if normalized_role not in {"user", "assistant"} or not normalized_text:
+            return
+
+        history = self._get_recent_messages(ctx)
+        history.append({"role": normalized_role, "text": normalized_text})
+        self._store_recent_messages(ctx, history)
+
+    def _prepare_owasp_input(self, ctx: InvocationContext, user_text: str) -> None:
+        """
+        Готовит bounded-context вход для `owasp_agent`.
+
+        Основной сигнал — текущее сообщение пользователя.
+        История передается только как ограниченное окно недавнего контекста.
+        """
+        recent_messages = self._get_recent_messages(ctx)
+        ctx.session.state["owasp_current_user_message"] = user_text
+        ctx.session.state["owasp_recent_messages_json"] = json.dumps(
+            recent_messages,
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _pagination_intent_from_message(user_text: str) -> Optional[str]:
         """
-        РљРѕСЂРѕС‚РєРёРµ СЂРµРїР»РёРєРё Р±РµР· РЅРѕРІРѕР№ С‚РµРјС‹ вЂ” РєРѕРјР°РЅРґС‹ РїР°РіРёРЅР°С†РёРё (show_more / show_all).
-        РќРµ С‚СЂРµР±СѓРµС‚ doc_search_list_items РІ state: РїСЂРё РїСѓСЃС‚РѕРј СЃРїРёСЃРєРµ РѕСЂРєРµСЃС‚СЂР°С‚РѕСЂ РІРµСЂРЅС‘С‚
-        РїРѕРЅСЏС‚РЅСѓСЋ РѕС€РёР±РєСѓ; Р·Р°С‚Рѕ РЅРµ Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ Р»РѕР¶РЅС‹Р№ doc_search, РµСЃР»Рё СЃРµСЃСЃРёСЏ РЅРµ СЃРѕС…СЂР°РЅРёР»Р°СЃСЊ.
+        Распознает короткие команды пагинации без новой поисковой темы.
+        Возвращает `show_more` или `show_all`, если сообщение похоже на команду
+        продолжения уже показанного списка документов.
         """
-        t = user_text.strip().lower().replace("С‘", "Рµ")
+        t = user_text.strip().lower().replace("ё", "е")
         t = re.sub(r"\s+", " ", t)
         if not t:
             return None
-        if re.fullmatch(r"РІСЃРµ[!?.вЂ¦]*", t):
+        if re.fullmatch(r"все[!?.]*", t):
             return "show_all"
-        if re.fullmatch(r"(РїРѕР»РЅРѕСЃС‚СЊСЋ|С†РµР»РёРєРѕРј)([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"(полностью|целиком)([!?.]*)", t):
             return "show_all"
-        if re.fullmatch(r"all([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"all([!?.]*)", t):
             return "show_all"
-        if re.fullmatch(r"(РїРѕРєР°Р¶Рё|РґР°Р№|РІС‹РІРµРґРё|РѕС‚РєСЂРѕР№)\s+РІСЃРµ([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"(покажи|дай|выведи|открой)\s+все([!?.]*)", t):
             return "show_all"
-        if re.fullmatch(r"(РїРѕРєР°Р¶Рё|РІС‹РІРµРґРё)\s+РїРѕР»РЅРѕСЃС‚СЊСЋ([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"(покажи|выведи)\s+полностью([!?.]*)", t):
             return "show_all"
-        if re.fullmatch(r"(РµС‰С‘|РµС‰Рµ|Р±РѕР»СЊС€Рµ|РґР°Р»РµРµ|СЃР»РµРґСѓСЋС‰РёРµ)([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"(еще|больше|далее|следующие)([!?.]*)", t):
             return "show_more"
-        if re.fullmatch(r"(РµС‰С‘|РµС‰Рµ)\s+(С„Р°Р№Р»С‹|РґРѕРєСѓРјРµРЅС‚С‹)([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"(еще)\s+(файлы|документы)([!?.]*)", t):
             return "show_more"
-        if re.fullmatch(r"(next|more)([!?.вЂ¦]*)", t):
+        if re.fullmatch(r"(next|more)([!?.]*)", t):
             return "show_more"
         return None
 
     def _get_required_state_dict(self, ctx: InvocationContext, key: str) -> Dict[str, Any]:
-        """РџРѕР»СѓС‡РµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕРіРѕ dict РёР· state"""
+        """Получает обязательный `dict` из `state`."""
         value = ctx.session.state.get(key)
         if not isinstance(value, dict):
             raise ValueError(f"State key '{key}' must be dict, got {type(value)}")
         return value
 
     def _get_required_state_text(self, ctx: InvocationContext, key: str) -> str:
-        """РџРѕР»СѓС‡РµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕРіРѕ С‚РµРєСЃС‚Р° РёР· state"""
+        """Получает обязательную строку из `state`."""
         value = ctx.session.state.get(key)
         if not isinstance(value, str):
             raise ValueError(f"State key '{key}' must be str, got {type(value)}")
         return value
+
+    @staticmethod
+    def _owasp_invalid_contract_fallback(raw: str, exc: Exception) -> Dict[str, Any]:
+        logger.warning(
+            "OWASP invalid contract fallback triggered: error=%s raw=%s",
+            exc,
+            truncate_for_log(raw, 500),
+        )
+        return validate_owasp_result(
+            {
+                "status": "blocked",
+                "route": "reject",
+                "reason": OWASP_INVALID_CONTRACT_REASON,
+                "user_message": OWASP_INVALID_CONTRACT_USER_MESSAGE,
+            }
+        )
 
     async def _run_json_leaf_agent(
         self,
@@ -179,8 +261,9 @@ class RootAgent(BaseAgent):
         parsed_state_key: str,
         validator: Callable[[Dict[str, Any]], Dict[str, Any]],
         log_label: str,
+        on_parse_error: Optional[Callable[[str, Exception], Dict[str, Any]]] = None,
     ) -> AsyncGenerator[Event, None]:
-        """Р—Р°РїСѓСЃРє leaf-Р°РіРµРЅС‚Р° СЃ JSON-РІР°Р»РёРґР°С†РёРµР№ (РґРµР»РµРіРёСЂСѓРµС‚ json_leaf_runner)."""
+        """Запускает leaf-агента с JSON-валидацией через `json_leaf_runner`."""
         async for event in run_json_leaf_agent(
             ctx=ctx,
             agent=agent,
@@ -188,6 +271,7 @@ class RootAgent(BaseAgent):
             parsed_state_key=parsed_state_key,
             validator=validator,
             log_label=log_label,
+            on_parse_error=on_parse_error,
         ):
             yield event
 
@@ -197,16 +281,22 @@ class RootAgent(BaseAgent):
 
         try:
             if not user_text:
-                yield self._build_final_event(ctx, "РџСѓСЃС‚РѕР№ Р·Р°РїСЂРѕСЃ. РќР°РїРёС€РёС‚Рµ СЃРѕРѕР±С‰РµРЅРёРµ РµС‰С‘ СЂР°Р·.")
+                yield self._build_final_event_with_history(
+                    ctx,
+                    user_text,
+                    "Пустой запрос. Напишите сообщение еще раз.",
+                )
                 return
 
-            # РЎРёРЅС…СЂРѕРЅРёР·Р°С†РёСЏ РїСЂРѕС„РёР»СЏ РёР· Р±РѕС‚Р° (AdkApiClient.set_user_state) вЂ” РЅРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёР№ Р·Р°РїСЂРѕСЃ.
+            # Синхронизация профиля из бота через AdkApiClient.set_user_state:
+            # это не пользовательский запрос и цепочку агентов запускать не нужно.
             if is_bot_user_profile_injection_message(user_text):
                 logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
                 yield self._build_final_event(ctx, "")
                 return
 
             ctx.session.state["user_query"] = user_text
+            self._prepare_owasp_input(ctx, user_text)
             self._clear_state_keys(
                 ctx,
                 [
@@ -225,6 +315,7 @@ class RootAgent(BaseAgent):
                 parsed_state_key="_owasp_result_parsed",
                 validator=validate_owasp_result,
                 log_label="owasp_result_json",
+                on_parse_error=self._owasp_invalid_contract_fallback,
             ):
                 yield event
 
@@ -232,7 +323,11 @@ class RootAgent(BaseAgent):
             logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
 
             if owasp["status"] == "blocked":
-                yield self._build_final_event(ctx, format_reject_answer(owasp["user_message"]))
+                yield self._build_final_event_with_history(
+                    ctx,
+                    user_text,
+                    format_reject_answer(owasp["user_message"]),
+                )
                 return
 
             ranks = extract_download_ranks(user_text)
@@ -307,7 +402,7 @@ class RootAgent(BaseAgent):
                         ctx.session.state["_dispatcher_result_parsed"] = dispatch
                         ctx.session.state.pop("dispatcher_result_json", None)
                         logger.info(
-                            "Dispatcher doc_searchв†’file_download override: ranks=%s",
+                            "Dispatcher doc_search->file_download override: ranks=%s",
                             dr,
                         )
 
@@ -317,7 +412,7 @@ class RootAgent(BaseAgent):
                 async for event in self.doc_search_orchestrator.run_async(ctx):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event(ctx, final_text)
+                yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
 
             async for event in self._handle_kb_answer(
@@ -328,16 +423,16 @@ class RootAgent(BaseAgent):
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
-            yield self._build_final_event(ctx, final_text)
+            yield self._build_final_event_with_history(ctx, user_text, final_text)
 
         except Exception as exc:
             logger.error("RootAgent failure: %s", exc, exc_info=True)
             message = (
                 f"DEBUG: {type(exc).__name__}: {exc}"
                 if DEBUG_EXCEPTIONS
-                else "РџСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР° РїСЂРё РѕР±СЂР°Р±РѕС‚РєРµ Р·Р°РїСЂРѕСЃР°. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
+                else "Произошла ошибка при обработке запроса. Попробуйте позже."
             )
-            yield self._build_final_event(ctx, message)
+            yield self._build_final_event_with_history(ctx, user_text, message)
 
     async def _handle_kb_answer(
         self,
@@ -356,11 +451,15 @@ class RootAgent(BaseAgent):
             intent: Тип запроса (kb_answer, smalltalk).
         """
         effective_search_query = (search_query or user_message).strip()
-        logger.info("kb_answer route: query=%s intent=%s", truncate_for_log(effective_search_query, 300), intent)
+        logger.info(
+            "kb_answer route: query=%s intent=%s",
+            truncate_for_log(effective_search_query, 300),
+            intent,
+        )
 
-        # РџРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РїСЂРѕРјРїС‚Р° kb_answer_agent
+        # Передаем данные профиля и маршрутизации для kb_answer_agent.
         user_profile = self._get_user_profile(ctx)
-        # Р Р°СЃРїР°РєРѕРІС‹РІР°РµРј РІСЃРµ РїРѕР»СЏ РїСЂРѕС„РёР»СЏ РІ РєРѕСЂРµРЅСЊ state
+        # Распаковываем все поля профиля в корневой state.
         for key, value in user_profile.items():
             ctx.session.state[key] = value
         ctx.session.state["search_query"] = effective_search_query
@@ -380,4 +479,3 @@ class RootAgent(BaseAgent):
 
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
-
