@@ -19,7 +19,7 @@ pip install -r requirements.txt
 
 | Переменная | Описание |
 |------------|----------|
-| **`ADK_API_BASE`** | URL сервиса ADK. Пример: `https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru` или внутри Kubernetes кластера `http://adk-agent:8000`. По этому адресу выполняется проверка доступности (health); если агент недоступен, выполнение также прервется. |
+| `ADK_API_BASE` | URL сервиса ADK. Пример: `https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru` или внутри Kubernetes кластера `http://adk-agent:8000`. По этому адресу выполняется проверка доступности (health); если агент недоступен, выполнение также прервется. |
 | `TC_TASK_FILE_NAME` | Имя файла Excel с тест-кейсами. Пример: `NSTya base test v1 260410.xlsx` |
 
 ### Не обязательны для старта, но нужны для автооценки ответов
