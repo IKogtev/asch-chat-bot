@@ -123,3 +123,36 @@ curl -sS -X POST "${ADK_AGENT_URL}/run" \
         }
     }"
 ```
+
+## Локальное тестирование
+
+```sh
+ADK_AGENT_URL="https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru"
+ADK_AGENT_APP="agent"
+USER="jenkins-smoke"
+SESSION="smoke-$(date +%s)"
+FIRST_NAME="Jenkins"
+FULL_NAME="Jenkins"
+
+curl -sS -X POST "${ADK_AGENT_URL}/apps/${ADK_AGENT_APP}/users/${USER}/sessions/${SESSION}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+curl -sS -X POST "${ADK_AGENT_URL}/run" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "app_name": "${ADK_AGENT_APP}",
+  "user_id": "${USER}",
+  "session_id": "${SESSION}",
+  "stateDelta": {
+    "first_name":"${FIRST_NAME}",
+    "full_name":"${FULL_NAME}"
+  },
+  "new_message": {
+    "role": "user",
+    "parts": [{"text": "Привет! Что ты умеешь?"}]
+  }
+}
+EOF
+```
