@@ -19,7 +19,7 @@ pip install -r requirements.txt
 
 | Переменная | Описание |
 |------------|----------|
-| **`ADK_API_BASE`** | URL сервиса ADK. Пример: `https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru` или внутри Kubernetes кластера `http://adk-agent:8000`. По этому адресу выполняется проверка доступности (health); если агент недоступен, выполнение также прервется. |
+| `ADK_API_BASE` | URL сервиса ADK. Пример: `https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru` или внутри Kubernetes кластера `http://adk-agent:8000`. По этому адресу выполняется проверка доступности (health); если агент недоступен, выполнение также прервется. |
 | `TC_TASK_FILE_NAME` | Имя файла Excel с тест-кейсами. Пример: `NSTya base test v1 260410.xlsx` |
 
 ### Не обязательны для старта, но нужны для автооценки ответов
@@ -79,7 +79,7 @@ FULL_NAME="Jenkins"
 
 - Инициализировать сессию
 ```sh
-curl -sS -X POST "${ADK_AGENT_URL}/apps/${APP}/users/${USER}/sessions/${SESSION}" \
+curl -sS -X POST "${ADK_AGENT_URL}/apps/${ADK_AGENT_APP}/users/${USER}/sessions/${SESSION}" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -119,7 +119,65 @@ curl -sS -X POST "${ADK_AGENT_URL}/run" \
         },
         \"new_message\": {
             \"role\": \"user\",
-            \"parts\": [{\"text\": \"В каких документах рассказывают про Fort Knox\"}]
+            \"parts\": [{\"text\": \"В каких документах рассказывают про Fort Knox?\"}]
         }
     }"
+```
+
+## Локальное тестирование через K8S Ingress
+
+- Установить переменные  окружения и инициализировать сессию
+```sh
+ADK_AGENT_URL="https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru"
+ADK_AGENT_APP="agent"
+USER="jenkins-smoke"
+SESSION="smoke-$(date +%s)"
+FIRST_NAME="Jenkins"
+FULL_NAME="Jenkins"
+
+curl -sS -X POST "${ADK_AGENT_URL}/apps/${ADK_AGENT_APP}/users/${USER}/sessions/${SESSION}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+- Пример smalltalk
+```sh
+curl -sS -X POST "${ADK_AGENT_URL}/run" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "app_name": "${ADK_AGENT_APP}",
+  "user_id": "${USER}",
+  "session_id": "${SESSION}",
+  "stateDelta": {
+    "first_name":"${FIRST_NAME}",
+    "full_name":"${FULL_NAME}"
+  },
+  "new_message": {
+    "role": "user",
+    "parts": [{"text": "Привет! Что ты умеешь?"}]
+  }
+}
+EOF
+```
+
+- Пример Fort Knox
+```sh
+curl -sS -X POST "${ADK_AGENT_URL}/run" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "app_name": "${ADK_AGENT_APP}",
+  "user_id": "${USER}",
+  "session_id": "${SESSION}",
+  "stateDelta": {
+    "first_name":"${FIRST_NAME}",
+    "full_name":"${FULL_NAME}"
+  },
+  "new_message": {
+    "role": "user",
+    "parts": [{"text": "В каких документах рассказывают про Fort Knox?"}]
+  }
+}
+EOF
 ```
