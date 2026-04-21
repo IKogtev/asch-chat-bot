@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
@@ -23,6 +24,8 @@ OWASP_INVALID_CONTRACT_USER_MESSAGE = (
 )
 
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
+OWASP_CONTEXT_WINDOW = 4
+OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
@@ -130,10 +133,66 @@ class RootAgent(BaseAgent):
             actions=EventActions(end_of_agent=True),
         )
 
+    def _build_final_event_with_history(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+        text: str,
+    ) -> Event:
+        """Формирует финальный ответ и обновляет bounded history текущего диалога."""
+        self._append_recent_message(ctx, "user", user_text)
+        self._append_recent_message(ctx, "assistant", text)
+        return self._build_final_event(ctx, text)
+
     def _clear_state_keys(self, ctx: InvocationContext, keys: List[str]) -> None:
         """Очищает указанные ключи из `state`."""
         for key in keys:
             ctx.session.state.pop(key, None)
+
+    def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
+        """Возвращает сохраненное ограниченное окно недавних сообщений."""
+        value = ctx.session.state.get(OWASP_HISTORY_STATE_KEY)
+        if not isinstance(value, list):
+            return []
+
+        items: List[Dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if role in {"user", "assistant"} and text:
+                items.append({"role": role, "text": text})
+        return items
+
+    def _store_recent_messages(self, ctx: InvocationContext, messages: List[Dict[str, str]]) -> None:
+        """Сохраняет ограниченное окно истории для bounded-context проверки."""
+        ctx.session.state[OWASP_HISTORY_STATE_KEY] = messages[-OWASP_CONTEXT_WINDOW:]
+
+    def _append_recent_message(self, ctx: InvocationContext, role: str, text: str) -> None:
+        """Добавляет сообщение в bounded history, игнорируя пустые записи."""
+        normalized_role = str(role or "").strip()
+        normalized_text = str(text or "").strip()
+        if normalized_role not in {"user", "assistant"} or not normalized_text:
+            return
+
+        history = self._get_recent_messages(ctx)
+        history.append({"role": normalized_role, "text": normalized_text})
+        self._store_recent_messages(ctx, history)
+
+    def _prepare_owasp_input(self, ctx: InvocationContext, user_text: str) -> None:
+        """
+        Готовит bounded-context вход для `owasp_agent`.
+
+        Основной сигнал — текущее сообщение пользователя.
+        История передается только как ограниченное окно недавнего контекста.
+        """
+        recent_messages = self._get_recent_messages(ctx)
+        ctx.session.state["owasp_current_user_message"] = user_text
+        ctx.session.state["owasp_recent_messages_json"] = json.dumps(
+            recent_messages,
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _pagination_intent_from_message(user_text: str) -> Optional[str]:
@@ -222,7 +281,11 @@ class RootAgent(BaseAgent):
 
         try:
             if not user_text:
-                yield self._build_final_event(ctx, "Пустой запрос. Напишите сообщение еще раз.")
+                yield self._build_final_event_with_history(
+                    ctx,
+                    user_text,
+                    "Пустой запрос. Напишите сообщение еще раз.",
+                )
                 return
 
             # Синхронизация профиля из бота через AdkApiClient.set_user_state:
@@ -233,6 +296,7 @@ class RootAgent(BaseAgent):
                 return
 
             ctx.session.state["user_query"] = user_text
+            self._prepare_owasp_input(ctx, user_text)
             self._clear_state_keys(
                 ctx,
                 [
@@ -259,7 +323,11 @@ class RootAgent(BaseAgent):
             logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
 
             if owasp["status"] == "blocked":
-                yield self._build_final_event(ctx, format_reject_answer(owasp["user_message"]))
+                yield self._build_final_event_with_history(
+                    ctx,
+                    user_text,
+                    format_reject_answer(owasp["user_message"]),
+                )
                 return
 
             ranks = extract_download_ranks(user_text)
@@ -344,7 +412,7 @@ class RootAgent(BaseAgent):
                 async for event in self.doc_search_orchestrator.run_async(ctx):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event(ctx, final_text)
+                yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
 
             async for event in self._handle_kb_answer(
@@ -355,7 +423,7 @@ class RootAgent(BaseAgent):
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
-            yield self._build_final_event(ctx, final_text)
+            yield self._build_final_event_with_history(ctx, user_text, final_text)
 
         except Exception as exc:
             logger.error("RootAgent failure: %s", exc, exc_info=True)
@@ -364,7 +432,7 @@ class RootAgent(BaseAgent):
                 if DEBUG_EXCEPTIONS
                 else "Произошла ошибка при обработке запроса. Попробуйте позже."
             )
-            yield self._build_final_event(ctx, message)
+            yield self._build_final_event_with_history(ctx, user_text, message)
 
     async def _handle_kb_answer(
         self,
