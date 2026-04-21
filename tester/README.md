@@ -119,13 +119,14 @@ curl -sS -X POST "${ADK_AGENT_URL}/run" \
         },
         \"new_message\": {
             \"role\": \"user\",
-            \"parts\": [{\"text\": \"В каких документах рассказывают про Fort Knox\"}]
+            \"parts\": [{\"text\": \"В каких документах рассказывают про Fort Knox?\"}]
         }
     }"
 ```
 
-## Локальное тестирование
+## Локальное тестирование через K8S Ingress
 
+- Установить переменные  окружения и инициализировать сессию
 ```sh
 ADK_AGENT_URL="https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru"
 ADK_AGENT_APP="agent"
@@ -137,7 +138,10 @@ FULL_NAME="Jenkins"
 curl -sS -X POST "${ADK_AGENT_URL}/apps/${ADK_AGENT_APP}/users/${USER}/sessions/${SESSION}" \
   -H "Content-Type: application/json" \
   -d '{}'
+```
 
+- Пример smalltalk
+```sh
 curl -sS -X POST "${ADK_AGENT_URL}/run" \
   -H "Content-Type: application/json" \
   -d @- <<EOF
@@ -152,6 +156,27 @@ curl -sS -X POST "${ADK_AGENT_URL}/run" \
   "new_message": {
     "role": "user",
     "parts": [{"text": "Привет! Что ты умеешь?"}]
+  }
+}
+EOF
+```
+
+- Пример Fort Knox
+```sh
+curl -sS -X POST "${ADK_AGENT_URL}/run" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "app_name": "${ADK_AGENT_APP}",
+  "user_id": "${USER}",
+  "session_id": "${SESSION}",
+  "stateDelta": {
+    "first_name":"${FIRST_NAME}",
+    "full_name":"${FULL_NAME}"
+  },
+  "new_message": {
+    "role": "user",
+    "parts": [{"text": "В каких документах рассказывают про Fort Knox?"}]
   }
 }
 EOF
