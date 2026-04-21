@@ -1657,3 +1657,71 @@ select:focus {
     color: var(--text-secondary);
     font-size: 0.8rem;
 }
+/* КРИТИЧНО — перенос длинных строк */
+#logs-table-inner td {
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+#logs-table-inner th {
+    background: #f5f5f5;
+    text-align: left;
+}
+
+.payload-cell {
+    max-width: 400px;
+    word-break: break-word;
+}
+
+.payload-cell pre {
+    margin: 0;              /* убирает отступы сверху/снизу */
+    padding: 8px;
+    white-space: pre-wrap;  /* перенос строк */
+    word-break: break-word; /* длинные строки не вылезают */
+    background: #f6f8fa;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+#logs-table-inner {
+    border-collapse: collapse;
+}
+
+#logs-table-inner th,
+#logs-table-inner td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    vertical-align: top;
+}
+/* Запрет переноса для колонок 1-4 */ */
+#logs-table-inner td:nth-child(1),  /* User ID */
+#logs-table-inner td:nth-child(2),  /* User name */
+#logs-table-inner td:nth-child(3),  /* Event */
+#logs-table-inner td:nth-child(4) { /* Channel */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;  /* Ограничение ширины, чтобы текст не уезжал */
+}
+/* Аналогично для заголовков */
+#logs-table-inner th:nth-child(1),
+#logs-table-inner th:nth-child(2),
+#logs-table-inner th:nth-child(3),
+#logs-table-inner th:nth-child(4) {
+    white-space: nowrap;
+}
+
+/* Колонка 5 (Time): можно перенос, но без pre-wrap */
+#logs-table-inner td:nth-child(5) {
+    white-space: normal;
+    word-break: normal;
+}
+/* Показывать полный текст при наведении на обрезанный */
+#logs-table-inner td:nth-child(1):hover,
+#logs-table-inner td:nth-child(2):hover,
+#logs-table-inner td:nth-child(3):hover,
+#logs-table-inner td:nth-child(4):hover {
+    overflow: visible;
+    position: relative;
+    z-index: 10;
+}

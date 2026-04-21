@@ -33,6 +33,8 @@ const PAGE_SIZE = 10;
 let docPage = 0;
 let allDocs = [];
 let statSources = [];
+let logsPage = 0;
+const LOGS_PAGE_SIZE = 100;
 
 
 // Initialize on load
@@ -2522,168 +2524,163 @@ function openFirstAvailableTab() {
 // #############################
 // LOGS TAB LOGIC
 // #############################
-// функция загрузки логов событий
-async function loadLogs(initial = false) {
-    if (isLoadingLogs) return;
-    isLoadingLogs = true;
-
-    let url = "/api/events?limit=100";
-    // создаем обновленние логов сверху
-    if (!initial && lastTimestamp) {
-        url = `/api/events?since=${encodeURIComponent(lastTimestamp)}&limit=50`;
-    }
-
+// функция форматирования в json вид чтобы отрисовывать
+function formatJSON(payload) {
     try {
-        const res = await fetch(url);
-        const data = await res.json();
-
-        const table = document.getElementById("logs-table");
-
-        // Инициализация таблицы и фильтров (только при первом запуске)
-        if (initial) {
-            table.innerHTML = `
-                <table id="logs-table-inner" border="1" style="width:100%; border-collapse: collapse;">
-                    <thead>
-                        <tr>
-                            <th>User ID</th>
-                            <th>User name</th>
-                            <th>Event</th>
-                            <th>Channel</th>
-                            <th>Time</th>
-                            <th>Payload</th>
-                        </tr>
-                    </thead>
-                    <tbody id="logs-body"></tbody>
-                </table>
-            `;
-            // Навешиваем обработчики на фильтры
-            setupLogFilters();
+        if (typeof payload === "string") {
+            payload = JSON.parse(payload);
         }
 
-        // Обновляем кэш: новые записи добавляем в начало
-        if (initial) {
-            logsCache = data;
-        } else {
-            // Добавляем только новые (которые не дублируются)
-            const existingIds = new Set(logsCache.map(r => r.created_at));
-            data.forEach(row => {
-                if (!existingIds.has(row.created_at)) {
-                    logsCache.unshift(row);
-                }
-
-    });
-            // Ограничиваем кэш, чтобы не рос бесконечно
-            if (logsCache.length > 500) {
-                logsCache = logsCache.slice(0, 500);
-            }
-        }
-
-        // Применяем фильтры и рендерим
-        renderFilteredLogs();
-
-        // Обновляем метку времени для инкрементальной загрузки
-        if (data.length > 0) {
-            lastTimestamp = data[data.length - 1].created_at;
-        }
-
-    } catch (err) {
-        console.error("Error loading logs:", err);
-    } finally {
-        isLoadingLogs = false;
+        return JSON.stringify(payload, null, 2);
+    } catch {
+        return String(payload);
     }
 }
+// отрисовка переключения между страницами
+function renderPagination(dataLength) {
+    const el = document.getElementById("logs-pagination");
 
-function renderFilteredLogs() {
+    el.innerHTML = `
+        <div class="pagination">
+            <button onclick="prevLogs()" ${logsPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
+
+            <span>Страница ${logsPage + 1}</span>
+
+            <button onclick="nextLogs()" ${dataLength < LOGS_PAGE_SIZE ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
+        </div>
+    `;
+}
+// отрисовка json payload 
+function renderPayload(payload) {
+    const formatted = formatJSON(payload);
+    return `<pre>${escapeHtml(formatted)}</pre>`;
+}
+// функция загрузки логов
+async function loadLogs() {
+    const params = new URLSearchParams();
+
+    params.set("limit", LOGS_PAGE_SIZE);
+    params.set("offset", logsPage * LOGS_PAGE_SIZE);
+
+    Object.entries(logFilters).forEach(([k, v]) => {
+        if (!v) return;
+        params.set(k, v);
+    });
+
+    console.log("REQUEST:", `/api/events?${params}`);
+
+    const res = await fetch(`/api/events?${params}`);
+    const data = await res.json();
+
+    logsCache = data;
+
+    // создаём таблицу один раз
+    if (!document.getElementById("logs-body")) {
+        document.getElementById("logs-table").innerHTML = `
+            <table id="logs-table-inner">
+                <thead>
+                    <tr>
+                        <th>User ID</th>
+                        <th>User name</th>
+                        <th>Event</th>
+                        <th>Channel</th>
+                        <th>Time</th>
+                        <th>Payload</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-body"></tbody>
+            </table>
+        `;
+    }
+
+    renderLogs();
+}
+// настраиваем фильтры для логов
+function setupLogFilters() {
+    document.querySelectorAll('.log-filter').forEach(input => {
+
+        let timeout;
+
+        input.addEventListener('input', (e) => {
+            clearTimeout(timeout);
+
+            timeout = setTimeout(() => {
+                const column = e.target.dataset.column;
+                const value = e.target.value.trim();
+
+                if (!value) {
+                    delete logFilters[column];
+                } else {
+                    logFilters[column] = value;
+                }
+                logsPage = 0; // сброс страницы
+                loadLogs();   // запрос на сервер
+            }, 300);
+        });
+    });
+}
+// отображаем логи
+function renderLogs() {
     const tbody = document.getElementById("logs-body");
     if (!tbody) return;
 
-    const filtered = applyLogFilters(logsCache);
-    
-    // Очищаем и рендерим (новые сверху)
     tbody.innerHTML = '';
-    
-    filtered.forEach(row => {
+
+    logsCache.forEach(row => {
         const tr = document.createElement("tr");
+
         tr.innerHTML = `
             <td>${escapeHtml(row.user_id || "-")}</td>
             <td>${escapeHtml(row.user_name || "-")}</td>
             <td>${escapeHtml(row.event_type)}</td>
             <td>${escapeHtml(row.channel || "-")}</td>
             <td>${new Date(row.created_at).toLocaleString()}</td>
-            <td>${escapeHtml(JSON.stringify(row.payload).slice(0, 100))}${JSON.stringify(row.payload).length > 100 ? '...' : ''}</td>
+            <td class="payload-cell">
+                ${renderPayload(row.payload)}
+            </td>
         `;
+
         tbody.appendChild(tr);
     });
-    
-    // Показываем сообщение, если ничего не найдено
-    if (filtered.length === 0 && logsCache.length > 0) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="6" style="text-align:center; padding: 20px; color: var(--text-secondary);">🔍 Ничего не найдено по текущим фильтрам</td>`;
-        tbody.appendChild(tr);
+
+    if (logsCache.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align:center;padding:20px;">
+                    🔍 Ничего не найдено
+                </td>
+            </tr>
+        `;
+    }
+
+    renderPagination(logsCache.length);
+}
+// переключение на следующую страницу
+function nextLogs() {
+    logsPage++;
+    setupLogFilters();
+    loadLogs();
+}
+// переключение на прошлую страницу
+function prevLogs() {
+    if (logsPage > 0) {
+        logsPage--;
+        setupLogFilters();
+        loadLogs();
     }
 }
-
-// Применяет фильтры к массиву логов
-function applyLogFilters(rows) {
-    return rows.filter(row => {
-        for (const [column, value] of Object.entries(logFilters)) {
-            if (!value) continue; // пустой фильтр — пропускаем
-            
-            let cellValue = '';
-            if (column === 'payload') {
-                cellValue = JSON.stringify(row.payload || '').toLowerCase();
-            } else if (column === 'created_at') {
-                cellValue = new Date(row.created_at).toLocaleString().toLowerCase();
-            } else {
-                cellValue = String(row[column] || '').toLowerCase();
-            }
-            
-            if (!cellValue.includes(value.toLowerCase())) {
-                return false;
-            }
-        }
-        return true;
-    });
-}
-
-function setupLogFilters() {
-    document.querySelectorAll('.log-filter').forEach(input => {
-        // Восстанавливаем значение из памяти (если было)
-        const column = input.dataset.column;
-        if (logFilters[column]) {
-            input.value = logFilters[column];
-        }
-        
-        // Debounce: не фильтровать при каждом нажатии клавиши
-        let timeout;
-        input.addEventListener('input', (e) => {
-            clearTimeout(timeout);
-            timeout = setTimeout(() => {
-                logFilters[column] = e.target.value.trim();
-                renderFilteredLogs(); // перерисовываем без перезагрузки с сервера
-            }, 300);
-        });
-    });
-}
-
-// Очистка всех фильтров (опционально)
-function clearLogFilters() {
-    logFilters = {};
-    document.querySelectorAll('.log-filter').forEach(input => {
-        input.value = '';
-    });
-    renderFilteredLogs();
-}
-
 // функция автоматического обновления логов каждые 10 секунд
 function startLogsAutoRefresh() {
+    setupLogFilters();
     loadLogs(true); // первый запуск
 
     setInterval(() => {
         loadLogs(false);
     }, 10000); // каждые 10 секунд
 }
-
+// #############################
+// ANALYTICS TAB LOGIC
+// #############################
 // функция экспорта аналитики
 function exportAnalytics() {
     const from = document.getElementById("from").value;
@@ -2727,6 +2724,12 @@ function exportDialogs() {
 
     window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }
+function formatTime(ms) {
+    if (ms === null || ms === undefined) return "0 мс";
+
+    if (ms < 1000) return `${ms} мс`;
+    return `${(ms / 1000).toFixed(2)} сек`;
+}
 // функция рендерит статистику
 function renderStats(stats, channels) {
     const el = document.getElementById("stats");
@@ -2740,8 +2743,8 @@ function renderStats(stats, channels) {
         <p> Среднее количество сообщений на пользователя: ${Math.round(stats.avg_messages_per_user || 0)}</p>
         <p>🔝 Максимальное количество сообщений на пользователя: ${stats.max_messages_per_user}</p>
 
-        <p>⚡ Среднее время ответа: ${Math.round(stats.avg_response_time || 0)}</p>
-        <p>⚡ Медианное время ответа: ${Math.round(stats.median_response_time || 0)}</p>
+        <p>⚡ Среднее время ответа: ${formatTime(stats.avg_response_time || 0)}</p>
+        <p>⚡ Медианное время ответа: ${formatTime(stats.median_response_time || 0)}</p>
 
         <hr>
 
@@ -3017,34 +3020,6 @@ function renderActivity(activity, words, phrases) {
 
 
     // ===== WORD CLOUD =====
-    // const list = words.map(w => [w.text, w.value]);
-
-    // const cloudEl = document.getElementById("word-cloud");
-
-    // // очищаем перед рендером
-    // cloudEl.innerHTML = "";
-
-    // if (list.length === 0) {
-    //     cloudEl.innerHTML = "<div>Нет данных</div>";
-    //     return;
-    // }
-    // // если контейнер ещё не готов для отрисовки
-    // if (cloudEl.offsetWidth === 0) {
-    //     setTimeout(() => renderActivity(activity, words, phrases), 100);
-    //     return;
-    // }
-    // // отложенный рендер word cloud он требует
-    // setTimeout(() => {
-    //     WordCloud(cloudEl, {
-    //         list: list,
-    //         gridSize: 8,
-    //         weightFactor: 10,
-    //         fontFamily: "Arial",
-    //         color: "random-dark",
-    //         backgroundColor: "#fff",
-    //         rotateRatio: 0.5
-    //     });
-    // }, 100);
     renderCloud("word-cloud", words);
     // phrases
     renderCloud("phrase-cloud", phrases);
@@ -3134,12 +3109,12 @@ function renderUserDialogs(dialogs) {
                 let answer;
 
                 if (d.response) {
-                    answer = `${d.response} (${d.response_time || 0} мс)`;
+                    answer = `${d.response} (${formatTime(d.response_time || 0)})`;
                 } else if (d.file_path) {
                     const shortFile = d.file_path.split("/").pop();
-                    answer = `📄 ${shortFile} (${d.response_time || 0} мс)`;
+                    answer = `📄 ${shortFile} (${formatTime(d.response_time || 0)} )`;
                 } else {
-                    answer = `Нет ответа (${d.response_time || 0} мс)`;
+                    answer = `Нет ответа (${formatTime(d.response_time || 0)})`;
                 }
 
                 return `
