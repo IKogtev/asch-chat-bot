@@ -1,14 +1,17 @@
-# dockerfile для вынесения в отдельности
-# Используем базовый образ
+# dockerfile для вынесения сервиса в отдельный контейнер
+# Используем базовый образ Python
 FROM python:3.11-slim AS base
 
 WORKDIR /app
+COPY pip.conf /etc/pip.conf
+
 # Копируем requirements для кэширования слоя
 COPY requirements.txt /app/requirements.txt
 
-# Устанавливаем Python зависимости с кэшированием
+# Устанавливаем Python-зависимости
 RUN pip install --no-cache-dir -r requirements.txt
-# Копируем только код приложения 
+
+# Копируем только код приложения
 COPY mcp_faq_v2.py /app/
 COPY utils /app/utils
 

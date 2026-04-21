@@ -14,6 +14,7 @@ import uvicorn
 load_dotenv(override=True)
 
 from utils import setup_logger
+from utils.event_logger import EventLogger
 from utils.document_handler import DocumentHandler
 #  импортируем вынесенные классы для работы с базами данных
 from bot.services.database import PostgresChatStore, SubscriberStore, NewsStore, AdkApiClient
@@ -48,6 +49,9 @@ async def main() -> None:
     logger.info("=" * 60)
     logger.info("Запуск Telegram бота")
     logger.info("=" * 60)
+    # logger событий
+    eventlogger = EventLogger()
+    await eventlogger.init()
     # Загрузка конфигурации
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not tg_token:
@@ -116,6 +120,13 @@ async def main() -> None:
     # Запуск бота
     try:
         logger.info("🚀 Бот запущен и готов к работе")
+        await eventlogger.log_event(
+            event_type="system_start",
+            channel="telegram",
+            payload={
+                "status": "bot_started"
+            }
+        )
         while True:
             bot_instance = None
             try:

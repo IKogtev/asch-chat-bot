@@ -118,7 +118,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.6.1
+      - PLATFORM_VERSION=0.6.2
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
     # Run Alembic then the bot. Fresh volume: upgrade creates tables. If the DB already had
@@ -164,7 +164,7 @@ services:
       - FAQ_COLLECTION_NAME=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.6.1
+      - PLATFORM_VERSION=0.6.2
       - BOT_TELEGRAM_API=http://bot:8001
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
       # шифрование паролей в postges
@@ -245,6 +245,8 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${FAQ_LOG_LEVEL:-INFO}
 
+      - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
+      - EMBEDDING_API_KEY=${OPENROUTER_API_KEY:-REDACTED_EXAMPLE}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20

@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 from datetime import datetime, timezone
 from utils import setup_logger
+from utils.event_logger import EventLogger
 from bot.services.config import Settings
 import aiofiles
 from bot.services.utils import html_to_telegram, split_message
@@ -13,6 +14,8 @@ from aiogram.types import BufferedInputFile
 
 # Настройка логгера
 logger = setup_logger('broadcasting', 'broadcast.log')
+#  логгер событий
+eventlogger = EventLogger()
 
 def create_broadcast_app(
     news_store,
@@ -62,14 +65,37 @@ def create_broadcast_app(
                     schedule_dt = datetime.fromisoformat(schedule_time)
                     schedule_dt = schedule_dt.astimezone(timezone.utc)
                     logger.info(f"📅 Задача отложена на {schedule_dt}")
+                await eventlogger.log_event(
+                    event_type="broadcast_created",
+                    channel="telegram",
+                    payload={
+                        "target_group": target_group,
+                        "has_files": bool(file_paths),
+                        "scheduled": bool(schedule_time)
+                    }
+                )
                 users, _ = await get_filtered_users(subscriber_store, target_group)    
                 news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group)
                 return {"status": "ok", "news_send": news_id, "sent": len(users)}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")
+                await eventlogger.log_event(
+                    event_type="error",
+                    channel="telegram",
+                    payload={
+                        "error": str(e)
+                    }
+                )
                 raise HTTPException(400, str(e))
         except Exception as e:
             logger.error(f"Error while broadcast all: {e}")
+            await eventlogger.log_event(
+                    event_type="error",
+                    channel="telegram",
+                    payload={
+                        "error": str(e)
+                    }
+                )
             raise HTTPException(400, str(e))
 
     @app.get("/api/news")
@@ -93,6 +119,13 @@ def create_broadcast_app(
             return {"status": "ok"}
         except Exception as e:
             logger.error(f"Delete error: {e}")
+            await eventlogger.log_event(
+                    event_type="error",
+                    channel="telegram",
+                    payload={
+                        "error": str(e)
+                    }
+                )
             raise HTTPException(500, str(e))
 
     @app.post("/api/reload-start-message")
@@ -145,7 +178,6 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
     count = len(users)
 
     logger.info(f"📬 Отправка новости: {count} из {all_count} пользователей (группа: {target_group})")        
-
     for user_id in users:
         try:
             if not bot_holder.instance:
@@ -163,7 +195,7 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
                     except Exception as e:
                         logger.error(f"HTML send error, fallback to plain: {e}")
                         await bot.send_message(user_id, part)
-
+            
             # отправка файлов
             for filename, content_type, content in file_data:
 
@@ -179,6 +211,11 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
                     )
 
             sent += 1
+            await eventlogger.log_event(
+                event_type="broadcast_sent",
+                user_id=str(user_id),
+                channel="telegram"
+            )
             # защита от Flood Limits 
             await asyncio.sleep(0.05)
 
@@ -205,6 +242,13 @@ async def get_filtered_users(subscriber_store, target_group: str = "all"):
 # планировщик для отложенных новостей 
 async def news_scheduler(news_store, subscriber_store, bot_holder):
     logger.info("🕒 Scheduler started")
+    await eventlogger.log_event(
+        event_type="system_scheduler_start",
+        channel="telegram",
+        payload={
+            "status": "scheduler_started"
+        }
+    )
 
     while True:
         try:
