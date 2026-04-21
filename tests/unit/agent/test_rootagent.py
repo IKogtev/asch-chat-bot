@@ -232,6 +232,55 @@ def test_clear_state_keys_removes_requested_keys_only() -> None:
 
 
 @pytest.mark.unit
+def test_append_recent_message_keeps_only_bounded_history() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    for idx in range(rootagent_module.OWASP_CONTEXT_WINDOW + 2):
+        agent._append_recent_message(ctx, "user", f"message-{idx}")
+
+    history = ctx.session.state[rootagent_module.OWASP_HISTORY_STATE_KEY]
+    assert len(history) == rootagent_module.OWASP_CONTEXT_WINDOW
+    assert history[0]["text"] == "message-2"
+    assert history[-1]["text"] == f"message-{rootagent_module.OWASP_CONTEXT_WINDOW + 1}"
+
+
+@pytest.mark.unit
+def test_prepare_owasp_input_uses_current_message_and_recent_history() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.OWASP_HISTORY_STATE_KEY: [
+                {"role": "user", "text": "старый вредоносный запрос"},
+                {"role": "assistant", "text": "отказ"},
+            ]
+        }
+    )
+
+    agent._prepare_owasp_input(ctx, "нормальный новый вопрос")
+
+    assert ctx.session.state["owasp_current_user_message"] == "нормальный новый вопрос"
+    recent = ctx.session.state["owasp_recent_messages_json"]
+    assert "старый вредоносный запрос" in recent
+    assert "нормальный новый вопрос" not in recent
+
+
+@pytest.mark.unit
+def test_build_final_event_with_history_appends_current_turn() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    event = agent._build_final_event_with_history(ctx, "новый вопрос", "новый ответ")
+
+    assert event.content.parts[0].text == "новый ответ"
+    history = ctx.session.state[rootagent_module.OWASP_HISTORY_STATE_KEY]
+    assert history == [
+        {"role": "user", "text": "новый вопрос"},
+        {"role": "assistant", "text": "новый ответ"},
+    ]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -242,6 +291,23 @@ def test_clear_state_keys_removes_requested_keys_only() -> None:
     ],
 )
 def test_pagination_intent_from_message_detects_short_commands(text: str, expected: str | None) -> None:
+    assert RootAgent._pagination_intent_from_message(text) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("все", "show_all"),
+        ("покажи все", "show_all"),
+        ("еще", "show_more"),
+        ("еще документы", "show_more"),
+    ],
+)
+def test_pagination_intent_from_message_detects_russian_short_commands(
+    text: str,
+    expected: str,
+) -> None:
     assert RootAgent._pagination_intent_from_message(text) == expected
 
 
