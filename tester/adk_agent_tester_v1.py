@@ -22,6 +22,9 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -472,6 +475,14 @@ def create_default_evaluation(error_message: str) -> Dict[str, Any]:
         "explanation": f"Ошибка оценки: {error_message}",
     }
 
+
+def format_evaluation_badge(evaluation: Dict[str, Any]) -> str:
+    meets_criteria = bool(evaluation.get("meets_criteria", False))
+    overall_score = float(evaluation.get("overall_score", 0) or 0)
+    marker = "🟢 ХОРОШО" if meets_criteria else "🔴 ПЛОХО"
+    return f"{marker} | overall={overall_score:.1f}/10"
+
+
 def init_evaluator(
     llm_api_url: str,
     llm_api_key: str,
@@ -496,30 +507,51 @@ def init_evaluator(
     evaluation_system_prompt = """
     You are an expert evaluator of AI assistant responses.
 
-    Your task: assess how well the assistant’s reply matches the reference answer and success criteria.
+    Your task: assess whether the assistant produced enough correct information
+    to satisfy the reference answer and success criteria.
 
     You will receive:
     1. user_question
     2. reference_answer
     3. success_criteria
     4. assistant_answer
+    5. assistant_answer_raw
+
+    Evaluation rules:
+    - Use assistant_answer as the final short answer.
+    - Use assistant_answer_raw as additional evidence with the detailed agent chain,
+      intermediate technical output, structured data, tool results, and diagnostics.
+    - You MUST take assistant_answer_raw into account in every evaluation.
+    - If assistant_answer is brief, technical, or incomplete, but assistant_answer_raw
+      contains enough correct information for the downstream bot to produce the expected
+      user-facing answer, this may still be considered successful.
+    - Do not require an exact wording match with the reference answer.
+    - Focus on semantic correctness and satisfaction of the success criteria.
+    - If assistant_answer_raw contradicts assistant_answer, rely on the fuller factual
+      content and mention the contradiction in explanation.
+    - If neither assistant_answer nor assistant_answer_raw contains enough information
+      to satisfy the criteria, set meets_criteria to false.
+    - For document search scenarios, structured raw output with a relevant document list,
+      document titles, snippets, ids, and evidence of successful retrieval is strong
+      evidence of success, even if assistant_answer is only a short technical phrase.
+    - Penalize hallucinations, contradictions, missing required elements, and irrelevant output.
 
     Evaluate using:
-    - accuracy (0–10): how precisely it matches the reference
-    - completeness (0–10): how fully the topic is covered
+    - accuracy (0–10): how precisely the available information matches the reference
+    - completeness (0–10): how fully the required result is covered
     - relevance (0–10): how well it fits the question
     - meets_criteria (true/false): meets success criteria or not
     - overall_score (0–10): overall quality
-    - explanation: brief 1–2 sentence justification
+    - explanation: brief 1–3 sentence justification
 
     ⚠️ OUTPUT RULES (critical):
-    1. Respond with **ONLY valid JSON**, no text before or after.
+    1. Respond with ONLY valid JSON, no text before or after.
     2. Start directly with `{{` and end with `}}`.
     3. No markdown, comments, or quotes around JSON.
     4. Answer in Russian.
 
     Example of valid output:
-    {{"accuracy": 8, "completeness": 7, "relevance": 9, "meets_criteria": true, "overall_score": 8, "explanation": "Ответ соответствует вопросы, есть все необходимые детали."}}
+    {{"accuracy": 8, "completeness": 7, "relevance": 9, "meets_criteria": true, "overall_score": 8, "explanation": "Итоговый ответ короткий, но в raw есть достаточные данные для корректного пользовательского ответа."}}
     """
 
     evaluation_prompt = ChatPromptTemplate.from_messages(
@@ -536,7 +568,9 @@ Reference answer: {reference_answer}
 
 Success criteria: {requirements}
 
-AI assistant's answer: {gpt_answer}
+AI assistant's final answer: {gpt_answer}
+
+AI assistant's detailed raw answer: {gpt_answer_raw}
 """,
             ),
         ]
@@ -553,6 +587,7 @@ def evaluate_answer(
     reference_answer: str,
     requirements: str,
     gpt_answer: str,
+    gpt_answer_raw: str,
     evaluator_model: Any,
     evaluation_prompt: Any,
     max_retries: int = 3,
@@ -561,7 +596,7 @@ def evaluate_answer(
     Оценивает ответ чат-агента с помощью GPT с retry-логикой (LangChain),
     максимально близко к prompt-manager/tester/chat_agent_tester_v2.py.
     """
-    if not all([question, reference_answer, requirements, gpt_answer]):
+    if not all([question, reference_answer, requirements]) or not (gpt_answer or gpt_answer_raw):
         return create_default_evaluation("Один или несколько обязательных параметров пусты")
 
     for attempt in range(max_retries):
@@ -572,6 +607,7 @@ def evaluate_answer(
                     "reference_answer": reference_answer,
                     "requirements": requirements,
                     "gpt_answer": gpt_answer,
+                    "gpt_answer_raw": gpt_answer_raw,
                 }
             )
 
@@ -624,24 +660,16 @@ def evaluate_answer(
 
 def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
     """Оценивает ответы агента и добавляет метрики в датафрейм (как в prompt-manager)."""
-    try:
-        from tqdm import tqdm  # type: ignore
+    total = tc_df.shape[0]
 
-        iterator = tqdm(tc_df.iterrows(), total=tc_df.shape[0], desc="Оценка ответов")
-    except ImportError as e:
-        logger.debug(f"tqdm не установлен, прогресс-бар оценки отключен: {e}")
-        iterator = tc_df.iterrows()
-
-    for i, row in iterator:
+    for index, (i, row) in enumerate(tc_df.iterrows(), start=1):
+        progress_pct = round(index / total * 100) if total else 100
         question = row.get("Вопросы")
         reference_answer = row.get("Ожидаемые ответы")
         requirements = row.get("Критерий успеха")
         gpt_answer = row.get("answer")
+        gpt_answer_raw = row.get("answer_raw")
         q_num = row.get("№")
-
-        logger.info(
-            f"\nОценка вопроса {q_num}: {str(question)[:50]}..." if len(str(question)) > 50 else f"\nОценка вопроса {q_num}: {question}"
-        )
 
         try:
             evaluation = evaluate_answer(
@@ -649,6 +677,7 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
                 reference_answer=str(reference_answer or ""),
                 requirements=str(requirements or ""),
                 gpt_answer=str(gpt_answer or ""),
+                gpt_answer_raw=str(gpt_answer_raw or ""),
                 evaluator_model=evaluator_model,
                 evaluation_prompt=evaluation_prompt,
                 max_retries=3,
@@ -672,6 +701,9 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
             tc_df.loc[i, "meets_criteria"] = evaluation.get("meets_criteria", False)
             tc_df.loc[i, "overall_score"] = evaluation.get("overall_score", 0)
             tc_df.loc[i, "explanation"] = evaluation.get("explanation", "")
+            logger.info(
+                f"[{progress_pct:>3}%] №{q_num} | {format_evaluation_badge(evaluation)} | {str(question or '')[:80]}"
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка при оценке вопроса {q_num} ({type(e).__name__}): {e}")
             tc_df.loc[i, "accuracy"] = 0
@@ -680,6 +712,7 @@ def evaluate_all(tc_df, evaluator_model: Any, evaluation_prompt: Any):
             tc_df.loc[i, "meets_criteria"] = False
             tc_df.loc[i, "overall_score"] = 0
             tc_df.loc[i, "explanation"] = f"Ошибка оценки: {str(e)}"
+            logger.info(f"[{progress_pct:>3}%] №{q_num} | 🔴 ПЛОХО | overall=0.0/10 | {str(question or '')[:80]}")
 
     return tc_df
 
