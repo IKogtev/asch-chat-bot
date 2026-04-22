@@ -30,6 +30,7 @@ let dayChart = null;
 let userSearch = "";
 let allUsers = [];
 let filteredUsers = [];
+let analyticsLoaded = false; // флаг загрузки аналитики
 let userPage = 0; 
 const PAGE_SIZE = 10; // число отображаемых пользователей и документов на странице
 let docPage = 0;
@@ -81,34 +82,6 @@ document.addEventListener('DOMContentLoaded', () => {
             placeholder: "Напишите новость..."
         });
     }
-    // инициализация автоматического рендера аналитики за последние 7 дней
-    const now = new Date();
-
-    // сегодня
-    const to = new Date(now);
-
-    // 7 дней назад
-    const from = new Date(now);
-    from.setDate(from.getDate() - 7);
-
-    // формат под datetime-local
-    function formatMSK(dt) {
-            return dt.toLocaleString('sv-SE', {
-            timeZone: 'Europe/Moscow',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }).replace(',', 'T');
-    }
-
-    document.getElementById("from").value = formatMSK(from);
-    document.getElementById("to").value = formatMSK(to);
-
-    // сразу грузим аналитику
-    loadAnalytics();
 });
 // #############################
 // MENU FOR ALL PAGES INSIDE UI 
@@ -492,6 +465,11 @@ function showTab(tabName, event=null) {
         loadBotStartMessage();
     } else if (tabName === 'user_groups'){
         loadUserGroups();
+    } else if (tabName === 'analytics'){
+        // инициализация автоматического рендера аналитики за последние 7 дней
+        initAnalytics();   // выставим даты
+        loadAnalytics();   // загрузим
+        analyticsLoaded = true;
     }
 }
 
@@ -2126,11 +2104,9 @@ async function deletePromptFile(filename) {
         console.error("Error deleting prompt file:", err);
     }
 }
-
 // #############################
 // BOT SETTINGS TAB LOGIC
 // #############################
-
 // загрузка стартового сообщения бота
 async function loadBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
@@ -2197,7 +2173,6 @@ async function saveBotStartMessage() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
-
 // #############################
 // GROUPS TAB LOGIC
 // #############################
@@ -2405,7 +2380,6 @@ function exportUsers() {
 /// #############################
 // AUTH ACCESS LOGIC
 // #############################
-
 // проверка авторизованности
 async function checkAuth() {
     try {
@@ -2498,7 +2472,6 @@ function applyRoleAccess() {
     }
     openFirstAvailableTab();
 }
-
 // сокрытие вкладок 
 function hideTabButton(tabName) {
     const btn = document.querySelector(`[data-tab="${tabName}"]`);
@@ -2521,7 +2494,6 @@ function openFirstAvailableTab() {
         }
     }
 }
-
 // #############################
 // LOGS TAB LOGIC
 // #############################
@@ -2572,14 +2544,9 @@ async function loadLogs() {
         }
         
     });
-
-    console.log("REQUEST:", `/api/events?${params}`);
-
     const res = await fetch(`/api/events?${params}`);
     const data = await res.json();
-
     logsCache = data;
-
     // создаём таблицу один раз
     if (!document.getElementById("logs-body")) {
         document.getElementById("logs-table").innerHTML = `
@@ -2598,18 +2565,14 @@ async function loadLogs() {
             </table>
         `;
     }
-
     renderLogs();
 }
 // настраиваем фильтры для логов
 function setupLogFilters() {
     document.querySelectorAll('.log-filter').forEach(input => {
-
         let timeout;
-
         input.addEventListener('input', (e) => {
             clearTimeout(timeout);
-
             timeout = setTimeout(() => {
                 const column = e.target.dataset.column;
                 const value = e.target.value.trim();
@@ -2658,20 +2621,18 @@ function renderLogs() {
             </tr>
         `;
     }
-
+    // отрисовка переключение между вкладками
     renderPagination(logsCache.length);
 }
 // переключение на следующую страницу
 function nextLogs() {
     logsPage++;
-    // setupLogFilters();
     loadLogs();
 }
 // переключение на прошлую страницу
 function prevLogs() {
     if (logsPage > 0) {
         logsPage--;
-        // setupLogFilters();
         loadLogs();
     }
 }
@@ -2679,7 +2640,7 @@ function prevLogs() {
 function startLogsAutoRefresh() {
     setupLogFilters();
     loadLogs(true); // первый запуск
-
+    // задаем интервал логирования
     setInterval(() => {
         loadLogs(false);
     }, 10000); // каждые 10 секунд
@@ -2687,6 +2648,30 @@ function startLogsAutoRefresh() {
 // #############################
 // ANALYTICS TAB LOGIC
 // #############################
+// функция инициализации аналитики при нажатии по вкладке
+function initAnalytics() {
+    const now = new Date();
+    // сегодня 
+    const to = new Date(now);
+    // 7 дней назад
+    const from = new Date(now);
+    from.setDate(from.getDate() - 7);
+    // формат под datetime-local
+    function formatMSK(dt) {
+        return dt.toLocaleString('sv-SE', {
+            timeZone: 'Europe/Moscow',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).replace(',', 'T');
+    }
+
+    document.getElementById("from").value = formatMSK(from);
+    document.getElementById("to").value = formatMSK(to);
+}
 // функция экспорта аналитики
 function exportAnalytics() {
     const from = document.getElementById("from").value;
@@ -2702,7 +2687,6 @@ async function openUsersModal(filename) {
     const users = await fetch(
         `/api/analytics/document-users?filename=${encodeURIComponent(filename)}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
-
     document.getElementById("users-list").innerHTML =
         users.length === 0
             ? "<div>Нет данных</div>"
@@ -2713,23 +2697,21 @@ async function openUsersModal(filename) {
                     ${u.source === "search" ? "🔍" : "📂"}
                 </div>
             `).join("");
-
     document.getElementById("users-modal").style.display = "block";
 }
 // функция закрытия модалки с пользователями
 function closeUsersModal() {
     const modal = document.getElementById("users-modal");
     modal.style.display = "none";
-
     document.getElementById("users-list").innerHTML = "";
 }
 // функция экспорта диалогов 
 function exportDialogs() {
     const from = document.getElementById("from").value;
     const to = document.getElementById("to").value;
-
     window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }
+// функция трансформации времени в корректное для визуализации
 function formatTime(ms) {
     if (ms === null || ms === undefined) return "0 мс";
 
@@ -2760,7 +2742,6 @@ function renderStats(stats, channels) {
         `).join("")}
     `;
 }
-
 // рендеринг топа пользователей
 function renderTopUsers(users) {
     allUsers = users;
@@ -2774,10 +2755,8 @@ function drawUsers() {
     const active = document.activeElement;
     const isInputFocused = active && active.tagName === "INPUT";
     const cursorPos = isInputFocused ? active.selectionStart : null;
-
     const total = filteredUsers.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
     // защита от выхода за границы
     if (userPage >= totalPages) userPage = totalPages - 1;
     if (userPage < 0) userPage = 0;
@@ -2813,10 +2792,8 @@ function drawUsers() {
     // возвращаем фокусирование где был
     if (isInputFocused) {
         const input = el.querySelector("input");
-
         if (input) {
             input.focus();
-
             if (cursorPos !== null) {
                 input.setSelectionRange(cursorPos, cursorPos);
             }
@@ -2826,14 +2803,11 @@ function drawUsers() {
 // поиск пользователей внутри топа
 function searchUsers(q) {
     userSearch = q;
-
     const query = q.toLowerCase();
-
     filteredUsers = allUsers.filter(u =>
         (u.user_id || "").toLowerCase().includes(query) ||
         (u.user_name || "").toLowerCase().includes(query)
     );
-
     userPage = 0;
     drawUsers();
 }
@@ -2852,21 +2826,19 @@ function prevUsers() {
         drawUsers();
     }
 }
-
 // отрисовка топа документов в запросах
 function drawDocs() {
-    
     const el = document.getElementById("top-docs");
-
+    // вычисляем страницы
     const total = allDocs.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
     if (docPage >= totalPages) docPage = totalPages - 1;
     if (docPage < 0) docPage = 0;
-
+    
     const start = docPage * PAGE_SIZE;
     const page = allDocs.slice(start, start + PAGE_SIZE);
-
+    // вычисляем общее число скачиваний
     const totalDownloads = statSources.reduce((sum, s) => sum + Number(s.downloads), 0);
     const sourcesHtml = `
         <div class="sources-block">
@@ -2932,9 +2904,9 @@ function prevDocs() {
 function renderTopDocs(docs, sources) {
     allDocs = docs;
     statSources = sources;
+    // отрисовываем документы
     drawDocs();
 }
-
 // загрузка аналитической активности 
 async function loadActivity(from, to) {
     const [activity, words, phrases] = await Promise.all([
@@ -2942,7 +2914,7 @@ async function loadActivity(from, to) {
         fetch(`/api/analytics/top-words?from_ts=${from}&to_ts=${to}`).then(r => r.json()),
         fetch(`/api/analytics/top-phrases?from_ts=${from}&to_ts=${to}`).then(r => r.json())
     ]);
-
+    // отрисовка графиков активности и облак
     renderActivity(activity, words, phrases);
 }
 // отрисовка графиков активности
@@ -2986,21 +2958,19 @@ function renderActivity(activity, words, phrases) {
         }
     });
 
-
     // ===== ДНИ =====
     const days = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
-
     const dayMap = {};
     // Инициализируем счётчики для всех дней (0-6, где 0=ВС по стандарту JS)
     for (let i = 0; i < 7; i++) {
         dayMap[i] = 0;
     }
-
+    //  Агрегация: суммируем сообщения по дням недели
     activity.forEach(a => {
         const day = Number(a.day);
         dayMap[day] += Number(a.messages);
     });
-
+    // Подготовка данных для графика: выравниваем по 7 дням с циклическим сдвигом
     const dayData = days.map((_, displayIndex) => {
         const dataIndex = (displayIndex + 1) % 7;
         return dayMap[dataIndex];
@@ -3023,8 +2993,6 @@ function renderActivity(activity, words, phrases) {
             responsive: true
         }
     });
-
-
     // ===== WORD CLOUD =====
     renderCloud("word-cloud", words);
     // phrases
@@ -3058,7 +3026,6 @@ function renderCloud(id, data) {
         });
     }, 50);
 }
-
 // загрузка всей аналитики
 async function loadAnalytics() {
     const fromRaw = document.getElementById("from").value;
@@ -3098,7 +3065,6 @@ async function openUserDialogs(userId, userName) {
         );
     };
     renderUserDialogs(dialogs);
-
     document.getElementById("dialogs-modal").style.display = "block";
 }
 // отрисовка диалога пользователя 
