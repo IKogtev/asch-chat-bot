@@ -329,7 +329,7 @@
                         <input type="text" id="filter-user-name" placeholder="🔍 User name" class="log-filter" data-column="user_name">
                         <input type="text" id="filter-event" placeholder="🔍 Event" class="log-filter" data-column="event_type">
                         <input type="text" id="filter-channel" placeholder="🔍 Channel" class="log-filter" data-column="channel">
-                        <input type="text" id="filter-time" placeholder="🔍 Time" class="log-filter" data-column="created_at">
+                        <input type="datetime-local" id="filter-time" class="log-filter" data-column="created_at">
                         <input type="text" id="filter-payload" placeholder="🔍 Payload" class="log-filter" data-column="payload">
                     </div>
                     <div id="logs-table"></div>
@@ -519,6 +519,7 @@
                     </div>
                 </div>
             </div>
+            <!-- Sidebar меню сворачиваемое сбоку -->
             <div class="sidebar collapsed" id="sidebar">
                 <button class="sidebar-toggle" onclick="toggleSidebar()">
                     <span id="toggle-icon">☰</span>
