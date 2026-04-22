@@ -3,44 +3,44 @@ const API_BASE = '';
 
 // State
 let selectedFile = null;
-let currentCollection = null;
+let currentCollection = null; // текущая коллекция
 let currentCollectionType = null; // faq | kb | docs
 let activeCollections = {
     faq: null,
     kb: null
-};
-let collectionsByType = {};
-let activeAliases = {};
-let currentPromptContent = "";
-let promptFiles = [];
-let botStartMessageContent = "";
-let newsEditor = null;
-let currentAgent = null;
-let promptEditorMDE = null;
-let currentUser = null;
+}; // активные коллекции
+let collectionsByType = {}; // коллекции по типам
+let activeAliases = {}; // активные алиасы
+// управление промптами
+let currentPromptContent = ""; //текст текущего промпта
+let promptFiles = []; // список файлов промптов для агента
+let botStartMessageContent = ""; // стартовое сообщение текст
+let newsEditor = null; // текстовое поле отправки новости
+let currentAgent = null; // текущий агент
+let promptEditorMDE = null; // редактор промпта в markdown формате
+let currentUser = null; // текущий пользователь
 // Логи: фильтры и кэш
 let logFilters = {};
 let logsCache = []; // кэш последних записей для быстрой фильтрации
-let lastTimestamp = null;
-let isLoadingLogs = false;
+let logsPage = 0; // стандартная страница логов
+const LOGS_PAGE_SIZE = 100; // число логов на страницу
+// переменные для аналитики
 let hourChart = null;
 let dayChart = null;
 let userSearch = "";
 let allUsers = [];
 let filteredUsers = [];
-let userPage = 0;
-const PAGE_SIZE = 10;
+let userPage = 0; 
+const PAGE_SIZE = 10; // число отображаемых пользователей и документов на странице
 let docPage = 0;
 let allDocs = [];
 let statSources = [];
-let logsPage = 0;
-const LOGS_PAGE_SIZE = 100;
 
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
-    checkAuth();
-    loadAliasData();
+    checkAuth(); //Проверка авторизации
+    loadAliasData(); // загрузка данных Алиаса
     loadCollections();
     loadActiveCollections();
     loadCollectionInfo();
@@ -2564,7 +2564,12 @@ async function loadLogs() {
 
     Object.entries(logFilters).forEach(([k, v]) => {
         if (!v) return;
-        params.set(k, v);
+        if (k === "created_at") {
+            params.set(k, shiftToUTC(v)); // сдвигаем время для правильности
+        } else {
+            params.set(k, v);
+        }
+        
     });
 
     console.log("REQUEST:", `/api/events?${params}`);
@@ -2658,14 +2663,14 @@ function renderLogs() {
 // переключение на следующую страницу
 function nextLogs() {
     logsPage++;
-    setupLogFilters();
+    // setupLogFilters();
     loadLogs();
 }
 // переключение на прошлую страницу
 function prevLogs() {
     if (logsPage > 0) {
         logsPage--;
-        setupLogFilters();
+        // setupLogFilters();
         loadLogs();
     }
 }
@@ -3024,7 +3029,7 @@ function renderActivity(activity, words, phrases) {
     // phrases
     renderCloud("phrase-cloud", phrases);
 }
-
+// функция отрисовки облака
 function renderCloud(id, data) {
     const el = document.getElementById(id);
 
