@@ -41,11 +41,11 @@ let statSources = [];
 document.addEventListener('DOMContentLoaded', () => {
     checkAuth(); //Проверка авторизации
     loadAliasData(); // загрузка данных Алиаса
-    loadCollections();
-    loadActiveCollections();
-    loadCollectionInfo();
-    loadDocuments();
-    setupDragAndDrop();
+    loadCollections(); // загрузка коллекций
+    loadActiveCollections(); // загрузка активных коллекций
+    loadCollectionInfo(); // загрузка информации о коллекциях
+    loadDocuments(); // загрузка документов
+    setupDragAndDrop(); 
     loadSyncSettings();
     subscribeToSync();
     loadFilesystemTree();
@@ -81,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
             placeholder: "Напишите новость..."
         });
     }
+    // инициализация автоматического рендера аналитики за последние 7 дней
     const now = new Date();
 
     // сегодня
@@ -2967,7 +2968,7 @@ function renderActivity(activity, words, phrases) {
     }
 
     const ctx = document.getElementById("activityChart").getContext("2d");
-
+    // строим график по сообщениям в час
     hourChart = new Chart(ctx, {
         type: "bar",
         data: {
@@ -3004,11 +3005,11 @@ function renderActivity(activity, words, phrases) {
         const dataIndex = (displayIndex + 1) % 7;
         return dayMap[dataIndex];
     });
-
+    // уничтожаем старый график
     if (dayChart) {
         dayChart.destroy();
     }
-
+    // строим график сообщений в день
     dayChart = new Chart(document.getElementById("dayChart"), {
         type: "bar",
         data: {
@@ -3041,12 +3042,11 @@ function renderCloud(id, data) {
         el.innerHTML = "<div>Нет данных</div>";
         return;
     }
-
     if (el.offsetWidth === 0) {
         setTimeout(() => renderCloud(id, data), 100);
         return;
     }
-
+    // отрисовываем облако с задержкой, так требует фреймворк
     setTimeout(() => {
         WordCloud(el, {
             list: list,
@@ -3078,7 +3078,6 @@ async function loadAnalytics() {
     renderStats(stats, channels);
     renderTopUsers(users);
     renderTopDocs(docs, sources)
-
     loadActivity(from, to);
 }
 // открытие окна диалогов пользователя
@@ -3112,7 +3111,7 @@ function renderUserDialogs(dialogs) {
             : dialogs.map(d => {
 
                 let answer;
-
+                // преобразуем ответ с добавлением времени ответа
                 if (d.response) {
                     answer = `${d.response} (${formatTime(d.response_time || 0)})`;
                 } else if (d.file_path) {
