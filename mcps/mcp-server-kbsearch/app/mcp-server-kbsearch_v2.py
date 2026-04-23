@@ -71,6 +71,10 @@ CHUNK_OVERLAP = int(os.getenv("KB_CHUNK_OVERLAP", 50))
 SIMILARITY_TOP_K = int(os.getenv("KB_SIMILARITY_TOP_K", 10))
 SIMILARITY_CUTOFF = float(os.getenv("KB_SIMILARITY_CUTOFF", 0.35))
 SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT",['.txt', '.pdf', '.docx', '.md']))
+# hybrid | dense — для hybrid-коллекций; dense = только семантика по вектору dense
+KB_DEFAULT_SEARCH_MODE = os.getenv("KB_DEFAULT_SEARCH_MODE", "hybrid").strip().lower()
+if KB_DEFAULT_SEARCH_MODE not in ("hybrid", "dense"):
+    KB_DEFAULT_SEARCH_MODE = "hybrid"
 
 # Qdrant settings
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -301,7 +305,6 @@ def overlap_score(text: str, terms: list[str]) -> float:
 def phrase_score(text: str, query: str) -> float:
     text_norm = normalize_text(text)
     query_norm = normalize_text(query)
-    logger.debug(f"Phrase score{text_norm} : {query_norm}")
     if not text_norm or not query_norm:
         return 0.0
     return 1.0 if query_norm in text_norm else 0.0
@@ -394,6 +397,10 @@ async def kb_search(
         """] = None,
     top_k: Annotated[int, "Number of results to return (default: SIMILARITY_TOP_K)"] = SIMILARITY_TOP_K,
     include_metadata: Annotated[bool, "Include document metadata in the output"] = True,
+    search_mode: Annotated[
+        str,
+        "For hybrid-indexed KB: 'hybrid' = dense + sparse BM25 + RRF (default); 'dense' = only dense vector similarity.",
+    ] = KB_DEFAULT_SEARCH_MODE,
 ):
     """
     Search over pre-indexed files in the internal knowledge base.
@@ -402,10 +409,16 @@ async def kb_search(
     Use this tool when a user asks something that should be matched against the indexed documents.
     `top_k` controls how many matching passages to return.
     Set `include_metadata=True` if document metadata is needed.
+    For collections indexed with sparse vectors, `search_mode='dense'` runs semantic search only (no RRF).
 
     Not for web search or database queries. Only searches the pre-indexed documents.
     """
-    logger.info(f"Поиск: '{query}' (top_k={top_k}), collection={collection}, filters={filters}")
+    sm = (search_mode or KB_DEFAULT_SEARCH_MODE).strip().lower()
+    if sm not in ("hybrid", "dense"):
+        sm = "hybrid"
+    logger.info(
+        f"Поиск: '{query}' (top_k={top_k}, search_mode={sm}), collection={collection}, filters={filters}"
+    )
 
     async with kb_lock:
         if not kb_runtime.initialized or not indexer.retriever:
@@ -426,6 +439,98 @@ async def kb_search(
             return res
    
         try:
+            if indexer.cfg.use_qdrant and indexer.hybrid_search_enabled(collection):
+                if sm == "dense":
+                    rows = indexer.hybrid_dense_search(query, collection, filters, top_k)
+                else:
+                    rows = indexer.hybrid_search_rrf(query, collection, filters, top_k)
+                if not rows:
+                    res = ToolResult(
+                        content="Ничего не найдено",
+                        structured_content=None,
+                    )
+                    res.isError = False
+                    return res
+
+                results = []
+                for i, item in enumerate(rows):
+                    metadata = dict(item.get("metadata") or {})
+                    metadata["relative_path"] = get_file_link(
+                        metadata.get("source", ""),
+                        metadata.get("section_path", []),
+                    )
+                    entry = {
+                        "rank": i,
+                        "score": item["score"],
+                        "dense_score": item.get("dense_score"),
+                        "sparse_score": item.get("sparse_score"),
+                        "lexical_score": None,
+                        "content": item["text"],
+                        "metadata": metadata,
+                    }
+                    results.append(entry)
+
+                logger.info(
+                    f"Найдено {len(results)} результатов (Qdrant hybrid, mode={sm})"
+                )
+
+                def cleanup_label(text: str) -> str:
+                    text = re.sub(r"^\d+[_\-\s]*", "", text)
+                    return text.strip()
+
+                def build_prompt_hybrid(results: list[dict], question: str) -> str:
+                    blocks = []
+                    doc_res = {}
+                    for item in results:
+                        meta = item.get("metadata") or {}
+                        doc_id = meta.get("document_id") or meta.get("chunk_id") or f"row_{item['rank']}"
+                        if doc_id not in doc_res.keys():
+                            doc_res.update({doc_id: item})
+                        else:
+                            doc_res[doc_id]["content"] += "\n..." + item["content"]
+                            doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+
+                    logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
+
+                    for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
+                        text = item["content"].strip()
+                        metadata = item.get("metadata", {})
+  
+                        relative_path = metadata.get("relative_path", "")
+                        source = metadata.get("source", "")
+
+                        block = f"""rank [{i+1}] FILE_NAME: {source}
+RELATIVE_PATH: {relative_path}
+
+DOCUMENT_ID: {doc_id}
+
+{text}
+"""
+                        blocks.append(block)
+
+                    context = "\n---\n\n".join(blocks)
+
+                    return f"""Используй только информацию из CONTEXT.
+Если ответа нет в контексте не придумывай сам.
+
+CONTEXT
+{context}
+
+QUESTION
+{question}
+"""
+
+                prompt = build_prompt_hybrid(results, query)
+                logger.debug(f"res:\n{prompt}")
+                res = ToolResult(
+                    content=prompt,
+                    structured_content=None,
+                )
+                res.isError = False
+                return res
+            
+            # fallback для старых коллекций
+            logger.debug("No sparse vectors in collection, use old approach")
             candidate_k = max(top_k * 5, 30)
             retriever = indexer.get_retriever_for_collection(collection, candidate_k, filters)
             nodes = retriever.retrieve(query)
@@ -487,18 +592,6 @@ async def kb_search(
             def cleanup_label(text: str) -> str:
                 text = re.sub(r"^\d+[_\-\s]*", "", text)
                 return text.strip()
-
-            def make_title(metadata: dict) -> str:
-                section = metadata.get("section_path", [])
-                source = metadata.get("source", "")
-
-                cleaned = [cleanup_label(x) for x in section if x]
-
-                if len(cleaned) >= 2:
-                    return " — ".join(cleaned[-2:])
-                if cleaned:
-                    return cleaned[-1]
-                return source
             
             def build_prompt(results: list[dict], question: str) -> str:
                 blocks = []
@@ -511,15 +604,15 @@ async def kb_search(
                         doc_res[doc_id]["content"] += "\n..." + item["content"]
                         doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
                         
-                logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
+                # logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
                 
                 for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
                     text = item["content"].strip()
                     metadata = item.get("metadata", {})
-                    title = make_title(metadata)
                     relative_path = metadata.get("relative_path", "")
+                    source = metadata.get("source", "")
 
-                    block = f"""rank [{i+1}] {title}
+                    block = f"""rank [{i+1}] FILE_NAME: {source}
 RELATIVE_PATH: {relative_path}
 
 DOCUMENT_ID: {doc_id}
@@ -544,6 +637,7 @@ QUESTION
                             content=prompt,
                             structured_content=None
                                             )
+            logger.debug(prompt)
             res.isError = False
             return res
 

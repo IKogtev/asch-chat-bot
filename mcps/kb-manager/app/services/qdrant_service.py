@@ -1,4 +1,5 @@
 """Qdrant service for Qdrant document management"""
+import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import qdrant_client
@@ -11,6 +12,16 @@ from qdrant_client.models import (
     )
 from enum import Enum
 from app.utils.utillites import RemoteEmbedding, chunk_id_to_uuid, meta_id_for_collection
+from app.utils.rrf import reciprocal_rank_fusion
+from app.utils.qdrant_hybrid import (
+    DENSE_VECTOR_NAME,
+    SPARSE_VECTOR_NAME,
+    bm25_document_text,
+    collection_hybrid_mode,
+    hybrid_collection_create_kwargs,
+    meta_point_vectors,
+    sparse_embedding_to_vector,
+)
 from app.models import CollectionType as CollectionTypeAlias
 
 class CollectionType(str, Enum):
@@ -62,14 +73,39 @@ class QdrantService:
         )
         # Ensure collection exists
         self.ensure_collection()
-        
-        # Initialize vector store
-        self.vector_store = QdrantVectorStore(
-            client=self.qdrant_client,
-            collection_name=self.collection_name
-        )
-        # initialize collection dict 
+
+        self._sparse_embedder = None
+        self._rebuild_vector_store()
+        # initialize collection dict
         self.collections_config = collections_config
+
+    def _hybrid_mode(self, collection_name: Optional[str] = None) -> str:
+        name = collection_name or self.collection_name
+        return collection_hybrid_mode(self.qdrant_client, name)
+
+    def _get_sparse_embedder(self):
+        if self._sparse_embedder is None:
+            from fastembed import SparseTextEmbedding
+
+            lang = os.getenv("SPARSE_BM25_LANGUAGE", "russian")
+            self._sparse_embedder = SparseTextEmbedding(
+                model_name="Qdrant/bm25",
+                language=lang,
+            )
+        return self._sparse_embedder
+
+    def _rebuild_vector_store(self) -> None:
+        kwargs: Dict[str, Any] = {
+            "client": self.qdrant_client,
+            "collection_name": self.collection_name,
+        }
+        if self._hybrid_mode() == "hybrid":
+            kwargs["vector_name"] = DENSE_VECTOR_NAME
+        try:
+            self.vector_store = QdrantVectorStore(**kwargs)
+        except TypeError:
+            kwargs.pop("vector_name", None)
+            self.vector_store = QdrantVectorStore(**kwargs)
 
     def _alias_name_for_type(self, collection_type: CollectionType | CollectionTypeAlias) -> str:
         return f"{collection_type.value}_collection_active"
@@ -104,12 +140,14 @@ class QdrantService:
                 "vector_size": self.vector_size,
             },
         }
+        mode = self._hybrid_mode(collection_name)
+        vector = meta_point_vectors(self.vector_size, mode)
         self.qdrant_client.upsert(
             collection_name=collection_name,
             points=[
                 PointStruct(
                     id=meta_id,
-                    vector=[0.0] * self.vector_size,
+                    vector=vector,
                     payload=payload,
                 )
             ],
@@ -138,10 +176,7 @@ class QdrantService:
                 if name not in existing:
                     self.qdrant_client.create_collection(
                         collection_name=name,
-                        vectors_config=VectorParams(
-                            size=self.vector_size,
-                            distance=Distance.COSINE
-                        )
+                        **hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE),
                     )
                     print(f"[INIT] Created collection: {name}")
                 else:
@@ -170,10 +205,7 @@ class QdrantService:
             if self.collection_name not in collection_names:
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
-                    vectors_config=VectorParams(
-                        size=self.vector_size,
-                        distance=Distance.COSINE
-                    )
+                    **hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE),
                 )
                 print(f"Created collection: {self.collection_name}")
             else:
@@ -430,18 +462,150 @@ class QdrantService:
         knowledge_bases.sort(key=lambda x: x["kb_id"])
         
         return knowledge_bases
+
+    def _search_hybrid_rrf(
+        self,
+        query: str,
+        limit: int,
+        q_filter: Filter,
+        rrf_k: int,
+    ) -> List[Dict[str, Any]]:
+        query_vector = self.embed_model.get_text_embedding_batch([query])[0]
+        sparse_model = self._get_sparse_embedder()
+        q_sparse = list(sparse_model.query_embed(query or " "))
+        if not q_sparse:
+            return []
+        sparse_vec = sparse_embedding_to_vector(q_sparse[0])
+        fetch = max(limit * int(os.getenv("KB_HYBRID_CANDIDATE_MULT", "4")), 40)
+
+        dresp = self.qdrant_client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            using=DENSE_VECTOR_NAME,
+            limit=fetch,
+            query_filter=q_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        sresp = self.qdrant_client.query_points(
+            collection_name=self.collection_name,
+            query=sparse_vec,
+            using=SPARSE_VECTOR_NAME,
+            limit=fetch,
+            query_filter=q_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        dense_ids = [h.id for h in (dresp.points or [])]
+        sparse_ids = [h.id for h in (sresp.points or [])]
+        fused = reciprocal_rank_fusion([dense_ids, sparse_ids], k=rrf_k)
+        hit_map: Dict[Any, Any] = {}
+        for h in (dresp.points or []) + (sresp.points or []):
+            if h.id not in hit_map:
+                hit_map[h.id] = h
+        dense_score_by_id: Dict[Any, float] = {
+            h.id: float(h.score) for h in (dresp.points or []) if h.score is not None
+        }
+        sparse_score_by_id: Dict[Any, float] = {
+            h.id: float(h.score) for h in (sresp.points or []) if h.score is not None
+        }
+
+        results: List[Dict[str, Any]] = []
+        for pid, rrf_score in fused[:limit]:
+            hit = hit_map.get(pid)
+            if not hit:
+                continue
+            payload = hit.payload or {}
+            chunk_index = 0
+            chunk_id = payload.get("chunk_id")
+            if chunk_id and "#" in chunk_id:
+                try:
+                    chunk_index = int(chunk_id.split("#")[1])
+                except Exception:
+                    pass
+            results.append({
+                "document_id": payload.get("document_id"),
+                "point_id": str(hit.id),
+                "chunk_index": chunk_index,
+                "text": payload.get("text", ""),
+                "answer": payload.get("answer", ""),
+                "score": float(rrf_score),
+                "rrf_score": float(rrf_score),
+                "dense_score": dense_score_by_id.get(pid),
+                "sparse_score": sparse_score_by_id.get(pid),
+                "source_name": payload.get("source") or payload.get("source_name"),
+                "source_type": payload.get("source_type", "md"),
+                "kb_id": payload.get("kb_id"),
+                "user_id": payload.get("user_id"),
+                "created_at": payload.get("created_at"),
+            })
+        return results
+
+    def _search_hybrid_dense_only(
+        self,
+        query: str,
+        limit: int,
+        q_filter: Filter,
+    ) -> List[Dict[str, Any]]:
+        """Только dense по именованному вектору (коллекция уже hybrid со sparse в индексе)."""
+        query_vector = self.embed_model.get_text_embedding_batch([query])[0]
+        response = self.qdrant_client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            using=DENSE_VECTOR_NAME,
+            limit=limit,
+            query_filter=q_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        results: List[Dict[str, Any]] = []
+        if not response or not getattr(response, "points", None):
+            return results
+        for hit in response.points:
+            payload = hit.payload or {}
+            chunk_index = 0
+            chunk_id = payload.get("chunk_id")
+            if chunk_id and "#" in chunk_id:
+                try:
+                    chunk_index = int(chunk_id.split("#")[1])
+                except Exception:
+                    pass
+            sc = float(hit.score) if hit.score is not None else 0.0
+            results.append({
+                "document_id": payload.get("document_id"),
+                "point_id": str(hit.id),
+                "chunk_index": chunk_index,
+                "text": payload.get("text", ""),
+                "answer": payload.get("answer", ""),
+                "score": sc,
+                "rrf_score": None,
+                "dense_score": sc,
+                "sparse_score": None,
+                "source_name": payload.get("source") or payload.get("source_name"),
+                "source_type": payload.get("source_type", "md"),
+                "kb_id": payload.get("kb_id"),
+                "user_id": payload.get("user_id"),
+                "created_at": payload.get("created_at"),
+            })
+        return results
     
     def search(
         self,
         query: str,
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        search_mode: str = "hybrid",
     ) -> List[Dict[str, Any]]:
         """Search documents by semantic similarity using LangChain retriever for OLD Payload
-        And using MCP payload -> qdrant search"""
+        And using MCP payload -> qdrant search.
+
+        search_mode: для hybrid-коллекций — 'hybrid' (dense+sparse+RRF) или 'dense' (только dense).
+        Для старых коллекций с одним вектором режим игнорируется (всегда dense-запрос).
+        """
+        if search_mode not in ("hybrid", "dense"):
+            search_mode = "hybrid"
         # Build filter if provided
         results: List[Dict[str, Any]] = []
-        query_vector = self.embed_model.get_text_embedding_batch([query])[0]
         must_conditions = []
 
         must_not_conditions = [
@@ -469,6 +633,15 @@ class QdrantService:
         available = count_response.count or 0
         if available == 0:
             return []
+
+        if self._hybrid_mode() == "hybrid":
+            effective_limit = min(limit, available)
+            if search_mode == "dense":
+                return self._search_hybrid_dense_only(query, effective_limit, q_filter)
+            rrf_k = int(os.getenv("KB_HYBRID_RRF_K", "60"))
+            return self._search_hybrid_rrf(query, limit, q_filter, rrf_k)
+
+        query_vector = self.embed_model.get_text_embedding_batch([query])[0]
         effective_limit = min(limit, available)
         response = self.qdrant_client.query_points(
             collection_name=self.collection_name,
@@ -564,10 +737,7 @@ class QdrantService:
             return
         self.collection_name = collection_name
         self.collection_type = collection_type
-        self.vector_store = QdrantVectorStore(
-            client=self.qdrant_client,
-            collection_name=self.collection_name
-        )
+        self._rebuild_vector_store()
 
     def get_date_iso(self, date:str):
         dt = datetime.fromisoformat(date)
@@ -637,12 +807,26 @@ class QdrantService:
         if not docs_texts:
             return {"error": "No documents found"}
         batch_size = 50
+        hybrid = self._hybrid_mode() == "hybrid"
+        sparse_model = self._get_sparse_embedder() if hybrid else None
         for i in range(0, points_count, batch_size):
             batch = docs_texts[i: i+batch_size]
             # извлекаем тексты 
             texts_batch = [item['text'] for item in batch]
             # генерируем эмбеддинги пачкой один запрос к API вместо 50
             embeddings_batch = self.embed_model.get_text_embedding_batch(texts_batch)
+            sparse_texts = None
+            sparse_batch = None
+            if hybrid and sparse_model is not None:
+                sparse_texts = [
+                    bm25_document_text(
+                        item.get("text") or "",
+                        (item.get("meta") or {}).get("section_path"),
+                    )
+                    or " "
+                    for item in batch
+                ]
+                sparse_batch = list(sparse_model.embed(sparse_texts))
             points = []
             for j, item in enumerate(batch):
                 meta = item.get("meta", {})
@@ -660,10 +844,17 @@ class QdrantService:
                 # генерация UUID
                 point_id = chunk_id_to_uuid(chunk_id)
                 payload = self._build_qdrant_payload(item)
+                if hybrid and sparse_batch is not None:
+                    vec = {
+                        DENSE_VECTOR_NAME: embeddings_batch[j],
+                        SPARSE_VECTOR_NAME: sparse_embedding_to_vector(sparse_batch[j]),
+                    }
+                else:
+                    vec = embeddings_batch[j]
                 points.append(
                     PointStruct(
                         id=point_id,
-                        vector=embeddings_batch[j], # берем вектор из пачки пакетов 
+                        vector=vec,
                         payload=payload, 
                     )
                 )
@@ -698,12 +889,14 @@ class QdrantService:
             payload={}
         payload.update(updates)
         payload["last_update"] = datetime.now().isoformat()
+        mode = self._hybrid_mode()
+        vector = meta_point_vectors(self.vector_size, mode)
         self.qdrant_client.upsert(
             collection_name=self.collection_name,
             points=[
                 PointStruct(
                     id=meta_id,
-                    vector=[0.0] * self.vector_size,
+                    vector=vector,
                     payload=payload
                 )
             ]
@@ -753,10 +946,7 @@ class QdrantService:
                 
         client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=self.vector_size,
-                distance=Distance.COSINE
-            )
+            **hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE),
         )
         self._ensure_collection_meta(collection_name, CollectionTypeAlias.kb)
 

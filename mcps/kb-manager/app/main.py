@@ -875,7 +875,8 @@ async def search_documents(request: SearchRequest):
         results = qdrant_service.search(
             query=request.query,
             limit=request.limit,
-            filters=request.filters
+            filters=request.filters,
+            search_mode=request.search_mode,
         )
         return results
     except Exception as e:
