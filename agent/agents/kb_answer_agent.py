@@ -1,4 +1,4 @@
-﻿from typing import Any, Dict
+from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
@@ -16,30 +16,112 @@ from ..config import (
 )
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
+from .validation_utils import build_validation_error
 
 logger = setup_logger("kb_answer_agent", "agent.log")
 
 
-def validate_kb_answer_result(data: Dict[str, Any]) -> Dict[str, Any]:
+def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Валидация результата kb_answer_agent.
+    Проверяет и нормализует результат `kb_answer_agent`.
+
+    Ожидаемый контракт:
+    - `status="ok"`;
+    - `mode` один из `text_answer`, `no_data`;
+    - `message` обязателен и не должен быть пустым;
+    - `source` один из `faq_search`, `kb_search`, `faq_search+kb_search`, `none`.
+
+    Семантические правила:
+    - при `mode="no_data"` обязателен `source="none"`;
+    - при `mode="text_answer"` значение `source="none"` недопустимо.
+
+    Возвращает нормализованный словарь с полями:
+    - `status`
+    - `mode`
+    - `message`
+    - `source`
+
+    При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
+    пригодным для логирования и локализации сбоя на этапе отладки.
     """
-    status = data.get("status")
-    mode = data.get("mode")
-    message = str(data.get("message", "")).strip()
-    source = data.get("source")
+    agent_name = "kb_answer_agent"
+    allowed_sources = ("faq_search", "kb_search", "faq_search+kb_search", "none")
+    intent = str((context or {}).get("intent", "")).strip()
 
-    if status != "ok":
-        raise ValueError(f"Invalid status: {status}")
+    def _validate_payload_type(payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            raise build_validation_error(
+                agent=agent_name,
+                stage="payload_type",
+                problem=f"expected dict, got {type(payload).__name__}",
+            )
 
-    if mode not in ("text_answer", "no_data"):
-        raise ValueError(f"Invalid mode: {mode}")
+    def _validate_basic_fields(payload: Dict[str, Any]) -> tuple[str, str, str, str]:
+        status = str(payload.get("status", "")).strip()
+        mode = str(payload.get("mode", "")).strip()
+        message = str(payload.get("message", "")).strip()
+        source = str(payload.get("source", "")).strip()
 
-    if not message:
-        raise ValueError("message is required")
+        if status != "ok":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem=f"invalid status {status!r}, expected 'ok'",
+                data=payload,
+                fields=("status", "mode", "source"),
+            )
 
-    if source not in ("faq_search", "kb_search", "faq_search+kb_search", "none"):
-        raise ValueError(f"Invalid source: {source}")
+        if mode not in ("text_answer", "no_data"):
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem=f"invalid mode {mode!r}, expected 'text_answer' or 'no_data'",
+                data=payload,
+                fields=("status", "mode", "source"),
+            )
+
+        if not message:
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem="message is required",
+                data=payload,
+                fields=("mode", "message", "source"),
+            )
+
+        if source not in allowed_sources:
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem=f"invalid source {source!r}, expected one of {list(allowed_sources)}",
+                data=payload,
+                fields=("mode", "source"),
+            )
+
+        return status, mode, message, source
+
+    def _validate_semantics(payload: Dict[str, Any], mode: str, source: str) -> None:
+        if mode == "no_data" and source != "none":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="mode='no_data' requires source='none'",
+                data=payload,
+                fields=("mode", "source"),
+            )
+
+        if mode == "text_answer" and source == "none" and intent != "smalltalk":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="mode='text_answer' must not use source='none' outside smalltalk",
+                data=payload,
+                fields=("mode", "source", "intent"),
+            )
+
+    _validate_payload_type(data)
+    status, mode, message, source = _validate_basic_fields(data)
+    _validate_semantics(data, mode, source)
 
     return {
         "status": status,
