@@ -318,21 +318,12 @@
                     <div id="user-groups-list">
                         <div class="loading">Загрузка пользователей...</div>
                     </div>
-                    <!-- пагинация -->
-                    <div class="pagination-controls">
-                        <select id="page-size" onchange="changePageSize()">
-                            <option value="20">20</option>
-                            <option value="50">50</option>
-                            <option value="100">100</option>
-                        </select>
-
-                        <div id="pagination-pages"></div>
-                    </div>
                 </div>
                 <!-- Logs Tab -->
                 <div id="logs-tab" class="tab-content">
                     <div class="section-header">
                         <h2>🧾 Логи</h2>
+                        <button onclick="exportAnalytics()" class="btn btn-primary btn-small">📥 Выгрузка логов</button>
                         <button onclick="loadLogs()" class="btn btn-secondary">🔄 Обновить логи</button>
                     </div>
                     <!-- Фильтры по столбцам -->
@@ -355,9 +346,7 @@
                     <div class="filters">
                         <input type="datetime-local" id="from" class="date-input">
                         <input type="datetime-local" id="to" class="date-input">
-
-                        <button onclick="loadAnalytics()" class="btn btn-add btn-small">Загрузить</button>
-                        <button onclick="exportAnalytics()" class="btn btn-primary btn-small">📥 Логи</button>
+                        <button onclick="loadAnalytics()" class="btn btn-add btn-small">Показать</button>
                         <button onclick="exportDialogs()" class="btn btn-primary btn-small">💬 Диалоги</button>
                     </div>
                     <!-- GRID -->
