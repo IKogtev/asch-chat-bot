@@ -216,6 +216,7 @@ header {
 .main-content {
     margin-left: 70px;
     display: flex;
+    transition: margin-left 0.3s ease;
     flex-direction: column;
     flex: 1;
     min-height: 0;
@@ -250,7 +251,6 @@ header {
     white-space: nowrap;
     transition: opacity 0.2s;
 }
-
 /* иконка */
 .sidebar-header .logo {
     font-size: 20px;
@@ -278,6 +278,9 @@ header {
 /* expanded */
 .sidebar.expanded {
     width: 220px;
+}
+.sidebar.expanded ~ .main-content {
+    margin-left: 220px;
 }
 /* toggle button */
 .sidebar-toggle {
@@ -311,15 +314,22 @@ header {
     gap: 10px;
     width: 100%;
     padding: 10px;
+    align-items: stretch;
 }
 .sidebar .tab-button {
     display: flex;
-    align-items: center;
+    align-items: left;
+    text-align: left;
+    justify-content: flex-start;
     gap: 12px;
     width: 100%;
-    padding: 10px;
+    padding: 10px 12px !important;
     border-radius: 8px;
     overflow: hidden;
+}
+.sidebar .tab-button .label {
+    text-align: left;
+    width: 100%;
 }
 /* collapsed = только иконки */
 .sidebar:not(.expanded) .tab-button {
@@ -354,7 +364,6 @@ header {
 .tab-button {
     background: none;
     border: none;
-    padding: 12px 24px;
     font-size: 1rem;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1177,6 +1186,53 @@ select:focus {
 .news-upload-wrapper {
     margin: 10px 0;
 }
+/* разделитель */
+.news-divider {
+    margin: 30px 0;
+    height: 1px;
+    background: var(--border-color);
+}
+/* история */
+.news-history-block {
+    margin-top: 10px;
+}
+.news-content {
+    padding: 12px;
+    background: rgba(0,0,0,0.03);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    border-left: 4px solid var(--primary-color);
+}
+
+/* FILES */
+.news-files {
+    border-top: 1px dashed var(--border-color);
+    padding-top: 10px;
+}
+
+.news-file {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 6px;
+}
+
+.news-no-files {
+    color: #999;
+    font-size: 13px;
+}
+/* META */
+.news-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+}
 .news-upload-box {
     border: 2px dashed var(--border-color);
     padding: 12px;
@@ -1348,18 +1404,31 @@ select:focus {
     border-radius: 6px;
 }
 .groups-tab-header {
-    margin-bottom: 20px;
+    top: 70px; /* ниже статистики */
+    z-index: 50;
+    background: var(--card-bg);
+    padding: 10px 0;
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
     align-items: center;
 }
+.groups-sticky-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: 140px;
+    background: var(--bg-color);
+    padding-bottom: 10px;
+
+    border-bottom: 1px solid var(--border-color);
+}
 .groups-search-input {
-    padding: 8px 12px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
     width: 300px;
     font-size: 14px;
+    padding: 8px 10px;
     transition: all 0.2s;
 }
 .groups-search-input:focus {
@@ -1368,8 +1437,11 @@ select:focus {
     box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
 .groups-stats-container {
-    margin-top: 20px;
-    padding: 15px;
+    top: 0;
+    z-index: 60;
+    padding: 10px 0;
+
+    border-bottom: 1px solid var(--border-color);
     background: var(--bg-color);
     border-radius: 8px;
     box-shadow: var(--shadow);
@@ -1406,12 +1478,26 @@ select:focus {
 }
 .user-groups-table {
     width: 100%;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     background: var(--card-bg);
     font-size: 14px;
     box-shadow: var(--shadow);
     border-radius: 8px;
     overflow: hidden;
+}
+thead th {
+    top: 140px;
+}
+/* закрепление для заголовка */
+.user-groups-table thead th {
+    position: sticky;
+    top: 140px; /* внутри контейнера */
+    z-index: 90;
+
+    background: var(--card-bg);
+    border-bottom: 2px solid var(--border-color);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
 
 .user-groups-table thead tr {
@@ -1430,6 +1516,9 @@ select:focus {
 }
 .user-groups-table tbody tr:hover {
     background-color: rgba(79, 70, 229, 0.02);
+}
+.user-groups-table tbody tr:nth-child(even) {
+    background: rgba(0,0,0,0.02);
 }
 .user-groups-table .text-center { text-align: center;}
 .user-groups-table .font-monospace { font-family: 'Fira Code', monospace;}
@@ -1754,4 +1843,23 @@ select:focus {
 #logs-table-inner th:nth-child(6),
 #logs-table-inner td:nth-child(6) {
     width: auto;
+}
+.pagination-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.page-btn {
+    margin: 0 3px;
+    padding: 5px 10px;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+    cursor: pointer;
+}
+
+.page-btn.active {
+    background: var(--primary-color);
+    color: white;
 }

@@ -36,6 +36,10 @@ const PAGE_SIZE = 10; // число отображаемых пользоват�
 let docPage = 0;
 let allDocs = [];
 let statSources = [];
+// пагинация для групп пользователей
+let currentPage = 1;
+let pageSize = 20;
+let allUsersCache = [];
 
 
 // Initialize on load
@@ -79,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
             modules: {
                 toolbar: '#news-toolbar'
             },
-            placeholder: "Напишите новость..."
+            placeholder: "Введите текст..."
         });
     }
 });
@@ -440,8 +444,9 @@ function showTab(tabName, event=null) {
     
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
-    if (event && event.target) {
-        event.target.classList.add('active');
+    if (event && event.currentTarget) {
+        // event.target.classList.add('active');
+        event.currentTarget.classList.add('active');
     }
     else {
         const button = document.querySelector(`[data-tab="${tabName}"]`);
@@ -884,7 +889,6 @@ function subscribeToSync() {
         eventSource.close();
     };
 }
-
 // функция для синхронизации по всем данным
 async function syncAll(btnElement) {
     // 1. Защита: если кнопка не передана, выходим
@@ -1538,7 +1542,7 @@ async function sendNews() {
         loadNewsHistory();
     }
 }
-
+// удаление файла прикрепленного к новости
 document.getElementById("news-file-remove").onclick = () => {
     const fileInput = document.getElementById("news-files");
 
@@ -1553,7 +1557,7 @@ document.getElementById("news-file-remove").onclick = () => {
 
     console.log("File removed (reuse cleared)");
 };
-
+// добавление файла прикрепленного к новости
 document.getElementById("news-files").addEventListener("change", (e) => {
     const fileInput = e.target;
 
@@ -1569,7 +1573,6 @@ document.getElementById("news-files").addEventListener("change", (e) => {
         console.log("New file selected, reuse cleared");
     }
 });
-
 // загрузка истории новостей
 async function loadNewsHistory() {
     const container = document.getElementById("news-history");
@@ -1598,7 +1601,7 @@ async function loadNewsHistory() {
             const targetGroup = n.target_group || "all";
             const filesHtml = files.length > 0
                 ? files.map(f => `
-                    <div style="margin-top:5px;">
+                    <div class="news-file">
                         📎 ${escapeHtml(f.name)}
                         <button 
                             class="btn btn-small btn-secondary"
@@ -1607,7 +1610,7 @@ async function loadNewsHistory() {
                         </button>
                     </div>
                 `).join("")
-                : '<div style="color:#999;">Без файлов</div>';
+                : '<div class="news-no-files">Без файлов</div>';
             return `
                 <div class="document-card">
                     <div class="document-header">
@@ -1617,7 +1620,7 @@ async function loadNewsHistory() {
                         <button 
                             class="btn btn-primary btn-small"
                             onclick="reuseNewsById(${n.id})">
-                            📋 Использовать
+                            📋  Редактировать и отправить
                         </button>
                         <button 
                             class="btn btn-primary btn-danger btn-small"
@@ -1625,28 +1628,16 @@ async function loadNewsHistory() {
                             🗑️ Удалить
                         </button>
                     </div>
-                    
-                    <div class="document-meta">
-                        <div class="meta-item">
-                            📅 ${formatDate(n.created_at)}
-                        </div>
-                        <div class="meta-item">
-                            ⏰ ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}
-                        </div>
-                        <div class="meta-item">
-                            📊 ${n.status}
-                        </div>
-                        <div class="meta-item">
-                            👥 ${getTargetGroupName(targetGroup) || n.target_group || "all"}
-                        </div>
+                    <div class="news-meta">
+                        <span> Создано: ${formatDate(n.created_at)}</span>
+                        <span> Отправлено: ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}</span>
+                        <span> Статус: ${n.status}</span>
+                        <span> Получатели: ${getTargetGroupName(targetGroup) || n.target_group || "all"}</span>
                     </div>
-
-                    <div class="result-text" style="margin-top:10px;">
-                        <div class="news-preview">
-                            ${n.text || ""}
-                        </div>
+                    <div class="news-content">
+                        ${n.text || ""}
                     </div>
-                    <div style="margin-top:10px;">
+                    <div class="news-files">
                         ${filesHtml}
                     </div>
                 </div>
@@ -1661,7 +1652,6 @@ async function loadNewsHistory() {
         `;
     }
 }
-
 // функция удаления новости из истории
 async function deleteNews(id) {
     const confirmDelete = confirm("Удалить новость из истории?");
@@ -1685,8 +1675,7 @@ async function deleteNews(id) {
     } catch (e) {
         alert("Ошибка: " + e.message);
     }
-}
-                        
+}                   
 // просмотр файла новости
 async function viewNewsFile(name) {
     try {
@@ -1874,7 +1863,7 @@ async function openAgent(agent) {
     // грузим текущий промпт 
     await loadCurrentPrompt();
 }
-
+// закрытие окна агента
 function closeAgentModal() {
     const modal = document.getElementById("agent-modal");
     if (modal) {
@@ -2191,7 +2180,7 @@ async function loadUserGroups() {
             throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
         }
         const users = await res.json();
-        
+        allUsersCache = users;
         // Фильтрация по поиску
         let filtered = users.filter(u => {
             if (!searchQuery) return true;
@@ -2212,7 +2201,11 @@ async function loadUserGroups() {
         } else if (groupFilter === "no_groups") {
             filtered = filtered.filter(u => !u.manager_group && !u.coach_group);
         }
-        
+        // пагинация расчеты
+        const start = (currentPage - 1) * pageSize;
+        const end = start + pageSize;
+        const paginated = filtered.slice(start, end);
+        renderPagination(filtered.length);
         // Обновление статистики
         updateGroupStats(users);
         if (filtered.length === 0) {
@@ -2270,6 +2263,37 @@ async function loadUserGroups() {
         `;
         console.error("Error loading user groups:", e);
     }
+}
+// рендеринг пагинации
+function renderPagination(totalItems) {
+    const pagesDiv = document.getElementById("pagination-pages");
+
+    const totalPages = Math.ceil(totalItems / pageSize);
+
+    let buttons = "";
+
+    for (let i = 1; i <= totalPages; i++) {
+        buttons += `
+            <button 
+                class="page-btn ${i === currentPage ? 'active' : ''}"
+                onclick="goToPage(${i})">
+                ${i}
+            </button>
+        `;
+    }
+
+    pagesDiv.innerHTML = buttons;
+}
+// Навигация
+function goToPage(page) {
+    currentPage = page;
+    loadUserGroups();
+}
+// изменение размера страницы
+function changePageSize() {
+    pageSize = parseInt(document.getElementById("page-size").value);
+    currentPage = 1;
+    loadUserGroups();
 }
 // Обновление статистики по группам
 function updateGroupStats(users) {
@@ -2459,11 +2483,11 @@ function applyRoleAccess() {
     if (role === "manager") {
         // manager ограничен
         const allowed = [
-            "documents",
             "search",
             "tree_files",
             "news_send",
-            "user_groups"
+            "user_groups",
+            "analytics"
         ];
 
         allowed.forEach(name => {
