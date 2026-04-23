@@ -27,7 +27,6 @@ import pandas as pd
 # простая токенизация
 from collections import Counter
 import re
-from collections import Counter
 import pymorphy3
 
 load_dotenv()
@@ -281,7 +280,6 @@ def get_interval_delta():
     if sync_settings.get("interval_seconds"):
         return timedelta(seconds=sync_settings["interval_seconds"])
     return timedelta(hours=sync_settings["interval_hours"])
-
 # создаем функцию очереди событий чтобы отслеживать автоматические обновления
 async def event_generator():
     queue = asyncio.Queue()
@@ -314,7 +312,6 @@ def validate_extensions(ext: str, collection_type: str):
             detail=f"Unsupported {collection_type.upper()} format: {ext}"
             f"\n Supported formats are: {', '.join(allowed)}"
         )
-
 ##################################
 # Работа с синхронихацией
 ##################################
@@ -417,7 +414,6 @@ async def run_sync_all_once():
     qdrant_service.switch_collection(original_collection, original_type)
 
     return {"status": "success", "message": "SYNC completed"}          
-
 
 async def start_scheduler():
     # запускаем расписание автоматической синхроонизации
@@ -577,7 +573,6 @@ def _generate_jwt(data: dict, expires_delta: timedelta, token_type: str) -> str:
     to_encode.update({"exp": expire, "type": token_type})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-
 def create_access_token(data: dict):
     """Создание JWT access токена с типом и временем жизни"""
     return _generate_jwt(data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), "access")
@@ -625,8 +620,6 @@ def is_allowed(path: str, role: str) -> bool:
 ##################################
 # Авторизация и главная
 ##################################
-
-
 @app.post("/api/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     """Эндпоинт для логина. Принимает username и password, проверяет их и возвращает JWT токены в cookies"""
@@ -1597,27 +1590,67 @@ async def update_subscriber_group(data: dict):
 # логирование событий в ui для аналитики
 @app.get("/api/events")
 async def get_events(request: Request):
-    """Получить последние события для мониторинга состояния бота и системы"""
     limit = int(request.query_params.get("limit", 100))
-    since = request.query_params.get("since")
-    if since:
-        since = datetime.fromisoformat(since)
+    offset = int(request.query_params.get("offset", 0))
+    # фильтры для поиска по логам
+    filters = {
+        "user_id": request.query_params.get("user_id"),
+        "user_name": request.query_params.get("user_name"),
+        "event_type": request.query_params.get("event_type"),
+        "channel": request.query_params.get("channel"),
+        "created_at": request.query_params.get("created_at"),
+        "payload": request.query_params.get("payload"),
+    }
+
+    conditions = []
+    values = []
+    i = 1
+
+    for key, value in filters.items():
+        if value:
+            if key == "payload":
+                conditions.append(f"payload::text ILIKE ${i}")
+                values.append(f"%{value}%")
+            elif key == "created_at":
+                # Пытаемся распарсить дату
+                try:
+                    dt = datetime.fromisoformat(value)
+
+                    # обрезаем секунды
+                    dt_from = dt.replace(second=0, microsecond=0)
+                    dt_to = dt_from + timedelta(minutes=1)
+                    # фильтр по дню (±1 день)
+                    conditions.append(f"created_at >= ${i} AND created_at < ${i+1}")
+                    values.append(dt_from)
+                    values.append(dt_to)
+                    i += 1  # +1 дополнительный параметр
+
+                except:
+                    # fallback — если не смогли распарсить
+                    conditions.append(f"created_at::text ILIKE ${i}")
+                    values.append(f"%{value}%")    
+            else:
+                conditions.append(f"{key} ILIKE ${i}")
+                values.append(f"%{value}%")
+            i += 1
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    query = f"""
+        SELECT user_id, user_name, event_type, channel, payload, created_at
+        FROM events
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT ${i} OFFSET ${i+1}
+    """
+
+    values.extend([limit, offset])
+
     async with request.app.state.db_pool.acquire() as conn:
-        if since:
-            rows = await conn.fetch("""
-                    SELECT user_id, user_name, event_type, channel, payload, created_at
-                    FROM events
-                    WHERE created_at > $1
-                    ORDER BY created_at ASC
-                    LIMIT $2
-                """, since, limit)
-        else:
-            rows = await conn.fetch("""
-                SELECT user_id, user_name, event_type, channel, payload, created_at
-                FROM events
-                ORDER BY created_at DESC
-                LIMIT $1
-            """, limit)
+        rows = await conn.fetch(query, *values)
+
     return [
         {
             "user_id": r["user_id"],
@@ -1630,6 +1663,9 @@ async def get_events(request: Request):
         for r in rows
     ]
 
+####################
+# Работа аналитики
+####################
 # экспорт событий для аналитики за период
 @app.get("/api/analytics/export")
 async def export(from_ts: str, to_ts: str, request: Request):
@@ -1819,9 +1855,9 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
+    #  извлекаем текст
     texts = [r["text"] for r in rows if r["text"]]
-
+    # извлекаем слова из текста
     words = []
     for t in texts:
         words += re.findall(r'\b\w+\b', t.lower())
@@ -1833,9 +1869,10 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
     for w in words:
         if len(w) < 3 or w in stopwords:
             continue
+        # производим лематизацию
         lemma = morph.parse(w)[0].normal_form
         clean_words.append(lemma)
-
+    # считаем слова
     counter = Counter(clean_words)
 
     top = counter.most_common(50)
@@ -1860,17 +1897,17 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
+    # извлекаем текст
     texts = [r["text"] for r in rows if r["text"]]
-
+    # прописываем стоп слова
     stopwords = {
         "и", "в", "на", "что", "как", "а", "с", "по",
         "это", "файл", "документ", "скачать"
     }
-
+    # извлекаем фразы 
     all_phrases = []
-
     for t in texts:
+        # находим слова
         words = re.findall(r'\b\w+\b', t.lower())
 
         # чистка + лемматизация
@@ -1886,11 +1923,11 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
             phrase = f"{clean[i]} {clean[i+1]}"
             all_phrases.append(phrase)
 
-        # ===== триграммы (опционально) =====
+        # ===== триграммы =====
         for i in range(len(clean) - 2):
             phrase = f"{clean[i]} {clean[i+1]} {clean[i+2]}"
             all_phrases.append(phrase)
-
+    # считаем число повторений
     counter = Counter(all_phrases)
 
     top = counter.most_common(50)
@@ -2148,7 +2185,7 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, user_id, from_ts, to_ts)
-
+    # экспорт диалогов делаем просто в виде текста для одного диалога
     lines = []
     for r in rows:
         lines.append(f"[{r['created_at']}] USER: {r['message']}")
