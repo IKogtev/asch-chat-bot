@@ -40,6 +40,9 @@ let statSources = [];
 let currentPage = 1;
 let pageSize = 20;
 let allUsersCache = [];
+// фильтр пользователей
+let activeStatsFilter = "all";
+let filteredUsersCache = []; // кэш фильтрованных пользователей
 
 
 // Initialize on load
@@ -445,7 +448,6 @@ function showTab(tabName, event=null) {
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
     if (event && event.currentTarget) {
-        // event.target.classList.add('active');
         event.currentTarget.classList.add('active');
     }
     else {
@@ -2167,133 +2169,143 @@ async function saveBotStartMessage() {
 // #############################
 
 // Загрузка списка пользователей с группами
-async function loadUserGroups() {
+async function loadUserGroups(skipFetch = false) {
     const container = document.getElementById("user-groups-list");
     const searchQuery = document.getElementById("user-search")?.value || "";
-    const groupFilter = document.getElementById("group-filter")?.value || "all";
     if (!container) return;
-
-    container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
-    try {
-        const res = await fetch("/api/subscribers");  
-        if (!res.ok) {
-            throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
-        }
-        const users = await res.json();
-        allUsersCache = users;
-        // Фильтрация по поиску
-        let filtered = users.filter(u => {
-            if (!searchQuery) return true;
-            const q = searchQuery.toLowerCase();
-            return (
-                String(u.user_id).includes(q) ||
-                (u.username && u.username.toLowerCase().includes(q)) ||
-                (u.first_name && u.first_name.toLowerCase().includes(q)) ||
-                (u.last_name && u.last_name.toLowerCase().includes(q))
-            );
-        });
-        
-        // Фильтрация по группе
-        if (groupFilter === "manager_group") {
-            filtered = filtered.filter(u => u.manager_group);
-        } else if (groupFilter === "coach_group") {
-            filtered = filtered.filter(u => u.coach_group);
-        } else if (groupFilter === "no_groups") {
-            filtered = filtered.filter(u => !u.manager_group && !u.coach_group);
-        }
-        // пагинация расчеты
-        const start = (currentPage - 1) * pageSize;
-        const end = start + pageSize;
-        const paginated = filtered.slice(start, end);
-        renderPagination(filtered.length);
-        // Обновление статистики
-        updateGroupStats(users);
-        if (filtered.length === 0) {
+    // Загружаем с API только если нужно
+    if (!skipFetch) {
+        container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
+        try {
+            const res = await fetch("/api/subscribers");  
+            if (!res.ok) {
+                throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
+            }
+            const users = await res.json();
+            allUsersCache = users;
+        } catch (e) {
             container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>Пользователи не найдены</p>
+                <div class="result-message error">
+                    Ошибка загрузки: ${e.message}
                 </div>
             `;
+            console.error(e);
             return;
         }
-        
+    }    
+    // Фильтрация по поиску
+    filteredUsersCache = allUsersCache.filter(u => {
+        const q = searchQuery.toLowerCase();
+        const matchesSearch = !searchQuery || (
+            String(u.user_id).includes(q) ||
+            (u.username && u.username.toLowerCase().includes(q)) ||
+            (u.first_name && u.first_name.toLowerCase().includes(q)) ||
+            (u.last_name && u.last_name.toLowerCase().includes(q))
+        );
+        // Фильтрация по группе
+        let matchesGroup = true;
+        if (activeStatsFilter === "manager") matchesGroup = !!u.manager_group;
+        else if (activeStatsFilter === "coach") matchesGroup = !!u.coach_group;
+        else if (activeStatsFilter === "both") matchesGroup = (u.manager_group && u.coach_group);
+        else if (activeStatsFilter === "none") matchesGroup = (!u.manager_group && !u.coach_group);
+        return matchesSearch && matchesGroup;
+    });
+    // пагинация расчеты
+    const totalPages = Math.max(1, Math.ceil(filteredUsersCache.length / pageSize));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    const start = (currentPage - 1) * pageSize;
+    const end = start + pageSize;
+    const paginated = filteredUsersCache.slice(start, end);
+    // Обновление статистики
+    updateGroupStats(allUsersCache);
+    if (paginated.length === 0) {
         container.innerHTML = `
-            <table class="user-groups-table">
-                <thead>
-                    <tr>
-                        <th>User ID</th>
-                        <th>Username</th>
-                        <th>Имя</th>
-                        <th>Фамилия</th>
-                        <th class="text-center">👔 Менеджер</th>
-                        <th class="text-center">🎓 Коуч</th>
-                        <th>Последний вход</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${filtered.map(u => `
-                        <tr>
-                            <td class="font-monospace">${u.user_id}</td>
-                            <td>${escapeHtml(u.username || '-')}</td>
-                            <td>${escapeHtml(u.first_name || '')}</td>
-                            <td>${escapeHtml(u.last_name || '')}</td>
-                            <td class="text-center">
-                                <input type="checkbox" 
-                                      ${u.manager_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
-                            </td>
-                            <td class="text-center">
-                                <input type="checkbox" 
-                                      ${u.coach_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
-                            </td>
-                            <td>${formatDate(u.last_seen)}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        `;
-        
-    } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>Пользователи не найдены</p>
             </div>
         `;
-        console.error("Error loading user groups:", e);
+        return;
+    }
+        
+    container.innerHTML = `
+        <table class="user-groups-table">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Username</th>
+                    <th>Имя</th>
+                    <th>Фамилия</th>
+                    <th class="text-center">👔 Менеджер</th>
+                    <th class="text-center">🎓 Коуч</th>
+                    <th>Последний вход</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${paginated.map(u => `
+                    <tr>
+                        <td class="font-monospace">${u.user_id}</td>
+                        <td>${escapeHtml(u.username || '-')}</td>
+                        <td>${escapeHtml(u.first_name || '')}</td>
+                        <td>${escapeHtml(u.last_name || '')}</td>
+                        <td class="text-center">
+                            <input type="checkbox" 
+                                    ${u.manager_group ? 'checked' : ''} 
+                                    onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
+                        </td>
+                        <td class="text-center">
+                            <input type="checkbox" 
+                                    ${u.coach_group ? 'checked' : ''} 
+                                    onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
+                        </td>
+                        <td>${formatDate(u.last_seen)}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+        <!-- пагинация -->
+        <div class="pagination-wrapper">
+            <div class="pagination-controls">
+                <span>Показывать по:</span>
+                <select id="page-size" onchange="changePageSize()">
+                    <option value="20" ${pageSize === 20 ? 'selected' : ''}>20</option>
+                    <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
+                    <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
+                </select>
+            </div>
+
+            <div class="pagination">
+                <button onclick="prevPage()" ${currentPage === 1 ? "disabled" : ""} class="btn btn-primary btn-small">⬅ Назад</button>
+                
+                <span class="page-info">Страница <strong>${currentPage}</strong> из <strong>${totalPages}</strong></span>
+
+                <button onclick="nextPage()" ${currentPage >= totalPages ? "disabled" : ""} class="btn btn-primary btn-small">Вперед ➡</button>
+            </div>
+        </div>
+    `;
+}
+function nextPage() {
+    const totalPages = Math.ceil(filteredUsersCache.length / pageSize);
+    if (currentPage < totalPages) {
+        currentPage++;
+        loadUserGroups(true); // Листаем без запроса к API
     }
 }
-// рендеринг пагинации
-function renderPagination(totalItems) {
-    const pagesDiv = document.getElementById("pagination-pages");
-
-    const totalPages = Math.ceil(totalItems / pageSize);
-
-    let buttons = "";
-
-    for (let i = 1; i <= totalPages; i++) {
-        buttons += `
-            <button 
-                class="page-btn ${i === currentPage ? 'active' : ''}"
-                onclick="goToPage(${i})">
-                ${i}
-            </button>
-        `;
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        loadUserGroups(true); // Листаем без запроса к API
     }
-
-    pagesDiv.innerHTML = buttons;
-}
-// Навигация
-function goToPage(page) {
-    currentPage = page;
-    loadUserGroups();
 }
 // изменение размера страницы
 function changePageSize() {
-    pageSize = parseInt(document.getElementById("page-size").value);
-    currentPage = 1;
-    loadUserGroups();
+    const select = document.getElementById("page-size");
+    if (select) {
+        pageSize = parseInt(select.value);
+        currentPage = 1; // Всегда возвращаемся на 1 страницу
+        loadUserGroups(true); // Листаем без запроса к API
+    }
 }
 // Обновление статистики по группам
 function updateGroupStats(users) {
@@ -2309,28 +2321,39 @@ function updateGroupStats(users) {
     statsDiv.innerHTML = `
         <h3>📊 Статистика пользователей</h3>
         <div class="groups-stats-grid">
-            <div class="groups-stat-card groups-stat-total">
+            <div class="groups-stat-card groups-stat-total ${activeStatsFilter === 'all' ? 'active' : ''}"
+                onclick="applyStatsFilter('all')">
                 <div class="groups-stat-number">${total}</div>
                 <div class="groups-stat-label">Всего пользователей</div>
             </div>
-            <div class="groups-stat-card groups-stat-managers">
+            <div class="groups-stat-card groups-stat-managers ${activeStatsFilter === 'manager' ? 'active' : ''}"
+                onclick="applyStatsFilter('manager')">
                 <div class="groups-stat-number">${managers}</div>
                 <div class="groups-stat-label">👔 Менеджеры</div>
             </div>
-            <div class="groups-stat-card groups-stat-couchs">
+            <div class="groups-stat-card groups-stat-couchs ${activeStatsFilter === 'coach' ? 'active' : ''}"
+                onclick="applyStatsFilter('coach')">
                 <div class="groups-stat-number">${couchs}</div>
                 <div class="groups-stat-label">🎓 Коучи</div>
             </div>
-            <div class="groups-stat-card groups-stat-both">
+            <div class="groups-stat-card groups-stat-both ${activeStatsFilter === 'both' ? 'active' : ''}"
+                onclick="applyStatsFilter('both')">
                 <div class="groups-stat-number">${both}</div>
                 <div class="groups-stat-label">В обеих группах</div>
             </div>
-            <div class="groups-stat-card groups-stat-none">
+            <div class="groups-stat-card groups-stat-none ${activeStatsFilter === 'none' ? 'active' : ''}"
+                onclick="applyStatsFilter('none')">
                 <div class="groups-stat-number">${noGroups}</div>
                 <div class="groups-stat-label">Без групп</div>
             </div>
         </div>
     `;
+}
+// функция фильтра
+function applyStatsFilter(filter) {
+    activeStatsFilter = filter;
+    currentPage = 1; // сброс страницы
+    loadUserGroups();
 }
 // Переключение группы пользователя
 async function toggleUserGroup(userId, group, value) {

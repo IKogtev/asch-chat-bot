@@ -1767,9 +1767,8 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
             df[col] = df[col].dt.tz_localize(None)
     # форматируем время ответа в понятный вид измерений
     if "response_time_ms" in df.columns:
-        df["response_time_ms"] = df["response_time_ms"].apply(
-            lambda x: f"{int(x)} ms" if pd.notnull(x) else ""
-        )
+        df.rename(columns={"response_time_ms": "response_time"}, inplace=True)
+        df["response_time"] = df["response_time"].apply(lambda x: "" if pd.isnull(x) else f"{int(x) / 1000:.2f} сек" if int(x) >= 1000 else f"{int(x)} мс")
 
     file_path = "/tmp/dialogs.xlsx"
     df.to_excel(file_path, index=False)
