@@ -53,6 +53,7 @@ def _load_dispatcher_module():
 
 dispatcher_module = _load_dispatcher_module()
 validate_dispatcher_result = dispatcher_module.validate_dispatcher_result
+VALIDATION_CONTEXT = {}
 
 
 @pytest.mark.unit
@@ -64,7 +65,8 @@ def test_validate_dispatcher_result_accepts_doc_search_with_query() -> None:
             "intent": "doc_search",
             "reason": "user asks to find docs",
             "search_query": "отпуск",
-        }
+        },
+        VALIDATION_CONTEXT,
     )
 
     assert result["route"] == "doc_search"
@@ -81,7 +83,8 @@ def test_validate_dispatcher_result_accepts_follow_up_without_query() -> None:
             "intent": "show_more",
             "reason": "pagination",
             "search_query": "",
-        }
+        },
+        VALIDATION_CONTEXT,
     )
 
     assert result["intent"] == "show_more"
@@ -97,7 +100,8 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
             "intent": "smalltalk",
             "reason": "casual talk",
             "search_query": "",
-        }
+        },
+        VALIDATION_CONTEXT,
     )
 
     assert result["route"] == "kb_answer"
@@ -106,7 +110,7 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("payload", "error"),
+    ("payload", "parts"),
     [
         (
             {
@@ -116,7 +120,7 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
                 "reason": "x",
                 "search_query": "q",
             },
-            "Invalid status",
+            ("dispatcher_agent", "basic_fields", "invalid status"),
         ),
         (
             {
@@ -126,7 +130,7 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
                 "reason": "x",
                 "search_query": "q",
             },
-            "Invalid route",
+            ("dispatcher_agent", "basic_fields", "invalid route"),
         ),
         (
             {
@@ -136,18 +140,22 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
                 "reason": "x",
                 "search_query": "q",
             },
-            "Invalid intent",
+            ("dispatcher_agent", "basic_fields", "invalid intent"),
         ),
     ],
 )
-def test_validate_dispatcher_result_rejects_invalid_basic_fields(payload, error: str) -> None:
-    with pytest.raises(ValueError, match=error):
-        validate_dispatcher_result(payload)
+def test_validate_dispatcher_result_rejects_invalid_basic_fields(payload, parts) -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_dispatcher_result(payload, VALIDATION_CONTEXT)
+
+    message = str(exc.value)
+    for part in parts:
+        assert part in message
 
 
 @pytest.mark.unit
 def test_validate_dispatcher_result_rejects_doc_route_intent_with_wrong_route() -> None:
-    with pytest.raises(ValueError, match="doc_search route intents must use route=doc_search"):
+    with pytest.raises(ValueError) as exc:
         validate_dispatcher_result(
             {
                 "status": "ok",
@@ -155,27 +163,33 @@ def test_validate_dispatcher_result_rejects_doc_route_intent_with_wrong_route() 
                 "intent": "show_all",
                 "reason": "wrong route",
                 "search_query": "",
-            }
+            },
+            VALIDATION_CONTEXT,
         )
+
+    assert "doc_search intents must use route='doc_search'" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_validate_dispatcher_result_rejects_kb_intent_with_wrong_route() -> None:
-    with pytest.raises(ValueError, match="intent=kb_answer\\|smalltalk must use route=kb_answer"):
+def test_validate_dispatcher_result_rejects_smalltalk_with_query() -> None:
+    with pytest.raises(ValueError) as exc:
         validate_dispatcher_result(
             {
                 "status": "ok",
-                "route": "doc_search",
-                "intent": "kb_answer",
-                "reason": "wrong route",
-                "search_query": "q",
-            }
+                "route": "kb_answer",
+                "intent": "smalltalk",
+                "reason": "casual talk",
+                "search_query": "лишний запрос",
+            },
+            VALIDATION_CONTEXT,
         )
+
+    assert "smalltalk must have empty search_query" in str(exc.value)
 
 
 @pytest.mark.unit
 def test_validate_dispatcher_result_requires_search_query_for_main_intent() -> None:
-    with pytest.raises(ValueError, match="search_query is required"):
+    with pytest.raises(ValueError) as exc:
         validate_dispatcher_result(
             {
                 "status": "ok",
@@ -183,13 +197,33 @@ def test_validate_dispatcher_result_requires_search_query_for_main_intent() -> N
                 "intent": "doc_search",
                 "reason": "missing query",
                 "search_query": "",
-            }
+            },
+            VALIDATION_CONTEXT,
         )
+
+    assert "search_query is required for doc_search and kb_answer intents" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_dispatcher_result_rejects_follow_up_with_query() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "doc_search",
+                "intent": "show_more",
+                "reason": "pagination",
+                "search_query": "не должно быть",
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "follow-up intents must not carry search_query" in str(exc.value)
 
 
 @pytest.mark.unit
 def test_validate_dispatcher_result_requires_reason() -> None:
-    with pytest.raises(ValueError, match="reason is required"):
+    with pytest.raises(ValueError) as exc:
         validate_dispatcher_result(
             {
                 "status": "ok",
@@ -197,5 +231,8 @@ def test_validate_dispatcher_result_requires_reason() -> None:
                 "intent": "smalltalk",
                 "reason": "",
                 "search_query": "",
-            }
+            },
+            VALIDATION_CONTEXT,
         )
+
+    assert "reason is required" in str(exc.value)
