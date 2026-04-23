@@ -1,5 +1,4 @@
 import os
-import json
 import aiohttp
 import time
 from urllib.parse import quote
@@ -12,6 +11,8 @@ from aiogram.types import (
 import tempfile
 from datetime import datetime
 from utils import setup_logger
+# логер событий
+from utils.event_logger import EventLogger
 # импортируем конфиг
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
@@ -27,8 +28,11 @@ from bot.services.utils import (
     get_document_id,
     get_kb_tree,
 )
+import uuid
 
 logger = setup_logger('handlers', 'handlers.log')
+# инициализируем логер событий
+eventlogger = EventLogger()
 # переменные для сохранения дерева папок в кэше
 TREE_CACHE = None
 TREE_TS = 0
@@ -55,7 +59,13 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
 
         user_id = user["user_id"]
         logger.info(f"Команда /start от user_id={user_id} (@{user['username']})")
-
+        await eventlogger.log_event(
+            event_type="command_start",
+            user_id=str(user_id),
+            user_name=user.get("username"),
+            session_id=str(user_id),
+            channel="telegram"
+        )
         # На /start не вызываем ADK.
         # Только обновляем пользователя в БД через get_authenticated_user()
         # и показываем стартовое меню.
@@ -84,7 +94,12 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         await subscriber_store.update_phone(user_id, phone)
 
         logger.info(f"✓ Получен телефон от user_id={user_id}.")
-
+        await eventlogger.log_event(
+            event_type="get_contact",
+            user_id=str(user_id),
+            session_id=str(user_id),
+            channel="telegram"
+        )
         # После получения телефона тоже не вызываем ADK.
         # ADK будет инициализирован лениво при первом текстовом сообщении.
         tree = await get_tree_cached()
@@ -102,6 +117,12 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         """Команда для получения версии платформы/бота"""
         user_id = m.from_user.id
         logger.info(f"Команда /version от user_id={user_id}")
+        await eventlogger.log_event(
+            event_type="command_version",
+            user_id=str(user_id),
+            session_id=str(user_id),
+            channel="telegram"
+        )
         await m.answer(f"Текущая версия бота: {Settings.PLATFORM_VERSION}")
 
     # домашняя страница
@@ -123,10 +144,15 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
     async def reset(m: Message) -> None:
         user_id = m.from_user.id
         username = m.from_user.username or "unknown"
-        session_id = f"session-{user_id}"
+        session_id = str(user_id)
 
         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
-
+        await eventlogger.log_event(
+            event_type="command_reset",
+            user_id=str(user_id),
+            session_id=session_id,
+            channel="telegram"
+        )
         try:
             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
             await adk.delete_session(user_id=str(user_id), session_id=session_id)
@@ -144,6 +170,15 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             logger.info(f"История и сессия сброшены для user_id={user_id}")
 
         except Exception as e:
+            await eventlogger.log_event(
+                event_type="error",
+                user_id=str(user_id),
+                session_id=session_id,
+                channel="telegram",
+                payload={
+                    "error": str(e)
+                }
+            )
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await m.answer("❌ Ошибка при сбросе истории")
 
@@ -154,7 +189,11 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
     async def help_cmd(m: Message) -> None:
         user_id = m.from_user.id
         logger.info(f"Команда /help от user_id={user_id}")
-
+        await eventlogger.log_event(
+            event_type="command_help",
+            user_id=str(user_id),
+            channel="telegram"
+        )
         await m.answer(
             "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
             "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
@@ -172,14 +211,28 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             return
 
         user_id = user["user_id"]
-        session_id = f"session-{user_id}"
+        session_id = str(user_id)
         user_text = (m.text or "").strip()
 
         if not user_text:
             return
-
+        turn_id = str(uuid.uuid4())
+        
+        # логируем скорость ответа
+        start_time = time.time()
         logger.info(f"📨 Сообщение от user_id={user_id} (@{user['username']}): {user_text[:100]}")
-
+        await eventlogger.log_event(
+            event_type="message_received",
+            user_id=str(user_id),
+            user_name=user.get("username"),
+            session_id=session_id,
+            channel="telegram",
+            payload={
+                "text": user_text,
+                "turn_id": turn_id,
+                "start_time": start_time
+            }
+        )
         try:
             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
 
@@ -262,8 +315,20 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 session_id=session_id,
                 text=user_text
             )
-
+            response_time = int((time.time() - start_time) * 1000)
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+            # сохраняем в логах событие ответа и его латентность
+            await eventlogger.log_event(
+                event_type="response",
+                user_id=str(user_id),
+                session_id=session_id,
+                channel="telegram",
+                payload={
+                    "turn_id": turn_id,
+                    "text": answer[:500],  # не логируем слишком длинные
+                    "response_time_ms": response_time
+                }
+            )
 
             work = answer or ""
 
@@ -298,6 +363,15 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
 
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
+            await eventlogger.log_event(
+                event_type="error",
+                user_id=str(user_id),
+                session_id=session_id,
+                channel="telegram",
+                payload={
+                    "error": str(e)
+                }
+            )
             await m.answer(
                 "😔 Произошла ошибка при обработке запроса.\n"
                 "Попробуйте позже или используйте /reset для сброса диалога."
@@ -332,10 +406,9 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
     async def send_file(callback: CallbackQuery):
         """Обработчик отправки файлов через меню бота"""
         await callback.answer()
-
+        
         pid = callback.data.split(":")[1]
         path = Settings.CALLBACK_MAP.get(pid)
-
         if not path:
             await callback.answer("Файл не найден", show_alert=True)
             return
@@ -347,7 +420,21 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
         else:
             url = f"{Settings.KB_MANAGER_URL}/api/documents/download/{doc_id}"
         filename = path.split("/")[-1]
-
+        user_id = callback.from_user.id
+        logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={user_id}")
+        await eventlogger.log_event(
+            event_type="document_download_menu",
+            user_id=str(user_id),
+            session_id=str(user_id),
+            user_name=callback.from_user.username,
+            channel="telegram",
+            payload={
+                "filename": filename,
+                "file_path": path,
+                "doc_id": doc_id,
+                "source": "menu"
+            }
+        )
         tmp_name = None
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:

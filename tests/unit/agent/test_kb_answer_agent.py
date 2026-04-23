@@ -72,6 +72,7 @@ def _load_kb_answer_module():
 
 kb_answer_module = _load_kb_answer_module()
 validate_kb_answer_result = kb_answer_module.validate_kb_answer_result
+DEFAULT_CONTEXT = {"intent": "kb_answer"}
 
 
 @pytest.mark.unit
@@ -82,7 +83,8 @@ def test_validate_kb_answer_result_accepts_text_answer() -> None:
             "mode": "text_answer",
             "message": "Готовый ответ",
             "source": "faq_search",
-        }
+        },
+        DEFAULT_CONTEXT,
     )
 
     assert result == {
@@ -101,7 +103,8 @@ def test_validate_kb_answer_result_accepts_no_data_result() -> None:
             "mode": "no_data",
             "message": "Точный ответ не найден",
             "source": "none",
-        }
+        },
+        DEFAULT_CONTEXT,
     )
 
     assert result["mode"] == "no_data"
@@ -110,35 +113,99 @@ def test_validate_kb_answer_result_accepts_no_data_result() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("payload", "error"),
+    ("payload", "parts"),
     [
         (
             {"status": "bad", "mode": "text_answer", "message": "x", "source": "faq_search"},
-            "Invalid status",
+            ("kb_answer_agent", "basic_fields", "invalid status"),
         ),
         (
             {"status": "ok", "mode": "bad", "message": "x", "source": "faq_search"},
-            "Invalid mode",
+            ("kb_answer_agent", "basic_fields", "invalid mode"),
         ),
         (
             {"status": "ok", "mode": "text_answer", "message": "x", "source": "bad"},
-            "Invalid source",
+            ("kb_answer_agent", "basic_fields", "invalid source"),
         ),
     ],
 )
-def test_validate_kb_answer_result_rejects_invalid_basic_fields(payload, error: str) -> None:
-    with pytest.raises(ValueError, match=error):
-        validate_kb_answer_result(payload)
+def test_validate_kb_answer_result_rejects_invalid_basic_fields(payload, parts) -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_kb_answer_result(payload, DEFAULT_CONTEXT)
+
+    message = str(exc.value)
+    for part in parts:
+        assert part in message
 
 
 @pytest.mark.unit
 def test_validate_kb_answer_result_requires_non_empty_message() -> None:
-    with pytest.raises(ValueError, match="message is required"):
+    with pytest.raises(ValueError) as exc:
         validate_kb_answer_result(
             {
                 "status": "ok",
                 "mode": "text_answer",
                 "message": "   ",
                 "source": "faq_search",
-            }
+            },
+            DEFAULT_CONTEXT,
         )
+
+    assert "message is required" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_kb_answer_result_requires_none_source_for_no_data() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_kb_answer_result(
+            {
+                "status": "ok",
+                "mode": "no_data",
+                "message": "Ничего не найдено",
+                "source": "faq_search",
+            },
+            DEFAULT_CONTEXT,
+        )
+
+    assert "mode='no_data' requires source='none'" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_kb_answer_result_rejects_none_source_for_text_answer() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_kb_answer_result(
+            {
+                "status": "ok",
+                "mode": "text_answer",
+                "message": "Ответ",
+                "source": "none",
+            },
+            DEFAULT_CONTEXT,
+        )
+
+    assert "mode='text_answer' must not use source='none' outside smalltalk" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_kb_answer_result_allows_none_source_for_smalltalk() -> None:
+    result = validate_kb_answer_result(
+        {
+            "status": "ok",
+            "mode": "text_answer",
+            "message": kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER,
+            "source": "none",
+        },
+        {"intent": "smalltalk"},
+    )
+
+    assert result["mode"] == "text_answer"
+    assert result["source"] == "none"
+    assert result["message"] == kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER
+
+
+@pytest.mark.unit
+def test_assistant_capabilities_answer_constant_matches_expected_phrase() -> None:
+    assert (
+        kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER
+        == "Я умею искать документы и помогать продавать продукты АСЖ."
+    )
