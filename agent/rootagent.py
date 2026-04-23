@@ -10,7 +10,7 @@ from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
 from .config import DEBUG_EXCEPTIONS, FAQ_DOCUMENTS_COLLECTION, KB_DOCUMENTS_COLLECTION
 from .helpers import truncate_for_log, format_text_answer, format_reject_answer
-from .json_leaf_runner import run_json_leaf_agent
+from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
@@ -24,6 +24,7 @@ OWASP_INVALID_CONTRACT_USER_MESSAGE = (
 )
 
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
+VALIDATION_ERROR_USER_MESSAGE = "Не удалось корректно обработать запрос. Попробуйте переформулировать вопрос."
 OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 
@@ -259,9 +260,9 @@ class RootAgent(BaseAgent):
         agent: LlmAgent,
         output_key: str,
         parsed_state_key: str,
-        validator: Callable[[Dict[str, Any]], Dict[str, Any]],
+        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
         log_label: str,
-        on_parse_error: Optional[Callable[[str, Exception], Dict[str, Any]]] = None,
+        validation_error_user_message: str,
     ) -> AsyncGenerator[Event, None]:
         """Запускает leaf-агента с JSON-валидацией через `json_leaf_runner`."""
         async for event in run_json_leaf_agent(
@@ -271,7 +272,7 @@ class RootAgent(BaseAgent):
             parsed_state_key=parsed_state_key,
             validator=validator,
             log_label=log_label,
-            on_parse_error=on_parse_error,
+            validation_error_user_message=validation_error_user_message,
         ):
             yield event
 
@@ -315,7 +316,7 @@ class RootAgent(BaseAgent):
                 parsed_state_key="_owasp_result_parsed",
                 validator=validate_owasp_result,
                 log_label="owasp_result_json",
-                on_parse_error=self._owasp_invalid_contract_fallback,
+                validation_error_user_message=OWASP_INVALID_CONTRACT_USER_MESSAGE,
             ):
                 yield event
 
@@ -339,7 +340,8 @@ class RootAgent(BaseAgent):
                         "intent": "file_download",
                         "reason": "download_by_rank_short_circuit",
                         "search_query": "",
-                    }
+                    },
+                    dict(ctx.session.state),
                 )
                 ctx.session.state["_dispatcher_result_parsed"] = dispatch
                 ctx.session.state.pop("dispatcher_result_json", None)
@@ -355,6 +357,7 @@ class RootAgent(BaseAgent):
                     parsed_state_key="_dispatcher_result_parsed",
                     validator=validate_dispatcher_result,
                     log_label="dispatcher_result_json",
+                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
                 ):
                     yield event
 
@@ -377,7 +380,8 @@ class RootAgent(BaseAgent):
                             "intent": pin,
                             "reason": "pagination_override_saved_doc_list",
                             "search_query": "",
-                        }
+                        },
+                        dict(ctx.session.state),
                     )
                     ctx.session.state["_dispatcher_result_parsed"] = dispatch
                     logger.info("Dispatcher pagination override: intent=%s", pin)
@@ -397,7 +401,8 @@ class RootAgent(BaseAgent):
                                 "intent": "file_download",
                                 "reason": "download_ranks_override_after_dispatcher",
                                 "search_query": "",
-                            }
+                            },
+                            dict(ctx.session.state),
                         )
                         ctx.session.state["_dispatcher_result_parsed"] = dispatch
                         ctx.session.state.pop("dispatcher_result_json", None)
@@ -424,6 +429,15 @@ class RootAgent(BaseAgent):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
             yield self._build_final_event_with_history(ctx, user_text, final_text)
+
+        except AgentValidationFailure as exc:
+            logger.warning(
+                "RootAgent stopped after validation failure: agent=%s error=%s raw=%s",
+                exc.log_label,
+                exc.validation_error,
+                truncate_for_log(exc.raw, 500),
+            )
+            yield self._build_final_event_with_history(ctx, user_text, exc.user_message)
 
         except Exception as exc:
             logger.error("RootAgent failure: %s", exc, exc_info=True)
@@ -474,6 +488,7 @@ class RootAgent(BaseAgent):
             parsed_state_key="_kb_answer_result_parsed",
             validator=validate_kb_answer_result,
             log_label="kb_answer_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
         ):
             yield event
 
