@@ -232,26 +232,27 @@
                     <div class="news-schedule">
                         <label class="form-label">📅 Отложить отправку:</label>
                         <input type="datetime-local" id="news-schedule-time" class="date-input">
-                        <label class="news-schedule-hint">⏰ Время отображается в Московском часовом поясе</label>
+                        <label class="news-schedule-hint">⏰ Часовой пояс Москва UTC+3</label>
                     </div>
-                    <br><br>
-
                     <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
                         📤 Отправить новость
                     </button>
-
+                    <!-- результаты отправки -->
                     <div id="news-result" class="result-message"></div>
-
+                    <!-- разделительная полоса визуально -->
                     <hr>
-                    <div class="section-header">
-                        <h3>📚 История новостей</h3>
-                        <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
-                            🔄 Обновить
-                        </button>
-                    </div>
+                    <div class="news-divider"></div>
+                    <div class="news-history-block">
+                        <div class="section-header">
+                            <h3>📚 История новостей</h3>
+                            <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
+                                🔄 Обновить
+                            </button>
+                        </div>
 
-                    <div id="news-history" class="news-list">
-                        <div class="loading">История не загружена</div>
+                        <div id="news-history" class="news-list">
+                            <div class="loading">История не загружена</div>
+                        </div>
                     </div>
                 </div>
                 <!-- Prompts tab -->
@@ -300,21 +301,32 @@
                     <div class="section-header">
                         <h2>👥 Управление группами пользователей</h2>
                     </div>
-                    
-                    <div class="groups-tab-header">
-                        <input type="text" id="user-search" class="groups-search-input" 
-                            placeholder="🔍 Поиск по user_id, username, имени или фамилии"
-                            onkeyup="loadUserGroups()">
-                        <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
-                        <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
+                    <div class="groups-sticky-header">
+                        <div id="user-groups-stats" class="groups-stats-container">
+                            <!-- Статистика будет загружена сюда -->
+                        </div>
+                        <!-- меню с кнопками и поиском -->
+                        <div class="groups-tab-header">
+                            <input type="text" id="user-search" class="groups-search-input" 
+                                placeholder="🔍 Поиск по user_id, username, имени или фамилии"
+                                onkeyup="loadUserGroups()">
+                            <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
+                            <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
+                        </div>
                     </div>
-                    
+                    <!-- таблица пользователей -->
                     <div id="user-groups-list">
                         <div class="loading">Загрузка пользователей...</div>
                     </div>
-                    
-                    <div id="user-groups-stats" class="groups-stats-container">
-                        <!-- Статистика будет загружена сюда -->
+                    <!-- пагинация -->
+                    <div class="pagination-controls">
+                        <select id="page-size" onchange="changePageSize()">
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+
+                        <div id="pagination-pages"></div>
                     </div>
                 </div>
                 <!-- Logs Tab -->
