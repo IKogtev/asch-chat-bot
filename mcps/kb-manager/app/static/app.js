@@ -3,30 +3,35 @@ const API_BASE = '';
 
 // State
 let selectedFile = null;
-let currentCollection = null;
+let currentCollection = null; // текущая коллекция
 let currentCollectionType = null; // faq | kb | docs
 let activeCollections = {
     faq: null,
     kb: null
-};
-let collectionsByType = {};
-let activeAliases = {};
-let currentPromptContent = "";
-let promptFiles = [];
-let botStartMessageContent = "";
-let newsEditor = null;
-let currentAgent = null;
-let promptEditorMDE = null;
-let currentUser = null;
-let lastTimestamp = null;
-let isLoadingLogs = false;
+}; // активные коллекции
+let collectionsByType = {}; // коллекции по типам
+let activeAliases = {}; // активные алиасы
+// управление промптами
+let currentPromptContent = ""; //текст текущего промпта
+let promptFiles = []; // список файлов промптов для агента
+let botStartMessageContent = ""; // стартовое сообщение текст
+let newsEditor = null; // текстовое поле отправки новости
+let currentAgent = null; // текущий агент
+let promptEditorMDE = null; // редактор промпта в markdown формате
+let currentUser = null; // текущий пользователь
+// Логи: фильтры и кэш
+let logFilters = {};
+let logsCache = []; // кэш последних записей для быстрой фильтрации
+let logsPage = 0; // стандартная страница логов
+const LOGS_PAGE_SIZE = 100; // число логов на страницу
+// переменные для аналитики
 let hourChart = null;
 let dayChart = null;
 let userSearch = "";
 let allUsers = [];
 let filteredUsers = [];
-let userPage = 0;
-const PAGE_SIZE = 10;
+let userPage = 0; 
+const PAGE_SIZE = 10; // число отображаемых пользователей и документов на странице
 let docPage = 0;
 let allDocs = [];
 let statSources = [];
@@ -34,13 +39,13 @@ let statSources = [];
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
-    checkAuth();
-    loadAliasData();
-    loadCollections();
-    loadActiveCollections();
-    loadCollectionInfo();
-    loadDocuments();
-    setupDragAndDrop();
+    checkAuth(); //Проверка авторизации
+    loadAliasData(); // загрузка данных Алиаса
+    loadCollections(); // загрузка коллекций
+    loadActiveCollections(); // загрузка активных коллекций
+    loadCollectionInfo(); // загрузка информации о коллекциях
+    loadDocuments(); // загрузка документов
+    setupDragAndDrop(); 
     loadSyncSettings();
     subscribeToSync();
     loadFilesystemTree();
@@ -76,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
             placeholder: "Напишите новость..."
         });
     }
+    // инициализация автоматического рендера аналитики за последние 7 дней
     const now = new Date();
 
     // сегодня
@@ -2519,29 +2525,69 @@ function openFirstAvailableTab() {
 // #############################
 // LOGS TAB LOGIC
 // #############################
-// функция загрузки логов событий
-async function loadLogs(initial = false) {
-    if (isLoadingLogs) return;
-    isLoadingLogs = true;
+// функция форматирования в json вид чтобы отрисовывать
+function formatJSON(payload) {
+    try {
+        if (typeof payload === "string") {
+            payload = JSON.parse(payload);
+        }
 
-    let url = "/api/events?limit=100";
-    // создаем обновленние логов сверху
-    if (!initial && lastTimestamp) {
-        url = `/api/events?since=${encodeURIComponent(lastTimestamp)}&limit=50`;
+        return JSON.stringify(payload, null, 2);
+    } catch {
+        return String(payload);
     }
+}
+// отрисовка переключения между страницами
+function renderPagination(dataLength) {
+    const el = document.getElementById("logs-pagination");
 
-    const res = await fetch(url);
+    el.innerHTML = `
+        <div class="pagination">
+            <button onclick="prevLogs()" ${logsPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
+
+            <span>Страница ${logsPage + 1}</span>
+
+            <button onclick="nextLogs()" ${dataLength < LOGS_PAGE_SIZE ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
+        </div>
+    `;
+}
+// отрисовка json payload 
+function renderPayload(payload) {
+    const formatted = formatJSON(payload);
+    return `<pre>${escapeHtml(formatted)}</pre>`;
+}
+// функция загрузки логов
+async function loadLogs() {
+    const params = new URLSearchParams();
+
+    params.set("limit", LOGS_PAGE_SIZE);
+    params.set("offset", logsPage * LOGS_PAGE_SIZE);
+
+    Object.entries(logFilters).forEach(([k, v]) => {
+        if (!v) return;
+        if (k === "created_at") {
+            params.set(k, shiftToUTC(v)); // сдвигаем время для правильности
+        } else {
+            params.set(k, v);
+        }
+        
+    });
+
+    console.log("REQUEST:", `/api/events?${params}`);
+
+    const res = await fetch(`/api/events?${params}`);
     const data = await res.json();
 
-    const table = document.getElementById("logs-table");
+    logsCache = data;
 
-    if (initial) {
-        table.innerHTML = `
-            <table id="logs-table-inner" border="1" style="width:100%; border-collapse: collapse;">
+    // создаём таблицу один раз
+    if (!document.getElementById("logs-body")) {
+        document.getElementById("logs-table").innerHTML = `
+            <table id="logs-table-inner">
                 <thead>
                     <tr>
-                        <th> User ID</th>
-                        <th> User name</th>
+                        <th>User ID</th>
+                        <th>User name</th>
                         <th>Event</th>
                         <th>Channel</th>
                         <th>Time</th>
@@ -2553,38 +2599,94 @@ async function loadLogs(initial = false) {
         `;
     }
 
-    const tbody = document.getElementById("logs-body");
+    renderLogs();
+}
+// настраиваем фильтры для логов
+function setupLogFilters() {
+    document.querySelectorAll('.log-filter').forEach(input => {
 
-    data.forEach(row => {
+        let timeout;
+
+        input.addEventListener('input', (e) => {
+            clearTimeout(timeout);
+
+            timeout = setTimeout(() => {
+                const column = e.target.dataset.column;
+                const value = e.target.value.trim();
+
+                if (!value) {
+                    delete logFilters[column];
+                } else {
+                    logFilters[column] = value;
+                }
+                logsPage = 0; // сброс страницы
+                loadLogs();   // запрос на сервер
+            }, 300);
+        });
+    });
+}
+// отображаем логи
+function renderLogs() {
+    const tbody = document.getElementById("logs-body");
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    logsCache.forEach(row => {
         const tr = document.createElement("tr");
 
         tr.innerHTML = `
-            <td>${row.user_id || "-"}</td>
-            <td>${row.user_name || "-"}</td>
-            <td>${row.event_type}</td>
-            <td>${row.channel || "-"}</td>
+            <td>${escapeHtml(row.user_id || "-")}</td>
+            <td>${escapeHtml(row.user_name || "-")}</td>
+            <td>${escapeHtml(row.event_type)}</td>
+            <td>${escapeHtml(row.channel || "-")}</td>
             <td>${new Date(row.created_at).toLocaleString()}</td>
-            <td>${JSON.stringify(row.payload).slice(0, 100)}</td>
+            <td class="payload-cell">
+                ${renderPayload(row.payload)}
+            </td>
         `;
 
-        // новые сверху
-        tbody.prepend(tr);
-
-        lastTimestamp = row.created_at;
+        tbody.appendChild(tr);
     });
 
-    isLoadingLogs = false;
-}
+    if (logsCache.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align:center;padding:20px;">
+                    🔍 Ничего не найдено
+                </td>
+            </tr>
+        `;
+    }
 
+    renderPagination(logsCache.length);
+}
+// переключение на следующую страницу
+function nextLogs() {
+    logsPage++;
+    // setupLogFilters();
+    loadLogs();
+}
+// переключение на прошлую страницу
+function prevLogs() {
+    if (logsPage > 0) {
+        logsPage--;
+        // setupLogFilters();
+        loadLogs();
+    }
+}
 // функция автоматического обновления логов каждые 10 секунд
 function startLogsAutoRefresh() {
+    setupLogFilters();
     loadLogs(true); // первый запуск
 
     setInterval(() => {
         loadLogs(false);
     }, 10000); // каждые 10 секунд
 }
-
+// #############################
+// ANALYTICS TAB LOGIC
+// #############################
 // функция экспорта аналитики
 function exportAnalytics() {
     const from = document.getElementById("from").value;
@@ -2628,6 +2730,12 @@ function exportDialogs() {
 
     window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }
+function formatTime(ms) {
+    if (ms === null || ms === undefined) return "0 мс";
+
+    if (ms < 1000) return `${ms} мс`;
+    return `${(ms / 1000).toFixed(2)} сек`;
+}
 // функция рендерит статистику
 function renderStats(stats, channels) {
     const el = document.getElementById("stats");
@@ -2641,8 +2749,8 @@ function renderStats(stats, channels) {
         <p> Среднее количество сообщений на пользователя: ${Math.round(stats.avg_messages_per_user || 0)}</p>
         <p>🔝 Максимальное количество сообщений на пользователя: ${stats.max_messages_per_user}</p>
 
-        <p>⚡ Среднее время ответа: ${Math.round(stats.avg_response_time || 0)}</p>
-        <p>⚡ Медианное время ответа: ${Math.round(stats.median_response_time || 0)}</p>
+        <p>⚡ Среднее время ответа: ${formatTime(stats.avg_response_time || 0)}</p>
+        <p>⚡ Медианное время ответа: ${formatTime(stats.median_response_time || 0)}</p>
 
         <hr>
 
@@ -2860,7 +2968,7 @@ function renderActivity(activity, words, phrases) {
     }
 
     const ctx = document.getElementById("activityChart").getContext("2d");
-
+    // строим график по сообщениям в час
     hourChart = new Chart(ctx, {
         type: "bar",
         data: {
@@ -2897,11 +3005,11 @@ function renderActivity(activity, words, phrases) {
         const dataIndex = (displayIndex + 1) % 7;
         return dayMap[dataIndex];
     });
-
+    // уничтожаем старый график
     if (dayChart) {
         dayChart.destroy();
     }
-
+    // строим график сообщений в день
     dayChart = new Chart(document.getElementById("dayChart"), {
         type: "bar",
         data: {
@@ -2918,39 +3026,11 @@ function renderActivity(activity, words, phrases) {
 
 
     // ===== WORD CLOUD =====
-    // const list = words.map(w => [w.text, w.value]);
-
-    // const cloudEl = document.getElementById("word-cloud");
-
-    // // очищаем перед рендером
-    // cloudEl.innerHTML = "";
-
-    // if (list.length === 0) {
-    //     cloudEl.innerHTML = "<div>Нет данных</div>";
-    //     return;
-    // }
-    // // если контейнер ещё не готов для отрисовки
-    // if (cloudEl.offsetWidth === 0) {
-    //     setTimeout(() => renderActivity(activity, words, phrases), 100);
-    //     return;
-    // }
-    // // отложенный рендер word cloud он требует
-    // setTimeout(() => {
-    //     WordCloud(cloudEl, {
-    //         list: list,
-    //         gridSize: 8,
-    //         weightFactor: 10,
-    //         fontFamily: "Arial",
-    //         color: "random-dark",
-    //         backgroundColor: "#fff",
-    //         rotateRatio: 0.5
-    //     });
-    // }, 100);
     renderCloud("word-cloud", words);
     // phrases
     renderCloud("phrase-cloud", phrases);
 }
-
+// функция отрисовки облака
 function renderCloud(id, data) {
     const el = document.getElementById(id);
 
@@ -2962,12 +3042,11 @@ function renderCloud(id, data) {
         el.innerHTML = "<div>Нет данных</div>";
         return;
     }
-
     if (el.offsetWidth === 0) {
         setTimeout(() => renderCloud(id, data), 100);
         return;
     }
-
+    // отрисовываем облако с задержкой, так требует фреймворк
     setTimeout(() => {
         WordCloud(el, {
             list: list,
@@ -2999,7 +3078,6 @@ async function loadAnalytics() {
     renderStats(stats, channels);
     renderTopUsers(users);
     renderTopDocs(docs, sources)
-
     loadActivity(from, to);
 }
 // открытие окна диалогов пользователя
@@ -3033,14 +3111,14 @@ function renderUserDialogs(dialogs) {
             : dialogs.map(d => {
 
                 let answer;
-
+                // преобразуем ответ с добавлением времени ответа
                 if (d.response) {
-                    answer = `${d.response} (${d.response_time || 0} мс)`;
+                    answer = `${d.response} (${formatTime(d.response_time || 0)})`;
                 } else if (d.file_path) {
                     const shortFile = d.file_path.split("/").pop();
-                    answer = `📄 ${shortFile} (${d.response_time || 0} мс)`;
+                    answer = `📄 ${shortFile} (${formatTime(d.response_time || 0)} )`;
                 } else {
-                    answer = `Нет ответа (${d.response_time || 0} мс)`;
+                    answer = `Нет ответа (${formatTime(d.response_time || 0)})`;
                 }
 
                 return `
