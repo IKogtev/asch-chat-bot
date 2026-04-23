@@ -14,10 +14,10 @@
     <!-- Login Screen page -->
     <div id="login-screen" class="login-screen">
         <div class="login-box">
-            <h2>🔐 Login</h2>
-            <input type="text" id="login-username" placeholder="Username">
-            <input type="password" id="login-password" placeholder="Password">
-            <button onclick="login()">Sign In</button>
+            <h2>🔐 Авторизация</h2>
+            <input type="text" id="login-username" placeholder="Имя пользователя">
+            <input type="password" id="login-password" placeholder="Пароль">
+            <button onclick="login()">Войти</button>
             <div id="login-error"></div>
         </div>
     </div>
@@ -26,18 +26,18 @@
         <header id="collections-header">
             <div class="collection-selector">
                 <label for="collection-select">
-                    <strong>Active collection:</strong>
+                    <strong>Активная коллекция:</strong>
                     <span id="current-collection" class="collection-current"></span>
                     <button 
                     id="delete-collection-btn" 
                     class="btn btn-danger btn-small" 
-                    title="Delete collection">🗑️ Delete</button>            
+                    title="Delete collection">🗑️ Удалить</button>            
                 </label>
                 <select id="collection-select">
-                    <option value="">Loading collections…</option>
+                    <option value="">Загрузка коллекций…</option>
                 </select>
-                <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Add collection</button>
-                <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Switch alias 🔄</button>
+                <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Добавить коллекцию</button>
+                <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Сменить Алиас 🔄</button>
             </div>
             <div class="header-info">
                 <span id="collection-info"></span>
@@ -48,31 +48,30 @@
                 <!-- Documents Tab -->
                 <div id="documents-tab" class="tab-content active">
                     <div class="section-header">
-                        <h2>Documents</h2>
+                        <h2>Документы</h2>
                         <button type="button" onclick="syncAll(this)" class="btn btn-primary">
-                            🔄Sync ALL KB
+                            🔄Синхронизация всех баз знаний
                         </button>
                         <button onclick="loadDocuments()" class="btn btn-secondary">
-                            Refresh
+                            Обновить
                         </button>
                     </div>
                     <div class="sync-settings">
-                        Auto sync interval:
-                        <strong id="sync-interval">loading...</strong> hours
+                        Автоматический интервал синхронизации задается в часах:
+                        <strong id="sync-interval">Загрузка...</strong>
 
                         <button onclick="changeSyncInterval()" class="btn btn-small">
-                            Change
+                            Изменить
                         </button>
                     </div>
                     <div id="documents-list" class="documents-list">
-                        <div class="loading">Loading documents...</div>
+                        <div class="loading">Загрузка документов...</div>
                     </div>
                 </div>
-
                 <!-- Search Tab -->
                 <div id="search-tab" class="tab-content">
                     <div class="section-header">
-                        <h2>Search Documents</h2>
+                        <h2>Поиск документов</h2>
                     </div>
                     
                     <div class="search-section">
@@ -80,23 +79,23 @@
                             <input 
                                 type="text" 
                                 id="search-query" 
-                                placeholder="Enter search query..."
+                                placeholder="Введите поисковой запрос..."
                                 onkeypress="handleSearchKeypress(event)"
                             >
                             <button onclick="performSearch()" class="btn btn-primary">
-                                Search
+                                Поиск
                             </button>
                         </div>
                         
                         <div class="search-options">
                             <label>
-                                Knowledge Base:
+                                База знаний:
                                 <select id="search-kb">
-                                    <option value="">All Knowledge Bases</option>
+                                    <option value="">Все базы знаний</option>
                                 </select>
                             </label>
                             <label>
-                                Results limit:
+                                Лимит результатов:
                                 <select id="search-limit">
                                     <option value="5">5</option>
                                     <option value="10" selected>10</option>
@@ -109,18 +108,17 @@
 
                     <div id="search-results" class="search-results"></div>
                 </div>
-
                 <!-- Upload Tab -->
                 <div id="upload-tab" class="tab-content">
                     <div class="section-header">
-                        <h2>Upload Document</h2>
+                        <h2>Загрузить Документ</h2>
                     </div>
                     
                     <div class="upload-section">
                         <div class="upload-box" id="upload-box">
                             <div class="upload-icon"></div>
-                            <p>Drag & drop a file here or click to select</p>
-                            <p class="upload-hint">Supported: TXT, MD, PDF, DOCX, EXCEL</p>
+                            <p>Перетащите файл сюда или выберите его щелчком мыши.</p>
+                            <p class="upload-hint">Поддерживаемые форматы: TXT, MD, PDF, DOCX, EXCEL</p>
                         </div>
                         
                         <input 
@@ -132,47 +130,45 @@
                         >
 
                         <div id="file-info" class="file-info" style="display: none;">
-                            <p><strong>Selected file:</strong> <span id="file-name"></span></p>
+                            <p><strong>Выбранный файл:</strong> <span id="file-name"></span></p>
                         </div>
 
                         <div class="upload-options">
                             <label>
-                                Knowledge Base ID:
-                                <input type="text" id="upload-kb-id" value="default" placeholder="e.g., default, kb1, kb2">
+                                ID Базы знаний:
+                                <input type="text" id="upload-kb-id" value="default" placeholder="например, default, kb1, kb2">
                             </label>
                             <label>
-                                User ID:
-                                <input type="text" id="upload-user-id" value="anonymous" placeholder="e.g., user123, anonymous">
+                                ID пользователя:
+                                <input type="text" id="upload-user-id" value="anonymous" placeholder="например, user123, anonymous">
                             </label>
                         </div>
 
                         <button onclick="uploadDocument()" id="upload-btn" class="btn btn-primary btn-large" disabled>
-                            Upload Document
+                            Загрузить документ
                         </button>
 
                         <div id="upload-progress" class="upload-progress" style="display: none;">
                             <div class="progress-bar">
                                 <div class="progress-fill"></div>
                             </div>
-                            <p>Processing document...</p>
+                            <p>Обработка документа...</p>
                         </div>
 
                         <div id="upload-result" class="result-message"></div>
                     </div>
                 </div>
-
                 <!-- Tree tab -->
                 <div id="tree_files-tab" class="tab-content">
                     <div class="section-header">
-                        <h2>Tree Files</h2>
+                        <h2>Дерево файлов</h2>
                     </div>
                     <div id="filesystem-tree"></div>
                 </div>
-
                 <!-- News Tab -->
                 <div id="news_send-tab" class="tab-content">
                     <div class="section-header">
-                        <h2>Send News</h2>
+                        <h2>Отправка новостей</h2>
                     </div>
                     <!-- tools to edit text -->
                     <div id="news-toolbar">
@@ -235,30 +231,30 @@
                     <!-- Schedule -->
                     <div class="news-schedule">
                         <label class="form-label">📅 Отложить отправку:</label>
-                        <input type="datetime-local" id="news-schedule-time" class="news-schedule-input">
-                        <label class="news-schedule-hint">⏰ Время отображается в Московском часовом поясе</label>
+                        <input type="datetime-local" id="news-schedule-time" class="date-input">
+                        <label class="news-schedule-hint">⏰ Часовой пояс Москва UTC+3</label>
                     </div>
-                    <br><br>
-
                     <button id="news-send-btn" onclick="sendNews()" class="btn btn-primary">
                         📤 Отправить новость
                     </button>
-
+                    <!-- результаты отправки -->
                     <div id="news-result" class="result-message"></div>
-
+                    <!-- разделительная полоса визуально -->
                     <hr>
-                    <div class="section-header">
-                        <h3>📚 История новостей</h3>
-                        <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
-                            🔄 Обновить
-                        </button>
-                    </div>
+                    <div class="news-divider"></div>
+                    <div class="news-history-block">
+                        <div class="section-header">
+                            <h3>📚 История новостей</h3>
+                            <button onclick="loadNewsHistory()" class="btn btn-secondary btn-small">
+                                🔄 Обновить
+                            </button>
+                        </div>
 
-                    <div id="news-history" class="news-list">
-                        <div class="loading">История не загружена</div>
+                        <div id="news-history" class="news-list">
+                            <div class="loading">История не загружена</div>
+                        </div>
                     </div>
                 </div>
-
                 <!-- Prompts tab -->
                 <div id="prompts-tab" class="tab-content">
                     <div class="section-header">
@@ -269,7 +265,6 @@
                         <div class="loading">Loading agents...</div>
                     </div>
                 </div>
-
                 <!-- Bot settings tab -->
                 <div id="bot_settings-tab" class="tab-content">
                     <div class="section-header">
@@ -301,46 +296,104 @@
                         
                     </div>
                 </div>
-                
                 <!-- Groups Tab -->
                 <div id="user_groups-tab" class="tab-content">
                     <div class="section-header">
                         <h2>👥 Управление группами пользователей</h2>
                     </div>
-                    
-                    <div class="groups-tab-header">
-                        <input type="text" id="user-search" class="groups-search-input" 
-                            placeholder="🔍 Поиск по user_id, username, имени или фамилии"
-                            onkeyup="loadUserGroups()">
-                        <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
-                        <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
+                    <div class="groups-sticky-header">
+                        <div id="user-groups-stats" class="groups-stats-container">
+                            <!-- Статистика будет загружена сюда -->
+                        </div>
+                        <!-- меню с кнопками и поиском -->
+                        <div class="groups-tab-header">
+                            <input type="text" id="user-search" class="groups-search-input" 
+                                placeholder="🔍 Поиск по user_id, username, имени или фамилии"
+                                onkeyup="loadUserGroups()">
+                            <button class="btn btn-primary" onclick="loadUserGroups()">🔄 Обновить</button>
+                            <button class="btn btn-secondary" onclick="exportUsers()">📥 Экспорт CSV</button>
+                        </div>
                     </div>
-                    
+                    <!-- таблица пользователей -->
                     <div id="user-groups-list">
                         <div class="loading">Загрузка пользователей...</div>
                     </div>
-                    
-                    <div id="user-groups-stats" class="groups-stats-container">
-                        <!-- Статистика будет загружена сюда -->
+                    <!-- пагинация -->
+                    <div class="pagination-controls">
+                        <select id="page-size" onchange="changePageSize()">
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+
+                        <div id="pagination-pages"></div>
                     </div>
                 </div>
+                <!-- Logs Tab -->
+                <div id="logs-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>🧾 Логи</h2>
+                        <button onclick="loadLogs()" class="btn btn-secondary">🔄 Обновить логи</button>
+                    </div>
+                    <!-- Фильтры по столбцам -->
+                    <div class="logs-filters" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 12px;">
+                        <input type="text" id="filter-user-id" placeholder="🔍 User ID" class="log-filter" data-column="user_id">
+                        <input type="text" id="filter-user-name" placeholder="🔍 User name" class="log-filter" data-column="user_name">
+                        <input type="text" id="filter-event" placeholder="🔍 Event" class="log-filter" data-column="event_type">
+                        <input type="text" id="filter-channel" placeholder="🔍 Channel" class="log-filter" data-column="channel">
+                        <input type="datetime-local" id="filter-time" class="log-filter" data-column="created_at">
+                        <input type="text" id="filter-payload" placeholder="🔍 Payload" class="log-filter" data-column="payload">
+                    </div>
+                    <div id="logs-table"></div>
+                    <div id="logs-pagination"></div>
+                </div>
+                <!-- Analytics Tab -->
+                <div id="analytics-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>📊 Аналитика</h2>
+                    </div>
+                    <div class="filters">
+                        <input type="datetime-local" id="from" class="date-input">
+                        <input type="datetime-local" id="to" class="date-input">
 
+                        <button onclick="loadAnalytics()" class="btn btn-add btn-small">Загрузить</button>
+                        <button onclick="exportAnalytics()" class="btn btn-primary btn-small">📥 Логи</button>
+                        <button onclick="exportDialogs()" class="btn btn-primary btn-small">💬 Диалоги</button>
+                    </div>
+                    <!-- GRID -->
+                    <div class="dashboard">
+
+                        <div class="card full" id="stats"></div>
+                        <div class="card" id="top-users"></div>
+                        <div class="card" id="top-docs"></div>
+
+                        <div class="card full" id="activity">
+                            <h3>📊 Активность по часам</h3>
+                            <canvas id="activityChart"></canvas>
+                            <h3>📅 Активность по дням недели</h3>
+                            <canvas id="dayChart"></canvas>
+                            <h3>🔤 Облако слов</h3>
+                            <div id="word-cloud"></div>
+                            <h3>💬 Облако фраз</h3>
+                            <div id="phrase-cloud"></div>
+                        </div>
+                    </div>
+                </div>
                 <!-- Modal for viewing document chunks -->
                 <div id="chunks-modal" class="modal">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h3 id="modal-title">Document Chunks</h3>
+                            <h3 id="modal-title">Чанки Документа</h3>
                             <button class="modal-close" onclick="closeModal()">&times;</button>
                         </div>
                         <div id="modal-body" class="modal-body"></div>
                     </div>
                 </div>
-            
                 <!-- Modal for creating collection -->
                 <div id="create-collection-modal" class="modal">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h3>Create collection</h3>
+                            <h3>Создать коллекцию</h3>
                             <button class="modal-close" onclick="closeCreateCollectionModal()">&times;</button>
                         </div>
 
@@ -348,18 +401,18 @@
                             <input
                                 type="text"
                                 id="newCollectionVersion"
-                                placeholder="Version (e.g. v1)"
+                                placeholder="Версия (например: 1)"
                             />
 
                             <div class="search-options">
                                 <select id="newCollectionType">
-                                    <option value="faq">FAQ</option>
-                                    <option value="kb">Knowledge Base</option>
+                                    <option value="faq">ЧАВО</option>
+                                    <option value="kb">База Знаний</option>
                                 </select>
                             </div>
                             
                             <div class="actions">
-                                <button onclick="createCollection()" class="btn btn-primary">Create</button>
+                                <button onclick="createCollection()" class="btn btn-primary">Создать</button>
                             </div>
 
                             <div id="create-collection-error" class="error hidden"></div>
@@ -370,27 +423,27 @@
                 <div id="switch-collection-modal" class="modal">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h3>Switch collection alias</h3>
+                            <h3>Переключить алиас коллекции</h3>
                             <button class="modal-close" onclick="closeSwitchCollectionModal()">&times;</button>
                         </div>
 
                         <div class="modal-body">
                             
                             <div class="search-options">
-                                <label>Collection type</label>
+                                <label>Тип коллекции</label>
                                 <select id="switchCollectionType" onchange="loadAliasCollections()">
-                                    <option value="faq">FAQ</option>
-                                    <option value="kb">Knowledge Base</option>
+                                    <option value="faq">ЧАВО</option>
+                                    <option value="kb">База Знаний</option>
                                 </select>
                             </div>
 
                             <div class="search-options">
-                                <label>Target collection</label>
+                                <label>Целевая коллекция</label>
                                 <select id="switchCollectionTarget"></select>
                             </div>
                             
                             <div class="actions">
-                                <button onclick="switchCollectionAlias()" class="btn btn-primary">Switch alias</button>
+                                <button onclick="switchCollectionAlias()" class="btn btn-primary">Переключить алиас</button>
                             </div>
 
                             <div id="switch-collection-error" class="error hidden"></div>
@@ -411,7 +464,7 @@
                 <div id="agent-modal" class="modal">
                     <div class="file-content-modal">
                         <div class="modal-header">
-                            <h3 id="agent-modal-title">Agent</h3>
+                            <h3 id="agent-modal-title">Агент</h3>
                             <button class="modal-close" onclick="closeAgentModal()">&times;</button>
                         </div>
 
@@ -419,7 +472,7 @@
                             <div class="prompt-container">
                                 <!-- Левая панель - история файлов -->
                                 <div class="prompt-sidebar">
-                                    <h3>📚 Files</h3>
+                                    <h3>📚 Файлы</h3>
                                     <div id="prompt-files-list" class="prompt-files-list">
                                         <div class="loading">Загрузка...</div>
                                     </div>
@@ -428,7 +481,7 @@
                                 <!-- Правая панель - редактор -->
                                 <div class="prompt-editor-panel">
                                     <div class="prompt-header">
-                                        <h3>✏️ Editor</h3>
+                                        <h3>✏️ Редактор</h3>
                                         <div class="prompt-actions">
                                             <button onclick="loadCurrentPrompt()" class="btn btn-secondary btn-small">
                                                 🔄
@@ -456,7 +509,29 @@
                         </div>
                     </div>
                 </div>
+                <!-- Download users modal -->
+                <div id="users-modal" class="modal">
+                    <div class="file-content-modal">
+                        <div class="modal-header">
+                            <h3>Пользователи, скачавшие документ</h3>
+                            <button class="modal-close" onclick="closeUsersModal()">&times;</button>
+                        </div>
+                        <div id="users-list"></div> 
+                    </div>
+                </div>
+                <!-- Dialogs modal -->
+                <div id="dialogs-modal" class="modal">
+                    <div class="file-content-modal">
+                        <div class="modal-header">
+                            <h3 id="dialogs-title">💬 Диалог</h3>
+                            <button class="modal-close" onclick="closeDialogsModal()">&times;</button>
+                        </div>
+                        <div id="dialogs-list"></div>
+                        <button id="download-dialogs" class="btn btn-primary">📥 Скачать</button>
+                    </div>
+                </div>
             </div>
+            <!-- Sidebar меню сворачиваемое сбоку -->
             <div class="sidebar collapsed" id="sidebar">
                 <button class="sidebar-toggle" onclick="toggleSidebar()">
                     <span id="toggle-icon">☰</span>
@@ -467,38 +542,47 @@
                 <div class="sidebar-tabs">
                     <button class="tab-button active" onclick="showTab('documents', event)" data-tab="documents">
                         <span class="icon">📄</span>
-                        <span class="label">Documents</span>
+                        <span class="label">Документы</span>
                     </button>
                     <button class="tab-button" onclick="showTab('search', event)" data-tab="search">
                         <span class="icon">🔍</span>
-                        <span class="label">Search</span>
+                        <span class="label">Поиск</span>
                     </button>
                     <button class="tab-button" onclick="showTab('upload', event)" data-tab="upload">
                         <span class="icon">📤</span>
-                        <span class="label">Upload</span>
+                        <span class="label">Загрузить</span>
                     </button>
                     <button class="tab-button" onclick="showTab('tree_files', event)" data-tab="tree_files">
                         <span class="icon">📁</span>
-                        <span class="label">Tree Files</span>
+                        <span class="label">Дерево Файлов</span>
                     </button>
                     <button class="tab-button" onclick="showTab('news_send', event)" data-tab="news_send">
                         <span class="icon">📢</span>
-                        <span class="label">Send News</span>
+                        <span class="label">Рассылка новостей</span>
                     </button>
                     <button class="tab-button" onclick="showTab('prompts', event)" data-tab="prompts">
                         <span class="icon">📝</span>
-                        <span class="label">Prompts</span>
+                        <span class="label">Промпты</span>
                     </button>
                     <button class="tab-button" onclick="showTab('bot_settings', event)" data-tab="bot_settings">
                         <span class="icon">⚙️</span>
-                        <span class="label">Bot Settings</span>
+                        <span class="label">Настройки бота</span>
                     </button>
                     <button class="tab-button" onclick="showTab('user_groups', event)" data-tab="user_groups">
                         <span class="icon">👥</span>
-                        <span class="label">User Groups</span>
+                        <span class="label">Группы</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('logs', event)" data-tab="logs">
+                        <span class="icon">🧾</span>
+                        <span class="label">Логи</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('analytics', event)" data-tab="analytics">
+                        <span class="icon">📊</span>
+                        <span class="label">Аналитика</span>
                     </button>
                     <button class="tab-button" onclick="logout()">
-                        <span class="label">Logout</span>
+                        <span class="icon">➜]</span>
+                        <span class="label">Выйти</span>
                     </button>
                 </div>
             </div>
@@ -510,6 +594,10 @@
     <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
     <!-- EasyMDE editor для markdown -->
     <script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
+    <!-- Диаграма Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- облако слов wordcloud2.js -->
+     <script src="https://cdnjs.cloudflare.com/ajax/libs/wordcloud2.js/1.1.1/wordcloud2.min.js"></script>
 </body>
 </html>
 

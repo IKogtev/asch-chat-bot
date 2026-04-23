@@ -1,4 +1,4 @@
-﻿from typing import Any, Dict
+from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
@@ -16,30 +16,114 @@ from ..config import (
 )
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
+from .validation_utils import build_validation_error
 
 logger = setup_logger("kb_answer_agent", "agent.log")
 
+ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и помогать продавать продукты АСЖ."
 
-def validate_kb_answer_result(data: Dict[str, Any]) -> Dict[str, Any]:
+
+def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Валидация результата kb_answer_agent.
+    Проверяет и нормализует результат `kb_answer_agent`.
+
+    Ожидаемый контракт:
+    - `status="ok"`;
+    - `mode` один из `text_answer`, `no_data`;
+    - `message` обязателен и не должен быть пустым;
+    - `source` один из `faq_search`, `kb_search`, `faq_search+kb_search`, `none`.
+
+    Семантические правила:
+    - при `mode="no_data"` обязателен `source="none"`;
+    - при `mode="text_answer"` значение `source="none"` недопустимо.
+
+    Возвращает нормализованный словарь с полями:
+    - `status`
+    - `mode`
+    - `message`
+    - `source`
+
+    При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
+    пригодным для логирования и локализации сбоя на этапе отладки.
     """
-    status = data.get("status")
-    mode = data.get("mode")
-    message = str(data.get("message", "")).strip()
-    source = data.get("source")
+    agent_name = "kb_answer_agent"
+    allowed_sources = ("faq_search", "kb_search", "faq_search+kb_search", "none")
+    intent = str((context or {}).get("intent", "")).strip()
 
-    if status != "ok":
-        raise ValueError(f"Invalid status: {status}")
+    def _validate_payload_type(payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            raise build_validation_error(
+                agent=agent_name,
+                stage="payload_type",
+                problem=f"expected dict, got {type(payload).__name__}",
+            )
 
-    if mode not in ("text_answer", "no_data"):
-        raise ValueError(f"Invalid mode: {mode}")
+    def _validate_basic_fields(payload: Dict[str, Any]) -> tuple[str, str, str, str]:
+        status = str(payload.get("status", "")).strip()
+        mode = str(payload.get("mode", "")).strip()
+        message = str(payload.get("message", "")).strip()
+        source = str(payload.get("source", "")).strip()
 
-    if not message:
-        raise ValueError("message is required")
+        if status != "ok":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem=f"invalid status {status!r}, expected 'ok'",
+                data=payload,
+                fields=("status", "mode", "source"),
+            )
 
-    if source not in ("faq_search", "kb_search", "faq_search+kb_search", "none"):
-        raise ValueError(f"Invalid source: {source}")
+        if mode not in ("text_answer", "no_data"):
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem=f"invalid mode {mode!r}, expected 'text_answer' or 'no_data'",
+                data=payload,
+                fields=("status", "mode", "source"),
+            )
+
+        if not message:
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem="message is required",
+                data=payload,
+                fields=("mode", "message", "source"),
+            )
+
+        if source not in allowed_sources:
+            raise build_validation_error(
+                agent=agent_name,
+                stage="basic_fields",
+                problem=f"invalid source {source!r}, expected one of {list(allowed_sources)}",
+                data=payload,
+                fields=("mode", "source"),
+            )
+
+        return status, mode, message, source
+
+    def _validate_semantics(payload: Dict[str, Any], mode: str, source: str) -> None:
+        if mode == "no_data" and source != "none":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="mode='no_data' requires source='none'",
+                data=payload,
+                fields=("mode", "source"),
+            )
+
+        if mode == "text_answer" and source == "none" and intent != "smalltalk":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="mode='text_answer' must not use source='none' outside smalltalk",
+                data=payload,
+                fields=("mode", "source", "intent"),
+            )
+
+    _validate_payload_type(data)
+    status, mode, message, source = _validate_basic_fields(data)
+    _validate_semantics(data, mode, source)
 
     return {
         "status": status,
@@ -117,25 +201,32 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
             "FAQSEARCH_MCP_URL не задан - MCP faqsearch не подключён к kb_answer_agent"
         )
 
-    fallback = """
+    fallback = f"""
 Ты - kb_answer_agent.
 
 Тебе доступны переменные:
-- {user_query} - исходный вопрос пользователя
-- {search_query} - нормализованный поисковый запрос
-- {faq_collection} - имя коллекции для faq_search
-- {kb_answer_collection} - имя коллекции для kb_search
-- {intent} - тип запроса (kb_answer, smalltalk, doc_search)
+- {{user_query}} - исходный вопрос пользователя
+- {{search_query}} - нормализованный поисковый запрос
+- {{faq_collection}} - имя коллекции для faq_search
+- {{kb_answer_collection}} - имя коллекции для kb_search
+- {{intent}} - тип запроса (kb_answer, smalltalk, doc_search)
 
 Правила:
-1. Если {intent} == "smalltalk":
+1. Если {{intent}} == "smalltalk":
    - не вызывай faq_search
    - не вызывай kb_search
-   - ответь кратко и естественно
+   - если {{user_query}} или {{search_query}} - это вопрос о возможностях ассистента
+     (например: "что ты умеешь", "что умеешь", "что ты можешь", "что можешь",
+     "чем ты можешь помочь", "чем можешь помочь", "какие у тебя возможности",
+     "каковы твои возможности", "на что ты способен", "на что способен"),
+     отвечай ровно одной фразой: "{ASSISTANT_CAPABILITIES_ANSWER}"
+   - для этого ответа верни source="none"
+   - не импровизируй и не добавляй новых деталей
+   - в остальных smalltalk-случаях ответь кратко и естественно
 
-2. Если {intent} != "smalltalk":
+2. Если {{intent}} != "smalltalk":
    - сначала ОБЯЗАТЕЛЬНО вызови faq_search
-   - передай: query={user_query}, collection={faq_collection}
+   - передай: query={{user_query}}, collection={{faq_collection}}
 
 3. Если faq_search дал точный или достаточно уверенный прямой ответ на вопрос:
    - используй только faq_search
@@ -144,8 +235,8 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 
 4. Если faq_search дал частично релевантный, слабый или неполный результат:
    - вызови kb_search
-   - передай: query={search_query}, collection={kb_answer_collection}, include_metadata=true
-   - если {search_query} пустой, используй {user_query}
+   - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true
+   - если {{search_query}} пустой, используй {{user_query}}
    - используй kb_search только как дополнение к faq_search
    - если ответ собран по обоим источникам, верни source="faq_search+kb_search"
    - если в итоговый ответ вошли только данные kb_search, верни source="kb_search"
@@ -165,12 +256,12 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 8. Верни только JSON без markdown
 
 Формат ответа:
-{
+{{
   "status": "ok",
   "mode": "text_answer",
   "message": "краткий ответ",
   "source": "faq_search"
-}
+}}
 """
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)

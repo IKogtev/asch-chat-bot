@@ -20,6 +20,7 @@ from .doc_search_agent import validate_doc_search_result
 from utils.logger import setup_logger
 
 logger = setup_logger("doc_search_orchestrator", "agent.log")
+VALIDATION_ERROR_USER_MESSAGE = "Не удалось корректно обработать запрос. Попробуйте переформулировать вопрос."
 
 
 def _follow_up_unhandled_in_agent_hint(intent: str) -> str:
@@ -222,6 +223,7 @@ class DocSearchOrchestrator(BaseAgent):
             parsed_state_key="_doc_search_result_parsed",
             validator=validate_doc_search_result,
             log_label="doc_search_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
         ):
             yield event
 

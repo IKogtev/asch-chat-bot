@@ -7,6 +7,7 @@ variables:
   IMAGE_CHATBOT: "${YC_REPO}/chatbot"
   IMAGE_KB_MANAGER: "${YC_REPO}/kb-manager"
   IMAGE_KBSEARCH: "${YC_REPO}/kbsearch"
+  IMAGE_FAQ: "${YC_REPO}/faq"
 
   # Kaniko cache
   KANIKO_CACHE: "true"
@@ -104,6 +105,21 @@ build:image:kbsearch:
         --compressed-caching=false \
         --snapshot-mode=redo
 
+build:image:faq:
+  <<: *kaniko-template
+  script:
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/mcps/mcp-server-faq" \
+        --dockerfile "${CI_PROJECT_DIR}/mcps/mcp-server-faq/Dockerfile" \
+        --destination "${IMAGE_FAQ}:${CI_COMMIT_TAG}-amd64" \
+        --destination "${IMAGE_FAQ}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${IMAGE_FAQ}:latest" \
+        --cache=${KANIKO_CACHE} \
+        --cache-repo=${KANIKO_CACHE_REPO} \
+        --compressed-caching=false \
+        --snapshot-mode=redo
+
 # ============================================================================
 # STAGE: Release (GitLab Release with Docker pull commands)
 # ============================================================================
@@ -120,6 +136,7 @@ release:gitlab:
     - job: build:image:chatbot
     - job: build:image:kb-manager
     - job: build:image:kbsearch
+    - job: build:image:faq
   script:
     - echo "Creating GitLab release for ${CI_COMMIT_TAG}"
     - |
@@ -132,6 +149,7 @@ release:gitlab:
           docker pull ${IMAGE_CHATBOT}:${CI_COMMIT_TAG}-amd64
           docker pull ${IMAGE_KB_MANAGER}:${CI_COMMIT_TAG}-amd64
           docker pull ${IMAGE_KBSEARCH}:${CI_COMMIT_TAG}-amd64
+          docker pull ${IMAGE_FAQ}:${CI_COMMIT_TAG}-amd64
       EOF
   release:
     tag_name: '${CI_COMMIT_TAG}'

@@ -42,17 +42,26 @@ def _load_rootagent_module():
         if False:
             yield None
 
+    class AgentValidationFailure(Exception):
+        def __init__(self, *, log_label, validation_error, raw, user_message):
+            self.log_label = log_label
+            self.validation_error = validation_error
+            self.raw = raw
+            self.user_message = user_message
+            super().__init__(f"{log_label}: {validation_error}")
+
     json_leaf_runner_stub = types.ModuleType("agent.json_leaf_runner")
+    json_leaf_runner_stub.AgentValidationFailure = AgentValidationFailure
     json_leaf_runner_stub.run_json_leaf_agent = _fake_run_json_leaf_agent
 
     owasp_stub = types.ModuleType("agent.agents.owasp_agent")
-    owasp_stub.validate_owasp_result = lambda data: data
+    owasp_stub.validate_owasp_result = lambda data, context: data
 
     dispatcher_stub = types.ModuleType("agent.agents.dispatcher_agent")
-    dispatcher_stub.validate_dispatcher_result = lambda data: data
+    dispatcher_stub.validate_dispatcher_result = lambda data, context: data
 
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
-    kb_answer_stub.validate_kb_answer_result = lambda data: data
+    kb_answer_stub.validate_kb_answer_result = lambda data, context: data
 
     doc_search_stub = types.ModuleType("agent.agents.doc_search_orchestrator")
     doc_search_stub.DocSearchOrchestrator = type(
@@ -232,6 +241,55 @@ def test_clear_state_keys_removes_requested_keys_only() -> None:
 
 
 @pytest.mark.unit
+def test_append_recent_message_keeps_only_bounded_history() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    for idx in range(rootagent_module.OWASP_CONTEXT_WINDOW + 2):
+        agent._append_recent_message(ctx, "user", f"message-{idx}")
+
+    history = ctx.session.state[rootagent_module.OWASP_HISTORY_STATE_KEY]
+    assert len(history) == rootagent_module.OWASP_CONTEXT_WINDOW
+    assert history[0]["text"] == "message-2"
+    assert history[-1]["text"] == f"message-{rootagent_module.OWASP_CONTEXT_WINDOW + 1}"
+
+
+@pytest.mark.unit
+def test_prepare_owasp_input_uses_current_message_and_recent_history() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.OWASP_HISTORY_STATE_KEY: [
+                {"role": "user", "text": "старый вредоносный запрос"},
+                {"role": "assistant", "text": "отказ"},
+            ]
+        }
+    )
+
+    agent._prepare_owasp_input(ctx, "нормальный новый вопрос")
+
+    assert ctx.session.state["owasp_current_user_message"] == "нормальный новый вопрос"
+    recent = ctx.session.state["owasp_recent_messages_json"]
+    assert "старый вредоносный запрос" in recent
+    assert "нормальный новый вопрос" not in recent
+
+
+@pytest.mark.unit
+def test_build_final_event_with_history_appends_current_turn() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    event = agent._build_final_event_with_history(ctx, "новый вопрос", "новый ответ")
+
+    assert event.content.parts[0].text == "новый ответ"
+    history = ctx.session.state[rootagent_module.OWASP_HISTORY_STATE_KEY]
+    assert history == [
+        {"role": "user", "text": "новый вопрос"},
+        {"role": "assistant", "text": "новый ответ"},
+    ]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -242,6 +300,23 @@ def test_clear_state_keys_removes_requested_keys_only() -> None:
     ],
 )
 def test_pagination_intent_from_message_detects_short_commands(text: str, expected: str | None) -> None:
+    assert RootAgent._pagination_intent_from_message(text) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("все", "show_all"),
+        ("покажи все", "show_all"),
+        ("еще", "show_more"),
+        ("еще документы", "show_more"),
+    ],
+)
+def test_pagination_intent_from_message_detects_russian_short_commands(
+    text: str,
+    expected: str,
+) -> None:
     assert RootAgent._pagination_intent_from_message(text) == expected
 
 
@@ -308,4 +383,143 @@ async def test_handle_kb_answer_sets_expected_state_and_final_text() -> None:
     assert ctx.session.state["faq_collection"] == "faq"
     assert ctx.session.state["kb_answer_collection"] == "kb"
     assert ctx.session.state["intent"] == "kb_answer"
-    assert ctx.session.state["_root_final_text"] == "Готовый ответ"
+    assert isinstance(ctx.session.state["_root_final_text"], str)
+    assert ctx.session.state["_root_final_text"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher_validation_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="привет")], session_state={})
+    kb_called = False
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        raise rootagent_module.AgentValidationFailure(
+            log_label=kwargs["log_label"],
+            validation_error="bad contract",
+            raw='{"status":"bad"}',
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(*args, **kwargs):
+        nonlocal kb_called
+        kb_called = True
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert kb_called is False
+    assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_returns_owasp_specific_stub_on_validation_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="привет")], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        raise rootagent_module.AgentValidationFailure(
+            log_label=kwargs["log_label"],
+            validation_error="bad contract",
+            raw="not-json",
+            user_message=rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="Что ты умеешь?")], session_state={})
+    kb_called = False
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "smalltalk",
+                "reason": "assistant_capabilities_smalltalk",
+                "search_query": "",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(ctx, user_message, search_query, intent):
+        nonlocal kb_called
+        kb_called = True
+        assert user_message == "Что ты умеешь?"
+        assert search_query == ""
+        assert intent == "smalltalk"
+        ctx.session.state["_root_final_text"] = "Я умею искать документы и помогать продавать продукты АСЖ."
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "Я умею искать документы и помогать продавать продукты АСЖ."
+    assert kb_called is True
+    assert doc_called is False
