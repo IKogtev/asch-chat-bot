@@ -130,6 +130,39 @@ services:
     command: ["sh", "-c", "cd /app && alembic upgrade head && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
+  bot-max:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: aszh-bot-max
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      adk-agent:
+        condition: service_started
+      kb-manager:
+        condition: service_started
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    volumes:
+      - ./kb_storage/bot/:/app/data
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - MAX_BOT_TOKEN=REDACTED_EXAMPLE
+      - ADK_API_BASE=http://adk-agent:8000
+      - ADK_APP_NAME=agent
+      - KB_MANAGER_URL=http://kb-manager:5000
+      - PLATFORM_VERSION=0.6.3
+      - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
+      - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
+      - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
+    command: ["sh", "-c", "cd /app && alembic upgrade head && exec python -m bot.max_bot"]
+    networks:
+      - aszh-bot-network
+    
 
   qdrant:
     image: qdrant/qdrant:latest

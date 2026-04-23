@@ -19,4 +19,4 @@ httpx>=0.24.0
 # Proxy support (опционально)
 aiohttp-socks>=0.8.0
 pysocks>=1.7.1
-
+maxapi
