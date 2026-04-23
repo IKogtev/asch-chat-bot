@@ -192,7 +192,7 @@ def test_validate_kb_answer_result_allows_none_source_for_smalltalk() -> None:
         {
             "status": "ok",
             "mode": "text_answer",
-            "message": "РџСЂРёРІРµС‚!",
+            "message": kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER,
             "source": "none",
         },
         {"intent": "smalltalk"},
@@ -200,3 +200,12 @@ def test_validate_kb_answer_result_allows_none_source_for_smalltalk() -> None:
 
     assert result["mode"] == "text_answer"
     assert result["source"] == "none"
+    assert result["message"] == kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER
+
+
+@pytest.mark.unit
+def test_assistant_capabilities_answer_constant_matches_expected_phrase() -> None:
+    assert (
+        kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER
+        == "Я умею искать документы и помогать продавать продукты АСЖ."
+    )

@@ -20,6 +20,8 @@ from .validation_utils import build_validation_error
 
 logger = setup_logger("kb_answer_agent", "agent.log")
 
+ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и помогать продавать продукты АСЖ."
+
 
 def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -199,25 +201,32 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
             "FAQSEARCH_MCP_URL не задан - MCP faqsearch не подключён к kb_answer_agent"
         )
 
-    fallback = """
+    fallback = f"""
 Ты - kb_answer_agent.
 
 Тебе доступны переменные:
-- {user_query} - исходный вопрос пользователя
-- {search_query} - нормализованный поисковый запрос
-- {faq_collection} - имя коллекции для faq_search
-- {kb_answer_collection} - имя коллекции для kb_search
-- {intent} - тип запроса (kb_answer, smalltalk, doc_search)
+- {{user_query}} - исходный вопрос пользователя
+- {{search_query}} - нормализованный поисковый запрос
+- {{faq_collection}} - имя коллекции для faq_search
+- {{kb_answer_collection}} - имя коллекции для kb_search
+- {{intent}} - тип запроса (kb_answer, smalltalk, doc_search)
 
 Правила:
-1. Если {intent} == "smalltalk":
+1. Если {{intent}} == "smalltalk":
    - не вызывай faq_search
    - не вызывай kb_search
-   - ответь кратко и естественно
+   - если {{user_query}} или {{search_query}} - это вопрос о возможностях ассистента
+     (например: "что ты умеешь", "что умеешь", "что ты можешь", "что можешь",
+     "чем ты можешь помочь", "чем можешь помочь", "какие у тебя возможности",
+     "каковы твои возможности", "на что ты способен", "на что способен"),
+     отвечай ровно одной фразой: "{ASSISTANT_CAPABILITIES_ANSWER}"
+   - для этого ответа верни source="none"
+   - не импровизируй и не добавляй новых деталей
+   - в остальных smalltalk-случаях ответь кратко и естественно
 
-2. Если {intent} != "smalltalk":
+2. Если {{intent}} != "smalltalk":
    - сначала ОБЯЗАТЕЛЬНО вызови faq_search
-   - передай: query={user_query}, collection={faq_collection}
+   - передай: query={{user_query}}, collection={{faq_collection}}
 
 3. Если faq_search дал точный или достаточно уверенный прямой ответ на вопрос:
    - используй только faq_search
@@ -226,8 +235,8 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 
 4. Если faq_search дал частично релевантный, слабый или неполный результат:
    - вызови kb_search
-   - передай: query={search_query}, collection={kb_answer_collection}, include_metadata=true
-   - если {search_query} пустой, используй {user_query}
+   - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true
+   - если {{search_query}} пустой, используй {{user_query}}
    - используй kb_search только как дополнение к faq_search
    - если ответ собран по обоим источникам, верни source="faq_search+kb_search"
    - если в итоговый ответ вошли только данные kb_search, верни source="kb_search"
@@ -247,12 +256,12 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 8. Верни только JSON без markdown
 
 Формат ответа:
-{
+{{
   "status": "ok",
   "mode": "text_answer",
   "message": "краткий ответ",
   "source": "faq_search"
-}
+}}
 """
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)

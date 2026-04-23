@@ -10,6 +10,19 @@ from .validation_utils import build_validation_error
 
 logger = setup_logger("dispatcher_agent", "agent.log")
 
+ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES = (
+    "что ты умеешь",
+    "что умеешь",
+    "что ты можешь",
+    "что можешь",
+    "чем ты можешь помочь",
+    "чем можешь помочь",
+    "какие у тебя возможности",
+    "каковы твои возможности",
+    "на что ты способен",
+    "на что способен",
+)
+
 
 def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -186,7 +199,12 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
 
 Правила:
 - smalltalk идёт в route=kb_answer
-- show_more / show_all / file_download — follow-up к списку документов, route=doc_search
+- вопросы о возможностях ассистента относи к smalltalk, включая разговорные формулировки:
+  "что ты умеешь", "что умеешь", "что ты можешь", "что можешь",
+  "чем ты можешь помочь", "чем можешь помочь", "какие у тебя возможности",
+  "каковы твои возможности", "на что ты способен", "на что способен"
+- для таких вопросов верни route="kb_answer", intent="smalltalk", search_query=""
+- show_more / show_all / file_download - follow-up к списку документов, route=doc_search
 - используй только snake_case
 """
     prompt_file = "dispatcher_agent_prompt.md"
