@@ -6,84 +6,137 @@ from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
-from ..config import KBSEARCH_MCP_URL, MCP_TOKEN, MCP_TIMEOUT_SEC
+from ..config import KBSEARCH_MCP_URL, MCP_TIMEOUT_SEC, MCP_TOKEN
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
+from .validation_utils import build_validation_error
 
 logger = setup_logger("doc_search_agent", "agent.log")
 
 
-def validate_doc_search_result(data: Dict[str, Any]) -> Dict[str, Any]:
+def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Проверяет и нормализует результат выдачи от doc_search_agent в соответствии с бот-контрактом.
+    Проверяет и нормализует результат `doc_search_agent`.
 
-    Валидация и обработка:
-      - Ожидается dict с ключами: status, mode, message, results.
-      - Для mode = "document_list" обязательно: status="ok", results - непустой список документов.
-        Каждый документ требует ключей document_id и source_name, остальные поля опциональны.
-        Не валидные или помеченные is_relevant=false — игнорируются.
-        Поле message не предназначено для показа пользователю при mode=document_list, оставляется пустым или служебным.
-      - Для mode = "no_data", "info", "app_command": message обязателен и может быть показан пользователю.
-      - Любой статус, отличный от "ok", считается ошибкой.
+    Ожидаемый контракт:
+    - `status="ok"`;
+    - `mode` один из `document_list`, `no_data`, `info`, `app_command`;
+    - для `document_list` обязателен непустой массив `results`;
+    - для остальных режимов обязателен непустой `message`, а `results` должен отсутствовать или быть пустым.
 
-    Исключены устаревшие форматы (mode="search_results") — допускается только стандартизованный контракт.
+    Нормализация для `document_list`:
+    - отбрасываются элементы не-`dict`;
+    - отбрасываются элементы с `is_relevant=false`;
+    - обязательны `document_id` и `source_name`;
+    - `snippet` обрезается до 500 символов;
+    - `source_path` приводится к строке или `None`.
 
-    :param data: dict — ответ doc_search_agent (разобранный JSON).
-    :return: dict — нормализованный результат, подходящий для дальнейшей обработки.
-    :raises: ValueError при несоответствии контракта.
+    При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
+    пригодным для логирования и локализации сбоя на этапе отладки.
     """
-    if not isinstance(data, dict):
-        raise ValueError("doc_search result must be a dict")
-
-    mode = data.get("mode")
-
-    # Строго принимаем только актуальные режимы
+    agent_name = "doc_search_agent"
+    _ = context
     allowed_modes = ("document_list", "no_data", "info", "app_command")
+
+    if not isinstance(data, dict):
+        raise build_validation_error(
+            agent=agent_name,
+            stage="payload_type",
+            problem=f"expected dict, got {type(data).__name__}",
+        )
+
+    mode = str(data.get("mode", "")).strip()
     if mode not in allowed_modes:
-        raise ValueError(f"Invalid mode: {mode}")
+        raise build_validation_error(
+            agent=agent_name,
+            stage="basic_fields",
+            problem=f"invalid mode {mode!r}, expected one of {list(allowed_modes)}",
+            data=data,
+            fields=("mode", "status"),
+        )
 
     status = data.get("status")
-    # Если статус не прописан, проставим "ok" для штатных режимов (doc_search_agent всегда работает штатно)
-    if status is None and mode in allowed_modes:
+    if status is None:
         status = "ok"
         data = {**data, "status": status}
+    status = str(status).strip()
 
     if status != "ok":
-        raise ValueError(f"Invalid status: {status}")
+        raise build_validation_error(
+            agent=agent_name,
+            stage="basic_fields",
+            problem=f"invalid status {status!r}, expected 'ok'",
+            data=data,
+            fields=("mode", "status"),
+        )
 
     message = str(data.get("message", "")).strip()
-
-    # Для не-document_list message обязателен (для UI)
-    if mode != "document_list" and not message:
-        raise ValueError("message is required for this mode")
-
     results_raw = data.get("results")
     validated: list[Dict[str, Any]] = []
 
+    if mode != "document_list" and not message:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem=f"mode={mode!r} requires non-empty message",
+            data=data,
+            fields=("mode", "message"),
+        )
+
+    if mode != "document_list" and results_raw not in (None, []):
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem=f"mode={mode!r} must not contain results",
+            data=data,
+            fields=("mode", "results"),
+        )
+
     if mode == "document_list":
-        # Для document_list: "results" — массив документов, не пустой
         if not isinstance(results_raw, list) or not results_raw:
-            raise ValueError("document_list requires non-empty results array")
-        for item in results_raw:
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="mode='document_list' requires non-empty results array",
+                data=data,
+                fields=("mode", "results"),
+            )
+
+        invalid_reasons: list[str] = []
+        for index, item in enumerate(results_raw):
             if not isinstance(item, dict):
+                invalid_reasons.append(f"item[{index}] is {type(item).__name__}, expected dict")
                 continue
-            # Пропускаем нерелевантные (если присутствует is_relevant)
             if item.get("is_relevant") is False:
+                invalid_reasons.append(f"item[{index}] filtered by is_relevant=false")
                 continue
-            document_id = item.get("document_id")
-            source_name = item.get("source_name")
-            if not document_id or not source_name:
+
+            document_id = str(item.get("document_id") or "").strip()
+            source_name = str(item.get("source_name") or "").strip()
+            if not document_id:
+                invalid_reasons.append(f"item[{index}] missing document_id")
                 continue
+            if not source_name:
+                invalid_reasons.append(f"item[{index}] missing source_name")
+                continue
+
             validated.append(
                 {
                     "document_id": document_id,
-                    "source_name": str(source_name),
+                    "source_name": source_name,
                     "source_path": str(item["source_path"]).strip() if item.get("source_path") else None,
                     "snippet": str(item.get("snippet") or "").strip()[:500],
                 }
             )
+
         if not validated:
-            raise ValueError("document_list: no valid items in results")
+            raise build_validation_error(
+                agent=agent_name,
+                stage="results_normalization",
+                problem="document_list returned no valid items after normalization: " + "; ".join(invalid_reasons[:5]),
+                data=data,
+                fields=("mode",),
+            )
 
     return {
         "status": status,
@@ -98,13 +151,10 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
     Создаёт и возвращает агента doc_search_agent для поиска документов.
 
     Особенности и детали:
-      - Агент интегрируется с MCP kb_search через инструмент McpToolset (если указан KBSEARCH_MCP_URL).
+      - Агент интегрируется с MCP kb_search через инструмент McpToolset, если задан KBSEARCH_MCP_URL.
       - Ожидает всегда контракт, подходящий под validate_doc_search_result.
-      - Возвращаемый агент — только JSON (не текст!), используемый следующими слоями (БД/UI).
-      - При ошибке подключения kb_search логирует, но не падает.
-
-    :param model: LiteLlm — модель для LlmAgent
-    :return: LlmAgent — настроенный агент для поиска документов
+      - Возвращаемый агент — только JSON, без текстового ответа для пользователя.
+      - При ошибке подключения kb_search пишет ошибку в лог, но не падает.
     """
     tools = []
 
@@ -122,12 +172,15 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
             )
 
             tools.append(kbsearch_toolset)
-            logger.info(f"✓ MCP kbsearch подключен к doc_search_agent: {KBSEARCH_MCP_URL}")
+            logger.info(f"MCP kbsearch подключен к doc_search_agent: {KBSEARCH_MCP_URL}")
 
         except Exception as e:
-            logger.error(f"✗ Ошибка подключения MCP kbsearch для doc_search_agent: {e}", exc_info=True)
+            logger.error(
+                f"Ошибка подключения MCP kbsearch для doc_search_agent: {e}",
+                exc_info=True,
+            )
     else:
-        logger.warning("⚠ KBSEARCH_MCP_URL не задан — MCP kbsearch не подключён к doc_search_agent")
+        logger.warning("KBSEARCH_MCP_URL не задан — MCP kbsearch не подключён к doc_search_agent")
 
     fallback = """
 Ты — doc_search_agent.
@@ -138,7 +191,7 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
 - {doc_search_collection} — имя коллекции для поиска, его надо передавать в kb_search
 
 Правила:
-1. Для содержательного запроса на поиск документов ОБЯЗАТЕЛЬНО вызови tool kb_search.
+1. Для содержательного запроса на поиск документов обязательно вызови tool kb_search.
 2. Передавай:
    - query={search_query}
    - collection={doc_search_collection}
@@ -146,9 +199,9 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
 3. Если {search_query} пустой, используй {user_query}.
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
-6. При mode=document_list пользователю список не показываешь ты: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
+6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
 
-Формат ответа (для document_list обязателен массив results — полный список документов):
+Формат ответа:
 {
   "status": "ok",
   "mode": "document_list",

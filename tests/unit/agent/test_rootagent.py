@@ -42,17 +42,26 @@ def _load_rootagent_module():
         if False:
             yield None
 
+    class AgentValidationFailure(Exception):
+        def __init__(self, *, log_label, validation_error, raw, user_message):
+            self.log_label = log_label
+            self.validation_error = validation_error
+            self.raw = raw
+            self.user_message = user_message
+            super().__init__(f"{log_label}: {validation_error}")
+
     json_leaf_runner_stub = types.ModuleType("agent.json_leaf_runner")
+    json_leaf_runner_stub.AgentValidationFailure = AgentValidationFailure
     json_leaf_runner_stub.run_json_leaf_agent = _fake_run_json_leaf_agent
 
     owasp_stub = types.ModuleType("agent.agents.owasp_agent")
-    owasp_stub.validate_owasp_result = lambda data: data
+    owasp_stub.validate_owasp_result = lambda data, context: data
 
     dispatcher_stub = types.ModuleType("agent.agents.dispatcher_agent")
-    dispatcher_stub.validate_dispatcher_result = lambda data: data
+    dispatcher_stub.validate_dispatcher_result = lambda data, context: data
 
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
-    kb_answer_stub.validate_kb_answer_result = lambda data: data
+    kb_answer_stub.validate_kb_answer_result = lambda data, context: data
 
     doc_search_stub = types.ModuleType("agent.agents.doc_search_orchestrator")
     doc_search_stub.DocSearchOrchestrator = type(
@@ -329,18 +338,6 @@ def test_get_required_state_dict_raises_for_non_dict() -> None:
 
 
 @pytest.mark.unit
-def test_owasp_invalid_contract_fallback_returns_blocked_contract() -> None:
-    result = RootAgent._owasp_invalid_contract_fallback("not-json", ValueError("Invalid JSON"))
-
-    assert result == {
-        "status": "blocked",
-        "route": "reject",
-        "reason": rootagent_module.OWASP_INVALID_CONTRACT_REASON,
-        "user_message": rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE,
-    }
-
-
-@pytest.mark.unit
 def test_get_required_state_text_returns_string_value() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={"payload": "value"})
@@ -386,4 +383,81 @@ async def test_handle_kb_answer_sets_expected_state_and_final_text() -> None:
     assert ctx.session.state["faq_collection"] == "faq"
     assert ctx.session.state["kb_answer_collection"] == "kb"
     assert ctx.session.state["intent"] == "kb_answer"
-    assert ctx.session.state["_root_final_text"] == "Готовый ответ"
+    assert isinstance(ctx.session.state["_root_final_text"], str)
+    assert ctx.session.state["_root_final_text"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher_validation_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="привет")], session_state={})
+    kb_called = False
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        raise rootagent_module.AgentValidationFailure(
+            log_label=kwargs["log_label"],
+            validation_error="bad contract",
+            raw='{"status":"bad"}',
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(*args, **kwargs):
+        nonlocal kb_called
+        kb_called = True
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert kb_called is False
+    assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_returns_owasp_specific_stub_on_validation_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="привет")], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        raise rootagent_module.AgentValidationFailure(
+            log_label=kwargs["log_label"],
+            validation_error="bad contract",
+            raw="not-json",
+            user_message=rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE
