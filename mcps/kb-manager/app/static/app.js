@@ -16,6 +16,7 @@ let currentPromptContent = ""; //текст текущего промпта
 let promptFiles = []; // список файлов промптов для агента
 let botStartMessageContent = ""; // стартовое сообщение текст
 let newsEditor = null; // текстовое поле отправки новости
+let newsHistoryTimer = null; // Переменная для хранения таймера
 let currentAgent = null; // текущий агент
 let promptEditorMDE = null; // редактор промпта в markdown формате
 let currentUser = null; // текущий пользователь
@@ -477,6 +478,9 @@ function showTab(tabName, event=null) {
         initAnalytics();   // выставим даты
         loadAnalytics();   // загрузим
         analyticsLoaded = true;
+    } else if (tabName === 'dialogs'){
+        initDialogs();
+        loadDialogs();
     }
 }
 
@@ -704,6 +708,29 @@ function shiftToUTC(dateStr) {
     const dt = new Date(dateStr);
 
     return dt.toISOString();
+}
+// формат под datetime-local
+function formatMSK(dt) {
+    return dt.toLocaleString('sv-SE', {
+        timeZone: 'Europe/Moscow',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }).replace(',', 'T');
+}
+// превращаем технический статус в русский текст
+function getStatusName(status) {
+    const statuses = {
+        'pending': 'В ожидании',
+        'sent': 'Отправлено',
+        'processing': 'Отправляется...',
+        'error': 'Ошибка'
+    };
+    // Если придет какой-то новый статус, которого нет в списке — вернем его как есть
+    return statuses[status] || status;
 }
 // #############################
 // DOCUMENTS TAB LOGIC
@@ -1541,7 +1568,7 @@ async function sendNews() {
     } finally {
         sendBtn.disabled = false;
         sendBtn.innerText = "📤 Отправить новость";
-        loadNewsHistory();
+        await loadNewsHistory();
     }
 }
 // удаление файла прикрепленного к новости
@@ -1578,7 +1605,10 @@ document.getElementById("news-files").addEventListener("change", (e) => {
 // загрузка истории новостей
 async function loadNewsHistory() {
     const container = document.getElementById("news-history");
-    container.innerHTML = '<div class="loading">Загрузка...</div>';
+    const isFirstLoad = container.innerHTML.includes("loading") || container.innerHTML === "";
+    if (isFirstLoad) {
+        container.innerHTML = '<div class="loading">Загрузка...</div>';
+    }
 
     try {
         const res = await fetch("/api/news");
@@ -1595,12 +1625,14 @@ async function loadNewsHistory() {
                     <p>Нет новостей</p>
                 </div>
             `;
+            stopNewsPolling(); // Останавливаем опрос, если новостей нет
             return;
         }
 
         container.innerHTML = data.map(n =>{
             const files = n.files || [];
             const targetGroup = n.target_group || "all";
+            const statusRussian = getStatusName(n.status);
             const filesHtml = files.length > 0
                 ? files.map(f => `
                     <div class="news-file">
@@ -1614,7 +1646,7 @@ async function loadNewsHistory() {
                 `).join("")
                 : '<div class="news-no-files">Без файлов</div>';
             return `
-                <div class="document-card">
+                <div class="document-card" ${n.status === 'pending' ? 'status-pending' : ''}">
                     <div class="document-header">
                         <div class="document-title">
                             📰 ID: ${n.id}
@@ -1633,7 +1665,7 @@ async function loadNewsHistory() {
                     <div class="news-meta">
                         <span> Создано: ${formatDate(n.created_at)}</span>
                         <span> Отправлено: ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}</span>
-                        <span> Статус: ${n.status}</span>
+                        <span> Статус: ${statusRussian}</span>
                         <span> Получатели: ${getTargetGroupName(targetGroup) || n.target_group || "all"}</span>
                     </div>
                     <div class="news-content">
@@ -1646,12 +1678,40 @@ async function loadNewsHistory() {
             `; 
         }).join("");
 
+        // --- ЛОГИКА АВТО-ОБНОВЛЕНИЯ ---
+        // Проверяем, есть ли хотя бы одна новость в статусе "pending"
+        const hasPending = data.some(n => n.status === "pending" || n.status === "processing");
+
+        if (hasPending) {
+            console.log("Есть ожидающие новости, запускаю поллинг...");
+            startNewsPolling();
+        } else {
+            console.log("Все новости отправлены, останавливаю поллинг.");
+            stopNewsPolling();
+        }
+
     } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
-            </div>
-        `;
+        console.error(e);
+        if (isFirstLoad) container.innerHTML = `<div class="result-message error">Ошибка: ${e.message}</div>`;
+    }
+}
+// Функция запуска опроса
+function startNewsPolling() {
+    if (newsHistoryTimer) return; // Чтобы не плодить кучу таймеров
+    newsHistoryTimer = setInterval(() => {
+        // Проверяем, активна ли вкладка новостей (чтобы не грузить сервер вхолостую)
+        const newsTab = document.getElementById("news_send-tab");
+        if (newsTab && newsTab.classList.contains("active") || newsTab.style.display !== "none") {
+            loadNewsHistory();
+        }
+    }, 10000); // 10 секунд — оптимально для новостей
+}
+
+// Функция остановки опроса
+function stopNewsPolling() {
+    if (newsHistoryTimer) {
+        clearInterval(newsHistoryTimer);
+        newsHistoryTimer = null;
     }
 }
 // функция удаления новости из истории
@@ -2487,7 +2547,8 @@ function applyRoleAccess() {
         "bot_settings",
         "user_groups",
         "logs",
-        "analytics"
+        "analytics",
+        "dialogs"
     ];
     tabNames.forEach(name => {
         const tab = document.getElementById(`${name}-tab`);
@@ -2510,7 +2571,8 @@ function applyRoleAccess() {
             "tree_files",
             "news_send",
             "user_groups",
-            "analytics"
+            "analytics",
+            "dialogs"
         ];
 
         allowed.forEach(name => {
@@ -2692,6 +2754,14 @@ function startLogsAutoRefresh() {
         loadLogs(false);
     }, 10000); // каждые 10 секунд
 }
+// функция экспорта логов для аналитики
+function exportAnalytics() {
+    // Временно убрал промежуток за который делать выгрузку
+    // const from = document.getElementById("from").value;
+    // const to = document.getElementById("to").value;
+    // window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
+    window.open("/api/analytics/export");
+}
 // #############################
 // ANALYTICS TAB LOGIC
 // #############################
@@ -2703,28 +2773,9 @@ function initAnalytics() {
     // 7 дней назад
     const from = new Date(now);
     from.setDate(from.getDate() - 7);
-    // формат под datetime-local
-    function formatMSK(dt) {
-        return dt.toLocaleString('sv-SE', {
-            timeZone: 'Europe/Moscow',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }).replace(',', 'T');
-    }
 
     document.getElementById("from").value = formatMSK(from);
     document.getElementById("to").value = formatMSK(to);
-}
-// функция экспорта аналитики
-function exportAnalytics() {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-
-    window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
 }
 // функция открытия модалки с пользователями, загрузившими конкретный документ
 async function openUsersModal(filename) {
@@ -2752,12 +2803,6 @@ function closeUsersModal() {
     modal.style.display = "none";
     document.getElementById("users-list").innerHTML = "";
 }
-// функция экспорта диалогов 
-function exportDialogs() {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-    window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
-}
 // функция трансформации времени в корректное для визуализации
 function formatTime(ms) {
     if (ms === null || ms === undefined) return "0 мс";
@@ -2770,7 +2815,7 @@ function renderStats(stats, channels) {
     const el = document.getElementById("stats");
 
     el.innerHTML = `
-        <h3>📊 Статистика</h3>
+        <h3>📈 Статистика</h3>
 
         <p><b>Уникальные пользователи:</b> ${stats.unique_users}</p>
         <p><b>Сообщений всего:</b> ${stats.total_messages}</p>
@@ -3153,4 +3198,105 @@ function renderUserDialogs(dialogs) {
 function closeDialogsModal() {
     document.getElementById("dialogs-modal").style.display = "none";
     document.getElementById("dialogs-list").innerHTML = "";
+}
+// #############################
+// DIALOGS TAB LOGIC
+// #############################
+// инициализация дат
+function initDialogs() {
+    const fromEl = document.getElementById("dialogs-from");
+    const toEl = document.getElementById("dialogs-to");
+    
+    if (fromEl.value && toEl.value) return;
+    
+    const now = new Date();
+    const to = new Date(now);
+    const from = new Date(now);
+    from.setDate(from.getDate() - 1); // по умолчанию 1 день
+    const fromStr = formatMSK(from)
+    const toStr = formatMSK(to)
+    fromEl.value = fromStr;
+    toEl.value = toStr;
+}
+// проверка существования диалогов
+function ensureDialogsDates() {
+    const fromEl = document.getElementById("dialogs-from");
+    const toEl = document.getElementById("dialogs-to");
+
+    if (!fromEl.value || !toEl.value) {
+        initDialogs();
+    }
+}
+// загрузка диалогов
+async function loadDialogs() {
+    ensureDialogsDates();
+    const fromRaw = document.getElementById("dialogs-from").value;
+    const toRaw = document.getElementById("dialogs-to").value;
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
+
+    const user = document.getElementById("dialogs-user").value;
+    const text = document.getElementById("dialogs-text").value;
+
+    const params = new URLSearchParams({
+        from_ts: from,
+        to_ts: to
+    });
+
+    if (user) params.set("user", user);
+    if (text) params.set("text", text);
+
+    const res = await fetch(`/api/analytics/dialogs?${params}`);
+    const data = await res.json();
+
+    renderDialogs(data);
+}
+// рендер таблицы диалогов
+function renderDialogs(data) {
+    const container = document.getElementById("dialogs-table");
+
+    if (!data || data.length === 0) {
+        container.innerHTML = "<p class='empty-state'>За этот период диалогов не найдено</p>";
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="modern-table">
+            <thead>
+                <tr>
+                    <th>Пользователь</th>
+                    <th>Время (МСК)</th>
+                    <th>Сообщение</th>
+                    <th>Ответ бота</th>
+                    <th>Скорость</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${data.map(row => {
+                    // ИСПРАВЛЕНО: Поле из БД называется message_time
+                    const date = row.message_time ? new Date(row.message_time).toLocaleString('ru-RU') : '---';
+                    const respTime = row.response_time ? `${(row.response_time / 1000).toFixed(2)}с` : '';
+                    
+                    return `
+                    <tr>
+                        <td class="user-cell">
+                            <strong>${escapeHtml(row.user_name || 'Аноним')}</strong><br>
+                            <small>${escapeHtml(row.user_id)}</small>
+                        </td>
+                        <td class="time-cell">${date}</td>
+                        <td class="msg-cell">${escapeHtml(row.message || '')}</td>
+                        <td class="resp-cell">${escapeHtml(row.response || '')}</td>
+                        <td class="meta-cell">${respTime}</td>
+                    </tr>
+                `}).join('')}
+            </tbody>
+        </table>
+    `;
+}
+// функция экспорта диалогов 
+function exportDialogs() {
+    const from = shiftToUTC(document.getElementById("dialogs-from").value);
+    const to = shiftToUTC(document.getElementById("dialogs-to").value);
+
+    window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }

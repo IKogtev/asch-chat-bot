@@ -342,12 +342,9 @@
                 <div id="analytics-tab" class="tab-content">
                     <div class="section-header">
                         <h2>📊 Аналитика</h2>
-                    </div>
-                    <div class="filters">
                         <input type="datetime-local" id="from" class="date-input">
                         <input type="datetime-local" id="to" class="date-input">
-                        <button onclick="loadAnalytics()" class="btn btn-add btn-small">Показать</button>
-                        <button onclick="exportDialogs()" class="btn btn-primary btn-small">💬 Диалоги</button>
+                        <button onclick="loadAnalytics()" class="btn btn-add">Показать</button>
                     </div>
                     <!-- GRID -->
                     <div class="dashboard">
@@ -367,6 +364,28 @@
                             <div id="phrase-cloud"></div>
                         </div>
                     </div>
+                </div>
+                <!-- Dialogs Tab -->
+                <div id="dialogs-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>💬 Диалоги</h2>
+                        <button onclick="loadDialogs()" class="btn btn-secondary">🔄 Обновить</button>
+                        <button onclick="exportDialogs()" class="btn btn-primary">📥 Выгрузить диалоги</button>
+                    </div>
+
+                    <!-- Фильтры -->
+                    <div class="filters">
+                        <input type="datetime-local" id="dialogs-from" class="date-input">
+                        <input type="datetime-local" id="dialogs-to" class="date-input">
+
+                        <input type="text" id="dialogs-user" placeholder="User ID / name">
+                        <input type="text" id="dialogs-text" placeholder="Поиск по тексту пользователя">
+
+                        <button onclick="loadDialogs()" class="btn btn-add btn-small">Показать</button>
+                    </div>
+
+                    <!-- Таблица -->
+                    <div id="dialogs-table"></div>
                 </div>
                 <!-- Modal for viewing document chunks -->
                 <div id="chunks-modal" class="modal">
@@ -568,6 +587,11 @@
                     <button class="tab-button" onclick="showTab('analytics', event)" data-tab="analytics">
                         <span class="icon">📊</span>
                         <span class="label">Аналитика</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('dialogs', event)" data-tab="dialogs">
+                        <span class="icon">💬</span>
+                        <span class="label">Диалоги</span>
+                    </button>
                     </button>
                     <button class="tab-button" onclick="logout()">
                         <span class="icon">➜]</span>
