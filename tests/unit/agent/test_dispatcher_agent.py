@@ -109,6 +109,16 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
 
 
 @pytest.mark.unit
+def test_assistant_capabilities_smalltalk_examples_include_conversational_variants() -> None:
+    examples = dispatcher_module.ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES
+
+    assert "что ты умеешь" in examples
+    assert "что умеешь" in examples
+    assert "чем можешь помочь" in examples
+    assert "на что способен" in examples
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("payload", "parts"),
     [
