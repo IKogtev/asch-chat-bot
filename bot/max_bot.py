@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 from utils import setup_logger
-from bot.services.utils import get_kb_tree, register_callback_path
+from bot.services.utils import get_kb_tree, register_callback_path, get_document_id
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated, Command, MessageCallback
 import os
@@ -15,8 +15,13 @@ from maxapi.types.attachments.buttons import (
 # from bot.adapters.handlers_max_wrapper import register_handlers_max
 from bot.services.config import Settings
 from maxapi import F
-import json
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+from urllib.parse import quote
+from aiogram.types import (
+    Message, FSInputFile, CallbackQuery, ReplyKeyboardRemove, 
+    ReplyKeyboardMarkup, KeyboardButton
+    ) 
+import tempfile
 
 # Настройка логирования
 logger = setup_logger('bot', 'bot.log')
@@ -127,8 +132,7 @@ async def help_cmd(event: MessageCreated) -> None:
 @dp.message_callback(F.callback.payload.startswith("d:"))
 async def open_dir(event: MessageCallback):
     """Команда обработчик открытия папки"""
-    logger.info("Мы попали в папку")
-    # await event.answer()
+    logger.info("📁 Обработка открытия папки")
     payload = event.callback.payload
     if not payload:
         await event.answer("Ошибка данных")
@@ -151,60 +155,73 @@ async def open_dir(event: MessageCallback):
         text=title,
         attachments=[menu]
     )
+# отладчик
+@dp.message_callback()
+async def debug_callback(event: MessageCallback):
+    """Универсальный отладочный хендлер — ловит ВСЕ колбэки"""
+    payload = event.callback.payload
+    logger.info(f"🔍 DEBUG CALLBACK: payload={payload!r}, callback_id={event.callback.callback_id}")
+    
+    # Если payload начинается с "d:" или "f:" — пропускаем, их обработают другие хендлеры
+    if payload and (payload.startswith("d:") or payload.startswith("f:") or payload == "home"):
+        return  # пусть сработают специализированные хендлеры
+    
+    # Для остальных — покажем уведомление
+    await event.answer(notification=f"🔍 payload: {payload}")
 
 # обработчик открытия файла в меню бота
-# @dp.callback_query(F.data.startswith("f:"))
-# async def send_file(callback: CallbackQuery):
-#     """Обработчик отправки файлов через меню бота"""
-#     await callback.answer()
+@dp.message_callback(F.callback.payload.startswith("f:"))
+async def send_file(event: MessageCallback):
+    """Обработчик отправки файлов через меню бота"""
+    payload = event.callback.payload
+    if not payload:
+        await event.answer("❌ Ошибка данных")
+        return
+    pid = payload.split(":", 1)[1]
+    path = Settings.CALLBACK_MAP.get(pid)
+    if not path:
+        await event.answer("Файл не найден")
+        return
+
+    Settings.CALLBACK_MAP.move_to_end(pid)
+    doc_id = await get_document_id(path)
+    if not doc_id:
+        url = f"{Settings.KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
+    else:
+        url = f"{Settings.KB_MANAGER_URL}/api/documents/download/{doc_id}"
+    filename = path.split("/")[-1]
+    user_id = event.callback.user.user_id
+    logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={user_id}")
+    tmp_name = None
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                await event.answer("Ошибка загрузки файла")
+                return
+            try:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}")
+                tmp_name = tmp.name
+                tmp.write(await resp.read())
+                tmp.close()
+
+                await event.message.answer(
+                    text=f"📎 Файл: {filename}",
+                    attachments=[tmp_name]
+                )
+            finally:
+                if tmp_name and os.path.exists(tmp_name):
+                    os.remove(tmp_name)
+
+@dp.message_callback(F.callback.payload == "home")
+async def handle_home(event: MessageCallback):
+    """Возврат на главную"""
+    tree = await get_kb_tree()
+    menu = build_menu(tree, [])
     
-#     pid = callback.data.split(":")[1]
-#     path = Settings.CALLBACK_MAP.get(pid)
-#     if not path:
-#         await callback.answer("Файл не найден", show_alert=True)
-#         return
-
-#     Settings.CALLBACK_MAP.move_to_end(pid)
-#     doc_id = await get_document_id(path)
-#     if not doc_id:
-#         url = f"{Settings.KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
-#     else:
-#         url = f"{Settings.KB_MANAGER_URL}/api/documents/download/{doc_id}"
-#     filename = path.split("/")[-1]
-#     user_id = callback.from_user.id
-#     logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={user_id}")
-#     await eventlogger.log_event(
-#         event_type="document_download_menu",
-#         user_id=str(user_id),
-#         session_id=str(user_id),
-#         user_name=callback.from_user.username,
-#         channel="telegram",
-#         payload={
-#             "filename": filename,
-#             "file_path": path,
-#             "doc_id": doc_id,
-#             "source": "menu"
-#         }
-#     )
-#     tmp_name = None
-#     async with aiohttp.ClientSession() as session:
-#         async with session.get(url) as resp:
-#             if resp.status != 200:
-#                 await callback.answer("Ошибка загрузки файла", show_alert=True)
-#                 return
-#             try:
-#                 tmp = tempfile.NamedTemporaryFile(delete=False)
-#                 tmp_name = tmp.name
-#                 tmp.write(await resp.read())
-#                 tmp.close()
-
-#                 await callback.message.answer_document(
-#                     document=FSInputFile(tmp_name, filename=filename),
-#                 )
-#             finally:
-#                 if tmp_name and os.path.exists(tmp_name):
-#                     os.remove(tmp_name)
-
+    await event.message.edit(
+        text=get_start_message(),
+        attachments=[menu]
+    )
 
 @dp.message_created()
 async def handle_message(event: MessageCreated):
