@@ -1388,6 +1388,9 @@ select:focus {
     font-size: 14px;
     width: 100%;
 }
+#user-groups-list {
+    margin-top: 10px;
+}
 #user-groups-list table tr:hover {
     background-color: rgba(79, 70, 229, 0.04);
 }
@@ -1417,7 +1420,6 @@ select:focus {
     position: sticky;
     top: 0;
     z-index: 100;
-    height: 140px;
     background: var(--bg-color);
     padding-bottom: 10px;
 
@@ -1458,9 +1460,15 @@ select:focus {
     text-align: center;
     box-shadow: var(--shadow);
     transition: transform 0.2s;
+    cursor: pointer;
 }
 .groups-stat-card:hover {
     transform: translateY(-2px);
+}
+/* активная карточка */
+.groups-stat-card.active {
+    border: 2px solid var(--primary-color);
+    background: rgba(79, 70, 229, 0.05);
 }
 .groups-stat-number {
     font-size: 24px;
@@ -1484,15 +1492,11 @@ select:focus {
     font-size: 14px;
     box-shadow: var(--shadow);
     border-radius: 8px;
-    overflow: hidden;
-}
-thead th {
-    top: 140px;
 }
 /* закрепление для заголовка */
 .user-groups-table thead th {
     position: sticky;
-    top: 140px; /* внутри контейнера */
+    top: 270px; /* внутри контейнера */
     z-index: 90;
 
     background: var(--card-bg);
@@ -1844,22 +1848,69 @@ thead th {
 #logs-table-inner td:nth-child(6) {
     width: auto;
 }
+/* Пагинация обертки */
 .pagination-controls {
+    margin-top: 25px;
+    padding: 15px;
+    display: flex;
+    justify-content: center; /* Центрируем кнопки */
+    align-items: center;
+    gap: 20px;
+    background: #f8f9fa; /* Серый фон, чтобы блок было видно */
+    border-radius: 8px;
+}
+
+.pagination-wrapper {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 10px;
+    margin-top: 15px;
+    padding: 10px;
+    background: #fdfdfd;
+    border-top: 1px solid #eee;
+}
+.page-info {
+    margin: 0 15px;
 }
 
-.page-btn {
-    margin: 0 3px;
-    padding: 5px 10px;
-    border: 1px solid var(--border-color);
-    background: var(--card-bg);
-    cursor: pointer;
+.modern-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+    background: white;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    border-radius: 8px;
+    overflow: hidden;
 }
 
-.page-btn.active {
-    background: var(--primary-color);
-    color: white;
+.modern-table th {
+    background-color: #f8f9fa;
+    color: #333;
+    text-align: left;
+    padding: 12px 15px;
+    border-bottom: 2px solid #dee2e6;
+    font-weight: 600;
+}
+
+.modern-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid #eee;
+    vertical-align: top;
+    font-size: 0.95em;
+}
+
+.modern-table tr:hover {
+    background-color: #f1f4f8;
+}
+
+.user-cell small { color: #666; font-size: 0.85em; }
+.time-cell { white-space: nowrap; color: #555; }
+.msg-cell { color: #2c3e50; min-width: 200px; }
+.resp-cell { color: #27ae60; min-width: 200px; font-style: italic; }
+.meta-cell { color: #999; font-size: 0.85em; }
+
+.loading, .error, .empty-state {
+    padding: 40px;
+    text-align: center;
+    color: #666;
 }
