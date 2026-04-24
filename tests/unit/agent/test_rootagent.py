@@ -461,3 +461,65 @@ async def test_run_async_impl_returns_owasp_specific_stub_on_validation_failure(
 
     assert len(events) == 1
     assert events[0].content.parts[0].text == rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="Что ты умеешь?")], session_state={})
+    kb_called = False
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "smalltalk",
+                "reason": "assistant_capabilities_smalltalk",
+                "search_query": "",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(ctx, user_message, search_query, intent):
+        nonlocal kb_called
+        kb_called = True
+        assert user_message == "Что ты умеешь?"
+        assert search_query == ""
+        assert intent == "smalltalk"
+        ctx.session.state["_root_final_text"] = "Я умею искать документы и помогать продавать продукты АСЖ."
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "Я умею искать документы и помогать продавать продукты АСЖ."
+    assert kb_called is True
+    assert doc_called is False
