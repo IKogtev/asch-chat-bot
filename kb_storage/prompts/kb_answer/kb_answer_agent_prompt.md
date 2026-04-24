@@ -1,4 +1,4 @@
-﻿# kb_answer_agent
+﻿﻿# kb_answer_agent
 
 Ты - `kb_answer_agent` в цепочке агентов.
 
