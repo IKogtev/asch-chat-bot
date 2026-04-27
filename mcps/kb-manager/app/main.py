@@ -28,6 +28,8 @@ import pandas as pd
 from collections import Counter
 import re
 import pymorphy3
+import csv
+import io
 
 load_dotenv()
 
@@ -1584,6 +1586,83 @@ async def update_subscriber_group(data: dict):
         logger.error(f"Error updating subscriber group: {e}")
         raise HTTPException(500, f"Failed to update group: {str(e)}")
 
+@app.get("/api/subscribers/export")
+async def export_subscribers(
+    search: str = None,
+    group: str = None
+):
+    """
+    Экспорт пользователей с фильтрами:
+    - search: строка поиска
+    - group: manager | coach | both | none | all
+    """
+
+    try:
+        resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
+        resp.raise_for_status()
+        users = resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching subscribers: {e}")
+        raise HTTPException(500, "Failed to fetch subscribers")
+
+    # 🔍 фильтрация
+    def matches(u):
+        # поиск
+        if search:
+            q = search.lower()
+            if not (
+                str(u.get("user_id", "")).lower().find(q) != -1 or
+                (u.get("username") or "").lower().find(q) != -1 or
+                (u.get("first_name") or "").lower().find(q) != -1 or
+                (u.get("last_name") or "").lower().find(q) != -1
+            ):
+                return False
+        # фильтр группы
+        if group == "manager":
+            return u.get("manager_group")
+        elif group == "coach":
+            return u.get("coach_group")
+        elif group == "both":
+            return u.get("manager_group") and u.get("coach_group")
+        elif group == "none":
+            return not u.get("manager_group") and not u.get("coach_group")
+
+        return True
+
+    filtered = [u for u in users if matches(u)]
+
+    # 📄 формируем CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "User ID",
+        "Username",
+        "First Name",
+        "Last Name",
+        "Manager",
+        "Coach",
+        "Last Seen"
+    ])
+    for u in filtered:
+        writer.writerow([
+            u.get("user_id"),
+            u.get("username"),
+            u.get("first_name"),
+            u.get("last_name"),
+            "Yes" if u.get("manager_group") else "No",
+            "Yes" if u.get("coach_group") else "No",
+            u.get("last_seen")
+        ])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=subscribers.csv"
+        }
+    )
+            
 ##################################
 # Работа с логами для мониторинга
 ##################################
@@ -2108,8 +2187,10 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
             df[col] = df[col].dt.tz_localize(None)
     # форматируем время ответа в понятный вид измерений
     if "response_time_ms" in df.columns:
-        df.rename(columns={"response_time_ms": "response_time"}, inplace=True)
-        df["response_time"] = df["response_time"].apply(lambda x: "" if pd.isnull(x) else f"{int(x) / 1000:.2f} сек" if int(x) >= 1000 else f"{int(x)} мс")
+        df.rename(columns={"response_time_ms": "response_time_sec"}, inplace=True)
+        df["response_time_sec"] = df["response_time_sec"] / 1000
+        # Заполнить нулями Nan
+        df["response_time_sec"] = df["response_time_sec"].fillna(0)
 
     file_path = "/tmp/dialogs.xlsx"
     df.to_excel(file_path, index=False)
@@ -2135,37 +2216,75 @@ async def get_dialogs(
     to_dt = datetime.fromisoformat(to_ts)
 
     query = """
+    WITH turns AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            user_id,
+            MAX(user_name) as user_name,
+            MIN(created_at) as message_time
+        FROM events
+        WHERE payload->>'turn_id' IS NOT NULL
+        AND created_at BETWEEN $1 AND $2
+        GROUP BY payload->>'turn_id', user_id
+    ),
+
+    messages AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as message
+        FROM events
+        WHERE event_type = 'message_received'
+        ORDER BY payload->>'turn_id', created_at ASC
+    ),
+
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as response,
+            (payload->>'response_time_ms')::int as response_time
+        FROM events
+        WHERE event_type = 'response'
+        ORDER BY payload->>'turn_id', created_at DESC
+    ),
+
+    docs AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            STRING_AGG(payload->>'file_path', '||') as file_paths
+        FROM events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+        GROUP BY payload->>'turn_id'
+    )
+
     SELECT
-        m.user_id,
-        m.user_name,
-        m.created_at as message_time,
-        m.payload->>'text' as message,
+        t.user_id,
+        COALESCE(t.user_name, 'Аноним') as user_name,
+        t.message_time,
+        m.message,
+        r.response,
+        r.response_time,
+        d.file_paths
 
-        r.payload->>'text' as response,
-        (r.payload->>'response_time_ms')::int as response_time
+    FROM turns t
+    LEFT JOIN messages m ON m.turn_id = t.turn_id
+    LEFT JOIN responses r ON r.turn_id = t.turn_id
+    LEFT JOIN docs d ON d.turn_id = t.turn_id
 
-    FROM events m
-
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
-
-    WHERE m.event_type = 'message_received'
-      AND m.created_at BETWEEN $1 AND $2
+    WHERE t.message_time BETWEEN $1 AND $2
     """
 
     params = [from_dt, to_dt]
     # фильтр по пользователям
     if user:
         # Поиск по ID или имени
-        query += f" AND (m.user_id ILIKE ${len(params)+1} OR m.user_name ILIKE ${len(params)+1})"
+        query += f" AND (CAST(t.user_id AS TEXT) ILIKE ${len(params)+1} OR t.user_name ILIKE ${len(params)+1})"
         params.append(f"%{user}%")
     # фильтр по тексту
     if text:
-        query += f" AND m.payload->>'text' ILIKE ${len(params)+1}"
+        query += f" AND m.message ILIKE ${len(params)+1}"
         params.append(f"%{text}%")
 
-    query += " ORDER BY m.created_at DESC LIMIT 500"
+    query += " ORDER BY t.message_time DESC LIMIT 500"
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)

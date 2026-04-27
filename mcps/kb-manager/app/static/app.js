@@ -479,8 +479,7 @@ function showTab(tabName, event=null) {
         loadAnalytics();   // загрузим
         analyticsLoaded = true;
     } else if (tabName === 'dialogs'){
-        initDialogs();
-        loadDialogs();
+        updateDialogs()
     }
 }
 
@@ -2448,40 +2447,17 @@ async function toggleUserGroup(userId, group, value) {
 }
 // Экспорт пользователей в CSV
 function exportUsers() {
-    const table = document.querySelector("#user-groups-list table");
-    if (!table) {
-        alert("Нет данных для экспорта");
-        return;
+    const search = document.getElementById("user-search")?.value || "";
+
+    const params = new URLSearchParams();
+
+    if (search) params.set("search", search);
+
+    if (activeStatsFilter && activeStatsFilter !== "all") {
+        params.set("group", activeStatsFilter);
     }
-    
-    let csv = [];
-    const rows = table.querySelectorAll("tr");
-    
-    rows.forEach(row => {
-        const cols = row.querySelectorAll("th, td");
-        const rowData = [];
-        
-        cols.forEach((col, index) => {
-            // Для чекбоксов берём состояние
-            const checkbox = col.querySelector("input[type='checkbox']");
-            if (checkbox) {
-                rowData.push(`"${checkbox.checked ? 'Yes' : 'No'}"`);
-            } else {
-                rowData.push(`"${col.textContent.trim().replace(/"/g, '""')}"`);
-            }
-        });
-        
-        csv.push(rowData.join(","));
-    });
-    
-    const csvContent = csv.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `users_groups_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-    
-    showNotification("Экспорт выполнен успешно", "success");
+
+    window.open(`/api/subscribers/export?${params.toString()}`);
 }
 
 /// #############################
@@ -2567,7 +2543,6 @@ function applyRoleAccess() {
     if (role === "manager") {
         // manager ограничен
         const allowed = [
-            "search",
             "tree_files",
             "news_send",
             "user_groups",
@@ -2779,8 +2754,11 @@ function initAnalytics() {
 }
 // функция открытия модалки с пользователями, загрузившими конкретный документ
 async function openUsersModal(filename) {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
+    const fromRaw = document.getElementById("from").value;
+    const toRaw = document.getElementById("to").value;
+    // сдвигаем к времени бд
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
 
     const users = await fetch(
         `/api/analytics/document-users?filename=${encodeURIComponent(filename)}&from_ts=${from}&to_ts=${to}`
@@ -3141,9 +3119,11 @@ async function loadAnalytics() {
 }
 // открытие окна диалогов пользователя
 async function openUserDialogs(userId, userName) {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-
+    const fromRaw = document.getElementById("from").value;
+    const toRaw = document.getElementById("to").value;
+    // сдвигаем к времени бд
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
     const dialogs = await fetch(
         `/api/analytics/user-dialogs?user_id=${userId}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
@@ -3206,9 +3186,6 @@ function closeDialogsModal() {
 function initDialogs() {
     const fromEl = document.getElementById("dialogs-from");
     const toEl = document.getElementById("dialogs-to");
-    
-    if (fromEl.value && toEl.value) return;
-    
     const now = new Date();
     const to = new Date(now);
     const from = new Date(now);
@@ -3251,6 +3228,10 @@ async function loadDialogs() {
 
     renderDialogs(data);
 }
+function updateDialogs(){
+    initDialogs();
+    loadDialogs();
+}
 // рендер таблицы диалогов
 function renderDialogs(data) {
     const container = document.getElementById("dialogs-table");
@@ -3266,7 +3247,7 @@ function renderDialogs(data) {
                 <tr>
                     <th>Пользователь</th>
                     <th>Время (МСК)</th>
-                    <th>Сообщение</th>
+                    <th>Запрос</th>
                     <th>Ответ бота</th>
                     <th>Скорость</th>
                 </tr>
@@ -3276,7 +3257,17 @@ function renderDialogs(data) {
                     // ИСПРАВЛЕНО: Поле из БД называется message_time
                     const date = row.message_time ? new Date(row.message_time).toLocaleString('ru-RU') : '---';
                     const respTime = row.response_time ? `${(row.response_time / 1000).toFixed(2)}с` : '';
-                    
+                    let answer;
+                    if (row.response) {
+                        answer = row.response;
+                    } else if (row.file_paths) {
+                        const files = row.file_paths.split("||")
+                            .map(f => "📄 " + f.split('/').pop())
+                            .join("<br>");
+                        answer = files;
+                    } else {
+                        answer = "—";
+                    }
                     return `
                     <tr>
                         <td class="user-cell">
@@ -3285,7 +3276,7 @@ function renderDialogs(data) {
                         </td>
                         <td class="time-cell">${date}</td>
                         <td class="msg-cell">${escapeHtml(row.message || '')}</td>
-                        <td class="resp-cell">${escapeHtml(row.response || '')}</td>
+                        <td class="resp-cell">${escapeHtml(answer)}</td>
                         <td class="meta-cell">${respTime}</td>
                     </tr>
                 `}).join('')}
