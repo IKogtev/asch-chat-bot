@@ -336,7 +336,7 @@ class Indexer:
         q_filter = Filter(must=must, must_not=must_not)
 
         rrf_k = int(os.getenv("KB_HYBRID_RRF_K", "60"))
-        fetch = max(top_k * int(os.getenv("KB_HYBRID_CANDIDATE_MULT", "6")), 40)
+        fetch = max(top_k * int(os.getenv("KB_HYBRID_CANDIDATE_MULT", "100")), 100)
 
         query_vector = self.embed_model.get_text_embedding_batch([query])[0]
         sparse_model = self._get_sparse_embedder()

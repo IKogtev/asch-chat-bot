@@ -487,7 +487,7 @@ async def kb_search(
                         if doc_id not in doc_res.keys():
                             doc_res.update({doc_id: item})
                         else:
-                            doc_res[doc_id]["content"] += "\n..." + item["content"]
+                            doc_res[doc_id]["content"] += "\n...\n" + item["content"]
                             doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
 
                     logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
@@ -504,6 +504,7 @@ RELATIVE_PATH: {relative_path}
 
 DOCUMENT_ID: {doc_id}
 
+TEXT:
 {text}
 """
                         blocks.append(block)
