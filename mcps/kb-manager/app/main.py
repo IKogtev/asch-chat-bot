@@ -2126,55 +2126,90 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
 
     query = """
-    WITH msg_counts AS (
-        SELECT session_id, COUNT(*) as msg_count
+    WITH messages AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            session_id,
+            user_name,
+            channel,
+            created_at as message_time,
+            payload->>'text' as message
         FROM events
         WHERE event_type = 'message_received'
-           AND created_at BETWEEN $1 AND $2
-        GROUP BY session_id
+        AND created_at BETWEEN $1 AND $2
     ),
 
-    downloads AS (
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as response,
+            (payload->>'response_time_ms')::int as response_time_ms
+        FROM events
+        WHERE event_type = 'response'
+        ORDER BY payload->>'turn_id', created_at DESC
+    ),
+
+    downloads_turn AS (
+        -- файлы внутри конкретного запроса
+        SELECT
+            payload->>'turn_id' as turn_id,
+            STRING_AGG(payload->>'file_path', ' | ' ORDER BY created_at) as files
+        FROM events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND payload->>'file_path' IS NOT NULL
+        GROUP BY payload->>'turn_id'
+    ),
+
+    downloads_session AS (
+        -- ВСЕ файлы пользователя (как в старом SQL, но без дублей)
         SELECT
             session_id,
-            string_agg(payload->>'file_path', ', ') as files
+            STRING_AGG(
+                DISTINCT payload->>'file_path',
+                ', ' ORDER BY payload->>'file_path'
+            ) as all_files
         FROM events
         WHERE event_type IN ('document_download', 'document_download_menu')
           AND created_at BETWEEN $1 AND $2
+          AND payload->>'file_path' IS NOT NULL
+        GROUP BY session_id
+    ),
+
+    msg_counts AS (
+        SELECT session_id, COUNT(*) as msg_count
+        FROM events
+        WHERE event_type = 'message_received'
+        AND created_at BETWEEN $1 AND $2
         GROUP BY session_id
     )
 
     SELECT
         m.session_id,
         m.user_name,
-        -- приводим время к МСК для удобства чтения
-        -- (m.created_at AT TIME ZONE 'UTC' + INTERVAL '3 hour') as message_time,
-        (m.created_at + INTERVAL '3 hour') as message_time,
-        m.payload->>'text' as message,
+        (m.message_time + INTERVAL '3 hour') as message_time,
+        m.message,
 
-        r.payload->>'text' as response,
-        (r.payload->>'response_time_ms')::int as response_time_ms,
+        CASE
+            WHEN r.response IS NOT NULL THEN r.response
+            WHEN dt.files IS NOT NULL THEN dt.files
+            ELSE ''
+        END as response,
+
+        r.response_time_ms,
 
         mc.msg_count,
         m.channel,
 
-        d.files as downloaded_files
+        ds.all_files as downloaded_files
 
-    FROM events m
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
+    FROM messages m
 
-    LEFT JOIN msg_counts mc
-      ON m.session_id = mc.session_id
-    
-    LEFT JOIN downloads d
-      ON m.session_id = d.session_id
+    LEFT JOIN responses r ON r.turn_id = m.turn_id
+    LEFT JOIN downloads_turn dt ON dt.turn_id = m.turn_id
+    LEFT JOIN downloads_session ds ON ds.session_id = m.session_id
+    LEFT JOIN msg_counts mc ON mc.session_id = m.session_id
 
-    WHERE m.event_type = 'message_received'
-       AND m.created_at BETWEEN $1 AND $2
-    
-    ORDER BY m.created_at
+    ORDER BY m.message_time
     """
 
     async with pool.acquire() as conn:
@@ -2187,11 +2222,35 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
             df[col] = df[col].dt.tz_localize(None)
     # форматируем время ответа в понятный вид измерений
     if "response_time_ms" in df.columns:
-        df.rename(columns={"response_time_ms": "response_time_sec"}, inplace=True)
-        df["response_time_sec"] = df["response_time_sec"] / 1000
         # Заполнить нулями Nan
-        df["response_time_sec"] = df["response_time_sec"].fillna(0)
+        df["response_time_sec"] = (df["response_time_ms"].fillna(0) / 1000).round(2)
+        df.drop(columns=["response_time_ms"], inplace=True)
+    
+    # оптимизируем названия в выгрузке
+    def clean_file_names(files):
+        if not files:
+            return ""
+        return " | ".join(f.split("/")[-1] for f in files.split(" | "))
 
+    def clean_files_pipe(files):
+        """для response (| разделитель)"""
+        if not files:
+            return ""
+        return " | ".join(f.split("/")[-1] for f in files.split(" | "))
+
+    def clean_files_csv(files):
+        """для downloaded_files (, разделитель)"""
+        if not files:
+            return ""
+        return ", ".join(f.split("/")[-1] for f in files.split(", "))
+
+    # response (может быть текст или файлы)
+    df["response"] = df["response"].fillna("").apply(
+        lambda x: clean_files_pipe(x) if "|" in x else clean_file_names(x)
+    )
+
+    # все скачанные файлы
+    df["downloaded_files"] = df["downloaded_files"].fillna("").apply(clean_files_csv)
     file_path = "/tmp/dialogs.xlsx"
     df.to_excel(file_path, index=False)
     # сохраняем обязательно с media_type для корректной выгрузки файла
