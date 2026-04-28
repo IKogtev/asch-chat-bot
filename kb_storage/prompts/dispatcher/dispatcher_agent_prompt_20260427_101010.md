@@ -193,7 +193,7 @@
 - `intent = "doc_search"`
 - `reason = "asks_for_documents"` или `reason = "asks_for_document_list"`
 
-Используй `reason`:
+Используй:
 - `asks_for_document_list`, если пользователь просит список, перечень, подборку, какие есть документы;
 - `asks_for_documents`, если пользователь просит конкретный файл, документ или тип артефакта.
 

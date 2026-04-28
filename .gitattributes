@@ -11,3 +11,5 @@
 # Для Windows-скриптов — CRLF
 *.bat text eol=crlf
 *.cmd text eol=crlf
+# Для всех MD-файлов принудительно используем LF чтобы не ломались промпты
+*.md text eol=lf

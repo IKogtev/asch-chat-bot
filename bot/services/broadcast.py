@@ -190,7 +190,6 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
                 parts = split_message(text)
                 for part in parts:
                     try:
-                        # await bot.send_message(user_id, text)
                         await bot.send_message(user_id, part, parse_mode="HTML")
                     except Exception as e:
                         logger.error(f"HTML send error, fallback to plain: {e}")
