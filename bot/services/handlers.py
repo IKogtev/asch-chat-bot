@@ -555,7 +555,8 @@ async def get_authenticated_user(m: Message, subscriber_store) -> dict | None:
         first_name=first_name,
         last_name=last_name,
         last_seen=last_seen,
-        phone_number=None # не затираем телефон если он уже есть
+        phone_number=None, # не затираем телефон если он уже есть
+        platform="telegram"
     )
     # Достаем полные данные пользователя
     user_data = await subscriber_store.get_user_data(user_id)

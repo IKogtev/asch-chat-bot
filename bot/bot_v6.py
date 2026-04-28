@@ -91,7 +91,8 @@ async def main() -> None:
         news_store=news_store,
         subscriber_store=subscriber_store,
         load_bot_start_message=load_bot_start_message,
-        get_start_message=get_start_message
+        get_start_message=get_start_message,
+        source="telegram"
     )
 
     # Инициализация DocumentHandler
@@ -115,7 +116,7 @@ async def main() -> None:
     logger.info("Все компоненты инициализированы")
     bot_holder = BotHolder()
     http_task = asyncio.create_task(run_http_server(broadcast_app))
-    scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder))
+    scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder, source="telegram"))
     logger.info("🚀 HTTP сервер и scheduler запущены")
     # Запуск бота
     try:
