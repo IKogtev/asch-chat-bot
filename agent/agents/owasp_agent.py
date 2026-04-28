@@ -146,6 +146,7 @@ def create_owasp_agent(model: LiteLlm) -> LlmAgent:
         name="owasp_agent",
         model=model,
         instruction=instruction,
+        include_contents="none",
         output_key="owasp_result_json",
     )
     start_prompt_watcher(prompt_file, agent, logger)
