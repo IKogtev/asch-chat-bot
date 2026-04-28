@@ -252,8 +252,8 @@ async def handle_show_more(
 def split_message(text: str, limit: int = 4000):
     return [text[i:i+limit] for i in range(0, len(text), limit)]
 
-# конвертация HTML в безопасный для Telegram формат
-def html_to_telegram(html: str) -> str:
+# конвертация HTML в безопасный формат
+def html_to_bot(html: str) -> str:
     if not html:
         return ""
 

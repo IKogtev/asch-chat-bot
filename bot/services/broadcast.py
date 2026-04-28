@@ -8,9 +8,13 @@ from utils import setup_logger
 from utils.event_logger import EventLogger
 from bot.services.config import Settings
 import aiofiles
-from bot.services.utils import html_to_telegram, split_message
+from bot.services.utils import html_to_bot, split_message
 import json
 from aiogram.types import BufferedInputFile
+from maxapi.enums import TextFormat
+import io, random
+import tempfile
+from maxapi.types import InputMedia
 
 # Настройка логгера
 logger = setup_logger('broadcasting', 'broadcast.log')
@@ -21,9 +25,11 @@ def create_broadcast_app(
     news_store,
     subscriber_store,
     load_bot_start_message,
-    get_start_message
+    get_start_message,
+    source="telegram"
 ):
     app = FastAPI(title="Bot Broadcast API")
+    logger.info(f"Источник для всех {source}")
 
     @app.post("/broadcast")
     async def broadcast(
@@ -67,21 +73,21 @@ def create_broadcast_app(
                     logger.info(f"📅 Задача отложена на {schedule_dt}")
                 await eventlogger.log_event(
                     event_type="broadcast_created",
-                    channel="telegram",
+                    channel=source,
                     payload={
                         "target_group": target_group,
                         "has_files": bool(file_paths),
                         "scheduled": bool(schedule_time)
                     }
                 )
-                users, _ = await get_filtered_users(subscriber_store, target_group)    
-                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group)
+                users, _ = await get_filtered_users(subscriber_store, target_group, source)    
+                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group, source=source)
                 return {"status": "ok", "news_send": news_id, "sent": len(users)}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")
                 await eventlogger.log_event(
                     event_type="error",
-                    channel="telegram",
+                    channel=source,
                     payload={
                         "error": str(e)
                     }
@@ -91,7 +97,7 @@ def create_broadcast_app(
             logger.error(f"Error while broadcast all: {e}")
             await eventlogger.log_event(
                     event_type="error",
-                    channel="telegram",
+                    channel=source,
                     payload={
                         "error": str(e)
                     }
@@ -121,7 +127,7 @@ def create_broadcast_app(
             logger.error(f"Delete error: {e}")
             await eventlogger.log_event(
                     event_type="error",
-                    channel="telegram",
+                    channel=source,
                     payload={
                         "error": str(e)
                     }
@@ -170,66 +176,125 @@ def create_broadcast_app(
 ######################################
 
 #  функция отправки новости с фильтрацией по группе
-async def send_now(text: str, file_data: List, target_group: str="all", bot_holder=None, subscriber_store=None):
+async def send_now(text: str, file_data: List, target_group: str="all", bot_holder=None, subscriber_store=None, source="telegram", news_id: Optional[int]=None):
     """Отправка новости с фильтрацией по группе"""
     sent = 0
+    failed = 0
+    errors = []
 
-    users, all_count = await get_filtered_users(subscriber_store, target_group)
+    users, all_count = await get_filtered_users(subscriber_store, target_group, source)
     count = len(users)
 
-    logger.info(f"📬 Отправка новости: {count} из {all_count} пользователей (группа: {target_group})")        
-    for user_id in users:
+    logger.info(f"📬 Отправка новости: #{news_id} {count} из {all_count} пользователей (группа: {target_group})")        
+    for idx, user_id in enumerate(users):
         try:
             if not bot_holder.instance:
-                logger.warning("Бот сейчас в процессе реконнекта, пропускаем отправку или ждем...")
+                logger.warning(f"⚠️ Бот в процессе реконнекта, пропускаем user_id={user_id}")
+                failed += 1
+                errors.append(f"user {user_id}: bot reconnecting")
                 continue
+
             bot = bot_holder.instance
-            # отправка текста
+            
+            # Для MAX: peer_id должен быть int, для Telegram — можно str
+            peer_id = int(user_id) if source == "max" else user_id
+
+            # === ОТПРАВКА ТЕКСТА ===
             if text:
-                # защита от слишком больших новостей, чтобы Telegram не обрезал их
                 parts = split_message(text)
                 for part in parts:
                     try:
-                        await bot.send_message(user_id, part, parse_mode="HTML")
+                        if source == "telegram":
+                            await bot.send_message(peer_id, part, parse_mode="HTML")
+                        else:  # max
+                            await bot.send_message(user_id=peer_id, text=part, format=TextFormat.HTML)
                     except Exception as e:
-                        logger.error(f"HTML send error, fallback to plain: {e}")
-                        await bot.send_message(user_id, part)
+                        # Fallback на plain text если HTML не прошёл
+                        logger.debug(f"HTML fallback для user {user_id}: {e}")
+                        await bot.send_message(user_id=peer_id, text=part)
             
-            # отправка файлов
+            # === ОТПРАВКА ФАЙЛОВ ===
             for filename, content_type, content in file_data:
+                try:
+                    if source == "telegram":
+                        if content_type.startswith("image"):
+                            await bot.send_photo(
+                                peer_id,
+                                BufferedInputFile(content, filename=filename)
+                            )
+                        else:
+                            await bot.send_document(
+                                peer_id,
+                                BufferedInputFile(content, filename=filename)
+                            )
+                    else:  # max
+                        tmp_path = None
+                        try:
+                            tmp_path = os.path.join(tempfile.gettempdir(), filename)
+                    
+                            # Пишем контент в файл
+                            async with aiofiles.open(tmp_path, "wb") as out:
+                                await out.write(content)
 
-                if content_type.startswith("image"):
-                    await bot.send_photo(
-                        user_id,
-                        BufferedInputFile(content, filename=filename)
-                    )
-                else:
-                    await bot.send_document(
-                        user_id, 
-                        BufferedInputFile(content, filename=filename)
-                    )
+                            # Отправляем через InputMedia — имя файла будет корректным
+                            await bot.send_message(
+                                user_id=peer_id,
+                                attachments=[InputMedia(path=tmp_path)]
+                            )
+                            logger.info(f" Файл отправлен: {filename}")
+                            
+                        finally:
+                            # Гарантированно удаляем временный файл
+                            if tmp_path and os.path.exists(tmp_path):
+                                try:
+                                    os.remove(tmp_path)
+                                except Exception as e:
+                                    logger.warning(f" Не удалось удалить временный файл {tmp_path}: {e}")
+                except Exception as e:
+                    logger.warning(f"Не отправлен файл {filename} для user {user_id}: {e}")
 
             sent += 1
             await eventlogger.log_event(
                 event_type="broadcast_sent",
                 user_id=str(user_id),
-                channel="telegram"
+                channel=source,
+                payload={"news_id": news_id} if news_id else None
             )
-            # защита от Flood Limits 
-            await asyncio.sleep(0.05)
+            
+            # Защита от Flood Limits (немного рандома для естественности)
+            await asyncio.sleep(0.03 + random.random() * 0.04)
 
         except Exception as e:
-            logger.error(f"Broadcast error to {user_id}: {e}")
+            failed += 1
+            errors.append(f"user {user_id}: {str(e)[:100]}")
+            logger.error(f"Broadcast error to {user_id} (#{idx+1}/{count}): {e}")
+            # Продолжаем отправку остальным, не прерываем цикл
 
-    return {"sent": sent}
+    # === ИТОГОВЫЙ РЕЗУЛЬТАТ ===
+    result = {
+        "sent": sent,
+        "failed": failed,
+        "total": count,
+        "success_rate": round(sent / count * 100, 1) if count > 0 else 0,
+        "errors": errors[:10] if failed > 0 else []  # только первые 10 ошибок для логов
+    }
+
+    # Логирование итога
+    logger.info(
+        f" Новость #{news_id} ({source}): отправлено {sent}/{count}, "
+        f"ошибок: {failed}, успех: {result['success_rate']}%"
+    )
+    return result
 
 # получение отфильтрованных пользователей по группе для рассылки
-async def get_filtered_users(subscriber_store, target_group: str = "all"):
+async def get_filtered_users(subscriber_store, target_group: str = "all", source: str="telegram"):
     all_users = await subscriber_store.get_all_with_groups()
 
     filtered_users = []
     for user in all_users:
         user_id = user["user_id"]
+        if user.get("platform") and user["platform"] != source:
+            continue
         if target_group == "all":
             filtered_users.append(user_id)
         elif target_group == "manager_group" and user.get("manager_group"):
@@ -239,11 +304,11 @@ async def get_filtered_users(subscriber_store, target_group: str = "all"):
     return filtered_users, len(all_users)
     
 # планировщик для отложенных новостей 
-async def news_scheduler(news_store, subscriber_store, bot_holder):
+async def news_scheduler(news_store, subscriber_store, bot_holder, source):
     logger.info("🕒 Scheduler started")
     await eventlogger.log_event(
         event_type="system_scheduler_start",
-        channel="telegram",
+        channel=source,
         payload={
             "status": "scheduler_started"
         }
@@ -251,7 +316,7 @@ async def news_scheduler(news_store, subscriber_store, bot_holder):
 
     while True:
         try:
-            pending = await news_store.get_pending_news()
+            pending = await news_store.get_pending_news_for_channel(source)
             now = datetime.now(timezone.utc)
 
             for news in pending:
@@ -267,10 +332,22 @@ async def news_scheduler(news_store, subscriber_store, bot_holder):
                         except Exception as e:
                             logger.error(f"File read error: {e}")
                     target_group = news.get("target_group", "all")
-                    safe_html = html_to_telegram(news['text'])
-                    await send_now(safe_html, file_data, target_group, bot_holder, subscriber_store)
-                    await news_store.mark_sent(news["id"])
-
+                    safe_html = html_to_bot(news['text'])
+                    result = await send_now(
+                        safe_html, 
+                        file_data, 
+                        target_group, 
+                        bot_holder, 
+                        subscriber_store, 
+                        source,
+                        news_id=news["id"]
+                    )
+                    await news_store.mark_channel_sent(news["id"], source)
+                    if result["sent"] > 0:
+                        await news_store.mark_channel_sent(news["id"], source)
+                        logger.info(f"Канал '{source}' помечен для новости #{news['id']}")
+                    else:
+                        logger.warning(f" Новость #{news['id']} не отправлена ни одному пользователю, канал не помечен")
             await asyncio.sleep(5)
         except Exception as e:
             logger.error(f"Error during news_scheduler like this {e}")

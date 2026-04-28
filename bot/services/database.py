@@ -2,7 +2,6 @@ import asyncpg
 import aiohttp
 import json
 from typing import Optional
-from uuid import uuid4
 # Импортируем логгер из
 from utils import setup_logger
 from bot.services.config import Settings
@@ -199,14 +198,15 @@ class SubscriberStore:
             first_name: str,
             last_name: str,
             last_seen: datetime,
-            phone_number: str | None=None):
+            phone_number: str | None=None, 
+            platform: str="telegram"):
         """добавление пользователя в таблицу"""
         logger.info(f"Added a new user: {user_id} (@{username})")
         query = """
         INSERT INTO subscribers (
             user_id, username, first_name, last_name, phone_number,
-            last_seen, region, manager_group, coach_group
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            last_seen, region, manager_group, coach_group, platform
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (user_id) DO UPDATE SET
             username = EXCLUDED.username,
             first_name = EXCLUDED.first_name,
@@ -225,7 +225,8 @@ class SubscriberStore:
                 last_seen,
                 None, # region
                 False, # manager_group
-                False # coach_group
+                False, # coach_group
+                platform
             )
 
     async def get_phone(self, user_id: int) -> str | None:
@@ -252,7 +253,7 @@ class SubscriberStore:
         query = """
         SELECT user_id, username, first_name, last_name,
                phone_number, last_seen, created_at,
-               manager_group, coach_group
+               manager_group, coach_group, platform
         FROM subscribers
         ORDER BY last_seen DESC
         """
@@ -305,14 +306,14 @@ class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    async def create_news(self, text, scheduled_at=None, group="all", files=None):
-        """Создание новостей для рассылки"""
+    async def create_news(self, text, scheduled_at=None, group="all", files=None, source="telegram"):
+        """Создание новостей для рассылки с привязкой к источнику"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
-                INSERT INTO news (text, scheduled_at, target_group, files)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO news (text, scheduled_at, target_group, files, source, status, sent_channels)
+                VALUES ($1, $2, $3, $4, $5, 'pending', '[]'::jsonb)
                 RETURNING id
-            """, text, scheduled_at, group, json.dumps(files or []))
+            """, text, scheduled_at, group, json.dumps(files or []), source)
             return row["id"]
 
     async def get_pending_news(self):
@@ -382,6 +383,47 @@ class NewsStore:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(query, news_id)
+    
+    async def get_pending_news_for_channel(self, channel: str):
+        """Получение новостей в ожидании для конкретного канала"""
+        rows = await self.pool.fetch("""
+            SELECT *
+            FROM news
+            WHERE 
+                status = 'pending'
+                AND source = $1
+                AND (
+                    sent_channels IS NULL 
+                    OR NOT EXISTS (
+                        SELECT 1 
+                        FROM jsonb_array_elements_text(sent_channels) elem 
+                        WHERE elem = $1
+                    )
+                )
+                AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+            ORDER BY scheduled_at ASC NULLS FIRST
+        """, channel)
+        return [dict(r) for r in rows]
+    
+    async def mark_channel_sent(self, news_id: int, channel: str):
+        """Пометка, что новость отправлена в указанный канал"""
+        await self.pool.execute("""
+            UPDATE news
+            SET sent_channels = (
+                SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb)
+                FROM (
+                    SELECT jsonb_array_elements_text(sent_channels) as elem
+                    WHERE sent_channels IS NOT NULL
+                    UNION
+                    SELECT $2
+                ) subquery
+            ),
+            status = CASE 
+                WHEN source = $2 THEN 'sent'
+                ELSE status
+            END
+            WHERE id = $1
+        """, news_id, channel)
 
 # Хранилище для взаимодействия с ADK API
 class AdkApiClient:

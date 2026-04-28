@@ -202,6 +202,7 @@ services:
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
       - PLATFORM_VERSION=0.6.6
       - BOT_TELEGRAM_API=http://bot:8001
+      - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
       # шифрование паролей в postges
       - SECRET_KEY=super-secret-key-change-this
