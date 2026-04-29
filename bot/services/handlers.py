@@ -2,10 +2,7 @@ import os
 import aiohttp
 import time
 from urllib.parse import quote
-from aiogram import Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import (
-    Message, FSInputFile, CallbackQuery, ReplyKeyboardRemove, 
+from aiogram.types import ( FSInputFile,
     ReplyKeyboardMarkup, KeyboardButton
     ) 
 import tempfile
@@ -30,8 +27,8 @@ from bot.services.utils import (
 )
 import uuid
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
-from maxapi.types import MessageCreated, MessageCallback, InputMedia, BotCommand, RequestContactButton
-
+from maxapi.types import MessageCreated, InputMedia, RequestContactButton
+import re
 
 logger = setup_logger('handlers', 'handlers.log')
 # инициализируем логер событий
@@ -47,467 +44,7 @@ PHONE_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=True
 )
-######################################
-# обработчики сообщений и команд бота
-######################################
-# def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler, get_start_message) -> None:
-#     """Регистрация всех обработчиков сообщений"""
-
-#     # Обработчик команды /start
-#     @dp.message(Command("start"))
-#     async def start(m: Message) -> None:
-#         user = await get_authenticated_user(m, subscriber_store, "telegram")
-#         if not user:
-#             return
-
-#         user_id = user["user_id"]
-#         logger.info(f"Команда /start от user_id={user_id} (@{user['username']})")
-#         await eventlogger.log_event(
-#             event_type="command_start",
-#             user_id=str(user_id),
-#             user_name=user.get("username"),
-#             session_id=str(user_id),
-#             channel="telegram"
-#         )
-#         # На /start не вызываем ADK.
-#         # Только обновляем пользователя в БД через get_authenticated_user()
-#         # и показываем стартовое меню.
-#         tree = await get_tree_cached()
-#         menu = build_universal_menu(tree, [], "telegram")
-#         await m.answer(get_start_message(), reply_markup=menu)
-#         return
-#     # обработчик команды /version для получения версии
-#     @dp.message(Command("version"))
-#     async def version_info(m: Message) -> None:
-#         """Команда для получения версии платформы/бота"""
-#         user_id = m.from_user.id
-#         logger.info(f"Команда /version от user_id={user_id}")
-#         await eventlogger.log_event(
-#             event_type="command_version",
-#             user_id=str(user_id),
-#             session_id=str(user_id),
-#             channel="telegram"
-#         )
-#         await m.answer(f"Текущая версия бота: {Settings.PLATFORM_VERSION}")
-#     # домашняя страница
-#     @dp.callback_query(lambda c: c.data == "home")
-#     async def go_home(callback: CallbackQuery):
-#         """Обработчик перехода на главную страницу"""
-#         await callback.answer()
-
-#         tree = await get_tree_cached()
-#         menu = build_universal_menu(tree, [], "telegram")
-
-#         await callback.message.edit_text(
-#             get_start_message(),
-#             reply_markup=menu
-#         )
-#     # обработчик команды /reset для сброса истории и сессии
-#     @dp.message(Command("reset"))
-#     async def reset(m: Message) -> None:
-#         user_id = m.from_user.id
-#         username = m.from_user.username or "unknown"
-#         session_id = str(user_id)
-
-#         logger.info(f"Команда /reset от user_id={user_id} (@{username})")
-#         await eventlogger.log_event(
-#             event_type="command_reset",
-#             user_id=str(user_id),
-#             session_id=session_id,
-#             channel="telegram"
-#         )
-#         try:
-#             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
-#             await adk.delete_session(user_id=str(user_id), session_id=session_id)
-
-#             # Очищаем историю в БД
-#             await store.reset(user_id)
-
-#             # Удаляем состояние результатов поиска
-#             await store.reset_search_state(user_id, session_id)
-
-#             # После /reset не создаем новую ADK-сессию
-#             # и не вызываем set_user_state.
-#             # Новая session и state будут созданы при первом обычном сообщении.
-#             await m.answer("✅ История диалога и сессия сброшены")
-#             logger.info(f"История и сессия сброшены для user_id={user_id}")
-
-#         except Exception as e:
-#             await eventlogger.log_event(
-#                 event_type="error",
-#                 user_id=str(user_id),
-#                 session_id=session_id,
-#                 channel="telegram",
-#                 payload={
-#                     "error": str(e)
-#                 }
-#             )
-#             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
-#             await m.answer("❌ Ошибка при сбросе истории")
-
-#         return
-#     # обработчик команды /help для отображения справки
-#     @dp.message(Command("help"))
-#     async def help_cmd(m: Message) -> None:
-#         user_id = m.from_user.id
-#         logger.info(f"Команда /help от user_id={user_id}")
-#         await eventlogger.log_event(
-#             event_type="command_help",
-#             user_id=str(user_id),
-#             channel="telegram"
-#         )
-#         await m.answer(
-#             "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
-#             "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
-#             "Команды:\n"
-#             "/start — начать работу\n"
-#             "/reset — сбросить историю\n"
-#             "/help — эта справка"
-#         )
-#     # обработчик открытия папки в меню бота
-#     @dp.callback_query(F.data.startswith("d:"))
-#     async def open_dir(callback: CallbackQuery):
-#         """Команда обработчик открытия папки"""
-#         await callback.answer()
-#         pid = callback.data.split(":")[1]
-
-#         path = Settings.CALLBACK_MAP.get(pid)
-
-#         if path is None:
-#             await callback.answer("Кнопка устарела", show_alert=True)
-#             return
-
-#         Settings.CALLBACK_MAP.move_to_end(pid)
-#         path_list = path.split("/") if path else []
-#         tree = await get_tree_cached()
-
-#         menu = build_universal_menu(tree, path_list, "telegram")
-#         title = "📁 /".join(path_list) or get_start_message()
-#         await callback.message.edit_text(
-#             title,
-#             reply_markup=menu
-#         )
-#     # обработчик открытия файла в меню бота
-#     @dp.callback_query(F.data.startswith("f:"))
-#     async def send_file(callback: CallbackQuery):
-#         """Обработчик отправки файлов через меню бота"""
-#         await callback.answer()
-        
-#         pid = callback.data.split(":")[1]
-#         path = Settings.CALLBACK_MAP.get(pid)
-#         if not path:
-#             await callback.answer("Файл не найден", show_alert=True)
-#             return
-
-#         Settings.CALLBACK_MAP.move_to_end(pid)
-#         doc_id = await get_document_id(path)
-#         if not doc_id:
-#             url = f"{Settings.KB_MANAGER_URL}/api/filesystem/download/?path={quote(path)}"
-#         else:
-#             url = f"{Settings.KB_MANAGER_URL}/api/documents/download/{doc_id}"
-#         filename = path.split("/")[-1]
-#         user_id = callback.from_user.id
-#         logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={user_id}")
-#         await eventlogger.log_event(
-#             event_type="document_download_menu",
-#             user_id=str(user_id),
-#             session_id=str(user_id),
-#             user_name=callback.from_user.username,
-#             channel="telegram",
-#             payload={
-#                 "filename": filename,
-#                 "file_path": path,
-#                 "doc_id": doc_id,
-#                 "source": "menu"
-#             }
-#         )
-#         tmp_name = None
-#         async with aiohttp.ClientSession() as session:
-#             async with session.get(url) as resp:
-#                 if resp.status != 200:
-#                     await callback.answer("Ошибка загрузки файла", show_alert=True)
-#                     return
-#                 try:
-#                     tmp = tempfile.NamedTemporaryFile(delete=False)
-#                     tmp_name = tmp.name
-#                     tmp.write(await resp.read())
-#                     tmp.close()
-
-#                     await callback.message.answer_document(
-#                         document=FSInputFile(tmp_name, filename=filename),
-#                     )
-#                 finally:
-#                     if tmp_name and os.path.exists(tmp_name):
-#                         os.remove(tmp_name)
-#     # обработчик всех текстовых сообщений (основной диалог)
-#     @dp.message(F.text)
-#     async def on_text(m: Message) -> None:
-#         user = await get_authenticated_user(m, subscriber_store, "telegram")
-#         if not user:
-#             return
-
-#         user_id = user["user_id"]
-#         session_id = str(user_id)
-#         user_text = (m.text or "").strip()
-
-#         if not user_text:
-#             return
-#         turn_id = str(uuid.uuid4())
-        
-#         # логируем скорость ответа
-#         start_time = time.time()
-#         logger.info(f"📨 Сообщение от user_id={user_id} (@{user['username']}): {user_text[:100]}")
-#         await eventlogger.log_event(
-#             event_type="message_received",
-#             user_id=str(user_id),
-#             user_name=user.get("username"),
-#             session_id=session_id,
-#             channel="telegram",
-#             payload={
-#                 "text": user_text,
-#                 "turn_id": turn_id,
-#                 "start_time": start_time
-#             }
-#         )
-#         try:
-#             await adk.ensure_session(user_id=str(user_id), session_id=session_id)
-
-#             # Пагинация и скачивание по номеру — из БД, без вызова ADK
-#             """
-#             Основной блок обработки пользовательских текстовых сообщений.
-#             Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
-#             поиск по базе знаний (через ADK), а также отправка найденных документов.
-
-#             Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
-#             """
-
-#             # --- Пагинация: показать следующую порцию сохранённого списка документов ---
-#             if Settings.SHOW_MORE_RE.match(user_text):
-#                 # Если пользователь запросил "показать еще", возвращаем следующую порцию из сохраненного поиска.
-#                 ok = await handle_show_more(event=m, store=store, user_id=user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform="telegram")
-#                 if not ok:
-#                     # Сообщение для пользователя, если списка нет
-#                     response_time = int((time.time() - start_time) * 1000)
-#                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-#                     await m.answer(answer)
-#                     await eventlogger.log_event(
-#                         event_type="response",
-#                         user_id=str(user_id),
-#                         session_id=session_id,
-#                         channel="telegram",
-#                         payload={
-#                             "turn_id": turn_id,
-#                             "text": answer, 
-#                             "response_time_ms": response_time
-#                         }    
-#                     )
-#                 # Логируем пользовательский запрос и результат в историю
-#                 await store.append(user_id, "user", user_text)
-#                 await store.append(
-#                     user_id,
-#                     "model",
-#                     "Показана следующая порция списка документов."
-#                     if ok
-#                     else "Список документов не найден.",
-#                 )
-#                 return
-
-#             # --- Пагинация: показать полный список сохранённых документов ---
-#             if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
-#                 # Только если это не "показать еще"
-#                 ok = await handle_show_all(m, store, user_id, session_id, turn_id, start_time, "telegram")
-#                 if not ok:
-#                     response_time = int((time.time() - start_time) * 1000)
-#                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-#                     await m.answer(answer)
-#                     await eventlogger.log_event(
-#                         event_type="response",
-#                         user_id=str(user_id),
-#                         session_id=session_id,
-#                         channel="telegram",
-#                         payload={
-#                             "turn_id": turn_id,
-#                             "text": answer, 
-#                             "response_time_ms": response_time
-#                         }    
-#                     )
-#                 await store.append(user_id, "user", user_text)
-#                 await store.append(
-#                     user_id,
-#                     "model",
-#                     "Показан полный список документов."
-#                     if ok
-#                     else "Список документов не найден.",
-#                 )
-#                 return
-
-#             # --- Обработка запроса на скачивание файлов по номерам из списка ---
-#             dl_ranks = parse_download_ranks(user_text)
-#             if dl_ranks:
-#                 """
-#                 Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
-#                 вызываем обработчик отправки файлов.
-#                 """
-#                 await handle_download_by_ranks(
-#                     m, store, doc_handler, user_id, session_id, dl_ranks, turn_id, start_time, "telegram"
-#                 )
-#                 await store.append(user_id, "user", user_text)
-#                 await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
-#                 return
-
-#             # Синхронизируем профиль пользователя в ADK перед run()
-#             await sync_user_profile_to_adk(
-#                 adk=adk,
-#                 subscriber_store=subscriber_store,
-#                 user_id=int(user_id),
-#                 session_id=session_id,
-#             )
-
-#             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
-#             meta_before = await store.get_last_search_meta(user_id, session_id)
-#             search_id_before = meta_before["search_id"] if meta_before else None
-
-#             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-#             answer, _ = await adk.run(
-#                 user_id=str(user_id),
-#                 session_id=session_id,
-#                 text=user_text
-#             )
-#             response_time = int((time.time() - start_time) * 1000)
-#             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
-#             # сохраняем в логах событие ответа и его латентность
-#             await eventlogger.log_event(
-#                 event_type="response",
-#                 user_id=str(user_id),
-#                 session_id=session_id,
-#                 channel="telegram",
-#                 payload={
-#                     "turn_id": turn_id,
-#                     "text": answer[:500],  # не логируем слишком длинные
-#                     "response_time_ms": response_time
-#                 }
-#             )
-
-#             work = answer or ""
-
-#             # сохраняем историю диалога
-#             await store.append(user_id, "user", user_text)
-#             await store.append(user_id, "model", answer)
-
-#             # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
-#             meta_after = await store.get_last_search_meta(user_id, session_id)
-#             search_id_after = meta_after["search_id"] if meta_after else None
-#             if (
-#                 search_id_after
-#                 and search_id_after != search_id_before
-#                 and meta_after
-#             ):
-#                 items = await store.get_last_search_results(user_id, session_id)
-#                 if items:
-#                     shown = int(meta_after["shown_count"])
-#                     shown = min(max(shown, 0), len(items))
-#                     chunk = items[:shown]
-#                     text = render_results(chunk, total=len(items), offset=0)
-#                     await m.answer(text, parse_mode="HTML")
-#                     response_time = int((time.time() - start_time) * 1000)
-#                     await eventlogger.log_event(
-#                         event_type="response",
-#                         user_id=str(user_id),
-#                         session_id=session_id,
-#                         channel="telegram",
-#                         payload={
-#                             "turn_id": turn_id,
-#                             "text": text,
-#                             "response_time_ms": response_time
-#                         }    
-#                     )
-#                     return
-
-#             # ответ пользователю (kb_answer и прочее)
-#             if work.strip():
-#                 if "<b>" in work or work.lstrip().startswith("<"):
-#                     await m.answer(work, parse_mode="HTML")
-#                     response_time = int((time.time() - start_time) * 1000)
-#                     await eventlogger.log_event(
-#                         event_type="response",
-#                         user_id=str(user_id),
-#                         session_id=session_id,
-#                         channel="telegram",
-#                         payload={
-#                             "turn_id": turn_id,
-#                             "text": work,
-#                             "response_time_ms": response_time
-#                         }    
-#                     )
-#                 else:
-#                     html_answer = markdown_to_safe_html(work)
-#                     await m.answer(html_answer, parse_mode="HTML")
-#                     response_time = int((time.time() - start_time) * 1000)
-#                     await eventlogger.log_event(
-#                         event_type="response",
-#                         user_id=str(user_id),
-#                         session_id=session_id,
-#                         channel="telegram",
-#                         payload={
-#                             "turn_id": turn_id,
-#                             "text": html_answer,
-#                             "response_time_ms": response_time
-#                         }    
-#                     )
-
-#         except Exception as e:
-#             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)
-#             await eventlogger.log_event(
-#                 event_type="error",
-#                 user_id=str(user_id),
-#                 session_id=session_id,
-#                 channel="telegram",
-#                 payload={
-#                     "error": str(e)
-#                 }
-#             )
-#             await m.answer(
-#                 "😔 Произошла ошибка при обработке запроса.\n"
-#                 "Попробуйте позже или используйте /reset для сброса диалога."
-#             )
-#     # обработчик получения контакта (номера телефона)
-#     @dp.message(F.contact)
-#     async def handle_contact_received(m: Message) -> None:
-#         """Обработка получения номера телефона"""
-#         if not m.contact:
-#             return
-
-#         user_id = m.from_user.id
-
-#         # Проверяем, что пользователь отправил свой контакт
-#         if m.contact.user_id != user_id:
-#             await m.answer("⚠️ Пожалуйста, отправьте свой номер телефона")
-#             return
-
-#         phone = m.contact.phone_number
-
-#         # Сохраняем телефон в БД
-#         await subscriber_store.update_phone(user_id, phone)
-
-#         logger.info(f"✓ Получен телефон от user_id={user_id}.")
-#         await eventlogger.log_event(
-#             event_type="get_contact",
-#             user_id=str(user_id),
-#             session_id=str(user_id),
-#             channel="telegram"
-#         )
-#         # После получения телефона тоже не вызываем ADK.
-#         # ADK будет инициализирован лениво при первом текстовом сообщении.
-#         tree = await get_tree_cached()
-#         menu = build_universal_menu(tree, [], "telegram")
-
-#         await m.answer(
-#             "✅ Спасибо! Теперь вы можете пользоваться ботом.",
-#             reply_markup=ReplyKeyboardRemove()
-#         )
-#         await m.answer(get_start_message(), reply_markup=menu)
-    
-    
+# синхронизация пользователей с адк 
 async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str) -> None:
     """
     Загружает профиль пользователя из БД и подготавливает его для передачи в ADK.
@@ -634,12 +171,19 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
     """Регистрация всех обработчиков сообщений универсальная для разных платформ"""
     # 1. Адаптация декораторов и фильтров под платформу
     if platform == "telegram":
+        from aiogram.filters import Command
+        from aiogram import F
+        from aiogram.types import ReplyKeyboardRemove
         message_decorator = dp.message
         callback_decorator = dp.callback_query
         home_filter = (F.data == "home")
         dir_filter = F.data.startswith("d:")
         file_filter = F.data.startswith("f:")
     else:
+        from maxapi import F
+        from maxapi.types import Command
+        from maxapi.enums import TextFormat
+        from maxapi.types.attachments import Contact
         message_decorator = dp.message_created
         callback_decorator = dp.message_callback
         home_filter = (F.callback.payload == "home")
@@ -890,3 +434,321 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
         finally:
             if tmp_name and os.path.exists(tmp_name):
                 os.remove(tmp_name)
+
+    # --- Вспомогательная функция для отправки ответов
+    async def send_answer(event, text, menu=None, is_html=True):
+        if platform == "telegram":
+            return await event.answer(
+                text, 
+                reply_markup=menu or (ReplyKeyboardRemove() if "Спасибо" in text else None), 
+                parse_mode="HTML" if is_html else None
+            )
+        else:
+            attachments = [menu] if menu else []
+            return await event.message.answer(
+                text=text, 
+                attachments=attachments, 
+                format=TextFormat.HTML if is_html else None
+            ) 
+    # логика обработки контакта
+    async def save_contact_and_welcome(event, user_id, phone):
+        # Сохраняем телефон в БД
+        await subscriber_store.update_phone(user_id, phone)
+        logger.info(f"✅ Телефон получен [{platform}]: {phone}")
+        
+        await eventlogger.log_event(
+            event_type="get_contact", user_id=str(user_id), 
+            session_id=str(user_id), channel=platform
+        )
+
+        tree = await get_tree_cached()
+        menu = build_universal_menu(tree, [], platform)
+        
+        await send_answer(event, "✅ Спасибо! Теперь вы можете пользоваться ботом.")
+        await send_answer(event, get_start_message(), menu=menu)
+
+    # хендлер контакта для телеграмма:
+    if platform == "telegram":
+        @dp.message(F.contact)
+        async def handle_contact_tg(m):
+            if m.contact.user_id != m.from_user.id:
+                return await m.answer("⚠️ Пожалуйста, отправьте свой номер телефона")
+            await save_contact_and_welcome(m, m.from_user.id, m.contact.phone_number)
+    else: 
+        # обработчик получения контакта (номера телефона)
+        async def handle_contact_received(event: MessageCreated, contact: Contact):
+            """Обработчик полученного контакта — извлекает телефон из vCard"""
+            user_id = event.from_user.user_id
+            try:
+                # Контакт приходит как объект с полем payload
+                payload = contact.payload  # ContactAttachmentPayload
+                
+                # Телефон может быть в vcf_info (vCard формат)
+                vcf_info = getattr(payload, 'vcf_info', None)
+                phone = None
+                
+                if vcf_info:
+                    # Парсим vCard: ищем строку TEL:...
+                    # Пример: TEL;TYPE=cell:79647322754
+                    tel_match = re.search(r'TEL[^:]*:([+\d\s\-\(\)]+)', vcf_info)
+                    if tel_match:
+                        phone = tel_match.group(1).strip()
+                        # Очищаем номер: убираем пробелы, тире, скобки
+                        phone = re.sub(r'[\s\-\(\)]', '', phone)
+                
+                # Альтернатива: если есть прямое поле phone
+                if not phone and hasattr(payload, 'phone'):
+                    phone = getattr(payload, 'phone', None)
+                    
+                if not phone:
+                    logger.warning(f"❌ Не удалось извлечь телефон из vcf_info: {vcf_info[:100] if vcf_info else 'None'}")
+                    await event.message.answer("⚠️ Не удалось получить номер. Попробуйте ещё раз.")
+                    return
+                phone = f"+{phone}"
+                logger.info(f"✅ Телефон извлечён: {phone}")
+            
+                # Сохраняем телефон в БД
+                await subscriber_store.update_phone(user_id, phone)
+                
+                logger.info(f"✅ Телефон получен: user_id={user_id}, phone={phone}")
+                await eventlogger.log_event(
+                    event_type="get_contact",
+                    user_id=str(user_id),
+                    session_id=str(user_id),
+                    channel="max"
+                )
+                
+                # Показываем меню
+                tree = await get_tree_cached()
+                menu = build_universal_menu(tree, [], "max")
+                
+                await event.message.answer(
+                    text="✅ Спасибо! Теперь вы можете пользоваться ботом."
+                )
+                await event.message.answer(
+                    text=get_start_message(),
+                    attachments=[menu]
+                )
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки контакта: {e}", exc_info=True)
+                await event.message.answer("⚠️ Произошла ошибка. Попробуйте ещё раз.")
+                await eventlogger.log_event(
+                    event_type="error",
+                    user_id=str(user_id),
+                    session_id=str(user_id),
+                    channel="max",
+                    payload={
+                        "error": str(e)
+                    }
+                )
+    # хендлер текста
+    @message_decorator()
+    async def on_text(event):
+        # Извлечение данных пользователя
+        user_obj = event.from_user
+        if platform == "telegram":
+            user_id = user_obj.id
+            user_text = (event.text or "").strip()
+        else:
+            user_id = user_obj.user_id
+            user_text = (event.message.body.text or "").strip()
+
+        #  Проверка контакта для Max (он шлет его внутри обычного сообщения)
+        if platform == "max" and event.message.body and event.message.body.attachments:
+            for att in event.message.body.attachments:
+                if hasattr(att, 'type') and att.type == 'contact':
+                    logger.info("Контакт обнаружен, обрабатываем...")
+                    await handle_contact_received(event, att)
+                    return
+
+        # Если это не контакт — проверяем авторизацию как обычно
+        user = await get_authenticated_user(event, subscriber_store, platform)
+        if not user or not user_text:
+            return
+
+        session_id = str(user_id)
+        turn_id = str(uuid.uuid4())
+        start_time = time.time()
+
+        # логируем скорость ответа
+        logger.info(f"📨 Сообщение [{platform}] от user_id={user_id} (@{user['username']}): {user_text[:100]}")
+        await eventlogger.log_event(
+            event_type="message_received", user_id=str(user_id), 
+            user_name=user.get("username"), session_id=session_id, 
+            channel=platform, payload={"text": user_text, "turn_id": turn_id, "start_time": start_time}
+        )
+
+        try:
+            await adk.ensure_session(user_id=str(user_id), session_id=session_id)
+
+            # Пагинация и скачивание по номеру — из БД, без вызова ADK
+            """
+            Основной блок обработки пользовательских текстовых сообщений.
+            Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
+            поиск по базе знаний (через ADK), а также отправка найденных документов.
+
+            Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
+            """
+            # --- Пагинация: показать следующую порцию сохранённого списка документов ---
+            if Settings.SHOW_MORE_RE.match(user_text):
+                ok = await handle_show_more(event=event, store=store, user_id=user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform=platform)
+                if not ok:
+                    # Сообщение для пользователя, если списка нет
+                    response_time = int((time.time() - start_time) * 1000)
+                    answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    # await send_answer(event, answer)
+                    if platform == "telegram":
+                        await event.answer(answer)
+                    else:
+                        await event.message.answer(answer)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel=platform,
+                        payload={
+                            "turn_id": turn_id,
+                            "text": answer, 
+                            "response_time_ms": response_time
+                        }    
+                    )
+                # Логируем пользовательский запрос и результат в историю
+                await store.append(user_id, "user", user_text)
+                await store.append(
+                    user_id,
+                    "model",
+                    "Показана следующая порция списка документов."
+                    if ok
+                    else "Список документов не найден.",
+                )
+                return
+            # --- Пагинация: показать полный список сохранённых документов ---
+            if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
+                # Только если это не "показать еще"
+                ok = await handle_show_all(event, store, user_id, session_id, turn_id, start_time, platform)
+                if not ok:
+                    response_time = int((time.time() - start_time) * 1000)
+                    answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    # await send_answer(event, answer)
+                    if platform == "telegram":
+                        await event.answer(answer)
+                    else:
+                        await event.message.answer(answer)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel=platform,
+                        payload={
+                            "turn_id": turn_id,
+                            "text": answer, 
+                            "response_time_ms": response_time
+                        }    
+                    )
+                await store.append(user_id, "user", user_text)
+                await store.append(
+                    user_id,
+                    "model",
+                    "Показан полный список документов."
+                    if ok
+                    else "Список документов не найден.",
+                )
+                return
+            
+            # --- Обработка запроса на скачивание файлов по номерам из списка ---
+            dl_ranks = parse_download_ranks(user_text)
+            if dl_ranks:
+                """
+                Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
+                вызываем обработчик отправки файлов.
+                """
+                await handle_download_by_ranks(event, store, doc_handler, user_id, session_id, dl_ranks, turn_id, start_time, platform)
+                await store.append(user_id, "user", user_text)
+                await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
+                return
+
+            # Синхронизируем профиль пользователя в ADK перед run()
+            await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id)
+            
+            # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
+            meta_before = await store.get_last_search_meta(user_id, session_id)
+            search_id_before = meta_before["search_id"] if meta_before else None
+
+            # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
+            answer, _ = await adk.run(user_id=str(user_id), session_id=session_id, text=user_text)
+            response_time = int((time.time() - start_time) * 1000)
+            logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
+            # сохраняем в логах событие ответа и его латентность
+            await eventlogger.log_event(
+                event_type="response",
+                user_id=str(user_id),
+                session_id=session_id,
+                channel=platform,
+                payload={
+                    "turn_id": turn_id,
+                    "text": answer[:500],  # не логируем слишком длинные
+                    "response_time_ms": response_time
+                }
+            )
+
+            work = answer or ""
+
+            # сохраняем историю диалога
+            await store.append(user_id, "user", user_text)
+            await store.append(user_id, "model", answer)
+
+            # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
+            meta_after = await store.get_last_search_meta(user_id, session_id)
+            search_id_after = meta_after["search_id"] if meta_after else None
+            
+            if search_id_after and search_id_after != search_id_before and meta_after:
+                items = await store.get_last_search_results(user_id, session_id)
+                if items:
+                    shown = min(max(int(meta_after.get("shown_count", 5)), 0), len(items))
+                    text_list = render_results(items[:shown], total=len(items), offset=0)
+                    
+                    await send_answer(event, text_list) # Используем наш хелпер!
+                    response_time = int((time.time() - start_time) * 1000)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel=platform,
+                        payload={
+                            "turn_id": turn_id,
+                            "text": text_list,
+                            "response_time_ms": response_time
+                        }    
+                    )
+                    return
+
+            # 2. Если это просто текстовый ответ от нейронки
+            if work and work.strip():
+                # Проверяем, нужно ли конвертировать Markdown в HTML
+                is_already_html = "<b>" in work or work.lstrip().startswith("<")
+                final_text = work if is_already_html else markdown_to_safe_html(work)
+                response_time = int((time.time() - start_time) * 1000)
+                # Отправляем одной командой для любой платформы!
+                await send_answer(event, final_text)
+                
+                await eventlogger.log_event(
+                    event_type="response", user_id=str(user_id),
+                    session_id=session_id, channel=platform,
+                    payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
+                )
+        except Exception as e:
+            logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={user_id}: {e}", exc_info=True)
+            await eventlogger.log_event(
+                event_type="error",
+                user_id=str(user_id),
+                session_id=session_id,
+                channel=platform,
+                payload={
+                    "error": str(e)
+                }
+            )
+            # await send_answer(event, "😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
+            if platform == "telegram":
+                await event.answer("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
+            else:
+                await event.message.answer("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
