@@ -30,7 +30,13 @@ def _load_owasp_module():
     prompt_loader_stub.start_prompt_watcher = lambda *args, **kwargs: None
 
     adk_agents_stub = types.ModuleType("google.adk.agents")
-    adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
+
+    class LlmAgent:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    adk_agents_stub.LlmAgent = LlmAgent
 
     lite_llm_stub = types.ModuleType("google.adk.models.lite_llm")
     lite_llm_stub.LiteLlm = type("LiteLlm", (), {})
@@ -54,6 +60,15 @@ def _load_owasp_module():
 owasp_module = _load_owasp_module()
 validate_owasp_result = owasp_module.validate_owasp_result
 VALIDATION_CONTEXT = {}
+
+
+@pytest.mark.unit
+def test_create_owasp_agent_excludes_prior_conversation_contents() -> None:
+    agent = owasp_module.create_owasp_agent(model=object())
+
+    assert agent.name == "owasp_agent"
+    assert agent.include_contents == "none"
+    assert agent.output_key == "owasp_result_json"
 
 
 @pytest.mark.unit
