@@ -61,16 +61,27 @@ def _load_json_leaf_runner_module():
 json_leaf_runner_module = _load_json_leaf_runner_module()
 AgentValidationFailure = json_leaf_runner_module.AgentValidationFailure
 run_json_leaf_agent = json_leaf_runner_module.run_json_leaf_agent
+strip_thought_parts = json_leaf_runner_module.strip_thought_parts
 
 
 class _FakeAgent:
+    def __init__(self, events=None):
+        self.events = events or []
+
     async def run_async(self, ctx):
-        if False:
-            yield None
+        for event in self.events:
+            yield event
 
 
 def _make_ctx(raw: str):
     return types.SimpleNamespace(session=types.SimpleNamespace(state={"owasp_result_json": raw}))
+
+
+def _make_event(parts, actions=None):
+    return types.SimpleNamespace(
+        content=types.SimpleNamespace(parts=parts),
+        actions=actions,
+    )
 
 
 async def _drain(gen):
@@ -78,6 +89,88 @@ async def _drain(gen):
     async for item in gen:
         items.append(item)
     return items
+
+
+@pytest.mark.unit
+def test_strip_thought_parts_removes_only_thought_parts_without_mutating_source() -> None:
+    visible = types.SimpleNamespace(text="visible")
+    thought = types.SimpleNamespace(text="hidden", thought=True)
+    event = _make_event([visible, thought])
+
+    cleaned = strip_thought_parts(event)
+
+    assert cleaned is not None
+    assert cleaned is not event
+    assert cleaned.content.parts == [visible]
+    assert event.content.parts == [visible, thought]
+
+
+@pytest.mark.unit
+def test_strip_thought_parts_drops_empty_event_without_actions() -> None:
+    event = _make_event([types.SimpleNamespace(text="hidden", thought=True)])
+
+    assert strip_thought_parts(event) is None
+
+
+@pytest.mark.unit
+def test_strip_thought_parts_preserves_function_parts_and_actions() -> None:
+    function_call = types.SimpleNamespace(function_call={"name": "kb_search"})
+    function_response = types.SimpleNamespace(function_response={"name": "kb_search"})
+    thought = types.SimpleNamespace(text="hidden", thought=True)
+    actions = types.SimpleNamespace(state_delta={"x": 1})
+    event = _make_event([thought, function_call, function_response], actions=actions)
+
+    cleaned = strip_thought_parts(event)
+
+    assert cleaned is not None
+    assert cleaned.content.parts == [function_call, function_response]
+    assert cleaned.actions is actions
+
+
+@pytest.mark.unit
+def test_strip_thought_parts_keeps_thought_only_event_with_meaningful_actions() -> None:
+    actions = types.SimpleNamespace(state_delta={"x": 1})
+    event = _make_event(
+        [types.SimpleNamespace(text="hidden", thought=True)],
+        actions=actions,
+    )
+
+    cleaned = strip_thought_parts(event)
+
+    assert cleaned is not None
+    assert cleaned.content.parts == []
+    assert cleaned.actions is actions
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_yields_sanitized_events() -> None:
+    visible = types.SimpleNamespace(text="visible")
+    thought = types.SimpleNamespace(text="hidden", thought=True)
+    event = _make_event([thought, visible])
+    ctx = _make_ctx('{"status":"ok"}')
+
+    def validator(data, context):
+        assert isinstance(context, dict)
+        return data
+
+    events = asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent([event]),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=validator,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].content.parts == [visible]
+    assert event.content.parts == [thought, visible]
+    assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
 
 
 @pytest.mark.unit
