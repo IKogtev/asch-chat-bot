@@ -213,6 +213,7 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
         name="dispatcher_agent",
         model=model,
         instruction=instruction,
+        include_contents="none",
         output_key="dispatcher_result_json",
     )
     start_prompt_watcher(prompt_file, agent, logger)

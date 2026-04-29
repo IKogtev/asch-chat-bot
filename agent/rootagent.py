@@ -238,22 +238,6 @@ class RootAgent(BaseAgent):
             raise ValueError(f"State key '{key}' must be str, got {type(value)}")
         return value
 
-    @staticmethod
-    def _owasp_invalid_contract_fallback(raw: str, exc: Exception) -> Dict[str, Any]:
-        logger.warning(
-            "OWASP invalid contract fallback triggered: error=%s raw=%s",
-            exc,
-            truncate_for_log(raw, 500),
-        )
-        return validate_owasp_result(
-            {
-                "status": "blocked",
-                "route": "reject",
-                "reason": OWASP_INVALID_CONTRACT_REASON,
-                "user_message": OWASP_INVALID_CONTRACT_USER_MESSAGE,
-            }
-        )
-
     async def _run_json_leaf_agent(
         self,
         ctx: InvocationContext,
@@ -350,6 +334,9 @@ class RootAgent(BaseAgent):
                     ranks,
                 )
             else:
+                ctx.session.state["dispatcher_user_query"] = user_text
+                ctx.session.state.pop("dispatcher_result_json", None)
+                
                 async for event in self._run_json_leaf_agent(
                     ctx=ctx,
                     agent=self.dispatcher_agent,

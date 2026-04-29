@@ -39,6 +39,14 @@ KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
 DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")))
 
 # =============================================================================
+# CONTEXT COMPACTION
+# =============================================================================
+AGENT_CONTEXT_COMPACTION_INTERVAL = int(os.getenv("AGENT_CONTEXT_COMPACTION_INTERVAL", "8"))
+AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE = int(os.getenv("AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE", "2"))
+AGENT_CONTEXT_TOKEN_THRESHOLD = int(os.getenv("AGENT_CONTEXT_TOKEN_THRESHOLD", "16000"))
+AGENT_CONTEXT_EVENT_RETENTION_SIZE = int(os.getenv("AGENT_CONTEXT_EVENT_RETENTION_SIZE", "12"))
+
+# =============================================================================
 # KB_SEARCH MCP SETTINGS
 # =============================================================================
 KBSEARCH_MCP_URL = os.getenv("KBSEARCH_MCP_URL", "http://kbsearch:7001/kbsearch/mcp").strip()
