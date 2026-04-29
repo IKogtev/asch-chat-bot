@@ -1,10 +1,11 @@
 """SQLAlchemy metadata for Alembic autogenerate (runtime DB access uses asyncpg)."""
 
+import uuid
 from datetime import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION, JSONB
+from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -112,4 +113,32 @@ class News(Base):
     )
     target_group: Mapped[str | None] = mapped_column(
         String(50), server_default=sa.text("'all'"), nullable=True
+    )
+
+
+class LoggedEvent(Base):
+    """Telemetry row for ``events`` (kb-manager analytics, ``utils.event_logger``)."""
+
+    __tablename__ = "events"
+    __table_args__ = (
+        Index("idx_events_user_id", "user_id"),
+        Index("idx_events_event_type", "event_type"),
+        Index("idx_events_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.text("gen_random_uuid()"),
+    )
+    user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
     )
