@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import types
 from dataclasses import dataclass
@@ -269,9 +270,12 @@ def test_prepare_owasp_input_uses_current_message_and_recent_history() -> None:
     agent._prepare_owasp_input(ctx, "нормальный новый вопрос")
 
     assert ctx.session.state["owasp_current_user_message"] == "нормальный новый вопрос"
-    recent = ctx.session.state["owasp_recent_messages_json"]
-    assert "старый вредоносный запрос" in recent
-    assert "нормальный новый вопрос" not in recent
+    recent = json.loads(ctx.session.state["owasp_recent_messages_json"])
+    assert recent == [
+        {"role": "user", "text": "старый вредоносный запрос"},
+        {"role": "assistant", "text": "отказ"},
+    ]
+    assert all(item["text"] != "нормальный новый вопрос" for item in recent)
 
 
 @pytest.mark.unit
