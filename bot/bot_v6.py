@@ -8,7 +8,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 from dotenv import load_dotenv
 import aiohttp
-import uvicorn
 
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
@@ -23,6 +22,7 @@ from bot.services.config import Settings
 
 from bot.services.broadcast import create_broadcast_app, news_scheduler
 from bot.services.handlers import register_handlers
+from bot.services.utils import run_http_server
 ##################################
 # Глобальные константы и переменные
 ##################################
@@ -110,12 +110,13 @@ async def main() -> None:
         subscriber_store=subscriber_store,
         adk=adk,
         doc_handler=doc_handler,
-        get_start_message=get_start_message
+        get_start_message=get_start_message,
+        platform="telegram"
     )
 
     logger.info("Все компоненты инициализированы")
     bot_holder = BotHolder()
-    http_task = asyncio.create_task(run_http_server(broadcast_app))
+    http_task = asyncio.create_task(run_http_server(broadcast_app, 8001))
     scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder, source="telegram"))
     logger.info("🚀 HTTP сервер и scheduler запущены")
     # Запуск бота
@@ -237,21 +238,6 @@ load_bot_start_message()
 def get_start_message():
     """Получение стартового сообщения"""
     return TITLE_START
-
-# Запуск HTTP сервера в отдельной задаче
-async def run_http_server(app):
-    """Запуск HTTP сервера"""
-    try:
-        config = uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=8001,
-            log_level="info"
-        )
-        server = uvicorn.Server(config)
-        await server.serve()
-    except asyncio.CancelledError:
-        logger.info("HTTP сервер остановлен")
 
 
 if __name__ == "__main__":
