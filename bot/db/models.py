@@ -12,7 +12,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 class Base(DeclarativeBase):
     pass
 
-
 class ChatHistory(Base):
     __tablename__ = "chat_history"
     __table_args__ = (
@@ -94,6 +93,7 @@ class Subscriber(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=True
     )
+    platform: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
 
 class News(Base):
@@ -114,6 +114,8 @@ class News(Base):
     target_group: Mapped[str | None] = mapped_column(
         String(50), server_default=sa.text("'all'"), nullable=True
     )
+    sent_channels: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(50), nullable=True)    
 
 
 class LoggedEvent(Base):
