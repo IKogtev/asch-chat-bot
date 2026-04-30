@@ -180,6 +180,8 @@ services:
       - SECRET_KEY=super-secret-key-change-this
       # путь к базе данных
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
+      - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
     depends_on:
       - qdrant
       - postgres
