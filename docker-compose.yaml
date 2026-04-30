@@ -348,7 +348,8 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
-
+      - DEBUG_EXCEPTIONS=true
+      
       # MCP kb_search
       - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
       - MCP_TOKEN=${MCP_TOKEN}
