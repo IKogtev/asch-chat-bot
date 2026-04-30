@@ -202,7 +202,7 @@ async def handle_show_more(
     session_id: str,
     page_size: int = Settings.SHOW_MAX,
     turn_id: str=None,
-    start_time: None=None
+    start_time: float=None
 ) -> bool:
     meta = await store.get_last_search_meta(user_id, session_id)
     items = await store.get_last_search_results(user_id, session_id)

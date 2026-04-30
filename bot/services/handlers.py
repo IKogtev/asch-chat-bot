@@ -248,7 +248,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             # --- Пагинация: показать следующую порцию сохранённого списка документов ---
             if Settings.SHOW_MORE_RE.match(user_text):
                 # Если пользователь запросил "показать еще", возвращаем следующую порцию из сохраненного поиска.
-                ok = await handle_show_more(m, store, user_id, session_id, turn_id, start_time)
+                ok = await handle_show_more(m=m, store=store, user_id=user_id, session_id=session_id, turn_id=turn_id, start_time=start_time)
                 if not ok:
                     # Сообщение для пользователя, если списка нет
                     response_time = int((time.time() - start_time) * 1000)
