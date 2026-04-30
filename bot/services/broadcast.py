@@ -34,10 +34,11 @@ def create_broadcast_app(
     @app.post("/broadcast")
     async def broadcast(
         html: str = Form(...),
+        news_id: Optional[int] = Form(None),
         files: List[UploadFile] = File(default=[]),
         schedule_time: Optional[str] = Form(None),
         reuse_file_path: Optional[str] = Form(None),
-        target_group: str = Form("all")
+        target_group: str = Form("all"),
     ):
         """Функция стриминга новостей в бота"""
         try:
@@ -81,8 +82,20 @@ def create_broadcast_app(
                     }
                 )
                 users, _ = await get_filtered_users(subscriber_store, target_group, source)    
-                news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group, source=source)
-                return {"status": "ok", "news_send": news_id, "sent": len(users)}
+                # СОЗДАЁМ НОВОСТЬ ТОЛЬКО ЕСЛИ ЕЁ НЕТ
+                if not news_id:
+                    news_id = await news_store.create_news(
+                        html,
+                        scheduled_at=schedule_dt,
+                        files=file_paths,
+                        group=target_group,
+                        source="multi"
+                    )
+                    logger.info(f" Создана новость {news_id}")
+                else:
+                    logger.info(f" Используем существующую новость {news_id}")
+                # news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group, source=source)
+                return {"status": "ok", "news_id": news_id, "sent": len(users)}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")
                 await eventlogger.log_event(
@@ -342,12 +355,18 @@ async def news_scheduler(news_store, subscriber_store, bot_holder, source):
                         source,
                         news_id=news["id"]
                     )
-                    await news_store.mark_channel_sent(news["id"], source)
                     if result["sent"] > 0:
                         await news_store.mark_channel_sent(news["id"], source)
-                        logger.info(f"Канал '{source}' помечен для новости #{news['id']}")
+                        await news_store.mark_sent_if_done(news["id"])
+
+                        logger.info(
+                            f"✅ Новость #{news['id']} отправлена в {source}, "
+                            f"sent={result['sent']}"
+                        )
                     else:
-                        logger.warning(f" Новость #{news['id']} не отправлена ни одному пользователю, канал не помечен")
+                        logger.warning(
+                            f"⚠️ Новость #{news['id']} не отправлена (0 users)"
+                        )
             await asyncio.sleep(5)
         except Exception as e:
             logger.error(f"Error during news_scheduler like this {e}")

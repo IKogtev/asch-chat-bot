@@ -306,7 +306,7 @@ class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    async def create_news(self, text, scheduled_at=None, group="all", files=None, source="telegram"):
+    async def create_news(self, text, scheduled_at=None, group="all", files=None, source="multi"):
         """Создание новостей для рассылки с привязкой к источнику"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
@@ -391,7 +391,6 @@ class NewsStore:
             FROM news
             WHERE 
                 status = 'pending'
-                AND source = $1
                 AND (
                     sent_channels IS NULL 
                     OR NOT EXISTS (
@@ -417,13 +416,19 @@ class NewsStore:
                     UNION
                     SELECT $2
                 ) subquery
-            ),
-            status = CASE 
-                WHEN source = $2 THEN 'sent'
-                ELSE status
-            END
+            )
             WHERE id = $1
         """, news_id, channel)
+    
+    async def mark_sent_if_done(self, news_id: int, expected_channels=2):
+        """Когда все каналы отработали — помечаем новость завершённой"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE news
+                SET status = 'sent'
+                WHERE id = $1
+                AND jsonb_array_length(sent_channels) >= $2
+            """, news_id, expected_channels)
 
 # Хранилище для взаимодействия с ADK API
 class AdkApiClient:
