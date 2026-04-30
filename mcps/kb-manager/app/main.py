@@ -157,7 +157,7 @@ ROLE_PERMISSIONS = {
 }
 # Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
-MAX_BOT_API = os.getenv("BOT_MAX_API", "http://bot:8002")
+MAX_BOT_API = os.getenv("BOT_MAX_API", "http://bot-max:8002")
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
