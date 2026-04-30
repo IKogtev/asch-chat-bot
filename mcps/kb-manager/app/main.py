@@ -1266,7 +1266,7 @@ async def send_news(
             logger.info("Using reused file, skipping new upload")
         
         # 2. Внутренняя функция для отправки в конкретного бота
-        async def send_to_bot(name: str, url: str):
+        async def send_to_bot(name: str, url: str, news_id=None):
             try:
                 # Создаём новый multipart для каждого запроса, 
                 # чтобы избежать проблем с повторным чтением стримов
@@ -1281,7 +1281,10 @@ async def send_news(
                         )
                     else:
                         request_data.append(item)
-                
+                # передаём news_id
+                if news_id:
+                    request_data.append(("news_id", (None, str(news_id))))
+
                 resp = await http_client.post(
                     f"{url}/broadcast",
                     files=request_data
@@ -1292,13 +1295,16 @@ async def send_news(
                 logger.error(f"{name.upper()} send error: {e}")
                 return name, {"status": "error", "error": str(e)}
 
-        # 3. Параллельная отправка в оба бота через asyncio.gather
-        logger.info("🚀 Запускаем параллельную отправку в оба бота...")
-        results = await asyncio.gather(
-            send_to_bot("telegram", TELEGRAM_BOT_API),
-            send_to_bot("max", MAX_BOT_API),
-            return_exceptions=True  # чтобы ошибка одного не ломала другой
-        )
+        # Telegram создаёт новость
+        tg_name, tg_result = await send_to_bot("telegram", TELEGRAM_BOT_API)
+
+        if tg_result.get("status") != "ok":
+            raise Exception("Telegram failed — не создаём новость")
+
+        news_id = tg_result.get("news_id")
+
+        # MAX использует уже созданную
+        max_name, max_result = await send_to_bot("max", MAX_BOT_API, news_id=news_id)
         # 4. Сбор и форматирование результата
         final_response = {
             "status": "ok",
@@ -1306,14 +1312,16 @@ async def send_news(
             "sent": 0,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        results_map = {
+            tg_name: tg_result,
+            max_name: max_result
+        }
         
-        for result in results:
-            if isinstance(result, Exception):
+        for bot_name, bot_result in results_map.items():
+            if isinstance(bot_result, Exception):
                 # Обработка исключений из gather
-                logger.error(f"⚠️ Exception in gather: {result}")
+                logger.error(f"⚠️ Exception in gather: {bot_result}")
                 continue
-                
-            bot_name, bot_result = result
             final_response["results"][bot_name] = bot_result
             
             if isinstance(bot_result, dict) and bot_result.get("status") == "ok":
@@ -1325,24 +1333,6 @@ async def send_news(
         # 5. Логирование итогового результата
         logger.info(f"📊 Итого отправлено: {final_response['sent']} пользователей")
         return final_response
-        
-        # Возвращаем комбинированный результат
-        return {
-            "status": "ok",
-            "telegram": tg_response,
-            "max": max_response,
-            "sent": tg_response.get("sent", 0) + max_response.get("sent", 0)
-        }
-
-        # resp = await http_client.post(
-        #     f"{TELEGRAM_BOT_API}/broadcast",
-        #     files=multipart_data
-        # )
-        # resp.raise_for_status()
-        # bot_response = resp.json()
-
-        # return bot_response
-    
     except Exception as e:
         logger.error(f"News send error: {e}")
         raise HTTPException(500, str(e))
