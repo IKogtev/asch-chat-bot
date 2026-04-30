@@ -233,6 +233,7 @@ async def handle_show_more(
 
     chunk = items[start:end]
     text = render_results(chunk, total=len(items), offset=start)
+    response_time = int((time.time() - start_time) * 1000)
     await store.update_shown_count(user_id, session_id, end)
     await m.answer(text, parse_mode="HTML")
     await eventlogger.log_event(
