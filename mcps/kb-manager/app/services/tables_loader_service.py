@@ -13,6 +13,7 @@ import pandas as pd
 
 
 DATA_CATALOG_FILE = "business layer_active.xlsx"
+ACTIVE_TABLES_SUFFIX = "_active.xlsx"
 
 DATA_CATALOG_SHEETS = {
     "business entities": "dc_entities",
@@ -87,13 +88,17 @@ class TablesLoaderService:
         excel_files = sorted(
             path
             for path in self.tables_dir.glob("*.xlsx")
-            if not path.name.startswith("~$") and path.name != DATA_CATALOG_FILE
+            if (
+                not path.name.startswith("~$")
+                and path.name != DATA_CATALOG_FILE
+                and path.name.endswith(ACTIVE_TABLES_SUFFIX)
+            )
         )
 
         for file_path in excel_files:
             workbook = pd.ExcelFile(file_path, engine="openpyxl")
             for sheet_name in workbook.sheet_names:
-                df = self._read_sheet(file_path, sheet_name)
+                df = self._read_sheet(file_path, sheet_name, skip_second_row_comment=True)
                 table_name = self._regular_table_name(file_path, sheet_name, workbook.sheet_names)
                 await self._replace_table(conn, table_name, df)
                 loaded_tables.append(
@@ -130,8 +135,16 @@ class TablesLoaderService:
 
         return loaded_tables
 
-    def _read_sheet(self, file_path: Path, sheet_name: str) -> pd.DataFrame:
+    def _read_sheet(
+        self,
+        file_path: Path,
+        sheet_name: str,
+        *,
+        skip_second_row_comment: bool = False,
+    ) -> pd.DataFrame:
         df = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl")
+        if skip_second_row_comment and not df.empty and str(df.iloc[0, 0]).strip() == "#":
+            df = df.iloc[1:].reset_index(drop=True)
         df = df.dropna(how="all")
         df.columns = self._normalize_columns(df.columns)
         return df
@@ -234,10 +247,14 @@ class TablesLoaderService:
         return normalized
 
     def _regular_table_name(self, file_path: Path, sheet_name: str, sheet_names: list[str]) -> str:
-        if len(sheet_names) == 1:
-            return self._normalize_identifier(file_path.stem)
+        file_stem = file_path.stem
+        if file_stem.endswith("_active"):
+            file_stem = file_stem[: -len("_active")]
 
-        return self._normalize_identifier(f"{file_path.stem}__{sheet_name}")
+        if len(sheet_names) == 1:
+            return self._normalize_identifier(file_stem)
+
+        return self._normalize_identifier(f"{file_stem}__{sheet_name}")
 
     def _normalize_identifier(self, value: str) -> str:
         value = value.strip().lower()
