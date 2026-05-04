@@ -279,6 +279,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  dbhub:
+    image: bytebase/dbhub:latest
+    container_name: dbhub
+    restart: unless-stopped
+    environment:
+      - DBHUB_LOG_LEVEL=info
+    volumes:
+      - ./mcps/dbhub/dbhub_nstya_config.toml:/config/dbhub_nstya_config.toml:ro
+    command:
+      - --transport
+      - http
+      - --port
+      - "8080"
+      - --config
+      - /config/dbhub_nstya_config.toml
+    depends_on:
+      - postgres
+    networks:
+      - aszh-bot-network
   
   file-manager:
     image: filegator/filegator:latest
