@@ -535,28 +535,20 @@ def verify_password(password: str, hashed: str) -> bool:
     return pwd_context.verify(password, hashed)
 
 async def init_db(pool: asyncpg.Pool):
-    """Инициализация базы данных"""
-    logger.info("Initializing database...")
-    # Получаем список пользователей динамически
+    """Инициализация пользователей (таблица уже создана через alembic)"""
+    logger.info("Initializing UI users...")
     users_to_init = get_users_from_env()
     async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ui_users (
-                id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL
-            );
-        """)
         for username, password, role in users_to_init:
             hashed = hash_password(password)
             await conn.execute("""
                 INSERT INTO ui_users (username, password, role)
                 VALUES ($1, $2, $3)
-                ON CONFLICT (username) DO NOTHING;
+                ON CONFLICT (username) DO UPDATE 
+                SET password = EXCLUDED.password, role = EXCLUDED.role;
             """, username, hashed, role)
             
-    logger.info(f"Database initialized with {len(users_to_init)} users.")
+    logger.info(f"UI users initialized with {len(users_to_init)} users.")
 
 async def get_user_from_db(username: str, pool: asyncpg.Pool):
     """Получение пользователя из базы данных по имени"""
