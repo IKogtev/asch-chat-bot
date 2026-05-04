@@ -248,11 +248,22 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             # --- Пагинация: показать следующую порцию сохранённого списка документов ---
             if Settings.SHOW_MORE_RE.match(user_text):
                 # Если пользователь запросил "показать еще", возвращаем следующую порцию из сохраненного поиска.
-                ok = await handle_show_more(m, store, user_id, session_id)
+                ok = await handle_show_more(m=m, store=store, user_id=user_id, session_id=session_id, turn_id=turn_id, start_time=start_time)
                 if not ok:
                     # Сообщение для пользователя, если списка нет
-                    await m.answer(
-                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    response_time = int((time.time() - start_time) * 1000)
+                    answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    await m.answer(answer)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel="telegram",
+                        payload={
+                            "turn_id": turn_id,
+                            "text": answer, 
+                            "response_time_ms": response_time
+                        }    
                     )
                 # Логируем пользовательский запрос и результат в историю
                 await store.append(user_id, "user", user_text)
@@ -268,10 +279,21 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
             # --- Пагинация: показать полный список сохранённых документов ---
             if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
                 # Только если это не "показать еще"
-                ok = await handle_show_all(m, store, user_id, session_id)
+                ok = await handle_show_all(m, store, user_id, session_id, turn_id, start_time)
                 if not ok:
-                    await m.answer(
-                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    response_time = int((time.time() - start_time) * 1000)
+                    answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    await m.answer(answer)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel="telegram",
+                        payload={
+                            "turn_id": turn_id,
+                            "text": answer, 
+                            "response_time_ms": response_time
+                        }    
                     )
                 await store.append(user_id, "user", user_text)
                 await store.append(
@@ -291,7 +313,7 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                 вызываем обработчик отправки файлов.
                 """
                 await handle_download_by_ranks(
-                    m, store, doc_handler, user_id, session_id, dl_ranks
+                    m, store, doc_handler, user_id, session_id, dl_ranks, turn_id, start_time
                 )
                 await store.append(user_id, "user", user_text)
                 await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
@@ -351,15 +373,51 @@ def register_handlers(dp: Dispatcher, store, subscriber_store, adk, doc_handler,
                     chunk = items[:shown]
                     text = render_results(chunk, total=len(items), offset=0)
                     await m.answer(text, parse_mode="HTML")
+                    response_time = int((time.time() - start_time) * 1000)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel="telegram",
+                        payload={
+                            "turn_id": turn_id,
+                            "text": text,
+                            "response_time_ms": response_time
+                        }    
+                    )
                     return
 
             # ответ пользователю (kb_answer и прочее)
             if work.strip():
                 if "<b>" in work or work.lstrip().startswith("<"):
                     await m.answer(work, parse_mode="HTML")
+                    response_time = int((time.time() - start_time) * 1000)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel="telegram",
+                        payload={
+                            "turn_id": turn_id,
+                            "text": work,
+                            "response_time_ms": response_time
+                        }    
+                    )
                 else:
                     html_answer = markdown_to_safe_html(work)
                     await m.answer(html_answer, parse_mode="HTML")
+                    response_time = int((time.time() - start_time) * 1000)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(user_id),
+                        session_id=session_id,
+                        channel="telegram",
+                        payload={
+                            "turn_id": turn_id,
+                            "text": html_answer,
+                            "response_time_ms": response_time
+                        }    
+                    )
 
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения от user_id={user_id}: {e}", exc_info=True)

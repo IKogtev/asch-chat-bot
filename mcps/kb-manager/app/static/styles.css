@@ -216,6 +216,7 @@ header {
 .main-content {
     margin-left: 70px;
     display: flex;
+    transition: margin-left 0.3s ease;
     flex-direction: column;
     flex: 1;
     min-height: 0;
@@ -250,7 +251,6 @@ header {
     white-space: nowrap;
     transition: opacity 0.2s;
 }
-
 /* иконка */
 .sidebar-header .logo {
     font-size: 20px;
@@ -278,6 +278,9 @@ header {
 /* expanded */
 .sidebar.expanded {
     width: 220px;
+}
+.sidebar.expanded ~ .main-content {
+    margin-left: 220px;
 }
 /* toggle button */
 .sidebar-toggle {
@@ -311,15 +314,22 @@ header {
     gap: 10px;
     width: 100%;
     padding: 10px;
+    align-items: stretch;
 }
 .sidebar .tab-button {
     display: flex;
-    align-items: center;
+    align-items: left;
+    text-align: left;
+    justify-content: flex-start;
     gap: 12px;
     width: 100%;
-    padding: 10px;
+    padding: 10px 12px !important;
     border-radius: 8px;
     overflow: hidden;
+}
+.sidebar .tab-button .label {
+    text-align: left;
+    width: 100%;
 }
 /* collapsed = только иконки */
 .sidebar:not(.expanded) .tab-button {
@@ -354,7 +364,6 @@ header {
 .tab-button {
     background: none;
     border: none;
-    padding: 12px 24px;
     font-size: 1rem;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1177,6 +1186,53 @@ select:focus {
 .news-upload-wrapper {
     margin: 10px 0;
 }
+/* разделитель */
+.news-divider {
+    margin: 30px 0;
+    height: 1px;
+    background: var(--border-color);
+}
+/* история */
+.news-history-block {
+    margin-top: 10px;
+}
+.news-content {
+    padding: 12px;
+    background: rgba(0,0,0,0.03);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    border-left: 4px solid var(--primary-color);
+}
+
+/* FILES */
+.news-files {
+    border-top: 1px dashed var(--border-color);
+    padding-top: 10px;
+}
+
+.news-file {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 6px;
+}
+
+.news-no-files {
+    color: #999;
+    font-size: 13px;
+}
+/* META */
+.news-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+}
 .news-upload-box {
     border: 2px dashed var(--border-color);
     padding: 12px;
@@ -1332,6 +1388,9 @@ select:focus {
     font-size: 14px;
     width: 100%;
 }
+#user-groups-list {
+    margin-top: 10px;
+}
 #user-groups-list table tr:hover {
     background-color: rgba(79, 70, 229, 0.04);
 }
@@ -1348,18 +1407,30 @@ select:focus {
     border-radius: 6px;
 }
 .groups-tab-header {
-    margin-bottom: 20px;
+    top: 70px; /* ниже статистики */
+    z-index: 50;
+    background: var(--card-bg);
+    padding: 10px 0;
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
     align-items: center;
 }
+.groups-sticky-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--bg-color);
+    padding-bottom: 10px;
+
+    border-bottom: 1px solid var(--border-color);
+}
 .groups-search-input {
-    padding: 8px 12px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
     width: 300px;
     font-size: 14px;
+    padding: 8px 10px;
     transition: all 0.2s;
 }
 .groups-search-input:focus {
@@ -1368,8 +1439,11 @@ select:focus {
     box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
 .groups-stats-container {
-    margin-top: 20px;
-    padding: 15px;
+    top: 0;
+    z-index: 60;
+    padding: 10px 0;
+
+    border-bottom: 1px solid var(--border-color);
     background: var(--bg-color);
     border-radius: 8px;
     box-shadow: var(--shadow);
@@ -1386,9 +1460,15 @@ select:focus {
     text-align: center;
     box-shadow: var(--shadow);
     transition: transform 0.2s;
+    cursor: pointer;
 }
 .groups-stat-card:hover {
     transform: translateY(-2px);
+}
+/* активная карточка */
+.groups-stat-card.active {
+    border: 2px solid var(--primary-color);
+    background: rgba(79, 70, 229, 0.05);
 }
 .groups-stat-number {
     font-size: 24px;
@@ -1406,12 +1486,22 @@ select:focus {
 }
 .user-groups-table {
     width: 100%;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     background: var(--card-bg);
     font-size: 14px;
     box-shadow: var(--shadow);
     border-radius: 8px;
-    overflow: hidden;
+}
+/* закрепление для заголовка */
+.user-groups-table thead th {
+    position: sticky;
+    top: 270px; /* внутри контейнера */
+    z-index: 90;
+
+    background: var(--card-bg);
+    border-bottom: 2px solid var(--border-color);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
 
 .user-groups-table thead tr {
@@ -1430,6 +1520,9 @@ select:focus {
 }
 .user-groups-table tbody tr:hover {
     background-color: rgba(79, 70, 229, 0.02);
+}
+.user-groups-table tbody tr:nth-child(even) {
+    background: rgba(0,0,0,0.02);
 }
 .user-groups-table .text-center { text-align: center;}
 .user-groups-table .font-monospace { font-family: 'Fira Code', monospace;}
@@ -1636,4 +1729,188 @@ select:focus {
 .dialog-q, .dialog-a {
     word-break: break-word;
     white-space: pre-wrap;
+}
+
+/* Фильтры логов */
+.logs-filters input {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 0.875rem;
+    transition: border-color 0.2s;
+}
+
+.logs-filters input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.logs-filters input::placeholder {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+#logs-table {
+    width: 100%;
+}
+
+/* КРИТИЧНО — перенос длинных строк */
+#logs-table-inner td {
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+#logs-table-inner th {
+    background: #f5f5f5;
+    text-align: left;
+}
+
+.payload-cell {
+    /* max-width: 400px; */
+    word-break: break-word;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.payload-cell pre {
+    margin: 0;              /* убирает отступы сверху/снизу */
+    padding: 8px;
+    white-space: pre-wrap;  /* перенос строк */
+    word-break: break-word; /* длинные строки не вылезают */
+    background: #f6f8fa;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+#logs-table-inner {
+    width: 100%;          
+    table-layout: fixed
+}
+
+#logs-table-inner th,
+#logs-table-inner td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    vertical-align: top;
+}
+/* Запрет переноса для колонок 1-4 */ */
+#logs-table-inner td:nth-child(1),  /* User ID */
+#logs-table-inner td:nth-child(2),  /* User name */
+#logs-table-inner td:nth-child(3),  /* Event */
+#logs-table-inner td:nth-child(4) { /* Channel */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;  /* Ограничение ширины, чтобы текст не уезжал */
+}
+/* Аналогично для заголовков */
+#logs-table-inner th:nth-child(1),
+#logs-table-inner th:nth-child(2),
+#logs-table-inner th:nth-child(3),
+#logs-table-inner th:nth-child(4) {
+    white-space: nowrap;
+}
+
+/* Колонка 5 (Time): можно перенос, но без pre-wrap */
+#logs-table-inner td:nth-child(5) {
+    white-space: normal;
+    word-break: normal;
+}
+/* Показывать полный текст при наведении на обрезанный */
+#logs-table-inner td:nth-child(1):hover,
+#logs-table-inner td:nth-child(2):hover,
+#logs-table-inner td:nth-child(3):hover,
+#logs-table-inner td:nth-child(4):hover {
+    overflow: visible;
+    position: relative;
+    z-index: 10;
+}
+
+/* фикс ширины колонок */
+#logs-table-inner th:nth-child(1),
+#logs-table-inner td:nth-child(1) { width: 120px; }
+
+#logs-table-inner th:nth-child(2),
+#logs-table-inner td:nth-child(2) { width: 150px; }
+
+#logs-table-inner th:nth-child(3),
+#logs-table-inner td:nth-child(3) { width: 140px; }
+
+#logs-table-inner th:nth-child(4),
+#logs-table-inner td:nth-child(4) { width: 120px; }
+
+#logs-table-inner th:nth-child(5),
+#logs-table-inner td:nth-child(5) { width: 160px; }
+
+/* payload занимает всё остальное */
+#logs-table-inner th:nth-child(6),
+#logs-table-inner td:nth-child(6) {
+    width: auto;
+}
+/* Пагинация обертки */
+.pagination-controls {
+    margin-top: 25px;
+    padding: 15px;
+    display: flex;
+    justify-content: center; /* Центрируем кнопки */
+    align-items: center;
+    gap: 20px;
+    background: #f8f9fa; /* Серый фон, чтобы блок было видно */
+    border-radius: 8px;
+}
+
+.pagination-wrapper {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 15px;
+    padding: 10px;
+    background: #fdfdfd;
+    border-top: 1px solid #eee;
+}
+.page-info {
+    margin: 0 15px;
+}
+
+.modern-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+    background: white;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.modern-table th {
+    background-color: #f8f9fa;
+    color: #333;
+    text-align: left;
+    padding: 12px 15px;
+    border-bottom: 2px solid #dee2e6;
+    font-weight: 600;
+}
+
+.modern-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid #eee;
+    vertical-align: top;
+    font-size: 0.95em;
+}
+
+.modern-table tr:hover {
+    background-color: #f1f4f8;
+}
+
+.user-cell small { color: #666; font-size: 0.85em; }
+.time-cell { white-space: nowrap; color: #555; }
+.msg-cell { color: #2c3e50; min-width: 200px; }
+.resp-cell { color: #27ae60; min-width: 200px; font-style: italic; }
+.meta-cell { color: #999; font-size: 0.85em; }
+
+.loading, .error, .empty-state {
+    padding: 40px;
+    text-align: center;
+    color: #666;
 }

@@ -21,8 +21,8 @@ if [ ! -f "$PRIVATE_DIR/users.json" ]; then
     "username": "guest",
     "name": "Guest User",
     "role": "guest",
-    "homedir": "/",
-    "permissions": "read"
+    "homedir": "/tmp/empty_dir_for_guest",
+    "permissions": ""
   },
   "admin": {
     "username": "admin",
@@ -36,6 +36,9 @@ if [ ! -f "$PRIVATE_DIR/users.json" ]; then
 EOF
 fi
 
+# Создадим пустую директорию, чтобы FileGator не ругался на отсутствие пути
+mkdir -p /tmp/empty_dir_for_guest
+chown 33:33 /tmp/empty_dir_for_guest
 # 3. Права владельца (www-data = 33:33)
 chown -R 33:33 "$PRIVATE_DIR"
 chmod -R 755 "$PRIVATE_DIR"
