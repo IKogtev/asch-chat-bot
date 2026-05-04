@@ -23,6 +23,7 @@ from bot.services.config import Settings
 from bot.services.broadcast import create_broadcast_app, news_scheduler
 from bot.services.handlers import register_handlers
 from bot.services.utils import run_http_server
+from bot.services.user_resolver import UserResolver
 ##################################
 # Глобальные константы и переменные
 ##################################
@@ -82,6 +83,8 @@ async def main() -> None:
     await store.connect()
     # инициализируем хранилище пользователей
     subscriber_store = SubscriberStore(store.pool)
+    # обработчик пользователя для унификации по номеру телефона
+    user_resolver = UserResolver(store.pool)
     # инициализируем хранилище новостей
     news_store = NewsStore(store.pool)
 
@@ -108,6 +111,7 @@ async def main() -> None:
         dp=dp,
         store=store,
         subscriber_store=subscriber_store,
+        user_resolver=user_resolver,
         adk=adk,
         doc_handler=doc_handler,
         get_start_message=get_start_message,
