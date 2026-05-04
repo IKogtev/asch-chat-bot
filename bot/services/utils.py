@@ -21,10 +21,27 @@ from maxapi.types.attachments.buttons import CallbackButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.enums import TextFormat
 from maxapi.types import InputMedia
+import hashlib
 
 # Настройка логгера
 logger = setup_logger('utils_processing', 'utils_processing.log')
 eventlogger = EventLogger()
+
+#  нормализация телефона для разных форматов
+def normalize_phone(phone: str) -> str:
+    if not phone:
+        return phone
+
+    phone = re.sub(r"[^\d+]", "", phone)
+
+    # если без + и начинается с 8 → делаем +7
+    if phone.startswith("8"):
+        phone = "+7" + phone[1:]
+    elif not phone.startswith("+"):
+        phone = "+" + phone
+
+    return phone
+
 
 def get_filename(filepath: str) -> str:
     return Path(filepath).name
@@ -113,20 +130,16 @@ def html_to_bot(html: str) -> str:
 
 # функция хранения пути
 def register_callback_path(path: str) -> str:
-    """Регистрирует путь и возвращает его короткий ID (хэш)"""
-    # path_id = str(hash(path))
-    path_id = str(len(Settings.CALLBACK_MAP) + 1)
-    
-    # Если ID уже есть, перемещаем его в конец (он теперь "свежий")
-    if path_id in Settings.CALLBACK_MAP:
-        Settings.CALLBACK_MAP.move_to_end(path_id)
-    
+    """Стабильный ID для path (не ломается после рестарта)"""
+
+    if not path:
+        return "root"
+
+    # стабильный hash
+    path_id = hashlib.md5(path.encode("utf-8")).hexdigest()[:10]
+
     Settings.CALLBACK_MAP[path_id] = path
-    
-    # Если превысили лимит, удаляем самый старый элемент (из начала)
-    if len(Settings.CALLBACK_MAP) > Settings.MAX_CALLBACK_ENTRIES:
-        Settings.CALLBACK_MAP.popitem(last=False)
-        
+
     return path_id
 
 # получить дерево папок
@@ -212,10 +225,14 @@ def build_universal_menu(tree: dict, path: list[str], channel: str = "telegram")
     # 3. Навигация (назад и на главную)
     if path:
         nav_row = []
-        parent = "/".join(path[:-1])
-        pid_back = register_callback_path(parent)
+        if len(path) == 1:
+            # если мы на первом уровне — назад = home
+            nav_row.append(create_btn("⬅ Назад", "home"))
+        else:
+            parent = "/".join(path[:-1])
+            pid_back = register_callback_path(parent)
+            nav_row.append(create_btn("⬅ Назад", f"d:{pid_back}"))
         
-        nav_row.append(create_btn("⬅ Назад", f"d:{pid_back}"))
         nav_row.append(create_btn("🏠 на главную", "home"))
         rows.append(nav_row)
 

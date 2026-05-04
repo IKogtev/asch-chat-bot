@@ -23,7 +23,8 @@ from bot.services.utils import (
     handle_download_by_ranks,
     get_document_id,
     get_kb_tree,
-    build_universal_menu
+    build_universal_menu,
+    normalize_phone
 )
 import uuid
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
@@ -38,18 +39,24 @@ eventlogger = EventLogger()
 # переменные для сохранения дерева папок в кэше
 TREE_CACHE = None
 TREE_TS = 0
+#  переменные для отсечения старых сообщений бота
+BOT_START_TIME = time.time()
+RECENT_MESSAGES = {}
+STARTUP_GRACE_PERIOD = 5  # сек
+OLD_MESSAGE_THRESHOLD = 15  # сек
 # синхронизация пользователей с адк 
-async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str) -> None:
+async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str, global_user_id=None) -> None:
     """
     Загружает профиль пользователя из БД и подготавливает его для передачи в ADK.
     """
     user_data = await subscriber_store.get_user_data(user_id)
-    if not user_data:
+    if not user_data and not global_user_id:
         return
 
     # Лишние персональные данные в ADK не передаем
     user_data.pop("phone_number", None)
-    
+    adk_user_id = str(global_user_id)
+
     # Убеждаемся, что имя не пустое (иначе агент не обратится по имени)
     if not user_data.get("first_name"):
         logger.warning(f"first_name пуст для user_id={user_id}")
@@ -57,8 +64,8 @@ async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_
         logger.warning(f"last_name пуст для user_id={user_id}")
 
     await adk.set_user_state(
-        user_id=str(user_id),
-        session_id=session_id,
+        user_id=adk_user_id,
+        session_id=adk_user_id,
         user_data=user_data,
     )
 
@@ -73,6 +80,7 @@ async def get_tree_cached():
     TREE_TS = time.time()
 
     return TREE_CACHE
+
 
 # получаем клавиатуру 
 def get_phone_keyboard(platform: str="telegram"):
@@ -95,7 +103,7 @@ def get_phone_keyboard(platform: str="telegram"):
 ######################################
 # обработчики сообщений и команд бота
 ######################################
-def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_message, platform="telegram") -> None:
+def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, platform="telegram") -> None:
     """Регистрация всех обработчиков сообщений универсальная для разных платформ"""
     is_tg = (platform == "telegram")
     # 1. Адаптация декораторов и фильтров под платформу
@@ -118,7 +126,22 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
 
     def universal_handler(func):
         async def wrapper(event, *args, **kwargs):
-            # Вызываем твою общую авторизацию
+            # АНТИ-БЭКЛОГ ЗАЩИТА 
+            is_callback = hasattr(event, "data") or hasattr(event, "callback")
+
+            # применяем ТОЛЬКО к обычным сообщениям
+            if not is_callback:
+
+                # 1. защита при старте
+                if time.time() - BOT_START_TIME < STARTUP_GRACE_PERIOD:
+                    logger.warning("⏳ Skip message during startup")
+                    return
+
+                # 2. защита от старых сообщений
+                if is_old_message(event, platform):
+                    logger.warning("⏳ Skip old message (backlog)")
+                    return
+            # Вызываем общую авторизацию
             ud, bot_res = await unified_auth(event)
             if ud is None:
                 return # Прерываем, если телефон не получен
@@ -127,6 +150,37 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
             return await func(event, ud, bot_res, *args, **kwargs)
         return wrapper
     
+    #  отсечение по времени: 
+    def is_old_message(event, platform: str) -> bool:
+        """Отсекаем старые сообщения (backlog)"""
+        try:
+            now = time.time()
+
+            if platform == "telegram":
+                msg_time = getattr(event, "date", None)
+                if not msg_time:
+                    return False
+                msg_ts = msg_time.timestamp()
+
+            else:  # max
+                msg = getattr(event, "message", None)
+                if not msg:
+                    return False
+
+                msg_time = getattr(msg, "timestamp", None) or getattr(msg, "created_at", None)
+
+                if isinstance(msg_time, (int, float)):
+                    msg_ts = msg_time
+                elif hasattr(msg_time, "timestamp"):
+                    msg_ts = msg_time.timestamp()
+                else:
+                    return False
+
+            return (now - msg_ts) > OLD_MESSAGE_THRESHOLD
+
+        except Exception:
+            return False
+
     # общая авторизация
     async def unified_auth(event):
         """Проверка регистрации и получение данных"""
@@ -147,14 +201,38 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
         username = user_obj.username or "unknown"
         first_name = user_obj.first_name or "Гость"
         last_name = getattr(user_obj, 'last_name', None)
-        
+        # всегда обновляем подписчика
         phone = await subscriber_store.get_phone(user_id)
         await subscriber_store.add(
             user_id=user_id, username=username,
             first_name=first_name, last_name=last_name,
             last_seen=datetime.now(), phone_number=None, platform=platform
         )
-        user_data = await subscriber_store.get_user_data(user_id)
+        #  резолвим global user
+        global_user_id = None
+        if phone:
+            try:
+                global_user_id = await user_resolver.resolve_user(
+                    platform=platform,
+                    platform_user_id=user_id,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    phone=phone
+                )
+            except Exception as e:
+                logger.error(f"UserResolver error: {e}", exc_info=True)
+    
+        user_data = await subscriber_store.get_user_data(user_id) or {}
+
+        user_data["global_user_id"] = str(global_user_id) if global_user_id else None
+        logger.info(
+            f"[USER_RESOLVE] platform={platform} "
+            f"platform_user_id={user_id} "
+            f"global_user_id={user_data['global_user_id']} "
+            f"phone={phone}"
+        )
+        # если телефона нет - запрашиваем его
         if not phone and not is_incoming_contact:
             logger.info(f"Запрос телефона [{platform}] user_id={user_id} (@{username})")
             keyboard = get_phone_keyboard(platform)
@@ -175,6 +253,7 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
     async def start(event, ud, bot_res, **kwargs):
         """Обработчик /start"""
         user_id = ud["user_id"]
+        global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /start [{platform}] от user_id={user_id} (@{ud['username']})")
         
         await eventlogger.log_event(
@@ -198,6 +277,7 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
     async def version_info(event, ud, bot_res, **kwargs):
         """Команда для получения версии платформы/бота"""
         user_id = ud["user_id"]
+        global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /version [{platform}] от user_id={user_id}")
         await eventlogger.log_event(
             event_type="command_version",
@@ -224,8 +304,9 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
     @universal_handler
     async def reset(event, ud, bot_res, **kwargs):
         user_id = ud["user_id"]
+        global_user_id = ud.get("global_user_id")
         username = ud["username"]
-        session_id = str(user_id)
+        session_id = str(global_user_id) if global_user_id else str(user_id)
 
         logger.info(f"Команда /reset [{platform}] от user_id={user_id} (@{username})")
         await eventlogger.log_event(
@@ -238,7 +319,7 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
             await adk.delete_session(user_id=str(user_id), session_id=session_id)
             # Очищаем историю в БД
-            await store.reset(user_id)
+            await store.reset(user_id, global_user_id)
             # Удаляем состояние результатов поиска
             await store.reset_search_state(user_id, session_id)
 
@@ -268,7 +349,8 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
     @message_decorator(Command("help"))
     @universal_handler
     async def help_cmd(event, ud, bot_res, **kwargs):
-        user_id = ud['user_id']
+        user_id = ud["user_id"]
+        global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /help от user_id={user_id}")
         await eventlogger.log_event(event_type="command_help", user_id=str(user_id), channel=platform)
         
@@ -293,7 +375,13 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
         path = Settings.CALLBACK_MAP.get(pid)
 
         if not path:
-            return await bot_res.answer_callback("Кнопка устарела")
+            await bot_res.answer_callback("⚠️ Кнопка устарела. Возвращаю в начало...", show_alert=True)
+            # Вместо edit делаем send, чтобы меню появилось внизу чата
+            tree = await get_tree_cached()
+            menu = build_universal_menu(tree, [], platform)
+            text = get_start_message()
+            return await bot_res.send(text, menu=menu)
+
         # Обновление кэш путей
         Settings.CALLBACK_MAP.move_to_end(pid)
         path_list = path.split("/") if path else []
@@ -326,6 +414,7 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
             
         filename = path.split("/")[-1]
         user_id = ud["user_id"]
+        global_user_id = ud.get("global_user_id")
 
         logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={user_id}")
         await eventlogger.log_event(
@@ -365,12 +454,29 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
         
         # Сохраняем в БД
         await subscriber_store.update_phone(user_id, phone)
+        # нормализуем телефон
+        phone = normalize_phone(phone)
         logger.info(f"✅ Телефон получен [{platform}]: user_id={user_id}, {phone}")
-        
+        # обновляем global user
+        global_user_id = None
+        try:
+            global_user_id = await user_resolver.resolve_user(
+                platform=platform,
+                platform_user_id=int(user_id),
+                username=None,
+                first_name="",
+                last_name="",
+                phone=phone
+            )
+        except Exception as e:
+            logger.error(f"UserResolver contact update error: {e}", exc_info=True)
+
+        logger.info(f"[CONTACT_RESOLVED] user_id={user_id} -> global_user_id={global_user_id}")
+
         await eventlogger.log_event(
             event_type="get_contact", 
             user_id=str(user_id),
-            session_id=str(user_id), 
+            session_id=str(global_user_id) if global_user_id else str(user_id), 
             channel=platform
         )
 
@@ -392,7 +498,8 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
         # обработчик получения контакта (номера телефона)
         async def handle_contact_max(bot_res: BotResponse, ud, contact: Contact):
             """Обработчик полученного контакта — извлекает телефон из vCard"""
-            user_id = ud['user_id']
+            user_id = ud["user_id"]
+            global_user_id = ud.get("global_user_id")
             try:
                 # Контакт приходит как объект с полем payload
                 payload = contact.payload  # ContactAttachmentPayload
@@ -438,7 +545,8 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
     @universal_handler
     async def on_text(event, ud, bot_res, **kwargs):
         # Извлечение данных пользователя
-        user_id = ud['user_id']
+        user_id = ud["user_id"]
+        global_user_id = ud.get("global_user_id")
         user_text = bot_res.text
         #  Проверка контакта для Max (он шлет его внутри обычного сообщения)
         if platform == "max" and bot_res.attachments:
@@ -447,9 +555,14 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
                     logger.info("Контакт обнаружен, обрабатываем...")
                     return await handle_contact_max(bot_res, ud, att)
 
+        # проверка наличия global_user_id
+        if not global_user_id:
+            logger.warning(f"Skip message — no global_user_id for user_id={user_id}")
+            return
+
         # Если это не контакт — проверяем авторизацию как обычно
         
-        session_id = str(user_id)
+        session_id = str(global_user_id)
         turn_id = str(uuid.uuid4())
         start_time = time.time()
 
@@ -462,7 +575,8 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
         )
 
         try:
-            await adk.ensure_session(user_id=str(user_id), session_id=session_id)
+            adk_user_id = str(global_user_id) if global_user_id else str(user_id)
+            await adk.ensure_session(user_id=adk_user_id, session_id=adk_user_id)
 
             # Пагинация и скачивание по номеру — из БД, без вызова ADK
             """
@@ -493,13 +607,14 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
                         }    
                     )
                 # Логируем пользовательский запрос и результат в историю
-                await store.append(user_id, "user", user_text)
+                await store.append(user_id, "user", user_text, global_user_id)
                 await store.append(
                     user_id,
                     "model",
                     "Показана следующая порция списка документов."
                     if ok
                     else "Список документов не найден.",
+                    global_user_id
                 )
                 return
             # --- Пагинация: показать полный список сохранённых документов ---
@@ -521,13 +636,14 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
                             "response_time_ms": response_time
                         }    
                     )
-                await store.append(user_id, "user", user_text)
+                await store.append(user_id, "user", user_text, global_user_id)
                 await store.append(
                     user_id,
                     "model",
                     "Показан полный список документов."
                     if ok
                     else "Список документов не найден.",
+                    global_user_id
                 )
                 return
             
@@ -539,19 +655,19 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
                 вызываем обработчик отправки файлов.
                 """
                 await handle_download_by_ranks(event, store, doc_handler, user_id, session_id, dl_ranks, turn_id, start_time, platform)
-                await store.append(user_id, "user", user_text)
-                await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.")
+                await store.append(user_id, "user", user_text, global_user_id)
+                await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.", global_user_id)
                 return
 
             # Синхронизируем профиль пользователя в ADK перед run()
-            await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id)
+            await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
             
             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
             meta_before = await store.get_last_search_meta(user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
 
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-            answer, _ = await adk.run(user_id=str(user_id), session_id=session_id, text=user_text)
+            answer, _ = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
             logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
             # сохраняем в логах событие ответа и его латентность
@@ -570,8 +686,8 @@ def register_handlers(dp, store, subscriber_store, adk, doc_handler, get_start_m
             work = answer or ""
 
             # сохраняем историю диалога
-            await store.append(user_id, "user", user_text)
-            await store.append(user_id, "model", answer)
+            await store.append(user_id, "user", user_text, global_user_id)
+            await store.append(user_id, "model", answer, global_user_id)
 
             # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
             meta_after = await store.get_last_search_meta(user_id, session_id)
@@ -679,17 +795,22 @@ class BotResponse:
 
     async def edit(self, text, menu=None, is_html=True):
         """Редактирует сообщение и подтверждает callback (для TG)"""
-        if self.is_tg:
-            # В TG нужно подтверждать callback, если это кнопка
-            if hasattr(self.event, 'answer'):
-                await self.event.answer()
-            return await self.event.message.edit_text(
-                text, reply_markup=menu, parse_mode="HTML" if is_html else None
-            )
-        else:
-            return await self.event.message.edit(
-                text=text, attachments=[menu] if menu else []
-            )
+        try:
+            if self.is_tg:
+                # В TG нужно подтверждать callback, если это кнопка
+                if hasattr(self.event, 'answer'):
+                    await self.event.answer()
+                return await self.event.message.edit_text(
+                    text, reply_markup=menu, parse_mode="HTML" if is_html else None
+                )
+            else:
+                return await self.event.message.edit(
+                    text=text, attachments=[menu] if menu else []
+                )
+        except Exception as e:
+            logger.warning(f"Could not edit message, sending new one: {e}")
+            # Если редактирование не прошло (сообщение старое или удалено), просто шлем новое
+            return await self.send(text, menu=menu, is_html=is_html)
 
     async def _send_document(self, path, filename):
         if self.is_tg:
@@ -702,4 +823,7 @@ class BotResponse:
         if self.is_tg and hasattr(self.event, 'answer'):
             await self.event.answer(text, show_alert=show_alert)
         elif not self.is_tg:
-            if text: await self.event.answer(text)
+            if text:
+                # Если передан флаг alert, добавляем эмодзи для заметности
+                msg = f"⚠️ {text.upper()}" if show_alert else text
+                await self.event.answer(msg)

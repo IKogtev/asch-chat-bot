@@ -30,61 +30,94 @@ class PostgresChatStore:
             logger.error(f"Ошибка подключения к БД: {e}", exc_info=True)
             raise
 
-    async def append(self, user_id: int, role: str, content: str) -> None:
+    async def append(self, user_id: int, role: str, content: str, global_user_id=None) -> None:
         """Добавление сообщения в историю"""
         if not self.pool:
             logger.warning("Pool не инициализирован, сообщение не сохранено")
             return
 
+        #  не сохраняем без global_user_id
+        if not global_user_id:
+            logger.warning(f"Skip append: no global_user_id for user_id={user_id}")
+            return
         query = """
-        INSERT INTO chat_history (user_id, role, content)
-        VALUES ($1, $2, $3)
+        INSERT INTO chat_history (user_id, global_user_id, role, content)
+        VALUES ($1, $2, $3, $4)
         """
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute(query, user_id, role, content)
+                await conn.execute(query, user_id, global_user_id, role, content)
             logger.debug(f"Сохранено сообщение: user={user_id}, role={role}, len={len(content)}")
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
 
-    async def get_history(self, user_id: int) -> list[dict]:
+    async def get_history(self, user_id: int, global_user_id=None) -> list[dict]:
         """Получение истории диалога"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return []
-
-        query = """
-        SELECT role, content, created_at
-        FROM chat_history
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        """
         try:
             async with self.pool.acquire() as conn:
+                if global_user_id:
+                    rows = await conn.fetch("""
+                        SELECT role, content, created_at
+                        FROM chat_history
+                        WHERE global_user_id = $1
+                        ORDER BY created_at DESC
+                        LIMIT $2
+                    """, global_user_id, self.max_turns)
+
+                    if rows:
+                        history = [
+                            {"role": row["role"], "content": row["content"]}
+                            for row in reversed(rows)
+                        ]
+                        logger.debug(f"[GLOBAL] История для global_user_id={global_user_id}: {len(history)}")
+                        return history
+                # fallback
+                query = """
+                SELECT role, content, created_at
+                FROM chat_history
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """
+
                 rows = await conn.fetch(query, user_id, self.max_turns)
 
             history = [
                 {"role": row["role"], "content": row["content"]}
                 for row in reversed(rows)
             ]
-            logger.debug(f"Загружена история для user={user_id}: {len(history)} сообщений")
+            logger.debug(f"[LEGACY] История для user={user_id}: {len(history)} сообщений")
             return history
+
         except Exception as e:
             logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
             return []
 
-    async def reset(self, user_id: int) -> None:
+    async def reset(self, user_id: int, global_user_id=None) -> None:
         """Очистка истории пользователя"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return
 
-        query = "DELETE FROM chat_history WHERE user_id = $1"
         try:
             async with self.pool.acquire() as conn:
-                result = await conn.execute(query, user_id)
-            logger.info(f"История очищена для user={user_id}: {result}")
+                if global_user_id:
+                    result = await conn.execute(
+                        "DELETE FROM chat_history WHERE global_user_id = $1",
+                        global_user_id
+                    )
+                    logger.info(f"[GLOBAL RESET] global_user_id={global_user_id}: {result}")
+                    return
+                
+                result = await conn.execute(
+                    "DELETE FROM chat_history WHERE user_id = $1",
+                    user_id
+                )
+                logger.info(f"[LEGACY RESET] user_id={user_id}: {result}")
+
         except Exception as e:
             logger.error(f"Ошибка очистки истории: {e}", exc_info=True)
 

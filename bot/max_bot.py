@@ -19,6 +19,8 @@ from bot.services.config import Settings
 from bot.services.broadcast import create_broadcast_app, news_scheduler
 from bot.services.handlers import register_handlers
 
+from bot.services.user_resolver import UserResolver
+
 # Настройка логирования
 logger = setup_logger('bot', 'bot.log')
 TITLE_START = """
@@ -95,6 +97,8 @@ async def main():
     await store.connect()
     # инициализируем хранилище пользователей
     subscriber_store = SubscriberStore(store.pool)
+    # обработчик пользователя для унификации по номеру телефона
+    user_resolver = UserResolver(store.pool)
     # инициализируем хранилище новостей
     news_store = NewsStore(store.pool)
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
@@ -119,6 +123,7 @@ async def main():
         dp=dp,
         store=store,
         subscriber_store=subscriber_store,
+        user_resolver=user_resolver,
         adk=adk,
         doc_handler=doc_handler,
         get_start_message=get_start_message,
