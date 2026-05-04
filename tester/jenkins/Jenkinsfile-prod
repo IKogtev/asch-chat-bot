@@ -70,7 +70,7 @@ pipeline {
 
       steps {
         withCredentials([
-          string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
+          string(credentialsId: 'LLM_API_KEY_GOOGLE_ADK_AGENT', variable: 'LLM_API_KEY')
         ]) {
           container('adk-agent-tester') {
             sh '''
