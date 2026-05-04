@@ -59,17 +59,29 @@ def _load_json_leaf_runner_module():
 
 
 json_leaf_runner_module = _load_json_leaf_runner_module()
+AgentValidationFailure = json_leaf_runner_module.AgentValidationFailure
 run_json_leaf_agent = json_leaf_runner_module.run_json_leaf_agent
+strip_thought_parts = json_leaf_runner_module.strip_thought_parts
 
 
 class _FakeAgent:
+    def __init__(self, events=None):
+        self.events = events or []
+
     async def run_async(self, ctx):
-        if False:
-            yield None
+        for event in self.events:
+            yield event
 
 
 def _make_ctx(raw: str):
     return types.SimpleNamespace(session=types.SimpleNamespace(state={"owasp_result_json": raw}))
+
+
+def _make_event(parts, actions=None):
+    return types.SimpleNamespace(
+        content=types.SimpleNamespace(parts=parts),
+        actions=actions,
+    )
 
 
 async def _drain(gen):
@@ -80,68 +92,137 @@ async def _drain(gen):
 
 
 @pytest.mark.unit
-def test_run_json_leaf_agent_uses_fallback_for_invalid_json() -> None:
-    ctx = _make_ctx("not-json")
+def test_strip_thought_parts_removes_only_thought_parts_without_mutating_source() -> None:
+    visible = types.SimpleNamespace(text="visible")
+    thought = types.SimpleNamespace(text="hidden", thought=True)
+    event = _make_event([visible, thought])
 
-    fallback_calls = []
+    cleaned = strip_thought_parts(event)
 
-    def validator(data):
-        return data
-
-    def fallback(raw, exc):
-        fallback_calls.append((raw, str(exc)))
-        return {"status": "blocked", "route": "reject", "reason": "invalid_contract"}
-
-    asyncio.run(
-        _drain(
-            run_json_leaf_agent(
-                ctx=ctx,
-                agent=_FakeAgent(),
-                output_key="owasp_result_json",
-                parsed_state_key="_owasp_result_parsed",
-                validator=validator,
-                log_label="owasp_result_json",
-                on_parse_error=fallback,
-            )
-        )
-    )
-
-    assert fallback_calls
-    assert ctx.session.state["_owasp_result_parsed"] == {
-        "status": "blocked",
-        "route": "reject",
-        "reason": "invalid_contract",
-    }
+    assert cleaned is not None
+    assert cleaned is not event
+    assert cleaned.content.parts == [visible]
+    assert event.content.parts == [visible, thought]
 
 
 @pytest.mark.unit
-def test_run_json_leaf_agent_uses_fallback_for_invalid_schema() -> None:
-    ctx = _make_ctx('{"status":"bad","route":"continue"}')
+def test_strip_thought_parts_drops_empty_event_without_actions() -> None:
+    event = _make_event([types.SimpleNamespace(text="hidden", thought=True)])
 
-    def validator(data):
-        raise ValueError(f"Invalid status: {data['status']}")
+    assert strip_thought_parts(event) is None
 
-    def fallback(raw, exc):
-        return {
-            "status": "blocked",
-            "route": "reject",
-            "reason": "invalid_contract",
-            "user_message": "blocked",
-        }
 
-    asyncio.run(
+@pytest.mark.unit
+def test_strip_thought_parts_preserves_function_parts_and_actions() -> None:
+    function_call = types.SimpleNamespace(function_call={"name": "kb_search"})
+    function_response = types.SimpleNamespace(function_response={"name": "kb_search"})
+    thought = types.SimpleNamespace(text="hidden", thought=True)
+    actions = types.SimpleNamespace(state_delta={"x": 1})
+    event = _make_event([thought, function_call, function_response], actions=actions)
+
+    cleaned = strip_thought_parts(event)
+
+    assert cleaned is not None
+    assert cleaned.content.parts == [function_call, function_response]
+    assert cleaned.actions is actions
+
+
+@pytest.mark.unit
+def test_strip_thought_parts_keeps_thought_only_event_with_meaningful_actions() -> None:
+    actions = types.SimpleNamespace(state_delta={"x": 1})
+    event = _make_event(
+        [types.SimpleNamespace(text="hidden", thought=True)],
+        actions=actions,
+    )
+
+    cleaned = strip_thought_parts(event)
+
+    assert cleaned is not None
+    assert cleaned.content.parts == []
+    assert cleaned.actions is actions
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_yields_sanitized_events() -> None:
+    visible = types.SimpleNamespace(text="visible")
+    thought = types.SimpleNamespace(text="hidden", thought=True)
+    event = _make_event([thought, visible])
+    ctx = _make_ctx('{"status":"ok"}')
+
+    def validator(data, context):
+        assert isinstance(context, dict)
+        return data
+
+    events = asyncio.run(
         _drain(
             run_json_leaf_agent(
                 ctx=ctx,
-                agent=_FakeAgent(),
+                agent=_FakeAgent([event]),
                 output_key="owasp_result_json",
                 parsed_state_key="_owasp_result_parsed",
                 validator=validator,
                 log_label="owasp_result_json",
-                on_parse_error=fallback,
+                validation_error_user_message="stub",
             )
         )
     )
 
-    assert ctx.session.state["_owasp_result_parsed"]["status"] == "blocked"
-    assert ctx.session.state["_owasp_result_parsed"]["reason"] == "invalid_contract"
+    assert len(events) == 1
+    assert events[0].content.parts == [visible]
+    assert event.content.parts == [thought, visible]
+    assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_raises_non_fatal_validation_failure_for_invalid_json() -> None:
+    ctx = _make_ctx("not-json")
+
+    def validator(data, context):
+        assert isinstance(context, dict)
+        return data
+
+    with pytest.raises(AgentValidationFailure) as exc:
+        asyncio.run(
+            _drain(
+                run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=_FakeAgent(),
+                    output_key="owasp_result_json",
+                    parsed_state_key="_owasp_result_parsed",
+                    validator=validator,
+                    log_label="owasp_result_json",
+                    validation_error_user_message="stub",
+                )
+            )
+        )
+
+    assert exc.value.log_label == "owasp_result_json"
+    assert exc.value.user_message == "stub"
+    assert ctx.session.state.get("_owasp_result_parsed") is None
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_raises_non_fatal_validation_failure_for_invalid_schema() -> None:
+    ctx = _make_ctx('{"status":"bad","route":"continue"}')
+
+    def validator(data, context):
+        assert isinstance(context, dict)
+        raise ValueError(f"Invalid status: {data['status']}")
+
+    with pytest.raises(AgentValidationFailure) as exc:
+        asyncio.run(
+            _drain(
+                run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=_FakeAgent(),
+                    output_key="owasp_result_json",
+                    parsed_state_key="_owasp_result_parsed",
+                    validator=validator,
+                    log_label="owasp_result_json",
+                    validation_error_user_message="blocked",
+                )
+            )
+        )
+
+    assert exc.value.validation_error == "Invalid status: bad"
+    assert exc.value.user_message == "blocked"

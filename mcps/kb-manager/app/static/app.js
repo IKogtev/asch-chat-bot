@@ -3,44 +3,58 @@ const API_BASE = '';
 
 // State
 let selectedFile = null;
-let currentCollection = null;
+let currentCollection = null; // текущая коллекция
 let currentCollectionType = null; // faq | kb | docs
 let activeCollections = {
     faq: null,
     kb: null
-};
-let collectionsByType = {};
-let activeAliases = {};
-let currentPromptContent = "";
-let promptFiles = [];
-let botStartMessageContent = "";
-let newsEditor = null;
-let currentAgent = null;
-let promptEditorMDE = null;
-let currentUser = null;
-let lastTimestamp = null;
-let isLoadingLogs = false;
+}; // активные коллекции
+let collectionsByType = {}; // коллекции по типам
+let activeAliases = {}; // активные алиасы
+// управление промптами
+let currentPromptContent = ""; //текст текущего промпта
+let promptFiles = []; // список файлов промптов для агента
+let botStartMessageContent = ""; // стартовое сообщение текст
+let newsEditor = null; // текстовое поле отправки новости
+let newsHistoryTimer = null; // Переменная для хранения таймера
+let currentAgent = null; // текущий агент
+let promptEditorMDE = null; // редактор промпта в markdown формате
+let currentUser = null; // текущий пользователь
+// Логи: фильтры и кэш
+let logFilters = {};
+let logsCache = []; // кэш последних записей для быстрой фильтрации
+let logsPage = 0; // стандартная страница логов
+const LOGS_PAGE_SIZE = 100; // число логов на страницу
+// переменные для аналитики
 let hourChart = null;
 let dayChart = null;
 let userSearch = "";
 let allUsers = [];
 let filteredUsers = [];
-let userPage = 0;
-const PAGE_SIZE = 10;
+let analyticsLoaded = false; // флаг загрузки аналитики
+let userPage = 0; 
+const PAGE_SIZE = 10; // число отображаемых пользователей и документов на странице
 let docPage = 0;
 let allDocs = [];
 let statSources = [];
+// пагинация для групп пользователей
+let currentPage = 1;
+let pageSize = 20;
+let allUsersCache = [];
+// фильтр пользователей
+let activeStatsFilter = "all";
+let filteredUsersCache = []; // кэш фильтрованных пользователей
 
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
-    checkAuth();
-    loadAliasData();
-    loadCollections();
-    loadActiveCollections();
-    loadCollectionInfo();
-    loadDocuments();
-    setupDragAndDrop();
+    checkAuth(); //Проверка авторизации
+    loadAliasData(); // загрузка данных Алиаса
+    loadCollections(); // загрузка коллекций
+    loadActiveCollections(); // загрузка активных коллекций
+    loadCollectionInfo(); // загрузка информации о коллекциях
+    loadDocuments(); // загрузка документов
+    setupDragAndDrop(); 
     loadSyncSettings();
     subscribeToSync();
     loadFilesystemTree();
@@ -73,36 +87,9 @@ document.addEventListener('DOMContentLoaded', () => {
             modules: {
                 toolbar: '#news-toolbar'
             },
-            placeholder: "Напишите новость..."
+            placeholder: "Введите текст..."
         });
     }
-    const now = new Date();
-
-    // сегодня
-    const to = new Date(now);
-
-    // 7 дней назад
-    const from = new Date(now);
-    from.setDate(from.getDate() - 7);
-
-    // формат под datetime-local
-    function formatMSK(dt) {
-            return dt.toLocaleString('sv-SE', {
-            timeZone: 'Europe/Moscow',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }).replace(',', 'T');
-    }
-
-    document.getElementById("from").value = formatMSK(from);
-    document.getElementById("to").value = formatMSK(to);
-
-    // сразу грузим аналитику
-    loadAnalytics();
 });
 // #############################
 // MENU FOR ALL PAGES INSIDE UI 
@@ -461,8 +448,8 @@ function showTab(tabName, event=null) {
     
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
-    if (event && event.target) {
-        event.target.classList.add('active');
+    if (event && event.currentTarget) {
+        event.currentTarget.classList.add('active');
     }
     else {
         const button = document.querySelector(`[data-tab="${tabName}"]`);
@@ -486,6 +473,13 @@ function showTab(tabName, event=null) {
         loadBotStartMessage();
     } else if (tabName === 'user_groups'){
         loadUserGroups();
+    } else if (tabName === 'analytics'){
+        // инициализация автоматического рендера аналитики за последние 7 дней
+        initAnalytics();   // выставим даты
+        loadAnalytics();   // загрузим
+        analyticsLoaded = true;
+    } else if (tabName === 'dialogs'){
+        updateDialogs()
     }
 }
 
@@ -714,6 +708,29 @@ function shiftToUTC(dateStr) {
 
     return dt.toISOString();
 }
+// формат под datetime-local
+function formatMSK(dt) {
+    return dt.toLocaleString('sv-SE', {
+        timeZone: 'Europe/Moscow',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }).replace(',', 'T');
+}
+// превращаем технический статус в русский текст
+function getStatusName(status) {
+    const statuses = {
+        'pending': 'В ожидании',
+        'sent': 'Отправлено',
+        'processing': 'Отправляется...',
+        'error': 'Ошибка'
+    };
+    // Если придет какой-то новый статус, которого нет в списке — вернем его как есть
+    return statuses[status] || status;
+}
 // #############################
 // DOCUMENTS TAB LOGIC
 // #############################
@@ -900,7 +917,6 @@ function subscribeToSync() {
         eventSource.close();
     };
 }
-
 // функция для синхронизации по всем данным
 async function syncAll(btnElement) {
     // 1. Защита: если кнопка не передана, выходим
@@ -1551,10 +1567,10 @@ async function sendNews() {
     } finally {
         sendBtn.disabled = false;
         sendBtn.innerText = "📤 Отправить новость";
-        loadNewsHistory();
+        await loadNewsHistory();
     }
 }
-
+// удаление файла прикрепленного к новости
 document.getElementById("news-file-remove").onclick = () => {
     const fileInput = document.getElementById("news-files");
 
@@ -1569,7 +1585,7 @@ document.getElementById("news-file-remove").onclick = () => {
 
     console.log("File removed (reuse cleared)");
 };
-
+// добавление файла прикрепленного к новости
 document.getElementById("news-files").addEventListener("change", (e) => {
     const fileInput = e.target;
 
@@ -1585,11 +1601,13 @@ document.getElementById("news-files").addEventListener("change", (e) => {
         console.log("New file selected, reuse cleared");
     }
 });
-
 // загрузка истории новостей
 async function loadNewsHistory() {
     const container = document.getElementById("news-history");
-    container.innerHTML = '<div class="loading">Загрузка...</div>';
+    const isFirstLoad = container.innerHTML.includes("loading") || container.innerHTML === "";
+    if (isFirstLoad) {
+        container.innerHTML = '<div class="loading">Загрузка...</div>';
+    }
 
     try {
         const res = await fetch("/api/news");
@@ -1606,15 +1624,17 @@ async function loadNewsHistory() {
                     <p>Нет новостей</p>
                 </div>
             `;
+            stopNewsPolling(); // Останавливаем опрос, если новостей нет
             return;
         }
 
         container.innerHTML = data.map(n =>{
             const files = n.files || [];
             const targetGroup = n.target_group || "all";
+            const statusRussian = getStatusName(n.status);
             const filesHtml = files.length > 0
                 ? files.map(f => `
-                    <div style="margin-top:5px;">
+                    <div class="news-file">
                         📎 ${escapeHtml(f.name)}
                         <button 
                             class="btn btn-small btn-secondary"
@@ -1623,9 +1643,9 @@ async function loadNewsHistory() {
                         </button>
                     </div>
                 `).join("")
-                : '<div style="color:#999;">Без файлов</div>';
+                : '<div class="news-no-files">Без файлов</div>';
             return `
-                <div class="document-card">
+                <div class="document-card" ${n.status === 'pending' ? 'status-pending' : ''}">
                     <div class="document-header">
                         <div class="document-title">
                             📰 ID: ${n.id}
@@ -1633,7 +1653,7 @@ async function loadNewsHistory() {
                         <button 
                             class="btn btn-primary btn-small"
                             onclick="reuseNewsById(${n.id})">
-                            📋 Использовать
+                            📋  Редактировать и отправить
                         </button>
                         <button 
                             class="btn btn-primary btn-danger btn-small"
@@ -1641,43 +1661,58 @@ async function loadNewsHistory() {
                             🗑️ Удалить
                         </button>
                     </div>
-                    
-                    <div class="document-meta">
-                        <div class="meta-item">
-                            📅 ${formatDate(n.created_at)}
-                        </div>
-                        <div class="meta-item">
-                            ⏰ ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}
-                        </div>
-                        <div class="meta-item">
-                            📊 ${n.status}
-                        </div>
-                        <div class="meta-item">
-                            👥 ${getTargetGroupName(targetGroup) || n.target_group || "all"}
-                        </div>
+                    <div class="news-meta">
+                        <span> Создано: ${formatDate(n.created_at)}</span>
+                        <span> Отправлено: ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}</span>
+                        <span> Статус: ${statusRussian}</span>
+                        <span> Получатели: ${getTargetGroupName(targetGroup) || n.target_group || "all"}</span>
                     </div>
-
-                    <div class="result-text" style="margin-top:10px;">
-                        <div class="news-preview">
-                            ${n.text || ""}
-                        </div>
+                    <div class="news-content">
+                        ${n.text || ""}
                     </div>
-                    <div style="margin-top:10px;">
+                    <div class="news-files">
                         ${filesHtml}
                     </div>
                 </div>
             `; 
         }).join("");
 
+        // --- ЛОГИКА АВТО-ОБНОВЛЕНИЯ ---
+        // Проверяем, есть ли хотя бы одна новость в статусе "pending"
+        const hasPending = data.some(n => n.status === "pending" || n.status === "processing");
+
+        if (hasPending) {
+            console.log("Есть ожидающие новости, запускаю поллинг...");
+            startNewsPolling();
+        } else {
+            console.log("Все новости отправлены, останавливаю поллинг.");
+            stopNewsPolling();
+        }
+
     } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
-            </div>
-        `;
+        console.error(e);
+        if (isFirstLoad) container.innerHTML = `<div class="result-message error">Ошибка: ${e.message}</div>`;
     }
 }
+// Функция запуска опроса
+function startNewsPolling() {
+    if (newsHistoryTimer) return; // Чтобы не плодить кучу таймеров
+    newsHistoryTimer = setInterval(() => {
+        // Проверяем, активна ли вкладка новостей (чтобы не грузить сервер вхолостую)
+        const newsTab = document.getElementById("news_send-tab");
+        if (newsTab && newsTab.classList.contains("active") || newsTab.style.display !== "none") {
+            loadNewsHistory();
+        }
+    }, 10000); // 10 секунд — оптимально для новостей
+}
 
+// Функция остановки опроса
+function stopNewsPolling() {
+    if (newsHistoryTimer) {
+        clearInterval(newsHistoryTimer);
+        newsHistoryTimer = null;
+    }
+}
 // функция удаления новости из истории
 async function deleteNews(id) {
     const confirmDelete = confirm("Удалить новость из истории?");
@@ -1701,8 +1736,7 @@ async function deleteNews(id) {
     } catch (e) {
         alert("Ошибка: " + e.message);
     }
-}
-                        
+}                   
 // просмотр файла новости
 async function viewNewsFile(name) {
     try {
@@ -1890,7 +1924,7 @@ async function openAgent(agent) {
     // грузим текущий промпт 
     await loadCurrentPrompt();
 }
-
+// закрытие окна агента
 function closeAgentModal() {
     const modal = document.getElementById("agent-modal");
     if (modal) {
@@ -2120,11 +2154,9 @@ async function deletePromptFile(filename) {
         console.error("Error deleting prompt file:", err);
     }
 }
-
 // #############################
 // BOT SETTINGS TAB LOGIC
 // #############################
-
 // загрузка стартового сообщения бота
 async function loadBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
@@ -2191,103 +2223,147 @@ async function saveBotStartMessage() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
-
 // #############################
 // GROUPS TAB LOGIC
 // #############################
 
 // Загрузка списка пользователей с группами
-async function loadUserGroups() {
+async function loadUserGroups(skipFetch = false) {
     const container = document.getElementById("user-groups-list");
     const searchQuery = document.getElementById("user-search")?.value || "";
-    const groupFilter = document.getElementById("group-filter")?.value || "all";
     if (!container) return;
-
-    container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
-    try {
-        const res = await fetch("/api/subscribers");  
-        if (!res.ok) {
-            throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
-        }
-        const users = await res.json();
-        
-        // Фильтрация по поиску
-        let filtered = users.filter(u => {
-            if (!searchQuery) return true;
-            const q = searchQuery.toLowerCase();
-            return (
-                String(u.user_id).includes(q) ||
-                (u.username && u.username.toLowerCase().includes(q)) ||
-                (u.first_name && u.first_name.toLowerCase().includes(q)) ||
-                (u.last_name && u.last_name.toLowerCase().includes(q))
-            );
-        });
-        
-        // Фильтрация по группе
-        if (groupFilter === "manager_group") {
-            filtered = filtered.filter(u => u.manager_group);
-        } else if (groupFilter === "coach_group") {
-            filtered = filtered.filter(u => u.coach_group);
-        } else if (groupFilter === "no_groups") {
-            filtered = filtered.filter(u => !u.manager_group && !u.coach_group);
-        }
-        
-        // Обновление статистики
-        updateGroupStats(users);
-        if (filtered.length === 0) {
+    // Загружаем с API только если нужно
+    if (!skipFetch) {
+        container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
+        try {
+            const res = await fetch("/api/subscribers");  
+            if (!res.ok) {
+                throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
+            }
+            const users = await res.json();
+            allUsersCache = users;
+        } catch (e) {
             container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>Пользователи не найдены</p>
+                <div class="result-message error">
+                    Ошибка загрузки: ${e.message}
                 </div>
             `;
+            console.error(e);
             return;
         }
-        
+    }    
+    // Фильтрация по поиску
+    filteredUsersCache = allUsersCache.filter(u => {
+        const q = searchQuery.toLowerCase();
+        const matchesSearch = !searchQuery || (
+            String(u.user_id).includes(q) ||
+            (u.username && u.username.toLowerCase().includes(q)) ||
+            (u.first_name && u.first_name.toLowerCase().includes(q)) ||
+            (u.last_name && u.last_name.toLowerCase().includes(q))
+        );
+        // Фильтрация по группе
+        let matchesGroup = true;
+        if (activeStatsFilter === "manager") matchesGroup = !!u.manager_group;
+        else if (activeStatsFilter === "coach") matchesGroup = !!u.coach_group;
+        else if (activeStatsFilter === "both") matchesGroup = (u.manager_group && u.coach_group);
+        else if (activeStatsFilter === "none") matchesGroup = (!u.manager_group && !u.coach_group);
+        return matchesSearch && matchesGroup;
+    });
+    // пагинация расчеты
+    const totalPages = Math.max(1, Math.ceil(filteredUsersCache.length / pageSize));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    const start = (currentPage - 1) * pageSize;
+    const end = start + pageSize;
+    const paginated = filteredUsersCache.slice(start, end);
+    // Обновление статистики
+    updateGroupStats(allUsersCache);
+    if (paginated.length === 0) {
         container.innerHTML = `
-            <table class="user-groups-table">
-                <thead>
-                    <tr>
-                        <th>User ID</th>
-                        <th>Username</th>
-                        <th>Имя</th>
-                        <th>Фамилия</th>
-                        <th class="text-center">👔 Менеджер</th>
-                        <th class="text-center">🎓 Коуч</th>
-                        <th>Последний вход</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${filtered.map(u => `
-                        <tr>
-                            <td class="font-monospace">${u.user_id}</td>
-                            <td>${escapeHtml(u.username || '-')}</td>
-                            <td>${escapeHtml(u.first_name || '')}</td>
-                            <td>${escapeHtml(u.last_name || '')}</td>
-                            <td class="text-center">
-                                <input type="checkbox" 
-                                      ${u.manager_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
-                            </td>
-                            <td class="text-center">
-                                <input type="checkbox" 
-                                      ${u.coach_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
-                            </td>
-                            <td>${formatDate(u.last_seen)}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        `;
-        
-    } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>Пользователи не найдены</p>
             </div>
         `;
-        console.error("Error loading user groups:", e);
+        return;
+    }
+        
+    container.innerHTML = `
+        <table class="user-groups-table">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Username</th>
+                    <th>Имя</th>
+                    <th>Фамилия</th>
+                    <th class="text-center">👔 Менеджер</th>
+                    <th class="text-center">🎓 Коуч</th>
+                    <th>Последний вход</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${paginated.map(u => `
+                    <tr>
+                        <td class="font-monospace">${u.user_id}</td>
+                        <td>${escapeHtml(u.username || '-')}</td>
+                        <td>${escapeHtml(u.first_name || '')}</td>
+                        <td>${escapeHtml(u.last_name || '')}</td>
+                        <td class="text-center">
+                            <input type="checkbox" 
+                                    ${u.manager_group ? 'checked' : ''} 
+                                    onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
+                        </td>
+                        <td class="text-center">
+                            <input type="checkbox" 
+                                    ${u.coach_group ? 'checked' : ''} 
+                                    onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
+                        </td>
+                        <td>${formatDate(u.last_seen)}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+        <!-- пагинация -->
+        <div class="pagination-wrapper">
+            <div class="pagination-controls">
+                <span>Показывать по:</span>
+                <select id="page-size" onchange="changePageSize()">
+                    <option value="20" ${pageSize === 20 ? 'selected' : ''}>20</option>
+                    <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
+                    <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
+                </select>
+            </div>
+
+            <div class="pagination">
+                <button onclick="prevPage()" ${currentPage === 1 ? "disabled" : ""} class="btn btn-primary btn-small">⬅ Назад</button>
+                
+                <span class="page-info">Страница <strong>${currentPage}</strong> из <strong>${totalPages}</strong></span>
+
+                <button onclick="nextPage()" ${currentPage >= totalPages ? "disabled" : ""} class="btn btn-primary btn-small">Вперед ➡</button>
+            </div>
+        </div>
+    `;
+}
+function nextPage() {
+    const totalPages = Math.ceil(filteredUsersCache.length / pageSize);
+    if (currentPage < totalPages) {
+        currentPage++;
+        loadUserGroups(true); // Листаем без запроса к API
+    }
+}
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        loadUserGroups(true); // Листаем без запроса к API
+    }
+}
+// изменение размера страницы
+function changePageSize() {
+    const select = document.getElementById("page-size");
+    if (select) {
+        pageSize = parseInt(select.value);
+        currentPage = 1; // Всегда возвращаемся на 1 страницу
+        loadUserGroups(true); // Листаем без запроса к API
     }
 }
 // Обновление статистики по группам
@@ -2304,28 +2380,39 @@ function updateGroupStats(users) {
     statsDiv.innerHTML = `
         <h3>📊 Статистика пользователей</h3>
         <div class="groups-stats-grid">
-            <div class="groups-stat-card groups-stat-total">
+            <div class="groups-stat-card groups-stat-total ${activeStatsFilter === 'all' ? 'active' : ''}"
+                onclick="applyStatsFilter('all')">
                 <div class="groups-stat-number">${total}</div>
                 <div class="groups-stat-label">Всего пользователей</div>
             </div>
-            <div class="groups-stat-card groups-stat-managers">
+            <div class="groups-stat-card groups-stat-managers ${activeStatsFilter === 'manager' ? 'active' : ''}"
+                onclick="applyStatsFilter('manager')">
                 <div class="groups-stat-number">${managers}</div>
                 <div class="groups-stat-label">👔 Менеджеры</div>
             </div>
-            <div class="groups-stat-card groups-stat-couchs">
+            <div class="groups-stat-card groups-stat-couchs ${activeStatsFilter === 'coach' ? 'active' : ''}"
+                onclick="applyStatsFilter('coach')">
                 <div class="groups-stat-number">${couchs}</div>
                 <div class="groups-stat-label">🎓 Коучи</div>
             </div>
-            <div class="groups-stat-card groups-stat-both">
+            <div class="groups-stat-card groups-stat-both ${activeStatsFilter === 'both' ? 'active' : ''}"
+                onclick="applyStatsFilter('both')">
                 <div class="groups-stat-number">${both}</div>
                 <div class="groups-stat-label">В обеих группах</div>
             </div>
-            <div class="groups-stat-card groups-stat-none">
+            <div class="groups-stat-card groups-stat-none ${activeStatsFilter === 'none' ? 'active' : ''}"
+                onclick="applyStatsFilter('none')">
                 <div class="groups-stat-number">${noGroups}</div>
                 <div class="groups-stat-label">Без групп</div>
             </div>
         </div>
     `;
+}
+// функция фильтра
+function applyStatsFilter(filter) {
+    activeStatsFilter = filter;
+    currentPage = 1; // сброс страницы
+    loadUserGroups();
 }
 // Переключение группы пользователя
 async function toggleUserGroup(userId, group, value) {
@@ -2360,46 +2447,22 @@ async function toggleUserGroup(userId, group, value) {
 }
 // Экспорт пользователей в CSV
 function exportUsers() {
-    const table = document.querySelector("#user-groups-list table");
-    if (!table) {
-        alert("Нет данных для экспорта");
-        return;
+    const search = document.getElementById("user-search")?.value || "";
+
+    const params = new URLSearchParams();
+
+    if (search) params.set("search", search);
+
+    if (activeStatsFilter && activeStatsFilter !== "all") {
+        params.set("group", activeStatsFilter);
     }
-    
-    let csv = [];
-    const rows = table.querySelectorAll("tr");
-    
-    rows.forEach(row => {
-        const cols = row.querySelectorAll("th, td");
-        const rowData = [];
-        
-        cols.forEach((col, index) => {
-            // Для чекбоксов берём состояние
-            const checkbox = col.querySelector("input[type='checkbox']");
-            if (checkbox) {
-                rowData.push(`"${checkbox.checked ? 'Yes' : 'No'}"`);
-            } else {
-                rowData.push(`"${col.textContent.trim().replace(/"/g, '""')}"`);
-            }
-        });
-        
-        csv.push(rowData.join(","));
-    });
-    
-    const csvContent = csv.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `users_groups_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-    
-    showNotification("Экспорт выполнен успешно", "success");
+
+    window.open(`/api/subscribers/export?${params.toString()}`);
 }
 
 /// #############################
 // AUTH ACCESS LOGIC
 // #############################
-
 // проверка авторизованности
 async function checkAuth() {
     try {
@@ -2460,7 +2523,8 @@ function applyRoleAccess() {
         "bot_settings",
         "user_groups",
         "logs",
-        "analytics"
+        "analytics",
+        "dialogs"
     ];
     tabNames.forEach(name => {
         const tab = document.getElementById(`${name}-tab`);
@@ -2479,11 +2543,11 @@ function applyRoleAccess() {
     if (role === "manager") {
         // manager ограничен
         const allowed = [
-            "documents",
-            "search",
             "tree_files",
             "news_send",
-            "user_groups"
+            "user_groups",
+            "analytics",
+            "dialogs"
         ];
 
         allowed.forEach(name => {
@@ -2492,7 +2556,6 @@ function applyRoleAccess() {
     }
     openFirstAvailableTab();
 }
-
 // сокрытие вкладок 
 function hideTabButton(tabName) {
     const btn = document.querySelector(`[data-tab="${tabName}"]`);
@@ -2515,33 +2578,67 @@ function openFirstAvailableTab() {
         }
     }
 }
-
 // #############################
 // LOGS TAB LOGIC
 // #############################
-// функция загрузки логов событий
-async function loadLogs(initial = false) {
-    if (isLoadingLogs) return;
-    isLoadingLogs = true;
+// функция форматирования в json вид чтобы отрисовывать
+function formatJSON(payload) {
+    try {
+        if (typeof payload === "string") {
+            payload = JSON.parse(payload);
+        }
 
-    let url = "/api/events?limit=100";
-    // создаем обновленние логов сверху
-    if (!initial && lastTimestamp) {
-        url = `/api/events?since=${encodeURIComponent(lastTimestamp)}&limit=50`;
+        return JSON.stringify(payload, null, 2);
+    } catch {
+        return String(payload);
     }
+}
+// отрисовка переключения между страницами
+function renderPagination(dataLength) {
+    const el = document.getElementById("logs-pagination");
 
-    const res = await fetch(url);
+    el.innerHTML = `
+        <div class="pagination">
+            <button onclick="prevLogs()" ${logsPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
+
+            <span>Страница ${logsPage + 1}</span>
+
+            <button onclick="nextLogs()" ${dataLength < LOGS_PAGE_SIZE ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
+        </div>
+    `;
+}
+// отрисовка json payload 
+function renderPayload(payload) {
+    const formatted = formatJSON(payload);
+    return `<pre>${escapeHtml(formatted)}</pre>`;
+}
+// функция загрузки логов
+async function loadLogs() {
+    const params = new URLSearchParams();
+
+    params.set("limit", LOGS_PAGE_SIZE);
+    params.set("offset", logsPage * LOGS_PAGE_SIZE);
+
+    Object.entries(logFilters).forEach(([k, v]) => {
+        if (!v) return;
+        if (k === "created_at") {
+            params.set(k, shiftToUTC(v)); // сдвигаем время для правильности
+        } else {
+            params.set(k, v);
+        }
+        
+    });
+    const res = await fetch(`/api/events?${params}`);
     const data = await res.json();
-
-    const table = document.getElementById("logs-table");
-
-    if (initial) {
-        table.innerHTML = `
-            <table id="logs-table-inner" border="1" style="width:100%; border-collapse: collapse;">
+    logsCache = data;
+    // создаём таблицу один раз
+    if (!document.getElementById("logs-body")) {
+        document.getElementById("logs-table").innerHTML = `
+            <table id="logs-table-inner">
                 <thead>
                     <tr>
-                        <th> User ID</th>
-                        <th> User name</th>
+                        <th>User ID</th>
+                        <th>User name</th>
                         <th>Event</th>
                         <th>Channel</th>
                         <th>Time</th>
@@ -2552,55 +2649,120 @@ async function loadLogs(initial = false) {
             </table>
         `;
     }
+    renderLogs();
+}
+// настраиваем фильтры для логов
+function setupLogFilters() {
+    document.querySelectorAll('.log-filter').forEach(input => {
+        let timeout;
+        input.addEventListener('input', (e) => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                const column = e.target.dataset.column;
+                const value = e.target.value.trim();
 
+                if (!value) {
+                    delete logFilters[column];
+                } else {
+                    logFilters[column] = value;
+                }
+                logsPage = 0; // сброс страницы
+                loadLogs();   // запрос на сервер
+            }, 300);
+        });
+    });
+}
+// отображаем логи
+function renderLogs() {
     const tbody = document.getElementById("logs-body");
+    if (!tbody) return;
 
-    data.forEach(row => {
+    tbody.innerHTML = '';
+
+    logsCache.forEach(row => {
         const tr = document.createElement("tr");
 
         tr.innerHTML = `
-            <td>${row.user_id || "-"}</td>
-            <td>${row.user_name || "-"}</td>
-            <td>${row.event_type}</td>
-            <td>${row.channel || "-"}</td>
+            <td>${escapeHtml(row.user_id || "-")}</td>
+            <td>${escapeHtml(row.user_name || "-")}</td>
+            <td>${escapeHtml(row.event_type)}</td>
+            <td>${escapeHtml(row.channel || "-")}</td>
             <td>${new Date(row.created_at).toLocaleString()}</td>
-            <td>${JSON.stringify(row.payload).slice(0, 100)}</td>
+            <td class="payload-cell">
+                ${renderPayload(row.payload)}
+            </td>
         `;
 
-        // новые сверху
-        tbody.prepend(tr);
-
-        lastTimestamp = row.created_at;
+        tbody.appendChild(tr);
     });
 
-    isLoadingLogs = false;
+    if (logsCache.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align:center;padding:20px;">
+                    🔍 Ничего не найдено
+                </td>
+            </tr>
+        `;
+    }
+    // отрисовка переключение между вкладками
+    renderPagination(logsCache.length);
 }
-
+// переключение на следующую страницу
+function nextLogs() {
+    logsPage++;
+    loadLogs();
+}
+// переключение на прошлую страницу
+function prevLogs() {
+    if (logsPage > 0) {
+        logsPage--;
+        loadLogs();
+    }
+}
 // функция автоматического обновления логов каждые 10 секунд
 function startLogsAutoRefresh() {
+    setupLogFilters();
     loadLogs(true); // первый запуск
-
+    // задаем интервал логирования
     setInterval(() => {
         loadLogs(false);
     }, 10000); // каждые 10 секунд
 }
-
-// функция экспорта аналитики
+// функция экспорта логов для аналитики
 function exportAnalytics() {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
+    // Временно убрал промежуток за который делать выгрузку
+    // const from = document.getElementById("from").value;
+    // const to = document.getElementById("to").value;
+    // window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
+    window.open("/api/analytics/export");
+}
+// #############################
+// ANALYTICS TAB LOGIC
+// #############################
+// функция инициализации аналитики при нажатии по вкладке
+function initAnalytics() {
+    const now = new Date();
+    // сегодня 
+    const to = new Date(now);
+    // 7 дней назад
+    const from = new Date(now);
+    from.setDate(from.getDate() - 7);
 
-    window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
+    document.getElementById("from").value = formatMSK(from);
+    document.getElementById("to").value = formatMSK(to);
 }
 // функция открытия модалки с пользователями, загрузившими конкретный документ
 async function openUsersModal(filename) {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
+    const fromRaw = document.getElementById("from").value;
+    const toRaw = document.getElementById("to").value;
+    // сдвигаем к времени бд
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
 
     const users = await fetch(
         `/api/analytics/document-users?filename=${encodeURIComponent(filename)}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
-
     document.getElementById("users-list").innerHTML =
         users.length === 0
             ? "<div>Нет данных</div>"
@@ -2611,29 +2773,27 @@ async function openUsersModal(filename) {
                     ${u.source === "search" ? "🔍" : "📂"}
                 </div>
             `).join("");
-
     document.getElementById("users-modal").style.display = "block";
 }
 // функция закрытия модалки с пользователями
 function closeUsersModal() {
     const modal = document.getElementById("users-modal");
     modal.style.display = "none";
-
     document.getElementById("users-list").innerHTML = "";
 }
-// функция экспорта диалогов 
-function exportDialogs() {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
+// функция трансформации времени в корректное для визуализации
+function formatTime(ms) {
+    if (ms === null || ms === undefined) return "0 мс";
 
-    window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
+    if (ms < 1000) return `${ms} мс`;
+    return `${(ms / 1000).toFixed(2)} сек`;
 }
 // функция рендерит статистику
 function renderStats(stats, channels) {
     const el = document.getElementById("stats");
 
     el.innerHTML = `
-        <h3>📊 Статистика</h3>
+        <h3>📈 Статистика</h3>
 
         <p><b>Уникальные пользователи:</b> ${stats.unique_users}</p>
         <p><b>Сообщений всего:</b> ${stats.total_messages}</p>
@@ -2641,8 +2801,8 @@ function renderStats(stats, channels) {
         <p> Среднее количество сообщений на пользователя: ${Math.round(stats.avg_messages_per_user || 0)}</p>
         <p>🔝 Максимальное количество сообщений на пользователя: ${stats.max_messages_per_user}</p>
 
-        <p>⚡ Среднее время ответа: ${Math.round(stats.avg_response_time || 0)}</p>
-        <p>⚡ Медианное время ответа: ${Math.round(stats.median_response_time || 0)}</p>
+        <p>⚡ Среднее время ответа: ${formatTime(stats.avg_response_time || 0)}</p>
+        <p>⚡ Медианное время ответа: ${formatTime(stats.median_response_time || 0)}</p>
 
         <hr>
 
@@ -2652,7 +2812,6 @@ function renderStats(stats, channels) {
         `).join("")}
     `;
 }
-
 // рендеринг топа пользователей
 function renderTopUsers(users) {
     allUsers = users;
@@ -2666,10 +2825,8 @@ function drawUsers() {
     const active = document.activeElement;
     const isInputFocused = active && active.tagName === "INPUT";
     const cursorPos = isInputFocused ? active.selectionStart : null;
-
     const total = filteredUsers.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
     // защита от выхода за границы
     if (userPage >= totalPages) userPage = totalPages - 1;
     if (userPage < 0) userPage = 0;
@@ -2705,10 +2862,8 @@ function drawUsers() {
     // возвращаем фокусирование где был
     if (isInputFocused) {
         const input = el.querySelector("input");
-
         if (input) {
             input.focus();
-
             if (cursorPos !== null) {
                 input.setSelectionRange(cursorPos, cursorPos);
             }
@@ -2718,14 +2873,11 @@ function drawUsers() {
 // поиск пользователей внутри топа
 function searchUsers(q) {
     userSearch = q;
-
     const query = q.toLowerCase();
-
     filteredUsers = allUsers.filter(u =>
         (u.user_id || "").toLowerCase().includes(query) ||
         (u.user_name || "").toLowerCase().includes(query)
     );
-
     userPage = 0;
     drawUsers();
 }
@@ -2744,21 +2896,19 @@ function prevUsers() {
         drawUsers();
     }
 }
-
 // отрисовка топа документов в запросах
 function drawDocs() {
-    
     const el = document.getElementById("top-docs");
-
+    // вычисляем страницы
     const total = allDocs.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
     if (docPage >= totalPages) docPage = totalPages - 1;
     if (docPage < 0) docPage = 0;
-
+    
     const start = docPage * PAGE_SIZE;
     const page = allDocs.slice(start, start + PAGE_SIZE);
-
+    // вычисляем общее число скачиваний
     const totalDownloads = statSources.reduce((sum, s) => sum + Number(s.downloads), 0);
     const sourcesHtml = `
         <div class="sources-block">
@@ -2824,9 +2974,9 @@ function prevDocs() {
 function renderTopDocs(docs, sources) {
     allDocs = docs;
     statSources = sources;
+    // отрисовываем документы
     drawDocs();
 }
-
 // загрузка аналитической активности 
 async function loadActivity(from, to) {
     const [activity, words, phrases] = await Promise.all([
@@ -2834,7 +2984,7 @@ async function loadActivity(from, to) {
         fetch(`/api/analytics/top-words?from_ts=${from}&to_ts=${to}`).then(r => r.json()),
         fetch(`/api/analytics/top-phrases?from_ts=${from}&to_ts=${to}`).then(r => r.json())
     ]);
-
+    // отрисовка графиков активности и облак
     renderActivity(activity, words, phrases);
 }
 // отрисовка графиков активности
@@ -2860,7 +3010,7 @@ function renderActivity(activity, words, phrases) {
     }
 
     const ctx = document.getElementById("activityChart").getContext("2d");
-
+    // строим график по сообщениям в час
     hourChart = new Chart(ctx, {
         type: "bar",
         data: {
@@ -2878,30 +3028,28 @@ function renderActivity(activity, words, phrases) {
         }
     });
 
-
     // ===== ДНИ =====
     const days = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
-
     const dayMap = {};
     // Инициализируем счётчики для всех дней (0-6, где 0=ВС по стандарту JS)
     for (let i = 0; i < 7; i++) {
         dayMap[i] = 0;
     }
-
+    //  Агрегация: суммируем сообщения по дням недели
     activity.forEach(a => {
         const day = Number(a.day);
         dayMap[day] += Number(a.messages);
     });
-
+    // Подготовка данных для графика: выравниваем по 7 дням с циклическим сдвигом
     const dayData = days.map((_, displayIndex) => {
         const dataIndex = (displayIndex + 1) % 7;
         return dayMap[dataIndex];
     });
-
+    // уничтожаем старый график
     if (dayChart) {
         dayChart.destroy();
     }
-
+    // строим график сообщений в день
     dayChart = new Chart(document.getElementById("dayChart"), {
         type: "bar",
         data: {
@@ -2915,42 +3063,12 @@ function renderActivity(activity, words, phrases) {
             responsive: true
         }
     });
-
-
     // ===== WORD CLOUD =====
-    // const list = words.map(w => [w.text, w.value]);
-
-    // const cloudEl = document.getElementById("word-cloud");
-
-    // // очищаем перед рендером
-    // cloudEl.innerHTML = "";
-
-    // if (list.length === 0) {
-    //     cloudEl.innerHTML = "<div>Нет данных</div>";
-    //     return;
-    // }
-    // // если контейнер ещё не готов для отрисовки
-    // if (cloudEl.offsetWidth === 0) {
-    //     setTimeout(() => renderActivity(activity, words, phrases), 100);
-    //     return;
-    // }
-    // // отложенный рендер word cloud он требует
-    // setTimeout(() => {
-    //     WordCloud(cloudEl, {
-    //         list: list,
-    //         gridSize: 8,
-    //         weightFactor: 10,
-    //         fontFamily: "Arial",
-    //         color: "random-dark",
-    //         backgroundColor: "#fff",
-    //         rotateRatio: 0.5
-    //     });
-    // }, 100);
     renderCloud("word-cloud", words);
     // phrases
     renderCloud("phrase-cloud", phrases);
 }
-
+// функция отрисовки облака
 function renderCloud(id, data) {
     const el = document.getElementById(id);
 
@@ -2962,12 +3080,11 @@ function renderCloud(id, data) {
         el.innerHTML = "<div>Нет данных</div>";
         return;
     }
-
     if (el.offsetWidth === 0) {
         setTimeout(() => renderCloud(id, data), 100);
         return;
     }
-
+    // отрисовываем облако с задержкой, так требует фреймворк
     setTimeout(() => {
         WordCloud(el, {
             list: list,
@@ -2979,7 +3096,6 @@ function renderCloud(id, data) {
         });
     }, 50);
 }
-
 // загрузка всей аналитики
 async function loadAnalytics() {
     const fromRaw = document.getElementById("from").value;
@@ -2999,14 +3115,15 @@ async function loadAnalytics() {
     renderStats(stats, channels);
     renderTopUsers(users);
     renderTopDocs(docs, sources)
-
     loadActivity(from, to);
 }
 // открытие окна диалогов пользователя
 async function openUserDialogs(userId, userName) {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-
+    const fromRaw = document.getElementById("from").value;
+    const toRaw = document.getElementById("to").value;
+    // сдвигаем к времени бд
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
     const dialogs = await fetch(
         `/api/analytics/user-dialogs?user_id=${userId}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
@@ -3020,7 +3137,6 @@ async function openUserDialogs(userId, userName) {
         );
     };
     renderUserDialogs(dialogs);
-
     document.getElementById("dialogs-modal").style.display = "block";
 }
 // отрисовка диалога пользователя 
@@ -3033,14 +3149,14 @@ function renderUserDialogs(dialogs) {
             : dialogs.map(d => {
 
                 let answer;
-
+                // преобразуем ответ с добавлением времени ответа
                 if (d.response) {
-                    answer = `${d.response} (${d.response_time || 0} мс)`;
+                    answer = `${d.response} (${formatTime(d.response_time || 0)})`;
                 } else if (d.file_path) {
                     const shortFile = d.file_path.split("/").pop();
-                    answer = `📄 ${shortFile} (${d.response_time || 0} мс)`;
+                    answer = `📄 ${shortFile} (${formatTime(d.response_time || 0)} )`;
                 } else {
-                    answer = `Нет ответа (${d.response_time || 0} мс)`;
+                    answer = `Нет ответа (${formatTime(d.response_time || 0)})`;
                 }
 
                 return `
@@ -3062,4 +3178,116 @@ function renderUserDialogs(dialogs) {
 function closeDialogsModal() {
     document.getElementById("dialogs-modal").style.display = "none";
     document.getElementById("dialogs-list").innerHTML = "";
+}
+// #############################
+// DIALOGS TAB LOGIC
+// #############################
+// инициализация дат
+function initDialogs() {
+    const fromEl = document.getElementById("dialogs-from");
+    const toEl = document.getElementById("dialogs-to");
+    const now = new Date();
+    const to = new Date(now);
+    const from = new Date(now);
+    from.setDate(from.getDate() - 1); // по умолчанию 1 день
+    const fromStr = formatMSK(from)
+    const toStr = formatMSK(to)
+    fromEl.value = fromStr;
+    toEl.value = toStr;
+}
+// проверка существования диалогов
+function ensureDialogsDates() {
+    const fromEl = document.getElementById("dialogs-from");
+    const toEl = document.getElementById("dialogs-to");
+
+    if (!fromEl.value || !toEl.value) {
+        initDialogs();
+    }
+}
+// загрузка диалогов
+async function loadDialogs() {
+    ensureDialogsDates();
+    const fromRaw = document.getElementById("dialogs-from").value;
+    const toRaw = document.getElementById("dialogs-to").value;
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
+
+    const user = document.getElementById("dialogs-user").value;
+    const text = document.getElementById("dialogs-text").value;
+
+    const params = new URLSearchParams({
+        from_ts: from,
+        to_ts: to
+    });
+
+    if (user) params.set("user", user);
+    if (text) params.set("text", text);
+
+    const res = await fetch(`/api/analytics/dialogs?${params}`);
+    const data = await res.json();
+
+    renderDialogs(data);
+}
+function updateDialogs(){
+    initDialogs();
+    loadDialogs();
+}
+// рендер таблицы диалогов
+function renderDialogs(data) {
+    const container = document.getElementById("dialogs-table");
+
+    if (!data || data.length === 0) {
+        container.innerHTML = "<p class='empty-state'>За этот период диалогов не найдено</p>";
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="modern-table">
+            <thead>
+                <tr>
+                    <th>Пользователь</th>
+                    <th>Время (МСК)</th>
+                    <th>Запрос</th>
+                    <th>Ответ бота</th>
+                    <th>Скорость</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${data.map(row => {
+                    // ИСПРАВЛЕНО: Поле из БД называется message_time
+                    const date = row.message_time ? new Date(row.message_time).toLocaleString('ru-RU') : '---';
+                    const respTime = row.response_time ? `${(row.response_time / 1000).toFixed(2)}с` : '';
+                    let answer;
+                    if (row.response) {
+                        answer = row.response;
+                    } else if (row.file_paths) {
+                        const files = row.file_paths.split("||")
+                            .map(f => "📄 " + f.split('/').pop())
+                            .join("<br>");
+                        answer = files;
+                    } else {
+                        answer = "—";
+                    }
+                    return `
+                    <tr>
+                        <td class="user-cell">
+                            <strong>${escapeHtml(row.user_name || 'Аноним')}</strong><br>
+                            <small>${escapeHtml(row.user_id)}</small>
+                        </td>
+                        <td class="time-cell">${date}</td>
+                        <td class="msg-cell">${escapeHtml(row.message || '')}</td>
+                        <td class="resp-cell">${escapeHtml(answer)}</td>
+                        <td class="meta-cell">${respTime}</td>
+                    </tr>
+                `}).join('')}
+            </tbody>
+        </table>
+    `;
+}
+// функция экспорта диалогов 
+function exportDialogs() {
+    const from = shiftToUTC(document.getElementById("dialogs-from").value);
+    const to = shiftToUTC(document.getElementById("dialogs-to").value);
+
+    window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }

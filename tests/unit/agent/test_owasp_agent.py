@@ -30,7 +30,13 @@ def _load_owasp_module():
     prompt_loader_stub.start_prompt_watcher = lambda *args, **kwargs: None
 
     adk_agents_stub = types.ModuleType("google.adk.agents")
-    adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
+
+    class LlmAgent:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    adk_agents_stub.LlmAgent = LlmAgent
 
     lite_llm_stub = types.ModuleType("google.adk.models.lite_llm")
     lite_llm_stub.LiteLlm = type("LiteLlm", (), {})
@@ -53,6 +59,16 @@ def _load_owasp_module():
 
 owasp_module = _load_owasp_module()
 validate_owasp_result = owasp_module.validate_owasp_result
+VALIDATION_CONTEXT = {}
+
+
+@pytest.mark.unit
+def test_create_owasp_agent_excludes_prior_conversation_contents() -> None:
+    agent = owasp_module.create_owasp_agent(model=object())
+
+    assert agent.name == "owasp_agent"
+    assert agent.include_contents == "none"
+    assert agent.output_key == "owasp_result_json"
 
 
 @pytest.mark.unit
@@ -62,7 +78,8 @@ def test_validate_owasp_result_accepts_continue_route() -> None:
             "status": "ok",
             "route": "continue",
             "reason": "safe",
-        }
+        },
+        VALIDATION_CONTEXT,
     )
 
     assert result == {
@@ -81,7 +98,8 @@ def test_validate_owasp_result_accepts_blocked_route_with_user_message() -> None
             "route": "reject",
             "reason": "prompt_injection",
             "user_message": "Запрос отклонён",
-        }
+        },
+        VALIDATION_CONTEXT,
     )
 
     assert result["status"] == "blocked"
@@ -91,17 +109,43 @@ def test_validate_owasp_result_accepts_blocked_route_with_user_message() -> None
 
 @pytest.mark.unit
 def test_validate_owasp_result_rejects_invalid_status() -> None:
-    with pytest.raises(ValueError, match="Invalid status"):
-        validate_owasp_result({"status": "bad", "route": "continue"})
+    with pytest.raises(ValueError) as exc:
+        validate_owasp_result({"status": "bad", "route": "continue", "reason": "x"}, VALIDATION_CONTEXT)
+
+    assert "owasp_agent" in str(exc.value)
+    assert "invalid status" in str(exc.value)
 
 
 @pytest.mark.unit
 def test_validate_owasp_result_rejects_invalid_route() -> None:
-    with pytest.raises(ValueError, match="Invalid route"):
-        validate_owasp_result({"status": "ok", "route": "other"})
+    with pytest.raises(ValueError) as exc:
+        validate_owasp_result({"status": "ok", "route": "other", "reason": "x"}, VALIDATION_CONTEXT)
+
+    assert "invalid route" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_owasp_result_requires_reason() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_owasp_result({"status": "ok", "route": "continue", "reason": ""}, VALIDATION_CONTEXT)
+
+    assert "reason is required" in str(exc.value)
 
 
 @pytest.mark.unit
 def test_validate_owasp_result_requires_user_message_for_blocked_status() -> None:
-    with pytest.raises(ValueError, match="blocked status requires user_message"):
-        validate_owasp_result({"status": "blocked", "route": "reject", "reason": "x"})
+    with pytest.raises(ValueError) as exc:
+        validate_owasp_result({"status": "blocked", "route": "reject", "reason": "x"}, VALIDATION_CONTEXT)
+
+    assert "blocked status requires non-empty user_message" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_owasp_result_requires_continue_route_for_ok_status() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_owasp_result(
+            {"status": "ok", "route": "reject", "reason": "safe", "user_message": ""},
+            VALIDATION_CONTEXT,
+        )
+
+    assert "status='ok' requires route='continue'" in str(exc.value)
