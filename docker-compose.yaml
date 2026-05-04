@@ -99,6 +99,20 @@ services:
       faq:
         condition: service_healthy
 
+  # НОВЫЙ сервис для миграций alembic, запускается перед всем!!!
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: aszh-bot-migration
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "cd /app && alembic upgrade head"]
+    networks:
+      - aszh-bot-network
   bot:
     build:
       context: .
@@ -106,6 +120,8 @@ services:
     container_name: aszh-bot
     restart: unless-stopped
     depends_on:
+      migration:
+          condition: service_completed_successfully
       postgres:
         condition: service_healthy
       adk-agent:
@@ -130,9 +146,7 @@ services:
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
-    # Run Alembic then the bot. Fresh volume: upgrade creates tables. If the DB already had
-    # tables from legacy ensure_schema but no alembic_version row, run once:
-    command: ["sh", "-c", "cd /app && alembic upgrade head && exec python -m bot.bot_v6"]
+    command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
   bot-max:
@@ -142,6 +156,8 @@ services:
     container_name: aszh-bot-max
     restart: unless-stopped
     depends_on:
+      migration:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       adk-agent:
@@ -164,7 +180,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-    command: ["sh", "-c", "cd /app && alembic upgrade head && exec python -m bot.max_bot"]
+    command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
     
@@ -214,8 +230,12 @@ services:
       # путь к базе данных
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
     depends_on:
-      - qdrant
-      - postgres
+      migration:
+          condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - aszh-bot-network
     healthcheck:
@@ -301,7 +321,8 @@ services:
       - QDRANT_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
       - USE_QDRANT=true
     depends_on:
-      - qdrant
+      kb-manager:
+        condition: service_healthy
     networks:
       - aszh-bot-network
     healthcheck:

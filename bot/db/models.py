@@ -29,6 +29,7 @@ class ChatHistory(Base):
         nullable=True,
     )
 
+    global_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class SearchMeta(Base):
     __tablename__ = "search_meta"
@@ -144,3 +145,38 @@ class LoggedEvent(Base):
         server_default=func.now(),
         nullable=False,
     )
+    global_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False) # FK на users.id (UUID)
+    platform: Mapped[str] = mapped_column(String(50), nullable=False)
+    platform_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), nullable=True
+    ) 
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True) 
+    phone_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), nullable=True
+    )
+
+class UiUser(Base):
+    __tablename__ = "ui_users"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    password: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
