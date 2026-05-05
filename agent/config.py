@@ -63,6 +63,15 @@ FAQSEARCH_MCP_TIMEOUT_SEC = float(
 )
 
 # =============================================================================
+# DBHUB MCP SETTINGS
+# =============================================================================
+DBHUB_MCP_URL = os.getenv("DBHUB_MCP_URL", "http://dbhub:8080/mcp").strip()
+DBHUB_MCP_TOKEN = os.getenv("DBHUB_MCP_TOKEN", MCP_TOKEN).strip()
+DBHUB_MCP_TIMEOUT_SEC = float(
+    os.getenv("DBHUB_MCP_TIMEOUT_SEC", str(MCP_TIMEOUT_SEC))
+)
+
+# =============================================================================
 # LOGGING
 # =============================================================================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

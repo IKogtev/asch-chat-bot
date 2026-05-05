@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import asyncpg
 import pandas as pd
@@ -57,6 +58,7 @@ class TablesLoaderService:
             raise FileNotFoundError(f"Tables directory not found: {self.tables_dir}")
 
         loaded_tables: list[LoadedTable] = []
+        await self.ensure_database_exists()
         conn = await asyncpg.connect(self.database_url)
         try:
             await self._drop_public_tables(conn)
@@ -70,6 +72,27 @@ class TablesLoaderService:
             loaded_tables=loaded_tables,
             validation_errors=validation_errors,
         )
+
+    async def ensure_database_exists(self) -> None:
+        database_name = self._database_name_from_url(self.database_url)
+        if not database_name:
+            return
+
+        maintenance_url = self._maintenance_database_url(self.database_url)
+        maintenance_database_name = self._database_name_from_url(maintenance_url)
+        if database_name == maintenance_database_name:
+            return
+
+        conn = await asyncpg.connect(maintenance_url)
+        try:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1",
+                database_name,
+            )
+            if not exists:
+                await conn.execute(f"CREATE DATABASE {self._quote_ident(database_name)}")
+        finally:
+            await conn.close()
 
     async def _drop_public_tables(self, conn: asyncpg.Connection) -> None:
         rows = await conn.fetch(
@@ -268,6 +291,22 @@ class TablesLoaderService:
 
     def _index_name(self, table_name: str, column: str) -> str:
         return self._normalize_identifier(f"idx_{table_name}_{column}")[:63]
+
+    def _database_name_from_url(self, database_url: str) -> str:
+        parsed = urlsplit(database_url)
+        return unquote(parsed.path.lstrip("/").split("/", 1)[0]).strip()
+
+    def _maintenance_database_url(self, database_url: str) -> str:
+        parsed = urlsplit(database_url)
+        return urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                "/postgres",
+                parsed.query,
+                parsed.fragment,
+            )
+        )
 
     def _quote_ident(self, value: str) -> str:
         return f'"{value.replace(chr(34), chr(34) + chr(34))}"'
