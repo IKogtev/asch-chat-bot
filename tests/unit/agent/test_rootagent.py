@@ -64,6 +64,9 @@ def _load_rootagent_module():
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
     kb_answer_stub.validate_kb_answer_result = lambda data, context: data
 
+    product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
+    product_selection_stub.validate_product_selection_result = lambda data, context: data
+
     doc_search_stub = types.ModuleType("agent.agents.doc_search_orchestrator")
     doc_search_stub.DocSearchOrchestrator = type(
         "DocSearchOrchestrator",
@@ -127,6 +130,7 @@ def _load_rootagent_module():
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
+    sys.modules["agent.agents.product_selection_agent"] = product_selection_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
     sys.modules["google"] = google_pkg
     sys.modules["google.genai"] = genai_pkg
@@ -156,6 +160,7 @@ def _make_agent() -> RootAgent:
         dispatcher_agent=fake_subagent,
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
+        product_selection_agent=fake_subagent,
     )
 
 
@@ -393,6 +398,48 @@ async def test_handle_kb_answer_sets_expected_state_and_final_text() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_handle_product_selection_sets_expected_state_and_final_text() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        user_state={"first_name": "Ivan"},
+        session_state={},
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert kwargs["agent"] is agent.product_selection_agent
+        assert kwargs["output_key"] == "product_selection_result_json"
+        assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "product_recommendation",
+            "message": " Product selection answer ",
+            "source": "dbhub",
+            "used_tables": ["products"],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "Original question",
+            "",
+            "product_recommendation",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["first_name"] == "Ivan"
+    assert ctx.session.state["product_selection_search_query"] == "Original question"
+    assert ctx.session.state["product_selection_intent"] == "product_recommendation"
+    assert ctx.session.state["_root_final_text"] == "Product selection answer"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher_validation_failure() -> None:
     agent = _make_agent()
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="привет")], session_state={})
@@ -439,6 +486,77 @@ async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher
 
     assert len(events) == 1
     assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert kb_called is False
+    assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_product_selection_to_product_agent_only() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="compare products")], session_state={})
+    product_called = False
+    kb_called = False
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": "product_compare",
+                "reason": "product comparison",
+                "search_query": "Fort Knox and protected capital",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "compare products"
+        assert search_query == "Fort Knox and protected capital"
+        assert intent == "product_compare"
+        ctx.session.state["_root_final_text"] = "product comparison answer"
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(*args, **kwargs):
+        nonlocal kb_called
+        kb_called = True
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product comparison answer"
+    assert product_called is True
     assert kb_called is False
     assert doc_called is False
 
