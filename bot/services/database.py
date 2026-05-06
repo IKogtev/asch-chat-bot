@@ -383,23 +383,6 @@ class NewsStore:
             """, text, scheduled_at, group, json.dumps(files or []), source)
             return row["id"]
 
-    async def get_pending_news(self):
-        """Получение новостей в ожидании к отправке"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT * FROM news
-                WHERE status = 'pending'
-            """)
-            return [dict(r) for r in rows]
-
-    async def mark_sent(self, news_id: int):
-        """Отметить новость как отправленную"""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE news SET status = 'sent'
-                WHERE id = $1
-            """, news_id)
-
     def _parse_news_row(self, row: asyncpg.Record) -> dict:
         """Приватный метод для нормализации данных новости из БД"""
         d = dict(row)

@@ -28,7 +28,7 @@ from bot.services.utils import (
 )
 import uuid
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
-from maxapi.types import MessageCreated, InputMedia, RequestContactButton
+from maxapi.types import InputMedia, RequestContactButton
 import re
 from maxapi.enums import TextFormat
 from maxapi.types.attachments import Contact
@@ -80,7 +80,6 @@ async def get_tree_cached():
     TREE_TS = time.time()
 
     return TREE_CACHE
-
 
 # получаем клавиатуру 
 def get_phone_keyboard(platform: str="telegram"):
@@ -219,10 +218,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         else:
             # fallback в БД
             phone = await subscriber_store.get_phone(user_id)
-
-        logger.info(
-            f"Данные: username={username}, first_name={first_name}, last_name={last_name}, phone={phone}"
-        )
         #  резолвим global user
         global_user_id = None
         if phone:
@@ -250,7 +245,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         # обработка блокировки пользователя
         user_data = await subscriber_store.get_user_data(user_id) or {}
         if user_data.get("is_blocked"):
-            await bot_res.send("🚫 Вы заблокированы и не можете пользоваться ботом.")
+            await bot_res.send("""
+                               🚫 Доступ для вашей учетной записи ограничен.
+                                Пожалуйста, обратитесь к администратору сервиса.
+                               """)
             return None, None
         
         user_data["global_user_id"] = str(global_user_id) if global_user_id else None
@@ -280,15 +278,14 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     @universal_handler
     async def start(event, ud, bot_res, **kwargs):
         """Обработчик /start"""
-        user_id = ud["user_id"]
         global_user_id = ud.get("global_user_id")
-        logger.info(f"Команда /start [{platform}] от user_id={user_id} (@{ud['username']})")
+        logger.info(f"Команда /start [{platform}] от user_id={global_user_id} (@{ud['username']})")
         
         await eventlogger.log_event(
             event_type="command_start",
-            user_id=str(user_id),
+            user_id=str(global_user_id),
             user_name=ud.get("username"),
-            session_id=str(user_id),
+            session_id=str(global_user_id),
             channel=platform
         )
         # На /start не вызываем ADK.
@@ -304,13 +301,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     @universal_handler
     async def version_info(event, ud, bot_res, **kwargs):
         """Команда для получения версии платформы/бота"""
-        user_id = ud["user_id"]
         global_user_id = ud.get("global_user_id")
-        logger.info(f"Команда /version [{platform}] от user_id={user_id}")
+        logger.info(f"Команда /version [{platform}] от user_id={global_user_id}")
         await eventlogger.log_event(
             event_type="command_version",
-            user_id=str(user_id),
-            session_id=str(user_id),
+            user_id=str(global_user_id),
+            user_name=ud.get("username"),
+            session_id=str(global_user_id),
             channel=platform
         )
         
@@ -336,16 +333,16 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         username = ud["username"]
         session_id = str(global_user_id) if global_user_id else str(user_id)
 
-        logger.info(f"Команда /reset [{platform}] от user_id={user_id} (@{username})")
+        logger.info(f"Команда /reset [{platform}] от user_id={global_user_id} (@{username})")
         await eventlogger.log_event(
             event_type="command_reset",
-            user_id=str(user_id),
+            user_id=str(global_user_id),
             session_id=session_id,
             channel=platform
         )
         try:
             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
-            await adk.delete_session(user_id=str(user_id), session_id=session_id)
+            await adk.delete_session(user_id=str(global_user_id), session_id=session_id)
             # Очищаем историю в БД
             await store.reset(user_id, global_user_id)
             # Удаляем состояние результатов поиска
@@ -362,7 +359,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             logger.error(f"Ошибка при сбросе: {e}", exc_info=True)
             await eventlogger.log_event(
                 event_type="error",
-                user_id=str(user_id),
+                user_id=str(global_user_id),
                 session_id=session_id,
                 channel=platform,
                 payload={
@@ -377,10 +374,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     @message_decorator(Command("help"))
     @universal_handler
     async def help_cmd(event, ud, bot_res, **kwargs):
-        user_id = ud["user_id"]
         global_user_id = ud.get("global_user_id")
-        logger.info(f"Команда /help от user_id={user_id}")
-        await eventlogger.log_event(event_type="command_help", user_id=str(user_id), channel=platform)
+        logger.info(f"Команда /help от user_id={global_user_id}")
+        await eventlogger.log_event(event_type="command_help", user_id=str(global_user_id), channel=platform)
         
         help_text = (
             "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
@@ -441,14 +437,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             url = f"{Settings.KB_MANAGER_URL}/api/documents/download/{doc_id}"
             
         filename = path.split("/")[-1]
-        user_id = ud["user_id"]
         global_user_id = ud.get("global_user_id")
 
-        logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={user_id}")
+        logger.info(f"Запрос на скачивание файла через меню: {filename} (doc_id={doc_id}) от user_id={global_user_id}")
         await eventlogger.log_event(
             event_type="document_download_menu",
-            user_id=str(user_id),
-            session_id=str(user_id),
+            user_id=str(global_user_id),
+            session_id=str(global_user_id),
             user_name=ud.get("username"),
             channel=platform,
             payload={"filename": filename, "file_path": path, "doc_id": doc_id, "source": "menu"}
@@ -541,7 +536,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         async def handle_contact_max(bot_res: BotResponse, ud, contact: Contact):
             """Обработчик полученного контакта — извлекает телефон из vCard"""
             user_id = ud["user_id"]
-            global_user_id = ud.get("global_user_id")
             # Достаем имена из user_data (ud)
             username = ud.get("username")
             first_name = ud.get("first_name", "")
@@ -620,9 +614,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         start_time = time.time()
 
         # логируем скорость ответа
-        logger.info(f"📨 Сообщение [{platform}] от user_id={user_id} (@{ud['username']}): {user_text[:100]}")
+        logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
         await eventlogger.log_event(
-            event_type="message_received", user_id=str(user_id), 
+            event_type="message_received", user_id=str(global_user_id), 
             user_name=ud.get("username"), session_id=session_id, 
             channel=platform, payload={"text": user_text, "turn_id": turn_id, "start_time": start_time}
         )
@@ -650,7 +644,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     await bot_res.send(answer)
                     await eventlogger.log_event(
                         event_type="response",
-                        user_id=str(user_id),
+                        user_id=str(global_user_id),
                         session_id=session_id,
                         channel=platform,
                         payload={
@@ -680,7 +674,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     await bot_res.send(answer)
                     await eventlogger.log_event(
                         event_type="response",
-                        user_id=str(user_id),
+                        user_id=str(global_user_id),
                         session_id=session_id,
                         channel=platform,
                         payload={
@@ -722,20 +716,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, _ = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
-            logger.info(f"📤 Ответ для user_id={user_id}: {answer[:100]}")
-            # сохраняем в логах событие ответа и его латентность
-            await eventlogger.log_event(
-                event_type="response",
-                user_id=str(user_id),
-                session_id=session_id,
-                channel=platform,
-                payload={
-                    "turn_id": turn_id,
-                    "text": answer[:500],  # не логируем слишком длинные
-                    "response_time_ms": response_time
-                }
-            )
-
             work = answer or ""
 
             # сохраняем историю диалога
@@ -756,7 +736,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     response_time = int((time.time() - start_time) * 1000)
                     await eventlogger.log_event(
                         event_type="response",
-                        user_id=str(user_id),
+                        user_id=str(global_user_id),
                         session_id=session_id,
                         channel=platform,
                         payload={
@@ -777,15 +757,15 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 await bot_res.send(final_text)
                 
                 await eventlogger.log_event(
-                    event_type="response", user_id=str(user_id),
+                    event_type="response", user_id=str(global_user_id),
                     session_id=session_id, channel=platform,
                     payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                 )
         except Exception as e:
-            logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={user_id}: {e}", exc_info=True)
+            logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
             await eventlogger.log_event(
                 event_type="error",
-                user_id=str(user_id),
+                user_id=str(global_user_id),
                 session_id=session_id,
                 channel=platform,
                 payload={
