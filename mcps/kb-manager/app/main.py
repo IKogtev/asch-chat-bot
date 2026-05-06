@@ -251,7 +251,7 @@ for name, cfg in COLLECTIONS_CFG.items():
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
-    "interval_hours": 12,
+    "interval_hours": int(os.getenv("SYNC_INTERVAL_HOURS", 12)),
     "interval_seconds": None,
     "last_sync": None,
     "next_sync":None,
@@ -1644,14 +1644,30 @@ async def update_subscriber_group(data: dict):
 # блокировка пользователя
 @app.post("/api/subscribers/block")
 async def block_subscriber(data: dict):
-    """Заблокировать или разблокировать пользователя"""
+    """Заблокировать или разблокировать пользователя сразу в двух ботах"""
     try:
-        resp = await http_client.post(
-            f"{TELEGRAM_BOT_API}/api/subscribers/block",
-            json=data
-        )
-        resp.raise_for_status()
-        return resp.json()
+        async def send_to_bot(name: str, url: str):
+            try:
+                resp = await http_client.post(
+                    f"{url}/api/subscribers/block",
+                    json=data
+                )
+                resp.raise_for_status()
+                return name, resp.json()
+            except Exception as e:
+                return name, {"status": "error", "error": str(e)}
+
+        tg_name, tg_result = await send_to_bot("telegram", TELEGRAM_BOT_API)
+        max_name, max_result = await send_to_bot("max", MAX_BOT_API)
+
+        return {
+            "status": "ok",
+            "results": {
+                tg_name: tg_result,
+                max_name: max_result
+            }
+        }
+
     except Exception as e:
         raise HTTPException(500, str(e))
 

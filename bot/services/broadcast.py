@@ -26,6 +26,7 @@ def create_broadcast_app(
     subscriber_store,
     load_bot_start_message,
     get_start_message,
+    bot_holder,
     source="telegram"
 ):
     app = FastAPI(title="Bot Broadcast API")
@@ -294,6 +295,8 @@ def create_broadcast_app(
                     WHERE id = $2
                 """, value, global_user_id)
 
+            if not value:
+                await notify_user_unblocked(global_user_id)
             return {
                 "status": "ok",
                 "global_user_id": global_user_id,
@@ -302,7 +305,46 @@ def create_broadcast_app(
 
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
-        
+
+    async def notify_user_unblocked(global_user_id: str):
+        async with subscriber_store.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ua.platform, ua.platform_user_id
+                FROM user_accounts ua
+                WHERE ua.user_id = $1
+            """, global_user_id)
+
+        bot = bot_holder.instance
+
+        if not bot:
+            logger.warning("[UNBLOCK NOTIFY] bot is None — skip")
+            return
+
+        text = "✅ Доступ к сервису восстановлен. Продуктивной работы!"
+
+        for r in rows:
+            platform = r["platform"]
+            platform_user_id = r["platform_user_id"]
+
+            try:
+                # КЛЮЧЕВОЕ: фильтр по source
+                if platform != source:
+                    continue
+
+                if source == "telegram":
+                    await bot.send_message(
+                        platform_user_id,
+                        text
+                    )
+                else:  # max
+                    await bot.send_message(
+                        user_id=int(platform_user_id),
+                        text=text
+                    )
+
+            except Exception as e:
+                logger.error(f"[UNBLOCK NOTIFY ERROR] {platform}:{platform_user_id} -> {e}")
+
     return app
 
 
@@ -316,7 +358,6 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
     sent = 0
     failed = 0
     errors = []
-
     users, all_count = await get_filtered_users(subscriber_store, target_group, source)
     count = len(users)
 

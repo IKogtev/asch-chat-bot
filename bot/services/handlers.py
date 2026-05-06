@@ -245,10 +245,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         # обработка блокировки пользователя
         user_data = await subscriber_store.get_user_data(user_id) or {}
         if user_data.get("is_blocked"):
-            await bot_res.send("""
-                               🚫 Доступ для вашей учетной записи ограничен.
-                                Пожалуйста, обратитесь к администратору сервиса.
-                               """)
+            await bot_res.send(
+                "🚫 Доступ для вашей учетной записи ограничен.\n\n"
+                "Пожалуйста, обратитесь к администратору сервиса."
+                )
             return None, None
         
         user_data["global_user_id"] = str(global_user_id) if global_user_id else None
