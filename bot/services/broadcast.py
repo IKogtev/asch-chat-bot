@@ -94,7 +94,6 @@ def create_broadcast_app(
                     logger.info(f" Создана новость {news_id}")
                 else:
                     logger.info(f" Используем существующую новость {news_id}")
-                # news_id = await news_store.create_news(html, schedule_dt, files=file_paths, group=target_group, source=source)
                 return {"status": "ok", "news_id": news_id, "sent": len(users)}
             except Exception as e:
                 logger.error(f"Error while broadcast inside shecdule and news: {e}")

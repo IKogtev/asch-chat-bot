@@ -62,6 +62,7 @@ class SearchResult(Base):
     document_id: Mapped[str] = mapped_column(Text, nullable=False)
     source_name: Mapped[str] = mapped_column(Text, nullable=False)
     source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    score: Mapped[float | None] = mapped_column(DOUBLE_PRECISION, nullable=True)
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False),
