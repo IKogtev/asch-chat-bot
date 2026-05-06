@@ -189,24 +189,39 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         user_id = int(getattr(user_obj, 'id' if is_tg else 'user_id'))
         # Проверка, не является ли текущее сообщение контактом
         is_incoming_contact = False
+        contact_obj = None
         if platform == "telegram" and hasattr(event, 'contact') and event.contact:
             is_incoming_contact = True
+            contact_obj = event.contact
         elif platform == "max":
             # Проверяем вложения в BotResponse (мы его уже создали выше)
             for att in bot_res.attachments:
                 if getattr(att, 'type', None) == 'contact':
                     is_incoming_contact = True
+                    contact_obj = att
                     break
 
         username = user_obj.username or "unknown"
         first_name = user_obj.first_name or "Гость"
         last_name = getattr(user_obj, 'last_name', None)
-        # всегда обновляем подписчика
-        phone = await subscriber_store.get_phone(user_id)
-        await subscriber_store.add(
-            user_id=user_id, username=username,
-            first_name=first_name, last_name=last_name,
-            last_seen=datetime.now(), phone_number=None, platform=platform
+        # Телефон (ВАЖНО: сначала из event, потом из БД) ---
+        phone = None
+
+        if is_incoming_contact and contact_obj:
+            # берем из события, а не из БД
+            raw_phone = getattr(contact_obj, "phone_number", None)
+            phone = normalize_phone(raw_phone)
+
+            # контакт может содержать более точные данные
+            first_name = getattr(contact_obj, "first_name", None) or first_name
+            last_name = getattr(contact_obj, "last_name", None) or last_name
+
+        else:
+            # fallback в БД
+            phone = await subscriber_store.get_phone(user_id)
+
+        logger.info(
+            f"Данные: username={username}, first_name={first_name}, last_name={last_name}, phone={phone}"
         )
         #  резолвим global user
         global_user_id = None
@@ -222,9 +237,22 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 )
             except Exception as e:
                 logger.error(f"UserResolver error: {e}", exc_info=True)
-    
-        user_data = await subscriber_store.get_user_data(user_id) or {}
 
+        # всегда обновляем подписчика
+        await subscriber_store.add(
+            user_id=user_id, username=username,
+            first_name=first_name, last_name=last_name,
+            last_seen=datetime.now(), phone_number=phone, platform=platform
+        )
+        # если это контакт — обновим телефон явно
+        if phone:
+            await subscriber_store.update_phone(user_id, phone)
+        # обработка блокировки пользователя
+        user_data = await subscriber_store.get_user_data(user_id) or {}
+        if user_data.get("is_blocked"):
+            await bot_res.send("🚫 Вы заблокированы и не можете пользоваться ботом.")
+            return None, None
+        
         user_data["global_user_id"] = str(global_user_id) if global_user_id else None
         logger.info(
             f"[USER_RESOLVE] platform={platform} "
@@ -321,7 +349,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # Очищаем историю в БД
             await store.reset(user_id, global_user_id)
             # Удаляем состояние результатов поиска
-            await store.reset_search_state(user_id, session_id)
+            await store.reset_search_state(global_user_id, session_id)
 
             # После /reset не создаем новую ADK-сессию
             # и не вызываем set_user_state.
@@ -449,7 +477,14 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             if tmp_name and os.path.exists(tmp_name):
                 os.remove(tmp_name)
 
-    async def process_contact_logic(bot_res: BotResponse, phone: str, user_id: str):
+    async def process_contact_logic(
+        bot_res: BotResponse, 
+        phone: str, 
+        user_id: str, 
+        username: str | None = None,
+        first_name: str = "", 
+        last_name: str | None = ""
+    ):
         """Единая точка входа для сохранения контакта и приветствия"""
         
         # Сохраняем в БД
@@ -463,9 +498,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             global_user_id = await user_resolver.resolve_user(
                 platform=platform,
                 platform_user_id=int(user_id),
-                username=None,
-                first_name="",
-                last_name="",
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
                 phone=phone
             )
         except Exception as e:
@@ -493,13 +528,24 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         async def handle_contact_tg(m, ud, bot_res, **kwargs):
             if m.contact.user_id != m.from_user.id:
                 return await m.answer("⚠️ Пожалуйста, отправьте свой номер телефона")
-            await process_contact_logic(bot_res, m.contact.phone_number, m.from_user.id)
+            await process_contact_logic(
+                bot_res=bot_res,
+                phone=m.contact.phone_number, 
+                user_id=m.from_user.id,
+                username=m.from_user.username,
+                first_name=m.from_user.first_name or "",
+                last_name=m.from_user.last_name or ""
+            )
     else: 
         # обработчик получения контакта (номера телефона)
         async def handle_contact_max(bot_res: BotResponse, ud, contact: Contact):
             """Обработчик полученного контакта — извлекает телефон из vCard"""
             user_id = ud["user_id"]
             global_user_id = ud.get("global_user_id")
+            # Достаем имена из user_data (ud)
+            username = ud.get("username")
+            first_name = ud.get("first_name", "")
+            last_name = ud.get("last_name", "")
             try:
                 # Контакт приходит как объект с полем payload
                 payload = contact.payload  # ContactAttachmentPayload
@@ -527,7 +573,14 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     return
                 phone = f"+{phone}"
                 logger.info(f"✅ Телефон извлечён: {phone}")
-                await process_contact_logic(bot_res, phone, user_id)
+                await process_contact_logic(
+                    bot_res=bot_res, 
+                    phone=phone, 
+                    user_id=user_id,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name
+                )
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки контакта: {e}", exc_info=True)
                 await bot_res.answer_callback("⚠️ Произошла ошибка. Попробуйте ещё раз.")
@@ -588,7 +641,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             """
             # --- Пагинация: показать следующую порцию сохранённого списка документов ---
             if Settings.SHOW_MORE_RE.match(user_text):
-                ok = await handle_show_more(event=event, store=store, user_id=user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform=platform)
+                ok = await handle_show_more(event=event, store=store, user_id=global_user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform=platform)
                 if not ok:
                     # Сообщение для пользователя, если списка нет
                     response_time = int((time.time() - start_time) * 1000)
@@ -620,7 +673,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # --- Пагинация: показать полный список сохранённых документов ---
             if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
                 # Только если это не "показать еще"
-                ok = await handle_show_all(event, store, user_id, session_id, turn_id, start_time, platform)
+                ok = await handle_show_all(event, store, global_user_id, session_id, turn_id, start_time, platform)
                 if not ok:
                     response_time = int((time.time() - start_time) * 1000)
                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
@@ -654,7 +707,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
                 вызываем обработчик отправки файлов.
                 """
-                await handle_download_by_ranks(event, store, doc_handler, user_id, session_id, dl_ranks, turn_id, start_time, platform)
+                await handle_download_by_ranks(event, store, doc_handler, global_user_id, session_id, dl_ranks, turn_id, start_time, platform)
                 await store.append(user_id, "user", user_text, global_user_id)
                 await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.", global_user_id)
                 return
@@ -663,7 +716,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
             
             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
-            meta_before = await store.get_last_search_meta(user_id, session_id)
+            meta_before = await store.get_last_search_meta(global_user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
 
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
@@ -690,11 +743,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             await store.append(user_id, "model", answer, global_user_id)
 
             # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
-            meta_after = await store.get_last_search_meta(user_id, session_id)
+            meta_after = await store.get_last_search_meta(global_user_id, session_id)
             search_id_after = meta_after["search_id"] if meta_after else None
             
             if search_id_after and search_id_after != search_id_before and meta_after:
-                items = await store.get_last_search_results(user_id, session_id)
+                items = await store.get_last_search_results(global_user_id, session_id)
                 if items:
                     shown = min(max(int(meta_after.get("shown_count", 5)), 0), len(items))
                     text_list = render_results(items[:shown], total=len(items), offset=0)

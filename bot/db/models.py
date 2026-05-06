@@ -34,14 +34,12 @@ class ChatHistory(Base):
 class SearchMeta(Base):
     __tablename__ = "search_meta"
 
-    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     session_id: Mapped[str] = mapped_column(Text, primary_key=True)
     search_id: Mapped[str] = mapped_column(Text, nullable=False)
     query: Mapped[str] = mapped_column(Text, nullable=False)
     total_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    shown_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=sa.text("0")
-    )
+    shown_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False),
         server_default=func.now(),
@@ -57,14 +55,13 @@ class SearchResult(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     search_id: Mapped[str] = mapped_column(Text, nullable=False)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     document_id: Mapped[str] = mapped_column(Text, nullable=False)
     source_name: Mapped[str] = mapped_column(Text, nullable=False)
     source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    score: Mapped[float | None] = mapped_column(DOUBLE_PRECISION, nullable=True)
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False),
@@ -145,7 +142,6 @@ class LoggedEvent(Base):
         server_default=func.now(),
         nullable=False,
     )
-    global_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class UserAccount(Base):
     __tablename__ = "user_accounts"
@@ -171,6 +167,10 @@ class User(Base):
     phone_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), server_default=func.now(), nullable=True
+    )
+    is_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa.text("false"))
+    blocked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
     )
 
 class UiUser(Base):

@@ -42,6 +42,28 @@ TITLE_START = """
 class BotHolder:
     def __init__(self):
         self.instance: Optional[Bot] = None
+##################################
+# Вспомогательные функции
+##################################
+# делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
+def load_bot_start_message():
+    """Load start message from file"""
+    global TITLE_START
+    try:
+        if Settings.BOT_START_MESSAGE_FILE.exists():
+            TITLE_START = Settings.BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
+            logger.info(f"Start message loaded from file: {len(TITLE_START)} symbols")
+        else:
+            logger.warning(f"Start file not found using standard")
+    except Exception as e:
+        logger.error(f"Error loading starting message: {e}")
+# загрузка стартового сообщения
+load_bot_start_message()
+
+def get_start_message():
+    """Получение стартового сообщения"""
+    return TITLE_START
+
 #####################################
 # Главная функция и обработчики бота
 #####################################
@@ -58,15 +80,12 @@ async def main() -> None:
     if not tg_token:
         logger.error("TELEGRAM_BOT_TOKEN отсутствует в .env")
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
-
     dsn = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_DSN") or "").strip()
     if not dsn:
         logger.error("DATABASE_URL отсутствует в .env")
         raise RuntimeError("DATABASE_URL (or POSTGRES_DSN) is missing in .env")
-
     adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
-
     # Конфигурация для DocumentHandler
     kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
@@ -87,7 +106,6 @@ async def main() -> None:
     user_resolver = UserResolver(store.pool)
     # инициализируем хранилище новостей
     news_store = NewsStore(store.pool)
-
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
     broadcast_app = create_broadcast_app(
@@ -97,7 +115,6 @@ async def main() -> None:
         get_start_message=get_start_message,
         source="telegram"
     )
-
     # Инициализация DocumentHandler
     doc_handler = DocumentHandler(
         kb_manager_url=Settings.KB_MANAGER_URL,
@@ -117,7 +134,6 @@ async def main() -> None:
         get_start_message=get_start_message,
         platform="telegram"
     )
-
     logger.info("Все компоненты инициализированы")
     bot_holder = BotHolder()
     http_task = asyncio.create_task(run_http_server(broadcast_app, 8001))
@@ -125,7 +141,6 @@ async def main() -> None:
     logger.info("🚀 HTTP сервер и scheduler запущены")
     # Запуск бота
     try:
-        logger.info("🚀 Бот запущен и готов к работе")
         await eventlogger.log_event(
             event_type="system_start",
             channel="telegram",
@@ -220,29 +235,6 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Ошибка при закрытии сессии бота: {e}")
         logger.info("Бот остановлен")
-
-##################################
-# Вспомогательные функции
-##################################
-# делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
-def load_bot_start_message():
-    """Load start message from file"""
-    global TITLE_START
-    try:
-        if Settings.BOT_START_MESSAGE_FILE.exists():
-            TITLE_START = Settings.BOT_START_MESSAGE_FILE.read_text(encoding="utf-8")
-            logger.info(f"Start message loaded from file: {len(TITLE_START)} symbols")
-        else:
-            logger.warning(f"Start file not found using standard")
-    except Exception as e:
-        logger.error(f"Error loading starting message: {e}")
-# загрузка стартового сообщения
-load_bot_start_message()
-
-def get_start_message():
-    """Получение стартового сообщения"""
-    return TITLE_START
-
 
 if __name__ == "__main__":
     try:

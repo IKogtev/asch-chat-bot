@@ -1914,3 +1914,79 @@ select:focus {
     text-align: center;
     color: #666;
 }
+
+/* таблица для просмотра пользователей скачавших файл */
+.modal-table-container {
+    max-height: 400px; /* Максимальная высота, после которой появится скролл */
+    overflow-y: auto;
+    margin-top: 15px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+}
+
+.modal-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    text-align: left;
+    background-color: white;
+}
+
+/* Фиксированная шапка таблицы */
+.modal-table thead th {
+    position: sticky;
+    top: 0;
+    background-color: #f8f9fa;
+    color: #333;
+    font-weight: 600;
+    padding: 12px 10px;
+    border-bottom: 2px solid #dee2e6;
+    z-index: 1;
+}
+
+.modal-table td {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+    vertical-align: middle;
+}
+
+.modal-table tr:hover {
+    background-color: #fcfcfc;
+}
+
+/* Стиль для ID пользователя */
+.user-id-code {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    color: #666;
+    background: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* Стиль для имени */
+.user-name-text {
+    font-weight: 500;
+    color: #2c3e50;
+    display: block;
+}
+
+/* Центрирование колонки с количеством */
+.text-center {
+    text-align: center;
+}
+
+/* Бейджик для источника (Поиск/Меню) */
+.source-badge {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    background: #e9ecef;
+    white-space: nowrap;
+}
+/* заблокированный пользователь */
+.user-blocked {
+    background: #ffe5e5;
+    opacity: 0.7;
+}
