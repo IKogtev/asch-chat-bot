@@ -3,8 +3,8 @@
     "username": "guest",
     "name": "Guest User",
     "role": "guest",
-    "homedir": "/",
-    "permissions": "read"
+    "homedir": "/tmp/empty_dir_for_guest",
+    "permissions": ""
   },
   "admin": {
     "username": "admin",
