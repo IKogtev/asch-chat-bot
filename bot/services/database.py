@@ -300,6 +300,9 @@ class SubscriberStore:
         LEFT JOIN user_accounts ua
             ON ua.platform_user_id = s.user_id
             AND ua.platform = s.platform
+        LEFT JOIN users u
+            ON u.id = ua.user_id
+        WHERE (u.is_blocked = FALSE OR u.is_blocked IS NULL)
         ORDER BY s.last_seen DESC
         """
         async with self.pool.acquire() as conn:

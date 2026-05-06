@@ -108,13 +108,6 @@ async def main() -> None:
     news_store = NewsStore(store.pool)
     adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
     await adk.open()
-    broadcast_app = create_broadcast_app(
-        news_store=news_store,
-        subscriber_store=subscriber_store,
-        load_bot_start_message=load_bot_start_message,
-        get_start_message=get_start_message,
-        source="telegram"
-    )
     # Инициализация DocumentHandler
     doc_handler = DocumentHandler(
         kb_manager_url=Settings.KB_MANAGER_URL,
@@ -136,6 +129,14 @@ async def main() -> None:
     )
     logger.info("Все компоненты инициализированы")
     bot_holder = BotHolder()
+    broadcast_app = create_broadcast_app(
+        news_store=news_store,
+        subscriber_store=subscriber_store,
+        load_bot_start_message=load_bot_start_message,
+        get_start_message=get_start_message,
+        bot_holder=bot_holder,
+        source="telegram",  
+    )
     http_task = asyncio.create_task(run_http_server(broadcast_app, 8001))
     scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder, source="telegram"))
     logger.info("🚀 HTTP сервер и scheduler запущены")
