@@ -1875,25 +1875,30 @@ async def document_users(filename: str, from_ts: str, to_ts: str, request: Reque
     query = """
     SELECT
         COALESCE(ua.user_id::text, e.user_id::text) as global_user_id,
-        -- Берем имя из user_accounts или из события, или пишем unknown
+
         COALESCE(
-            NULLIF(ua.first_name || ' ' || COALESCE(ua.last_name, ''), ' '), 
-            NULLIF(e.user_name, ''), 
+            NULLIF(TRIM(CONCAT(ua.first_name, ' ', ua.last_name)), ''),
+            NULLIF(e.user_name, ''),
             'unknown'
         ) as user_name,
+
         e.payload->>'source' as source,
         COUNT(*) as downloads
+
     FROM events e
+
     LEFT JOIN user_accounts ua 
         ON ua.platform_user_id::text = e.user_id::text 
         AND ua.platform = e.channel
+
     WHERE e.event_type IN ('document_download', 'document_download_menu')
       AND e.created_at BETWEEN $2 AND $3
       AND (
           e.payload->>'filename' = $1 
           OR e.payload->>'text' = $1 
-          OR e.payload->>'file_path' ILIKE '%' || $1
+          OR e.payload->>'file_path' ILIKE '%' || $1 || '%'
       )
+
     GROUP BY 1, 2, 3
     ORDER BY downloads DESC;
     """
@@ -2031,7 +2036,7 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
     query = """
     WITH base_users AS (
         SELECT
-            COALESCE(e.global_user_id, ua.user_id::text) as gid,
+            COALESCE(ua.user_id::text, e.user_id::text) as gid,
             COUNT(*) as msg_count
         FROM events e
         LEFT JOIN user_accounts ua
@@ -2039,7 +2044,7 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
             AND ua.platform = e.channel
         WHERE e.event_type = 'message_received'
         AND e.created_at BETWEEN $1 AND $2
-        GROUP BY COALESCE(e.global_user_id, ua.user_id::text)
+        GROUP BY COALESCE(ua.user_id::text, e.user_id::text)
     ),
 
     response_times AS (
@@ -2052,7 +2057,7 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
 
     totals AS (
         SELECT
-            COUNT(DISTINCT COALESCE(e.global_user_id, ua.user_id::text)) as unique_users,
+            COUNT(DISTINCT COALESCE(ua.user_id::text, e.user_id::text)) as unique_users,
             COUNT(*) FILTER (WHERE e.event_type = 'message_received') as total_messages
         FROM events e
         LEFT JOIN user_accounts ua
@@ -2060,17 +2065,13 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
             AND ua.platform = e.channel
         WHERE e.created_at BETWEEN $1 AND $2
     )
-
     SELECT
         t.unique_users,
         t.total_messages,
-
         (SELECT AVG(msg_count) FROM base_users) as avg_messages_per_user,
         (SELECT MAX(msg_count) FROM base_users) as max_messages_per_user,
-
         (SELECT AVG(rt) FROM response_times) as avg_response_time,
         (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY rt) FROM response_times) as median_response_time
-
     FROM totals t;
     """
 
@@ -2110,47 +2111,57 @@ async def top_users(from_ts: str, to_ts: str, request: Request):
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
     query = """
-    WITH period_messages AS (
+     WITH period_messages AS (
         SELECT 
-            COALESCE(e.global_user_id, ua.user_id::text) as global_user_id,
+            COALESCE(ua.user_id::text, e.user_id::text) as global_user_id,
+
             MAX(
                 COALESCE(
-                    NULLIF(TRIM(CONCAT(ua.first_name, ' ', ua.last_name)), ''), 
-                    e.user_name, 
+                    NULLIF(TRIM(CONCAT(ua.first_name, ' ', ua.last_name)), ''),
+                    e.user_name,
                     'Аноним'
                 )
             ) as user_name,
+
             COUNT(*) as messages
+
         FROM events e
         LEFT JOIN user_accounts ua 
             ON ua.platform_user_id::text = e.user_id::text 
             AND ua.platform = e.channel
+
         WHERE e.event_type = 'message_received'
           AND e.created_at BETWEEN $1 AND $2
-        GROUP BY COALESCE(e.global_user_id, ua.user_id::text)
+
+        GROUP BY COALESCE(ua.user_id::text, e.user_id::text)
     ),
     
     weekly_messages AS (
         SELECT 
-            COALESCE(e.global_user_id, ua.user_id::text) as global_user_id,
+            COALESCE(ua.user_id::text, e.user_id::text) as global_user_id,
             COUNT(*) as weekly_messages
+
         FROM events e
         LEFT JOIN user_accounts ua 
             ON ua.platform_user_id::text = e.user_id::text 
             AND ua.platform = e.channel
+
         WHERE e.event_type = 'message_received'
           AND e.created_at > NOW() - INTERVAL '7 days'
-        GROUP BY COALESCE(e.global_user_id, ua.user_id::text)
+
+        GROUP BY COALESCE(ua.user_id::text, e.user_id::text)
     )
 
     SELECT 
         p.global_user_id,
         p.user_name,
         p.messages,
-        -- Считаем среднее в день за неделю (делим на 7)
         COALESCE(ROUND(w.weekly_messages / 7.0, 1), 0) as avg_weekly_messages
+
     FROM period_messages p
-    LEFT JOIN weekly_messages w ON p.global_user_id = w.global_user_id
+    LEFT JOIN weekly_messages w 
+        ON p.global_user_id = w.global_user_id
+
     ORDER BY p.messages DESC
     LIMIT 10;
     """
@@ -2233,17 +2244,30 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
 
     query = """
-    WITH messages AS (
+    WITH base_events AS (
+        SELECT
+            e.*,
+            COALESCE(ua.user_id::text, e.user_id::text) as global_user_id,
+            ua.first_name,
+            ua.last_name
+        FROM events e
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = e.user_id::text
+            AND ua.platform = e.channel
+    ),
+
+    messages AS (
         SELECT
             payload->>'turn_id' as turn_id,
             session_id,
-            user_name,
+            global_user_id,
             channel,
             created_at as message_time,
-            payload->>'text' as message
-        FROM events
+            payload->>'text' as message,
+            CONCAT(first_name, ' ', last_name) as user_name
+        FROM base_events
         WHERE event_type = 'message_received'
-        AND created_at BETWEEN $1 AND $2
+          AND created_at BETWEEN $1 AND $2
     ),
 
     responses AS (
@@ -2251,31 +2275,29 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
             payload->>'turn_id' as turn_id,
             payload->>'text' as response,
             (payload->>'response_time_ms')::int as response_time_ms
-        FROM events
+        FROM base_events
         WHERE event_type = 'response'
         ORDER BY payload->>'turn_id', created_at DESC
     ),
 
     downloads_turn AS (
-        -- файлы внутри конкретного запроса
         SELECT
             payload->>'turn_id' as turn_id,
             STRING_AGG(payload->>'file_path', ' | ' ORDER BY created_at) as files
-        FROM events
+        FROM base_events
         WHERE event_type IN ('document_download', 'document_download_menu')
           AND payload->>'file_path' IS NOT NULL
         GROUP BY payload->>'turn_id'
     ),
 
     downloads_session AS (
-        -- ВСЕ файлы пользователя (как в старом SQL, но без дублей)
         SELECT
             session_id,
             STRING_AGG(
                 DISTINCT payload->>'file_path',
                 ', ' ORDER BY payload->>'file_path'
             ) as all_files
-        FROM events
+        FROM base_events
         WHERE event_type IN ('document_download', 'document_download_menu')
           AND created_at BETWEEN $1 AND $2
           AND payload->>'file_path' IS NOT NULL
@@ -2284,15 +2306,15 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
 
     msg_counts AS (
         SELECT session_id, COUNT(*) as msg_count
-        FROM events
+        FROM base_events
         WHERE event_type = 'message_received'
-        AND created_at BETWEEN $1 AND $2
+          AND created_at BETWEEN $1 AND $2
         GROUP BY session_id
     )
 
     SELECT
         m.session_id,
-        m.user_name,
+        COALESCE(NULLIF(m.user_name, ' '), 'Аноним') as user_name,
         (m.message_time + INTERVAL '3 hour') as message_time,
         m.message,
 
@@ -2303,10 +2325,8 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
         END as response,
 
         r.response_time_ms,
-
         mc.msg_count,
         m.channel,
-
         ds.all_files as downloaded_files
 
     FROM messages m
@@ -2386,10 +2406,8 @@ async def get_dialogs(
         SELECT
             e.payload->>'turn_id' as turn_id,
 
-            -- восстанавливаем global_user_id
-            MAX(
-                COALESCE(e.global_user_id, ua.user_id::text)
-            ) as global_user_id,
+            -- теперь только через user_accounts
+            MAX(ua.user_id::text) as global_user_id,
 
             MIN(e.created_at) as message_time,
             MAX(e.channel) as channel
@@ -2432,7 +2450,7 @@ async def get_dialogs(
             STRING_AGG(payload->>'file_path', '||') as file_paths
         FROM events
         WHERE event_type IN ('document_download', 'document_download_menu')
-        AND payload->>'file_path' IS NOT NULL
+            AND payload->>'file_path' IS NOT NULL
         GROUP BY payload->>'turn_id'
     ),
 
@@ -2448,7 +2466,6 @@ async def get_dialogs(
     SELECT
         t.global_user_id,
 
-        -- корректное имя
         COALESCE(
             NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
             'Аноним'
@@ -2504,13 +2521,15 @@ async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request)
 
     query = """
     WITH target_events AS (
-        -- Собираем все события конкретного пользователя (через global_user_id или платформенный ID)
-        SELECT e.* 
+        -- Собираем все события конкретного пользователя (через global_user_id или платформенный ID)    
+        SELECT 
+            e.*,
+            COALESCE(ua.user_id::text, e.user_id::text) as resolved_user_id
         FROM events e
         LEFT JOIN user_accounts ua 
             ON ua.platform_user_id::text = e.user_id::text 
             AND ua.platform = e.channel
-        WHERE COALESCE(e.global_user_id, ua.user_id::text) = $1
+        WHERE COALESCE(ua.user_id::text, e.user_id::text) = $1
     ),
     
     messages AS (
@@ -2532,6 +2551,7 @@ async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request)
             (payload->>'response_time_ms')::int as response_time
         FROM target_events
         WHERE event_type = 'response' AND payload->>'turn_id' IS NOT NULL
+        ORDER BY payload->>'turn_id', created_at DESC
     ),
     
     docs AS (
@@ -2583,10 +2603,7 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
         SELECT
             m.payload->>'turn_id' as turn_id,
 
-            COALESCE(
-                m.global_user_id,
-                ua.user_id::text
-            ) as global_user_id,
+            COALESCE(ua.user_id::text, m.user_id::text) as global_user_id,
 
             MIN(m.created_at) as created_at,
             MAX(m.payload->>'text') as message,
@@ -2600,14 +2617,14 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
 
         LEFT JOIN events r
             ON m.payload->>'turn_id' = r.payload->>'turn_id'
-        AND r.event_type = 'response'
+            AND r.event_type = 'response'
 
         WHERE m.event_type = 'message_received'
-        AND m.created_at BETWEEN $2 AND $3
+          AND m.created_at BETWEEN $2 AND $3
 
         GROUP BY
             m.payload->>'turn_id',
-            COALESCE(m.global_user_id, ua.user_id::text)
+            COALESCE(ua.user_id::text, m.user_id::text)
     )
 
     SELECT *

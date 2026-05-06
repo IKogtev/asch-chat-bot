@@ -12,7 +12,7 @@ from bot.services.utils import html_to_bot, split_message
 import json
 from aiogram.types import BufferedInputFile
 from maxapi.enums import TextFormat
-import io, random
+import random
 import tempfile
 from maxapi.types import InputMedia
 
