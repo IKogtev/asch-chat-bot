@@ -67,7 +67,6 @@ def render_results(items: list[dict], total: int, offset: int = 0) -> str:
     """Рендер списка документов (логика общая с агентом doc_search)."""
     return render_doc_list_html(items, total, offset)
 
-
 # функция для безопасного разбиения длинного текста на части, чтобы Telegram не обрезал его
 def split_message(text: str, limit: int = 4000):
     return [text[i:i+limit] for i in range(0, len(text), limit)]
@@ -268,7 +267,7 @@ async def handle_show_more(
     else:
         # Для Max API ответ идет через event.message
         answer_func = event.message.answer
-        # Предполагаем, что TextFormat импортирован
+        # формат для Max API
         html_param = {"format": TextFormat.HTML}
 
     # 3. Расчет пагинации
