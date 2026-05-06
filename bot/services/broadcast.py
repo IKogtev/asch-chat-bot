@@ -158,10 +158,88 @@ def create_broadcast_app(
 
     @app.get("/api/subscribers")
     async def get_subscribers():
-        """Получить всех подписчиков с группами"""
+        """
+        Возвращает ГЛОБАЛЬНЫХ пользователей с их аккаунтами(1 строка = 1человек)
+        """
         try:
-            subscribers = await subscriber_store.get_all_with_groups()
-            return subscribers
+            async with subscriber_store.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT 
+                        u.id as global_user_id,
+                        u.phone_number,
+                        u.is_blocked,
+
+                        -- Собираем данные аккаунтов в массив объектов
+                        json_agg(
+                            json_build_object(
+                                'platform', ua.platform,
+                                'platform_user_id', ua.platform_user_id,
+                                'username', s.username,
+                                'first_name', s.first_name,
+                                'last_name', s.last_name
+                            )
+                        ) FILTER (WHERE ua.platform_user_id IS NOT NULL) as accounts,
+                        
+                        -- УМНЫЙ ВЫБОР ИМЕНИ ДЛЯ ТАБЛИЦЫ:
+                        -- Ищем самый свежий аккаунт, где first_name не пустой. 
+                        -- Если таких нет, берем просто самый свежий.
+                        (SELECT COALESCE(s2.first_name, s2.username, 'unknown')
+                        FROM subscribers s2 
+                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
+                        WHERE ua2.user_id = u.id 
+                        ORDER BY 
+                            (NULLIF(s2.first_name, '') IS NOT NULL) DESC, -- Сначала те, где есть имя
+                            s2.last_seen DESC                             -- Затем самые свежие
+                        LIMIT 1) as display_first_name,
+                        
+                        (SELECT s2.last_name
+                        FROM subscribers s2 
+                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
+                        WHERE ua2.user_id = u.id 
+                        ORDER BY 
+                            (NULLIF(s2.last_name, '') IS NOT NULL) DESC, 
+                            s2.last_seen DESC 
+                        LIMIT 1) as display_last_name,
+
+                        (SELECT s2.username
+                        FROM subscribers s2 
+                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
+                        WHERE ua2.user_id = u.id 
+                        ORDER BY 
+                            (NULLIF(s2.username, '') IS NOT NULL) DESC, 
+                            s2.last_seen DESC 
+                        LIMIT 1) as display_username,
+                        bool_or(s.manager_group) as manager_group,
+                        bool_or(s.coach_group) as coach_group,
+                        max(s.last_seen) as last_seen
+                    FROM users u
+                    LEFT JOIN user_accounts ua ON ua.user_id = u.id
+                    LEFT JOIN subscribers s ON s.user_id = ua.platform_user_id AND s.platform = ua.platform
+                    GROUP BY u.id
+                    ORDER BY last_seen DESC NULLS LAST
+                """)
+
+            result = []
+            for r in rows:
+                import json
+                accounts = r["accounts"]
+                if isinstance(accounts, str):
+                    accounts = json.loads(accounts)
+
+                result.append({
+                    "global_user_id": str(r["global_user_id"]), # Явно в string для JS
+                    "phone_number": r["phone_number"],
+                    "username": r["display_username"],
+                    "first_name": r["display_first_name"],
+                    "last_name": r["display_last_name"],
+                    "manager_group": r["manager_group"] or False,
+                    "coach_group": r["coach_group"] or False,
+                    "is_blocked": r["is_blocked"] or False,
+                    "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+                    "accounts": accounts or []
+                })
+
+            return result
         except Exception as e:
             logger.error(f"Error getting subscribers: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -170,17 +248,62 @@ def create_broadcast_app(
     async def update_subscriber_group(data: dict):
         """Обновить группу пользователя"""
         try:
-            user_id = int(data.get("user_id"))
+            global_user_id = data.get("global_user_id")
             group = data.get("group")
             value = bool(data.get("value"))
-            if group not in Settings.AVAILABLE_GROUPS:
-                raise HTTPException(status_code=400, detail="Invalid group")
-            await subscriber_store.update_user_group(user_id, group, value)
 
-            return {"status": "ok", "user_id": user_id, "group": group, "value": value}
+            if group not in ("manager_group", "coach_group"):
+                raise HTTPException(status_code=400, detail="Invalid group")
+
+            async with subscriber_store.pool.acquire() as conn:
+                # 1. получаем все аккаунты пользователя
+                rows = await conn.fetch("""
+                    SELECT platform, platform_user_id
+                    FROM user_accounts
+                    WHERE user_id = $1
+                """, global_user_id)
+
+                # 2. обновляем ВСЕ аккаунты
+                for r in rows:
+                    await subscriber_store.update_user_group(
+                        r["platform_user_id"],
+                        group,
+                        value
+                    )
+
+            return {
+                "status": "ok",
+                "global_user_id": global_user_id,
+                "group": group,
+                "value": value
+            }
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+    
+    # endpoint для блокировки пользователя и разблокировки
+    @app.post("/api/subscribers/block")
+    async def block_user(data: dict):
+        try:
+            global_user_id = data.get("global_user_id")
+            value = bool(data.get("value"))
 
+            async with subscriber_store.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE users
+                    SET is_blocked = $1,
+                        blocked_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+                    WHERE id = $2
+                """, value, global_user_id)
+
+            return {
+                "status": "ok",
+                "global_user_id": global_user_id,
+                "is_blocked": value
+            }
+
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
     return app
 
 

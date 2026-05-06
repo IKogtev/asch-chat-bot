@@ -2,6 +2,9 @@ import asyncpg
 from typing import Optional
 from uuid import UUID
 from bot.services.utils import normalize_phone
+from utils.logger import setup_logger
+
+logger = setup_logger("user_resolver", "bot.log")
 
 # обработчик пользователя
 

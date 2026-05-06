@@ -58,6 +58,8 @@ def load_bot_start_message():
             logger.warning(f"Start file not found using standard")
     except Exception as e:
         logger.error(f"Error loading starting message: {e}")
+# загрузка стартового сообщения
+load_bot_start_message()
 
 def get_start_message():
     """Получение стартового сообщения"""
@@ -183,9 +185,6 @@ async def main():
         except Exception as e:
             logger.error(f"Ошибка при закрытии сессии бота: {e}")
         logger.info("Бот остановлен")
-
-# загрузка стартового сообщения
-load_bot_start_message()
 
 if __name__ == '__main__':
     try:

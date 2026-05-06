@@ -42,7 +42,7 @@ async def get_shared_pool() -> Optional[asyncpg.Pool]:
 
 async def save_doc_search_results(
     pool: asyncpg.Pool,
-    user_id: int,
+    user_id: str,
     session_id: str,
     query: str,
     items: list[dict[str, Any]],
@@ -102,7 +102,7 @@ async def save_doc_search_results(
 
 async def update_doc_search_shown_count(
     pool: asyncpg.Pool,
-    user_id: int,
+    user_id: str,
     session_id: str,
     shown_count: int,
 ) -> None:

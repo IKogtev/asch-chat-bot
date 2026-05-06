@@ -251,7 +251,7 @@ for name, cfg in COLLECTIONS_CFG.items():
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
-    "interval_hours": 3,
+    "interval_hours": 12,
     "interval_seconds": None,
     "last_sync": None,
     "next_sync":None,
@@ -1618,7 +1618,7 @@ async def get_subscribers():
 async def update_subscriber_group(data: dict):
     """Обновить группу пользователя"""
     try:
-        user_id = int(data.get("user_id"))
+        global_user_id = data.get("global_user_id")
         group = data.get("group")
         value = bool(data.get("value"))
         
@@ -1628,7 +1628,7 @@ async def update_subscriber_group(data: dict):
         resp = await http_client.post(
             f"{TELEGRAM_BOT_API}/api/subscribers/group",
             json={
-                "user_id": user_id,
+                "global_user_id": global_user_id,
                 "group": group,
                 "value": value
             }
@@ -1641,6 +1641,19 @@ async def update_subscriber_group(data: dict):
     except Exception as e:
         logger.error(f"Error updating subscriber group: {e}")
         raise HTTPException(500, f"Failed to update group: {str(e)}")
+# блокировка пользователя
+@app.post("/api/subscribers/block")
+async def block_subscriber(data: dict):
+    """Заблокировать или разблокировать пользователя"""
+    try:
+        resp = await http_client.post(
+            f"{TELEGRAM_BOT_API}/api/subscribers/block",
+            json=data
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/api/subscribers/export")
 async def export_subscribers(
@@ -1661,18 +1674,30 @@ async def export_subscribers(
         logger.error(f"Error fetching subscribers: {e}")
         raise HTTPException(500, "Failed to fetch subscribers")
 
-    # 🔍 фильтрация
+    # фильтрация
     def matches(u):
         # поиск
         if search:
             q = search.lower()
-            if not (
-                str(u.get("user_id", "")).lower().find(q) != -1 or
-                (u.get("username") or "").lower().find(q) != -1 or
-                (u.get("first_name") or "").lower().find(q) != -1 or
-                (u.get("last_name") or "").lower().find(q) != -1
-            ):
-                return False
+            # Ищем во всех полях, включая ID и аккаунты
+            main_fields = [
+                str(u.get("global_user_id", "")),
+                (u.get("username") or ""),
+                (u.get("first_name") or ""),
+                (u.get("last_name") or "")
+            ]
+            if any(q in f.lower() for f in main_fields):
+                return True
+            # ищем в аккаунтах
+            accounts = u.get("accounts", [])
+            for acc in accounts:
+                p_id = str(acc.get("platform_user_id", ""))
+                p_username = (acc.get("username") or "").lower()
+                if q in p_id or q in p_username:
+                    return True
+            
+            return False
+                
         # фильтр группы
         if group == "manager":
             return u.get("manager_group")
@@ -1698,17 +1723,19 @@ async def export_subscribers(
         "Last Name",
         "Manager",
         "Coach",
-        "Last Seen"
+        "Last Seen",
+        "Accounts Count"
     ])
     for u in filtered:
         writer.writerow([
-            u.get("user_id"),
+            u.get("global_user_id"),
             u.get("username"),
             u.get("first_name"),
             u.get("last_name"),
             "Yes" if u.get("manager_group") else "No",
             "Yes" if u.get("coach_group") else "No",
-            u.get("last_seen")
+            u.get("last_seen"),
+            len(u.get("accounts", []))
         ])
 
     return Response(
@@ -1847,23 +1874,28 @@ async def document_users(filename: str, from_ts: str, to_ts: str, request: Reque
     to_ts = datetime.fromisoformat(to_ts)
     query = """
     SELECT
-        user_id,
-        MAX(user_name) as user_name,
-        payload->>'source' as source,
+        COALESCE(ua.user_id::text, e.user_id::text) as global_user_id,
+        -- Берем имя из user_accounts или из события, или пишем unknown
+        COALESCE(
+            NULLIF(ua.first_name || ' ' || COALESCE(ua.last_name, ''), ' '), 
+            NULLIF(e.user_name, ''), 
+            'unknown'
+        ) as user_name,
+        e.payload->>'source' as source,
         COUNT(*) as downloads
-    FROM events
-    WHERE event_type IN ('document_download', 'document_download_menu')
-
-    AND COALESCE(
-            payload->>'filename',
-            split_part(payload->>'file_path', '/', array_length(string_to_array(payload->>'file_path', '/'), 1))
-        ) = $1
-
-    AND user_id IS NOT NULL
-    AND created_at BETWEEN $2 AND $3
-
-    GROUP BY user_id, source
-    ORDER BY downloads DESC
+    FROM events e
+    LEFT JOIN user_accounts ua 
+        ON ua.platform_user_id::text = e.user_id::text 
+        AND ua.platform = e.channel
+    WHERE e.event_type IN ('document_download', 'document_download_menu')
+      AND e.created_at BETWEEN $2 AND $3
+      AND (
+          e.payload->>'filename' = $1 
+          OR e.payload->>'text' = $1 
+          OR e.payload->>'file_path' ILIKE '%' || $1
+      )
+    GROUP BY 1, 2, 3
+    ORDER BY downloads DESC;
     """
 
     async with pool.acquire() as conn:
@@ -1997,13 +2029,17 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
     to_ts = datetime.fromisoformat(to_ts)
     
     query = """
-    WITH user_messages AS (
-        SELECT user_id, COUNT(*) as msg_count
-        FROM events
-        WHERE event_type = 'message_received'
-        AND user_id IS NOT NULL
-        AND created_at BETWEEN $1 AND $2
-        GROUP BY user_id
+    WITH base_users AS (
+        SELECT
+            COALESCE(e.global_user_id, ua.user_id::text) as gid,
+            COUNT(*) as msg_count
+        FROM events e
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = e.user_id::text
+            AND ua.platform = e.channel
+        WHERE e.event_type = 'message_received'
+        AND e.created_at BETWEEN $1 AND $2
+        GROUP BY COALESCE(e.global_user_id, ua.user_id::text)
     ),
 
     response_times AS (
@@ -2016,27 +2052,26 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
 
     totals AS (
         SELECT
-            COUNT(DISTINCT user_id) as unique_users,
-            COUNT(*) as total_messages
-        FROM events
-        WHERE event_type IN ('message_received', 'response')
-        AND user_id IS NOT NULL
-        AND created_at BETWEEN $1 AND $2
+            COUNT(DISTINCT COALESCE(e.global_user_id, ua.user_id::text)) as unique_users,
+            COUNT(*) FILTER (WHERE e.event_type = 'message_received') as total_messages
+        FROM events e
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = e.user_id::text
+            AND ua.platform = e.channel
+        WHERE e.created_at BETWEEN $1 AND $2
     )
 
     SELECT
         t.unique_users,
         t.total_messages,
 
-        -- сообщения
-        (SELECT AVG(msg_count) FROM user_messages) as avg_messages_per_user,
-        (SELECT MAX(msg_count) FROM user_messages) as max_messages_per_user,
+        (SELECT AVG(msg_count) FROM base_users) as avg_messages_per_user,
+        (SELECT MAX(msg_count) FROM base_users) as max_messages_per_user,
 
-        -- response time
         (SELECT AVG(rt) FROM response_times) as avg_response_time,
         (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY rt) FROM response_times) as median_response_time
 
-    FROM totals t
+    FROM totals t;
     """
 
     async with pool.acquire() as conn:
@@ -2076,33 +2111,48 @@ async def top_users(from_ts: str, to_ts: str, request: Request):
     to_ts = datetime.fromisoformat(to_ts)
     query = """
     WITH period_messages AS (
-        SELECT user_id, MAX(user_name) as user_name,
-          COUNT(*) as messages
-        FROM events
-        WHERE event_type = 'message_received'
-          AND user_id IS NOT NULL
-          AND created_at BETWEEN $1 AND $2
-        GROUP BY user_id
+        SELECT 
+            COALESCE(e.global_user_id, ua.user_id::text) as global_user_id,
+            MAX(
+                COALESCE(
+                    NULLIF(TRIM(CONCAT(ua.first_name, ' ', ua.last_name)), ''), 
+                    e.user_name, 
+                    'Аноним'
+                )
+            ) as user_name,
+            COUNT(*) as messages
+        FROM events e
+        LEFT JOIN user_accounts ua 
+            ON ua.platform_user_id::text = e.user_id::text 
+            AND ua.platform = e.channel
+        WHERE e.event_type = 'message_received'
+          AND e.created_at BETWEEN $1 AND $2
+        GROUP BY COALESCE(e.global_user_id, ua.user_id::text)
     ),
-
+    
     weekly_messages AS (
-        SELECT user_id, COUNT(*) as weekly_messages
-        FROM events
-        WHERE event_type = 'message_received'
-          AND user_id IS NOT NULL
-          AND created_at > NOW() - INTERVAL '7 days'
-        GROUP BY user_id
+        SELECT 
+            COALESCE(e.global_user_id, ua.user_id::text) as global_user_id,
+            COUNT(*) as weekly_messages
+        FROM events e
+        LEFT JOIN user_accounts ua 
+            ON ua.platform_user_id::text = e.user_id::text 
+            AND ua.platform = e.channel
+        WHERE e.event_type = 'message_received'
+          AND e.created_at > NOW() - INTERVAL '7 days'
+        GROUP BY COALESCE(e.global_user_id, ua.user_id::text)
     )
 
-    SELECT
-        p.user_id,
+    SELECT 
+        p.global_user_id,
         p.user_name,
         p.messages,
-        COALESCE(w.weekly_messages / 7.0, 0) as avg_weekly_messages
+        -- Считаем среднее в день за неделю (делим на 7)
+        COALESCE(ROUND(w.weekly_messages / 7.0, 1), 0) as avg_weekly_messages
     FROM period_messages p
-    LEFT JOIN weekly_messages w ON p.user_id = w.user_id
+    LEFT JOIN weekly_messages w ON p.global_user_id = w.global_user_id
     ORDER BY p.messages DESC
-    LIMIT 10
+    LIMIT 10;
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
@@ -2117,29 +2167,30 @@ async def top_documents(from_ts: str, to_ts: str, request: Request):
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
     query = """
+    WITH cleaned_events AS (
+        SELECT
+            COALESCE(
+                payload->>'filename',
+                payload->>'text',
+                reverse(split_part(reverse(payload->>'file_path'), '/', 1))
+            ) as file_name,
+            payload->>'file_path' as file_path,
+            payload->>'source' as source
+        FROM events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND created_at BETWEEN $1 AND $2
+    )
     SELECT
-        payload->>'doc_id' as doc_id,
-
-        COALESCE(
-            payload->>'filename',
-            split_part(payload->>'file_path', '/', array_length(string_to_array(payload->>'file_path', '/'), 1))
-        ) as file_name,
-
-        -- берем ЛЮБОЙ file_path (например MAX)
-        MAX(payload->>'file_path') as file_path,
-
+        file_name,
+        MAX(file_path) as file_path,
         COUNT(*) as total_downloads,
-
-        COUNT(*) FILTER (WHERE payload->>'source' = 'search') as search_downloads,
-        COUNT(*) FILTER (WHERE payload->>'source' = 'menu') as menu_downloads
-
-    FROM events
-    WHERE event_type IN ('document_download', 'document_download_menu')
-    AND created_at BETWEEN $1 AND $2
-
-    GROUP BY doc_id, file_name
+        COUNT(*) FILTER (WHERE source = 'search') as search_downloads,
+        COUNT(*) FILTER (WHERE source = 'menu') as menu_downloads
+    FROM cleaned_events
+    WHERE file_name IS NOT NULL AND file_name != ''
+    GROUP BY file_name
     ORDER BY total_downloads DESC
-    LIMIT 20
+    LIMIT 50;
     """
 
     async with pool.acquire() as conn:
@@ -2333,14 +2384,27 @@ async def get_dialogs(
     query = """
     WITH turns AS (
         SELECT
-            payload->>'turn_id' as turn_id,
-            user_id,
-            MAX(user_name) as user_name,
-            MIN(created_at) as message_time
-        FROM events
-        WHERE payload->>'turn_id' IS NOT NULL
-        AND created_at BETWEEN $1 AND $2
-        GROUP BY payload->>'turn_id', user_id
+            e.payload->>'turn_id' as turn_id,
+
+            -- восстанавливаем global_user_id
+            MAX(
+                COALESCE(e.global_user_id, ua.user_id::text)
+            ) as global_user_id,
+
+            MIN(e.created_at) as message_time,
+            MAX(e.channel) as channel
+
+        FROM events e
+
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = e.user_id::text
+            AND ua.platform = e.channel
+
+        WHERE e.payload->>'turn_id' IS NOT NULL
+            AND e.created_at BETWEEN $1 AND $2
+
+        GROUP BY
+            e.payload->>'turn_id'
     ),
 
     messages AS (
@@ -2368,22 +2432,42 @@ async def get_dialogs(
             STRING_AGG(payload->>'file_path', '||') as file_paths
         FROM events
         WHERE event_type IN ('document_download', 'document_download_menu')
+        AND payload->>'file_path' IS NOT NULL
         GROUP BY payload->>'turn_id'
+    ),
+
+    users AS (
+        SELECT
+            user_id::text as global_user_id,
+            MAX(first_name) as first_name,
+            MAX(last_name) as last_name
+        FROM user_accounts
+        GROUP BY user_id
     )
 
     SELECT
-        t.user_id,
-        COALESCE(t.user_name, 'Аноним') as user_name,
+        t.global_user_id,
+
+        -- корректное имя
+        COALESCE(
+            NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
+            'Аноним'
+        ) as user_name,
+
+        t.channel,
         t.message_time,
+
         m.message,
         r.response,
         r.response_time,
+
         d.file_paths
 
     FROM turns t
     LEFT JOIN messages m ON m.turn_id = t.turn_id
     LEFT JOIN responses r ON r.turn_id = t.turn_id
     LEFT JOIN docs d ON d.turn_id = t.turn_id
+    LEFT JOIN users u ON u.global_user_id = t.global_user_id
 
     WHERE t.message_time BETWEEN $1 AND $2
     """
@@ -2392,7 +2476,12 @@ async def get_dialogs(
     # фильтр по пользователям
     if user:
         # Поиск по ID или имени
-        query += f" AND (CAST(t.user_id AS TEXT) ILIKE ${len(params)+1} OR t.user_name ILIKE ${len(params)+1})"
+        query += f"""
+        AND (
+            CAST(t.global_user_id AS TEXT) ILIKE ${len(params)+1}
+            OR CONCAT(u.first_name, ' ', u.last_name) ILIKE ${len(params)+1}
+        )
+        """
         params.append(f"%{user}%")
     # фильтр по тексту
     if text:
@@ -2414,33 +2503,66 @@ async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request)
     to_ts = datetime.fromisoformat(to_ts)
 
     query = """
-    SELECT
-        m.created_at as message_time,
-        m.payload->>'text' as message,
+    WITH target_events AS (
+        -- Собираем все события конкретного пользователя (через global_user_id или платформенный ID)
+        SELECT e.* 
+        FROM events e
+        LEFT JOIN user_accounts ua 
+            ON ua.platform_user_id::text = e.user_id::text 
+            AND ua.platform = e.channel
+        WHERE COALESCE(e.global_user_id, ua.user_id::text) = $1
+    ),
+    
+    messages AS (
+        SELECT 
+            payload->>'turn_id' as turn_id,
+            session_id,
+            created_at as message_time,
+            payload->>'text' as message,
+            channel -- ТУТ МЫ ДОСТАЕМ КАНАЛ (telegram, max и тд)
+        FROM target_events
+        WHERE event_type = 'message_received'
+          AND created_at BETWEEN $2 AND $3
+    ),
+    
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as response,
+            (payload->>'response_time_ms')::int as response_time
+        FROM target_events
+        WHERE event_type = 'response' AND payload->>'turn_id' IS NOT NULL
+    ),
+    
+    docs AS (
+        SELECT 
+            payload->>'turn_id' as turn_id,
+            session_id,
+            created_at,
+            payload->>'file_path' as file_path
+        FROM target_events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND payload->>'file_path' IS NOT NULL
+    )
 
-        r.payload->>'text' as response,
-        (r.payload->>'response_time_ms')::int as response_time,
+    SELECT 
+        m.message_time,
+        m.message,
+        m.channel,
+        r.response,
+        r.response_time,
+        -- Собираем скачанные файлы (по turn_id ИЛИ по времени в течение 10 сек)
+        (
+            SELECT STRING_AGG(d.file_path, '||')
+            FROM docs d
+            WHERE (d.turn_id = m.turn_id AND m.turn_id IS NOT NULL)
+               OR (d.session_id = m.session_id AND d.created_at >= m.message_time AND d.created_at <= m.message_time + INTERVAL '10 seconds')
+        ) as file_paths
 
-        d.payload->>'file_path' as file_path
-
-    FROM events m
-
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
-
-    LEFT JOIN events d
-      ON m.session_id = d.session_id
-     AND d.event_type IN ('document_download', 'document_download_menu')
-     AND d.created_at >= m.created_at
-     AND d.created_at <= m.created_at + INTERVAL '10 seconds'
-
-    WHERE m.event_type = 'message_received'
-      AND m.user_id = $1
-      AND m.created_at BETWEEN $2 AND $3
-
-    ORDER BY m.created_at
-    LIMIT 500
+    FROM messages m
+    LEFT JOIN responses r ON r.turn_id = m.turn_id
+    ORDER BY m.message_time ASC
+    LIMIT 500;
     """
 
     async with pool.acquire() as conn:
@@ -2457,18 +2579,41 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
     to_ts = datetime.fromisoformat(to_ts)
 
     query = """
-    SELECT
-        m.created_at,
-        m.payload->>'text' as message,
-        r.payload->>'text' as response
-    FROM events m
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
-    WHERE m.event_type = 'message_received'
-      AND m.user_id = $1
-      AND m.created_at BETWEEN $2 AND $3
-    ORDER BY m.created_at
+    WITH base AS (
+        SELECT
+            m.payload->>'turn_id' as turn_id,
+
+            COALESCE(
+                m.global_user_id,
+                ua.user_id::text
+            ) as global_user_id,
+
+            MIN(m.created_at) as created_at,
+            MAX(m.payload->>'text') as message,
+            MAX(r.payload->>'text') as response
+
+        FROM events m
+
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = m.user_id::text
+            AND ua.platform = m.channel
+
+        LEFT JOIN events r
+            ON m.payload->>'turn_id' = r.payload->>'turn_id'
+        AND r.event_type = 'response'
+
+        WHERE m.event_type = 'message_received'
+        AND m.created_at BETWEEN $2 AND $3
+
+        GROUP BY
+            m.payload->>'turn_id',
+            COALESCE(m.global_user_id, ua.user_id::text)
+    )
+
+    SELECT *
+    FROM base
+    WHERE global_user_id = $1
+    ORDER BY created_at;
     """
 
     async with pool.acquire() as conn:

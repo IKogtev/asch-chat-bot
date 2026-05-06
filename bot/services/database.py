@@ -30,7 +30,7 @@ class PostgresChatStore:
             logger.error(f"Ошибка подключения к БД: {e}", exc_info=True)
             raise
 
-    async def append(self, user_id: int, role: str, content: str, global_user_id=None) -> None:
+    async def append(self, user_id: str, role: str, content: str, global_user_id=None) -> None:
         """Добавление сообщения в историю"""
         if not self.pool:
             logger.warning("Pool не инициализирован, сообщение не сохранено")
@@ -51,7 +51,7 @@ class PostgresChatStore:
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
 
-    async def get_history(self, user_id: int, global_user_id=None) -> list[dict]:
+    async def get_history(self, user_id: str, global_user_id=None) -> list[dict]:
         """Получение истории диалога"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
@@ -96,7 +96,7 @@ class PostgresChatStore:
             logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
             return []
 
-    async def reset(self, user_id: int, global_user_id=None) -> None:
+    async def reset(self, user_id: str, global_user_id=None) -> None:
         """Очистка истории пользователя"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
@@ -123,7 +123,7 @@ class PostgresChatStore:
 
     async def save_search_results(
         self,
-        user_id: int,
+        user_id: str,
         session_id: str,
         query: str,
         items: list[dict],
@@ -141,7 +141,7 @@ class PostgresChatStore:
         )
 
 
-    async def get_last_search_meta(self, user_id: int, session_id: str) -> dict | None:
+    async def get_last_search_meta(self, user_id: str, session_id: str) -> dict | None:
         """Получаем последнюю метаинформацию"""
         if not self.pool:
             return None
@@ -156,7 +156,7 @@ class PostgresChatStore:
         return dict(row) if row else None
 
 
-    async def get_last_search_results(self, user_id: int, session_id: str) -> list[dict]:
+    async def get_last_search_results(self, user_id: str, session_id: str) -> list[dict]:
         """Получаем последние результаты поиска"""
         if not self.pool:
             return []
@@ -172,7 +172,7 @@ class PostgresChatStore:
         return [dict(r) for r in rows]
 
 
-    async def get_result_by_rank(self, user_id: int, session_id: str, rank: int) -> dict | None:
+    async def get_result_by_rank(self, user_id: str, session_id: str, rank: int) -> dict | None:
         """Получаем результаты поиска по рангу"""
         if not self.pool:
             return None
@@ -187,7 +187,7 @@ class PostgresChatStore:
         return dict(row) if row else None
 
 
-    async def update_shown_count(self, user_id: int, session_id: str, shown_count: int) -> None:
+    async def update_shown_count(self, user_id: str, session_id: str, shown_count: int) -> None:
         """Обновляем количество показанных"""
         if not self.pool:
             return
@@ -197,7 +197,7 @@ class PostgresChatStore:
         await update_doc_search_shown_count(self.pool, user_id, session_id, shown_count)
 
 
-    async def reset_search_state(self, user_id: int, session_id: str) -> None:
+    async def reset_search_state(self, user_id: str, session_id: str) -> None:
         """Сбрасываем состояние поиска"""
         if not self.pool:
             return
@@ -226,7 +226,7 @@ class SubscriberStore:
 
     async def add(
             self,
-            user_id: int,
+            user_id: str,
             username: str | None,
             first_name: str,
             last_name: str,
@@ -262,14 +262,14 @@ class SubscriberStore:
                 platform
             )
 
-    async def get_phone(self, user_id: int) -> str | None:
+    async def get_phone(self, user_id: str) -> str | None:
         """Проверить есть ли телефон у пользователя"""
         query = "SELECT phone_number FROM subscribers WHERE user_id =$1"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)
         return row["phone_number"] if row else None
 
-    async def update_phone(self, user_id: int, phone_number: str):
+    async def update_phone(self, user_id: str, phone_number: str):
         """Обновить номер телефона"""
         query = """
         UPDATE subscribers
@@ -284,23 +284,55 @@ class SubscriberStore:
         """Получение всех пользователей с информацией с группами"""
         logger.info("Получаем пользователей с группами")
         query = """
-        SELECT user_id, username, first_name, last_name,
-               phone_number, last_seen, created_at,
-               manager_group, coach_group, platform
-        FROM subscribers
-        ORDER BY last_seen DESC
+        SELECT 
+            s.user_id,
+            s.username,
+            s.first_name,
+            s.last_name,
+            s.phone_number,
+            s.last_seen,
+            s.created_at,
+            s.manager_group,
+            s.coach_group,
+            s.platform,
+            ua.user_id as global_user_id
+        FROM subscribers s
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id = s.user_id
+            AND ua.platform = s.platform
+        ORDER BY s.last_seen DESC
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [dict(r) for r in rows]
 
-    async def get_user_data(self, user_id: int) -> dict | None:
-        """Получение полных данных пользователя для передачи в ADK"""
+    async def get_user_data(self, user_id: str) -> dict | None:
+        """
+        Получение полных данных пользователя для передачи в ADK
+        + проверка блокировки (через users)
+        """
         query = """
-        SELECT user_id, username, first_name, last_name, phone_number,
-               region, manager_group, coach_group
-        FROM subscribers
-        WHERE user_id = $1
+        SELECT 
+            s.user_id,
+            s.username,
+            s.first_name,
+            s.last_name,
+            s.phone_number,
+            s.region,
+            s.manager_group,
+            s.coach_group,
+            u.id as global_user_id,
+            u.is_blocked
+
+        FROM subscribers s
+        LEFT JOIN user_accounts ua 
+            ON ua.platform_user_id = s.user_id 
+            AND ua.platform = s.platform
+        LEFT JOIN users u 
+            ON u.id = ua.user_id
+
+        WHERE s.user_id = $1
+        LIMIT 1
         """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)
@@ -316,10 +348,12 @@ class SubscriberStore:
             "phone_number": row["phone_number"],
             "region": row["region"],
             "manager_group": row["manager_group"],
-            "coach_group": row["coach_group"]
+            "coach_group": row["coach_group"],
+            "global_user_id": str(row["global_user_id"]) if row["global_user_id"] else None,
+            "is_blocked": row["is_blocked"] or False
         }
 
-    async def update_user_group(self, user_id: int, group: str, value: bool):
+    async def update_user_group(self, user_id: str, group: str, value: bool):
         """Обновление принадлежности пользователя к группе"""
         if group not in ("manager_group", "coach_group"):
             raise ValueError(f"Invalid group: {group}")

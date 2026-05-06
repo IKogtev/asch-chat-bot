@@ -44,13 +44,13 @@ def _follow_up_unhandled_in_agent_hint(intent: str) -> str:
             "(например «3»), несколько номеров через запятую или фразу вида «скачай 1», «1 и 3»."
         )
 
-def _telegram_user_id(ctx: InvocationContext) -> Optional[int]:
+def _telegram_user_id(ctx: InvocationContext) -> Optional[str]:
     """ID пользователя Telegram из ADK Session (тот же, что в /run)."""
     raw = getattr(ctx.session, "user_id", None)
     if raw is None:
         return None
     try:
-        return int(str(raw).strip())
+        return str(raw)
     except ValueError:
         return None
 
@@ -93,7 +93,7 @@ async def _persist_full_list(
         return
 
     # Получаем идентификатор сессии
-    sid = getattr(ctx.session, "id", None) or ""
+    sid = str(getattr(ctx.session, "id", None) or "")
     if not sid:
         logger.warning("session.id отсутствует — пропуск сохранения списка в БД")
         return

@@ -10,7 +10,7 @@ from utils.event_logger import EventLogger
 from utils.document_handler import DocumentHandler
 from utils.doc_search_format import render_doc_list_html
 
-from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
 from pathlib import Path
 from bot.services.database import PostgresChatStore
@@ -29,20 +29,18 @@ eventlogger = EventLogger()
 
 #  нормализация телефона для разных форматов
 def normalize_phone(phone: str) -> str:
+    # если телефон пустой — возвращаем None
     if not phone:
         return phone
-
     phone = re.sub(r"[^\d+]", "", phone)
-
     # если без + и начинается с 8 → делаем +7
     if phone.startswith("8"):
         phone = "+7" + phone[1:]
     elif not phone.startswith("+"):
         phone = "+" + phone
-
     return phone
 
-
+#  получаем имя файла из пути
 def get_filename(filepath: str) -> str:
     return Path(filepath).name
 
