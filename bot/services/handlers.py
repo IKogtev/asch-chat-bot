@@ -256,7 +256,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             f"[USER_RESOLVE] platform={platform} "
             f"platform_user_id={user_id} "
             f"global_user_id={user_data['global_user_id']} "
-            f"phone={phone}"
+            f"phone={'***' if phone else None}"
         )
         # если телефона нет - запрашиваем его
         if not phone and not is_incoming_contact:
@@ -486,7 +486,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         await subscriber_store.update_phone(user_id, phone)
         # нормализуем телефон
         phone = normalize_phone(phone)
-        logger.info(f"✅ Телефон получен [{platform}]: user_id={user_id}, {phone}")
+        logger.info(f"✅ Телефон получен [{platform}]: user_id={user_id}, {'***' if phone else None}")
         # обновляем global user
         global_user_id = None
         try:
@@ -566,7 +566,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     await bot_res.answer_callback("⚠️ Не удалось получить номер. Попробуйте ещё раз.")
                     return
                 phone = f"+{phone}"
-                logger.info(f"✅ Телефон извлечён: {phone}")
+                logger.info(f"✅ Телефон извлечён: {'***' if phone else None}")
                 await process_contact_logic(
                     bot_res=bot_res, 
                     phone=phone, 
