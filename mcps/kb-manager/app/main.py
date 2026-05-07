@@ -30,6 +30,8 @@ import re
 import pymorphy3
 import csv
 import io
+import subprocess
+import sys
 
 load_dotenv()
 
@@ -718,6 +720,63 @@ async def list_documents():
         return documents
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+#  загрузка таблиц из Excel в PostgreSQL
+@app.post("/api/tables/load")
+async def load_tables():
+    """
+    Запуск загрузчика Excel таблиц в PostgreSQL
+    """
+
+    try:
+        script_path = Path(
+            "/app/scripts/load_tables.py"
+        )
+
+        if not script_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Script not found: {script_path}"
+            )
+
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(script_path),
+
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        stdout_text = stdout.decode("utf-8", errors="ignore")
+        stderr_text = stderr.decode("utf-8", errors="ignore")
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Tables loading failed\n\n"
+                    f"{stderr_text or stdout_text}"
+                )
+            )
+
+        return {
+            "status": "success",
+            "stdout": stdout_text,
+            "stderr": stderr_text
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logger.exception("Tables loading failed")
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.post("/api/documents/upload")
 async def upload_document(
