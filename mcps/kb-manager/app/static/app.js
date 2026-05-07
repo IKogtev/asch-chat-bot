@@ -3256,13 +3256,18 @@ function renderUserDialogs(dialogs) {
                 let answer;
                 // преобразуем ответ с добавлением времени ответа
                 if (d.response) {
-                    answer = `${d.response} (${formatTime(d.response_time || 0)})`;
-                } else if (d.file_path) {
-                    const shortFile = d.file_path.split("/").pop();
-                    answer = `📄 ${shortFile} (${formatTime(d.response_time || 0)} )`;
+                    if (d.file_paths && d.response.includes("||")) {
+                        answer = d.response
+                            .split("||")
+                            .map(f => "📄 " + f.split("/").pop())
+                            .join("<br>");
+                    } else {
+                        answer = escapeHtml(d.response);
+                    }
                 } else {
-                    answer = `Нет ответа (${formatTime(d.response_time || 0)})`;
+                    answer = "—";
                 }
+                answer += ` <small style="color:#999;">(${formatTime(d.response_time || 0)})</small>`;
 
                 return `
                     <div class="dialog-item">
@@ -3310,6 +3315,11 @@ function ensureDialogsDates() {
         initDialogs();
     }
 }
+// обновление диалогов при изменении дат или фильтров
+function updateDialogs(){
+    initDialogs();
+    loadDialogs();
+}
 // загрузка диалогов
 async function loadDialogs() {
     ensureDialogsDates();
@@ -3339,10 +3349,6 @@ async function loadDialogs() {
     const data = await res.json();
 
     renderDialogs(data);
-}
-function updateDialogs(){
-    initDialogs();
-    loadDialogs();
 }
 // рендер таблицы диалогов
 function renderDialogs(data) {

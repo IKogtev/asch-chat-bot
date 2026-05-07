@@ -360,8 +360,21 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
     errors = []
     users, all_count = await get_filtered_users(subscriber_store, target_group, source)
     count = len(users)
-
-    logger.info(f"📬 Отправка новости: #{news_id} {count} из {all_count} пользователей (группа: {target_group})")        
+    # логирование перед отправкой
+    if count == 0:
+        logger.info(
+            f"📭 Новость #{news_id}: "
+            f"для source={source} "
+            f"нет подходящих пользователей "
+            f"(группа: {target_group})"
+        )
+    else:
+        logger.info(
+            f"📬 Отправка новости: #{news_id} "
+            f"{count} из {all_count} пользователей "
+            f"(группа: {target_group}, source={source})"
+        )   
+    # цикл отправки каждому пользователю с обработкой ошибок и логированием
     for idx, user_id in enumerate(users):
         try:
             if not bot_holder.instance:
@@ -445,6 +458,7 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
             errors.append(f"user {user_id}: {str(e)[:100]}")
             logger.error(f"Broadcast error to {user_id} (#{idx+1}/{count}): {e}")
             # Продолжаем отправку остальным, не прерываем цикл
+            continue
 
     # === ИТОГОВЫЙ РЕЗУЛЬТАТ ===
     result = {
@@ -452,7 +466,8 @@ async def send_now(text: str, file_data: List, target_group: str="all", bot_hold
         "failed": failed,
         "total": count,
         "success_rate": round(sent / count * 100, 1) if count > 0 else 0,
-        "errors": errors[:10] if failed > 0 else []  # только первые 10 ошибок для логов
+        "errors": errors[:10] if failed > 0 else [],  # только первые 10 ошибок для логов
+        "no_users": count == 0
     }
 
     # Логирование итога
@@ -496,40 +511,64 @@ async def news_scheduler(news_store, subscriber_store, bot_holder, source):
             now = datetime.now(timezone.utc)
 
             for news in pending:
-                if news["scheduled_at"] is None or now >= news["scheduled_at"]:
-                    logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
-                    files = json.loads(news.get("files") or "[]")
-                    file_data = []
-                    for f in files:
-                        try: 
-                            with open(f["path"], "rb") as fp:
-                                content = fp.read()
-                                file_data.append((f["name"], f["type"], content))
-                        except Exception as e:
-                            logger.error(f"File read error: {e}")
-                    target_group = news.get("target_group", "all")
-                    safe_html = html_to_bot(news['text'])
-                    result = await send_now(
-                        safe_html, 
-                        file_data, 
-                        target_group, 
-                        bot_holder, 
-                        subscriber_store, 
-                        source,
-                        news_id=news["id"]
+                if (news["scheduled_at"] is not None and now < news["scheduled_at"]):
+                    continue
+                logger.info(f"🚀 Выполняем отложенную задачу {news['scheduled_at']}")
+                # читаем файлы из новости если есть
+                files = json.loads(news.get("files") or "[]")
+                file_data = []
+                for f in files:
+                    try: 
+                        with open(f["path"], "rb") as fp:
+                            content = fp.read()
+                            file_data.append((f["name"], f["type"], content))
+                    except Exception as e:
+                        logger.error(f"File read error: {e}")
+                # получаем группу для новости, если нет - по умолчанию all
+                target_group = news.get("target_group", "all")
+                safe_html = html_to_bot(news['text'])
+                result = await send_now(
+                    safe_html, 
+                    file_data, 
+                    target_group, 
+                    bot_holder, 
+                    subscriber_store, 
+                    source,
+                    news_id=news["id"]
+                )
+                # обработка нет пользователей для рассылки
+                if result["no_users"]:
+                    logger.warning(
+                        f"⚠️ Новость #{news['id']} "
+                        f"({source}) пропущена: "
+                        f"нет пользователей"
                     )
-                    if result["sent"] > 0:
-                        await news_store.mark_channel_sent(news["id"], source)
-                        await news_store.mark_sent_if_done(news["id"])
+                    # помечаем канал как обработанный
+                    # чтобы scheduler не ретраил бесконечно
+                    await news_store.mark_channel_sent(
+                        news["id"],
+                        source
+                    )
+                    await news_store.mark_sent_if_done(
+                        news["id"]
+                    )
+                # успешная отправка
+                elif result["sent"] > 0:
+                    await news_store.mark_channel_sent(news["id"], source)
+                    await news_store.mark_sent_if_done(news["id"])
 
-                        logger.info(
-                            f"✅ Новость #{news['id']} отправлена в {source}, "
-                            f"sent={result['sent']}"
-                        )
-                    else:
-                        logger.warning(
-                            f"⚠️ Новость #{news['id']} не отправлена (0 users)"
-                        )
+                    logger.info(
+                        f"✅ Новость #{news['id']} отправлена в {source}, "
+                        f"sent={result['sent']}"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ Новость #{news['id']} "
+                        f"({source}) не отправлена: "
+                        f"все попытки завершились ошибкой"
+                    )
+            # пауза между итерациями, чтобы не перегружать систему 
             await asyncio.sleep(5)
         except Exception as e:
             logger.error(f"Error during news_scheduler like this {e}")
+            await asyncio.sleep(5)

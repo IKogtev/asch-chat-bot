@@ -234,7 +234,6 @@ class SubscriberStore:
             phone_number: str | None=None, 
             platform: str="telegram"):
         """добавление пользователя в таблицу"""
-        logger.info(f"Added a new user: {user_id} (@{username})")
         query = """
         INSERT INTO subscribers (
             user_id, username, first_name, last_name, phone_number,
@@ -278,7 +277,6 @@ class SubscriberStore:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, phone_number, user_id)
-        logger.info(f"✓ Телефон обновлён для user_id={user_id}: {phone_number}")
 
     async def get_all_with_groups(self) -> list[dict]:
         """Получение всех пользователей с информацией с группами"""
