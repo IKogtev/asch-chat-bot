@@ -111,20 +111,20 @@
                 <!-- Upload Tab -->
                 <div id="upload-tab" class="tab-content">
                     <div class="section-header">
-                        <h2>Загрузить Документ</h2>
+                        <h2>Загрузка таблиц</h2>
                     </div>
                     
                     <div class="upload-section">
-                        <div class="upload-box" id="upload-box">
+                        <div class="upload-box tables-upload-box" id="upload-box">
                             <div class="upload-icon"></div>
                             <p>Перетащите файл сюда или выберите его щелчком мыши.</p>
-                            <p class="upload-hint">Поддерживаемые форматы: TXT, MD, PDF, DOCX, EXCEL</p>
+                            <p class="upload-hint">Будет запущен tables loader service</p>
                         </div>
                         
                         <input 
                             type="file" 
                             id="file-input" 
-                            accept=".txt,.md,.pdf,.docx,.doc,.csv,.xls,.xlsx" 
+                            accept=".csv,.xls,.xlsx" 
                             onchange="handleFileSelect(event)"
                             style="display: none;"
                         >
@@ -133,29 +133,18 @@
                             <p><strong>Выбранный файл:</strong> <span id="file-name"></span></p>
                         </div>
 
-                        <div class="upload-options">
-                            <label>
-                                ID Базы знаний:
-                                <input type="text" id="upload-kb-id" value="default" placeholder="например, default, kb1, kb2">
-                            </label>
-                            <label>
-                                ID пользователя:
-                                <input type="text" id="upload-user-id" value="anonymous" placeholder="например, user123, anonymous">
-                            </label>
-                        </div>
-
-                        <button onclick="uploadDocument()" id="upload-btn" class="btn btn-primary btn-large" disabled>
-                            Загрузить документ
+                        <button onclick="loadTables()" id="load-tables-btn" class="btn btn-primary btn-large" disabled>
+                            Загрузить таблицу
                         </button>
 
-                        <div id="upload-progress" class="upload-progress" style="display: none;">
+                        <div id="tables-load-progress" class="upload-progress" style="display: none;">
                             <div class="progress-bar">
                                 <div class="progress-fill"></div>
                             </div>
-                            <p>Обработка документа...</p>
+                            <p>Загрузка таблиц...</p>
                         </div>
 
-                        <div id="upload-result" class="result-message"></div>
+                        <div id="tables-load-result" class="result-message" style="display: none;"></div>
                     </div>
                 </div>
                 <!-- Tree tab -->

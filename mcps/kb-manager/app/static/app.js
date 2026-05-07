@@ -1408,6 +1408,63 @@ function cancelUpload() {
     document.getElementById('upload-btn').disabled = true;
 }
 
+// загрузка таблиц postgres
+async function loadTables() {
+    const btn = document.getElementById('load-tables-btn');
+    const progress = document.getElementById('tables-load-progress');
+    const resultDiv = document.getElementById('tables-load-result');
+
+    btn.disabled = true;
+    progress.style.display = 'block';
+
+    resultDiv.style.display = 'none';
+    resultDiv.className = 'result-message';
+
+    try {
+        const response = await fetch('/api/tables/load', {
+            method: 'POST'
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+            throw new Error(result.detail || 'Ошибка загрузки таблиц');
+        }
+
+        resultDiv.className = 'result-message success';
+
+        resultDiv.innerHTML = `
+            <strong>✓ Таблицы успешно загружены</strong><br><br>
+
+            <strong>stdout:</strong>
+            <pre>${escapeHtml(result.stdout || '')}</pre>
+
+            ${
+                result.stderr
+                    ? `
+                    <strong>stderr:</strong>
+                    <pre>${escapeHtml(result.stderr)}</pre>
+                    `
+                    : ''
+            }
+        `;
+
+    } catch (error) {
+        console.error(error);
+
+        resultDiv.className = 'result-message error';
+
+        resultDiv.innerHTML = `
+            <strong>✗ Ошибка:</strong><br>
+            ${escapeHtml(error.message)}
+        `;
+    } finally {
+        progress.style.display = 'none';
+        resultDiv.style.display = 'block';
+        btn.disabled = false;
+    }
+}
+
 // #############################
 // TREE TAB LOGIC
 // #############################
