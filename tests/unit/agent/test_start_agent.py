@@ -76,6 +76,9 @@ def _load_start_agent_module(monkeypatch):
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
     kb_answer_stub.create_kb_answer_agent = _agent_factory("kb_answer_agent")
 
+    product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
+    product_selection_stub.create_product_selection_agent = _agent_factory("product_selection_agent")
+
     for name, module in {
         "agent": agent_pkg,
         "google.adk.apps.app": app_stub,
@@ -87,6 +90,7 @@ def _load_start_agent_module(monkeypatch):
         "agent.agents.doc_search_agent": doc_search_stub,
         "agent.agents.doc_search_orchestrator": doc_orchestrator_stub,
         "agent.agents.kb_answer_agent": kb_answer_stub,
+        "agent.agents.product_selection_agent": product_selection_stub,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -108,3 +112,4 @@ def test_start_agent_exports_app_with_context_compaction_config(monkeypatch) -> 
     assert module.app.events_compaction_config.token_threshold == 16000
     assert module.app.events_compaction_config.event_retention_size == 12
     assert module.app.events_compaction_config.summarizer.llm is not None
+    assert module.root_agent.product_selection_agent.name == "product_selection_agent"
