@@ -747,8 +747,8 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
     report_df = tc_df.rename(
         columns={
             "Use case": "Код use case",
-            "answer": "Ответ чат-бота",
-            "answer_raw": "Ответ бота (raw)",
+            "answer": "Ответ ADK Agent",
+            "answer_raw": "Ответ ADK Agent (raw)",
             "response_time": "Время ответа (сек)",
             "accuracy": "Точность",
             "completeness": "Полнота",
@@ -768,8 +768,8 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
             "Вопросы",
             "Ожидаемые ответы",
             "Критерий успеха",
-            "Ответ чат-бота",
-            "Ответ бота (raw)",
+            "Ответ ADK Agent",
+            "Ответ ADK Agent (raw)",
             "Время ответа (сек)",
             "Точность",
             "Полнота",

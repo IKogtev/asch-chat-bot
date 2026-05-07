@@ -2255,12 +2255,19 @@ async function loadUserGroups(skipFetch = false) {
     // Фильтрация по поиску
     filteredUsersCache = allUsersCache.filter(u => {
         const q = searchQuery.toLowerCase();
-        const matchesSearch = !searchQuery || (
-            String(u.user_id).includes(q) ||
+        // поиск по global_user_id, username, first_name, last_name
+        const matchesMainInfo = !searchQuery || (
+            String(u.global_user_id).toLowerCase().includes(q) ||
             (u.username && u.username.toLowerCase().includes(q)) ||
             (u.first_name && u.first_name.toLowerCase().includes(q)) ||
             (u.last_name && u.last_name.toLowerCase().includes(q))
         );
+        // поиск по аккаунтам
+        const matchesAccounts = !searchQuery || (u.accounts && u.accounts.some(acc => 
+            String(acc.platform_user_id).includes(q) || 
+            (acc.username && acc.username.toLowerCase().includes(q))
+        ));
+        const matchesSearch = matchesMainInfo || matchesAccounts;
         // Фильтрация по группе
         let matchesGroup = true;
         if (activeStatsFilter === "manager") matchesGroup = !!u.manager_group;
@@ -2298,29 +2305,55 @@ async function loadUserGroups(skipFetch = false) {
                     <th>Фамилия</th>
                     <th class="text-center">👔 Менеджер</th>
                     <th class="text-center">🎓 Коуч</th>
+                    <th>Аккаунты</th>
                     <th>Последний вход</th>
+                    <th class="text-center">🚫 Блок</th>
                 </tr>
             </thead>
             <tbody>
-                ${paginated.map(u => `
-                    <tr>
-                        <td class="font-monospace">${u.user_id}</td>
+                ${paginated.map(u => {
+                    // Логика отображения: если имя unknown, пробуем показать username
+                    const displayName = (u.first_name === 'unknown' && u.username) ? u.username : (u.first_name || 'unknown');
+                    const displayLastName = u.last_name || '';    
+                    return `
+                    <tr class="${u.is_blocked ? 'user-blocked' : ''}">
+                        <td class="font-monospace">${u.global_user_id}</td>
                         <td>${escapeHtml(u.username || '-')}</td>
-                        <td>${escapeHtml(u.first_name || '')}</td>
-                        <td>${escapeHtml(u.last_name || '')}</td>
+                        <td>${escapeHtml(displayName || '')}</td>
+                        <td>${escapeHtml(displayLastName || '')}</td>
                         <td class="text-center">
                             <input type="checkbox" 
                                     ${u.manager_group ? 'checked' : ''} 
-                                    onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
+                                    onchange="toggleUserGroup('${u.global_user_id}', 'manager_group', this.checked)">
                         </td>
                         <td class="text-center">
                             <input type="checkbox" 
                                     ${u.coach_group ? 'checked' : ''} 
-                                    onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
+                                    onchange="toggleUserGroup('${u.global_user_id}', 'coach_group', this.checked)">
+                        </td>
+                        <td>
+                            <div class="accounts-cell">
+                                <button class="btn btn-secondary btn-small" onclick="toggleAccountsRow('${u.global_user_id}')">
+                                    📱 Аккаунты (${u.accounts.length})
+                                </button>
+                                <div id="acc-details-${u.global_user_id}" class="accounts-details-hidden" style="display:none;">
+                                    ${u.accounts.map(acc => `
+                                        <div class="account-badge-mini">
+                                            <span class="platform-tag">${acc.platform}</span>: <code>${acc.platform_user_id}</code>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
                         </td>
                         <td>${formatDate(u.last_seen)}</td>
+                        <td>
+                            <input type="checkbox" 
+                                ${u.is_blocked ? 'checked' : ''} 
+                                onchange="toggleUserBlock('${u.global_user_id}', this.checked)">
+                        </td>
                     </tr>
-                `).join('')}
+                    `;
+                }).join('')}
             </tbody>
         </table>
         <!-- пагинация -->
@@ -2344,6 +2377,44 @@ async function loadUserGroups(skipFetch = false) {
         </div>
     `;
 }
+
+async function toggleUserBlock(globalUserId, value) {
+    try {
+        const res = await fetch("/api/subscribers/block", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                global_user_id: globalUserId,
+                value: value
+            })
+        });
+
+        if (!res.ok) {
+            throw new Error(`Ошибка ${res.status}`);
+        }
+
+        const action = value ? "заблокирован" : "разблокирован";
+
+        showNotification(
+            `Пользователь ${globalUserId} ${action}`,
+            "success"
+        );
+
+        await loadUserGroups();
+
+    } catch (e) {
+        alert(`Ошибка блокировки: ${e.message}`);
+        await loadUserGroups();
+    }
+}
+// отображение/скрытие строки с аккаунтами пользователя
+function toggleAccountsRow(userId) {
+    const el = document.getElementById(`acc-details-${userId}`);
+    if (el) {
+        el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+}
+
 function nextPage() {
     const totalPages = Math.ceil(filteredUsersCache.length / pageSize);
     if (currentPage < totalPages) {
@@ -2415,13 +2486,13 @@ function applyStatsFilter(filter) {
     loadUserGroups();
 }
 // Переключение группы пользователя
-async function toggleUserGroup(userId, group, value) {
+async function toggleUserGroup(globalUserId, group, value) {
     try {
         const res = await fetch("/api/subscribers/group", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                user_id: userId,
+                global_user_id: globalUserId,
                 group: group,
                 value: value
             })
@@ -2434,7 +2505,7 @@ async function toggleUserGroup(userId, group, value) {
         const groupName = group === "manager_group" ? "👔 Менеджер" : "🎓 Коуч";
         const action = value ? "добавлен в" : "удалён из";
         
-        showNotification(`Пользователь ${userId} ${action} группы "${groupName}"`, "success");
+        showNotification(`Пользователь ${globalUserId} ${action} группы "${groupName}"`, "success");
         
         // Перезагружаем список для обновления статистики
         await loadUserGroups();
@@ -2759,21 +2830,47 @@ async function openUsersModal(filename) {
     // сдвигаем к времени бд
     const from = shiftToUTC(fromRaw);
     const to = shiftToUTC(toRaw);
-
+    const modalList = document.getElementById("users-list");
+    document.getElementById("users-modal").style.display = "block";
     const users = await fetch(
         `/api/analytics/document-users?filename=${encodeURIComponent(filename)}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
-    document.getElementById("users-list").innerHTML =
-        users.length === 0
-            ? "<div>Нет данных</div>"
-            : users.map(u => `
-                <div>
-                    ${u.user_id} (${u.user_name || "unknown"})
-                    — ${u.downloads}
-                    ${u.source === "search" ? "🔍" : "📂"}
-                </div>
-            `).join("");
-    document.getElementById("users-modal").style.display = "block";
+    if (users.length === 0) {
+        modalList.innerHTML = `<div class="empty-state">Никто еще не скачивал этот файл</div>`;
+    } else {
+        modalList.innerHTML = `
+            <div class="modal-table-container">
+                <table class="modal-table">
+                    <thead>
+                        <tr>
+                            <th>Пользователь</th>
+                            <th>Источник</th>
+                            <th class="text-center">Скачиваний</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${users.map(u => `
+                            <tr>
+                                <td>
+                                    <span class="user-name-text">${escapeHtml(u.user_name || 'unknown')}</span>
+                                    <code class="user-id-code">${u.global_user_id}</code>
+                                </td>
+                                <td>
+                                    <span class="source-badge">
+                                        ${u.source === "search" ? "🔍 Поиск" : "📂 Меню"}
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    <strong>${u.downloads}</strong>
+                                </td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+    
 }
 // функция закрытия модалки с пользователями
 function closeUsersModal() {
@@ -2842,10 +2939,10 @@ function drawUsers() {
 
         ${page.length === 0 ? "<div>Нет пользователей</div>" : page.map(u => `
             <div class="user-card">
-                <b>${u.user_id} | ${u.user_name || "unknown"}</b>
+                <b>${u.global_user_id} | ${u.user_name || "unknown"}</b>
                 <div>Всего сообщений: ${u.messages}</div>
                 <div>В среднем за неделю сообщений: ${u.avg_weekly_messages.toFixed(1)}</div>
-                <button onclick="openUserDialogs('${u.user_id}', '${u.user_name || "unknown"}')" class="btn btn-primary btn-small">
+                <button onclick="openUserDialogs('${u.global_user_id}', '${u.user_name || "unknown"}')" class="btn btn-primary btn-small">
                     👁 Диалог
                 </button>
             </div>
@@ -2875,7 +2972,7 @@ function searchUsers(q) {
     userSearch = q;
     const query = q.toLowerCase();
     filteredUsers = allUsers.filter(u =>
-        (u.user_id || "").toLowerCase().includes(query) ||
+        (u.global_user_id || "").toLowerCase().includes(query) ||
         (u.user_name || "").toLowerCase().includes(query)
     );
     userPage = 0;
@@ -2970,7 +3067,7 @@ function prevDocs() {
         drawDocs();
     }
 }
-// рендеринг топа пользователей
+// рендеринг топа документов
 function renderTopDocs(docs, sources) {
     allDocs = docs;
     statSources = sources;
@@ -3147,17 +3244,30 @@ function renderUserDialogs(dialogs) {
         dialogs.length === 0
             ? "<div>Нет диалогов</div>"
             : dialogs.map(d => {
-
+                // Определяем иконку/название мессенджера
+                let channelBadge = "";
+                if (d.channel === "telegram") {
+                    channelBadge = `<span class="badge" style="background:#0088cc; color:white; padding:2px 6px; border-radius:4px; font-size:11px;">Telegram</span>`;
+                } else if (d.channel === "max") {
+                    channelBadge = `<span class="badge" style="background:#ff4b4b; color:white; padding:2px 6px; border-radius:4px; font-size:11px;">Max</span>`;
+                } else if (d.channel) {
+                    channelBadge = `<span class="badge" style="background:#666; color:white; padding:2px 6px; border-radius:4px; font-size:11px;">${d.channel}</span>`;
+                }
                 let answer;
                 // преобразуем ответ с добавлением времени ответа
                 if (d.response) {
-                    answer = `${d.response} (${formatTime(d.response_time || 0)})`;
-                } else if (d.file_path) {
-                    const shortFile = d.file_path.split("/").pop();
-                    answer = `📄 ${shortFile} (${formatTime(d.response_time || 0)} )`;
+                    if (d.file_paths && d.response.includes("||")) {
+                        answer = d.response
+                            .split("||")
+                            .map(f => "📄 " + f.split("/").pop())
+                            .join("<br>");
+                    } else {
+                        answer = escapeHtml(d.response);
+                    }
                 } else {
-                    answer = `Нет ответа (${formatTime(d.response_time || 0)})`;
+                    answer = "—";
                 }
+                answer += ` <small style="color:#999;">(${formatTime(d.response_time || 0)})</small>`;
 
                 return `
                     <div class="dialog-item">
@@ -3166,6 +3276,7 @@ function renderUserDialogs(dialogs) {
                                     timeZone: "Europe/Moscow"
                                 })}
                             </span>
+                            ${channelBadge}
                         </div>
 
                         <div class="dialog-q">🧑 ${d.message || "-"}</div>
@@ -3204,6 +3315,11 @@ function ensureDialogsDates() {
         initDialogs();
     }
 }
+// обновление диалогов при изменении дат или фильтров
+function updateDialogs(){
+    initDialogs();
+    loadDialogs();
+}
 // загрузка диалогов
 async function loadDialogs() {
     ensureDialogsDates();
@@ -3224,13 +3340,15 @@ async function loadDialogs() {
     if (text) params.set("text", text);
 
     const res = await fetch(`/api/analytics/dialogs?${params}`);
+    if (!res.ok) {
+        const text = await res.text();
+        console.error("Server error:", text);
+        alert("Ошибка сервера, смотри консоль");
+        return;
+    }
     const data = await res.json();
 
     renderDialogs(data);
-}
-function updateDialogs(){
-    initDialogs();
-    loadDialogs();
 }
 // рендер таблицы диалогов
 function renderDialogs(data) {
@@ -3246,6 +3364,7 @@ function renderDialogs(data) {
             <thead>
                 <tr>
                     <th>Пользователь</th>
+                    <th>Платформа</th>
                     <th>Время (МСК)</th>
                     <th>Запрос</th>
                     <th>Ответ бота</th>
@@ -3254,7 +3373,12 @@ function renderDialogs(data) {
             </thead>
             <tbody>
                 ${data.map(row => {
-                    // ИСПРАВЛЕНО: Поле из БД называется message_time
+
+                    // ✅ нормальное имя
+                    let userName = (row.user_name || '').trim();
+                    if (!userName || userName === "None None") {
+                        userName = "Аноним";
+                    }
                     const date = row.message_time ? new Date(row.message_time).toLocaleString('ru-RU') : '---';
                     const respTime = row.response_time ? `${(row.response_time / 1000).toFixed(2)}с` : '';
                     let answer;
@@ -3271,8 +3395,11 @@ function renderDialogs(data) {
                     return `
                     <tr>
                         <td class="user-cell">
-                            <strong>${escapeHtml(row.user_name || 'Аноним')}</strong><br>
-                            <small>${escapeHtml(row.user_id)}</small>
+                            <strong>${escapeHtml(userName)}</strong><br>
+                            <small>${escapeHtml(row.global_user_id)}</small>
+                        </td>
+                        <td>
+                            ${row.channel === 'telegram' ? '📨 Telegram' : '⚡ Max'}
                         </td>
                         <td class="time-cell">${date}</td>
                         <td class="msg-cell">${escapeHtml(row.message || '')}</td>

@@ -1,51 +1,52 @@
 import asyncio
-import os
-from typing import Optional
-
-from aiogram import Bot, Dispatcher
-from aiogram.exceptions import TelegramNetworkError
-from aiogram.client.session.aiohttp import AiohttpSession
-
-from dotenv import load_dotenv
 import aiohttp
-
+from dotenv import load_dotenv
+from typing import Optional
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
-
 from utils import setup_logger
+from bot.services.utils import run_http_server
+from maxapi import Bot, Dispatcher
+from maxapi.types import BotCommand
+import os
 from utils.event_logger import EventLogger
 from utils.document_handler import DocumentHandler
 #  импортируем вынесенные классы для работы с базами данных
 from bot.services.database import PostgresChatStore, SubscriberStore, NewsStore, AdkApiClient
-# импортируем конфиг
-from bot.services.config import Settings
 
+from bot.services.config import Settings
+#  импортируем функции вспомогательные для бота
 from bot.services.broadcast import create_broadcast_app, news_scheduler
 from bot.services.handlers import register_handlers
-from bot.services.utils import run_http_server
-from bot.services.user_resolver import UserResolver
-##################################
-# Глобальные константы и переменные
-##################################
 
-# Настройка логгера
+from bot.services.user_resolver import UserResolver
+
+# Настройка логирования
 logger = setup_logger('bot', 'bot.log')
-# # создаем папку для загрузки новостей, если ее нет
-# стартовое сообщение
 TITLE_START = """
 👋 Привет! Я интерактивный чат-бот базы знаний компании.
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
-
-#  создаем класс для того чтобы держать запросы бота
+eventlogger = EventLogger()
 class BotHolder:
     def __init__(self):
         self.instance: Optional[Bot] = None
-##################################
-# Вспомогательные функции
-##################################
-# делаем загрузку стартового сообщения из файла если есть, иначе берем и загружаем стандартное
+# инициализация команд бота
+async def setup_bot_commands(bot):
+    """Регистрация команд в меню бота"""
+
+    try:
+        await bot.set_my_commands(
+            BotCommand(name="start", description="Начать работу"),
+            BotCommand(name="help", description="Показать справку"),
+            BotCommand(name="version", description="Версия системы"),
+            BotCommand(name="reset", description="сбросить историю"),
+        )
+        logger.info("Команды бота зарегистрированы")
+    except Exception as e:
+        logger.warning(f"Ошибка регистрации команд: {e}")
+
 def load_bot_start_message():
     """Load start message from file"""
     global TITLE_START
@@ -64,22 +65,20 @@ def get_start_message():
     """Получение стартового сообщения"""
     return TITLE_START
 
-#####################################
-# Главная функция и обработчики бота
-#####################################
-async def main() -> None:
-    """Главная функция бота"""
+# =========================
+# RUN
+# =========================
+async def main():
     logger.info("=" * 60)
-    logger.info("Запуск Telegram бота")
+    logger.info("Запуск max бота")
     logger.info("=" * 60)
     # logger событий
     eventlogger = EventLogger()
     await eventlogger.init()
-    # Загрузка конфигурации
-    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    if not tg_token:
-        logger.error("TELEGRAM_BOT_TOKEN отсутствует в .env")
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is missing in .env")
+    max_token = os.getenv("MAX_BOT_TOKEN", "REDACTED_EXAMPLE").strip()
+    if not max_token:
+        logger.error("MAX_BOT_TOKEN отсутствует в .env")
+        raise RuntimeError("MAX_BOT_TOKEN is missing in .env")
     dsn = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_DSN") or "").strip()
     if not dsn:
         logger.error("DATABASE_URL отсутствует в .env")
@@ -96,8 +95,6 @@ async def main() -> None:
     logger.info(f"  KB Manager: {Settings.KB_MANAGER_URL}")
     logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
-    # ссылка на прокси для телеграма (если нужна)
-    proxy_url = os.getenv("TELEGRAM_PROXY")
     store = PostgresChatStore(dsn=dsn, max_turns=30)
     await store.connect()
     # инициализируем хранилище пользователей
@@ -125,7 +122,7 @@ async def main() -> None:
         adk=adk,
         doc_handler=doc_handler,
         get_start_message=get_start_message,
-        platform="telegram"
+        platform="max"
     )
     logger.info("Все компоненты инициализированы")
     bot_holder = BotHolder()
@@ -135,78 +132,31 @@ async def main() -> None:
         load_bot_start_message=load_bot_start_message,
         get_start_message=get_start_message,
         bot_holder=bot_holder,
-        source="telegram",  
+        source="max"
     )
-    http_task = asyncio.create_task(run_http_server(broadcast_app, 8001))
-    scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder, source="telegram"))
+    http_task = asyncio.create_task(run_http_server(broadcast_app, 8002))
+    scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder, source="max"))
     logger.info("🚀 HTTP сервер и scheduler запущены")
-    # Запуск бота
     try:
         await eventlogger.log_event(
             event_type="system_start",
-            channel="telegram",
+            channel="max",
             payload={
                 "status": "bot_started"
             }
         )
-        while True:
-            bot_instance = None
-            try:
-                logger.info("Попытка подключения к Telegram API...")
+        bot_instance = Bot(token=max_token)
+        me = await bot_instance.get_me()
+        logger.info(f"✅ Успешное подключение к Max API. Бот: @{me.username}")
+        # Инициализация компонентов
+        bot_holder.instance = bot_instance
+        # команды инициализируем
+        await setup_bot_commands(bot_instance)
+        logger.info("✓ Диспетчер инициализирован")
 
-                if proxy_url:
-                    session = AiohttpSession(proxy=proxy_url)
-                    bot_instance = Bot(token=tg_token, session=session)
-                    logger.info(f"Используется Telegram proxy: {proxy_url}")
-                else:
-                    bot_instance = Bot(token=tg_token)
-
-                me = await bot_instance.get_me()
-                logger.info(f"✅ Успешное подключение к Telegram API. Бот: @{me.username}")
-
-                # Инициализация компонентов
-                bot_holder.instance = bot_instance
-
-                logger.info("✓ Диспетчер инициализирован")
-
-                logger.info(f"🚀 Бот запущен и готов к работе (версия {Settings.PLATFORM_VERSION})")
-                await dp.start_polling(bot_instance)
-            except TelegramNetworkError as e:
-                logger.warning(
-                    f"⚠️ Нет доступа к Telegram API: {e}. "
-                    f"Следующая попытка через {Settings.RECONNECT_DELAY_SEC} секунд."
-                )
-                await asyncio.sleep(Settings.RECONNECT_DELAY_SEC)
-
-            except (
-                aiohttp.ClientError,
-                OSError,
-                ConnectionResetError,
-                TimeoutError,
-            ) as e:
-                logger.warning(
-                    f"⚠️ Сетевая ошибка при работе с Telegram API: {e}. "
-                    f"Следующая попытка через {Settings.RECONNECT_DELAY_SEC} секунд."
-                )
-                await asyncio.sleep(Settings.RECONNECT_DELAY_SEC)
-
-            except asyncio.CancelledError:
-                logger.info("Получен сигнал остановки бота")
-                break
-
-            except Exception as e:
-                logger.error(f"❌ Ошибка при работе бота: {e}", exc_info=True)
-                logger.info(f"Перезапуск через {Settings.RECONNECT_DELAY_SEC} секунд...")
-                bot_holder.instance = None
-                await asyncio.sleep(Settings.RECONNECT_DELAY_SEC)
-
-            finally:
-                if bot_instance and hasattr(bot_instance, "session") and bot_instance.session:
-                    try:
-                        await bot_instance.session.close()
-                    except Exception as e:
-                        logger.warning(f"Ошибка при закрытии сессии бота: {e}")
-
+        logger.info(f"🚀 Бот запущен и готов к работе (версия {Settings.PLATFORM_VERSION})")
+        await dp.start_polling(bot_instance)
+        
     except KeyboardInterrupt:
         logger.info("Получен сигнал прерывания (Ctrl+C)")
 
@@ -237,7 +187,7 @@ async def main() -> None:
             logger.error(f"Ошибка при закрытии сессии бота: {e}")
         logger.info("Бот остановлен")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
