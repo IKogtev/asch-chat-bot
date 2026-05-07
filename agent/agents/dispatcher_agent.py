@@ -54,10 +54,17 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     """
     agent_name = "dispatcher_agent"
     _ = context
-    allowed_routes = {"doc_search", "kb_answer"}
+    allowed_routes = {"doc_search", "kb_answer", "product_selection"}
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
     kb_route_intents = {"kb_answer", "smalltalk"}
-    allowed_intents = doc_route_intents | kb_route_intents
+    product_route_intents = {
+        "product_filter",
+        "product_compare",
+        "product_recommendation",
+        "product_explanation",
+        "product_alternatives",
+    }
+    allowed_intents = doc_route_intents | kb_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}
 
     def _validate_payload_type(payload: Dict[str, Any]) -> None:
@@ -132,6 +139,15 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 fields=("route", "intent"),
             )
 
+        if intent in product_route_intents and route != "product_selection":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="product intents must use route='product_selection'",
+                data=payload,
+                fields=("route", "intent"),
+            )
+
         if intent in follow_up_no_query and search_query:
             raise build_validation_error(
                 agent=agent_name,
@@ -154,7 +170,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
-                problem="search_query is required for doc_search and kb_answer intents",
+                problem="search_query is required for doc_search, kb_answer, and product intents",
                 data=payload,
                 fields=("route", "intent", "search_query"),
             )
