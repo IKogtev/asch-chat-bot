@@ -128,7 +128,7 @@ curl -sS -X POST "${ADK_AGENT_URL}/run" \
 
 - Установить переменные  окружения и инициализировать сессию
 ```sh
-ADK_AGENT_URL="https://adk-agent-chatbot-dev.sandbox-2.wwwnstcloud.ru"
+ADK_AGENT_URL="https://adk-agent-chatbot-test1.sandbox-2.wwwnstcloud.ru"
 ADK_AGENT_APP="agent"
 USER="jenkins-smoke"
 SESSION="smoke-$(date +%s)"
