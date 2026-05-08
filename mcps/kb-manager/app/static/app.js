@@ -47,17 +47,18 @@ let filteredUsersCache = []; // кэш фильтрованных пользов
 
 
 // Initialize on load
-document.addEventListener('DOMContentLoaded', () => {
-    checkAuth(); //Проверка авторизации
-    loadAliasData(); // загрузка данных Алиаса
-    loadCollections(); // загрузка коллекций
-    loadActiveCollections(); // загрузка активных коллекций
-    loadCollectionInfo(); // загрузка информации о коллекциях
-    loadDocuments(); // загрузка документов
+document.addEventListener('DOMContentLoaded', async () => {
+    await checkAuth(); //Проверка авторизации
+    await loadAliasData(); // загрузка данных Алиаса
+    await loadCollections(); // загрузка коллекций
+    await loadActiveCollections(); // загрузка активных коллекций
+    await loadCollectionInfo(); // загрузка информации о коллекциях
+    await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
+    await loadDocuments(); // загрузка документов
     setupDragAndDrop(); 
-    loadSyncSettings();
+    await loadSyncSettings();
     subscribeToSync();
-    loadFilesystemTree();
+    await loadFilesystemTree();
     startLogsAutoRefresh();
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
@@ -177,6 +178,7 @@ async function switchCollection(collectionName, collectionType) {
         await loadCollections();
         await loadActiveCollections();
         await loadCollectionInfo();
+        await loadManagerCollectionInfo();
         await loadDocuments();
         await loadFilesystemTree();
         
@@ -211,6 +213,44 @@ async function loadCollectionInfo() {
          
         } catch (error) {
         console.error('Error loading collection info:', error);
+    }
+}
+// collection info for manager 
+async function loadManagerCollectionInfo() {
+
+    try {
+
+        const response = await fetch(`${API_BASE}/api/collections/info?collection=kb_collection`);
+        const data = await response.json();
+
+        document.getElementById("manager-collection-info").innerHTML = `
+            Документы
+            <strong>${data.points_count - 1 || 0}</strong>
+
+            | Версия платформы
+            <strong>${data.platform_version || 0}</strong>
+
+            | Последняя Синхронизация
+            <strong>
+                ${data.last_sync
+                    ? formatDate(data.last_sync)
+                    : "В процессе"}
+            </strong>
+
+            | Следующая Синхронизация
+            <strong>
+                ${data.next_sync
+                    ? formatDate(data.next_sync)
+                    : "Пока не установлена"}
+            </strong>
+        `;
+
+    } catch (error) {
+
+        console.error(
+            "Error loading manager collection info:",
+            error
+        );
     }
 }
 // кнопка удаления коллекции
@@ -464,6 +504,21 @@ function showTab(tabName, event=null) {
     } else if (tabName === 'search') {
         loadKnowledgeBasesForSearch();
     } else if (tabName === 'tree_files'){
+        const managerOverlay = document.getElementById("manager-tree-overlay");
+        const defaultHeader = document.getElementById("default-tree-header");
+        //  отображаем 1 из 2 интерфейсов в зависимости от роли пользователя
+        if (currentUser?.role === "manager") {
+
+            managerOverlay.style.display = "block";
+            defaultHeader.style.display = "none";
+
+            loadManagerCollectionInfo();
+
+        } else {
+            managerOverlay.style.display = "none";
+            defaultHeader.style.display = "flex";
+        }
+        // строим дерево файловой системы
         loadFilesystemTree();
     } else if (tabName === 'news_send'){
         loadNewsHistory();
@@ -497,7 +552,10 @@ function updateHeaderVisibility(tabName) {
         "tree_files"
     ];
 
-    if (allowedTabs.includes(tabName)) {
+    if (
+    allowedTabs.includes(tabName) &&
+        currentUser?.role !== "manager"
+    ) {
         header.style.display = "block";
     } else {
         header.style.display = "none";
@@ -664,6 +722,7 @@ async function changeSyncInterval(){
     if(res.ok){
         loadSyncSettings()
         loadCollectionInfo()
+        loadManagerCollectionInfo();
     }
 }
 // функция разворачивания kb 
@@ -758,6 +817,7 @@ async function loadDocuments() {
                 </div>
             `;
             loadCollectionInfo();
+            loadManagerCollectionInfo();
             return;
         }
                                 
@@ -828,6 +888,7 @@ async function loadDocuments() {
             </div>
         `).join('');
         loadCollectionInfo();
+        loadManagerCollectionInfo();
         loadFilesystemTree();
     } catch (error) {
         container.innerHTML = `
@@ -889,6 +950,7 @@ document.addEventListener("click", async function (e) {
             if (button.innerText==="✅ Синхронизация"){
                 await loadDocuments();
                 await loadCollectionInfo();
+                await loadManagerCollectionInfo();
             }
 
         } catch (err) {
@@ -1419,6 +1481,15 @@ async function loadFilesystemTree() {
     container.innerHTML = "⏳ Загрузка...";
 
     try {
+        // MANAGER -> полное дерево kb_collection
+        if (currentUser?.role === "manager") {
+            const res = await fetch("/api/filesystem/folders");
+            const data = await res.json();
+
+            container.innerHTML = renderManagerTree(data);
+            return;
+        }
+        // ADMIN / обычный режим → lazy loading по коллекциям
         const res = await fetch(
             `/api/filesystem/node?path=&collection_name=${encodeURIComponent(currentCollection)}`
         );
@@ -1452,6 +1523,48 @@ function renderNode(path, data) {
     });
 
     html += "</ul>";
+    return html;
+}
+
+// реденринг полного дерева для менеджера
+function renderManagerTree(tree, currentPath = "") {
+    let html = "<ul class='tree'>";
+
+    for (const [key, value] of Object.entries(tree)) {
+
+        // files
+        if (key === "files" && Array.isArray(value)) {
+            value.forEach(file => {
+                html += `
+                    <li class="file">
+                        📄 ${escapeHtml(file)}
+                    </li>
+                `;
+            });
+
+            continue;
+        }
+
+        // folders
+        const newPath = currentPath
+            ? `${currentPath}/${key}`
+            : key;
+
+        html += `
+            <li class="folder">
+                <details>
+                    <summary>
+                        📁 ${escapeHtml(key)}
+                    </summary>
+
+                    ${renderManagerTree(value, newPath)}
+                </details>
+            </li>
+        `;
+    }
+
+    html += "</ul>";
+
     return html;
 }
 // открытие папок внутри дерева
