@@ -926,16 +926,71 @@ async def download_document(document_id: str):
 ##################################
 
 @app.get("/api/collections/info")
-async def collection_info():
+async def collection_info(collection: Optional[str] = None):
     """Get collection information"""
     try:
-        info = qdrant_service.get_collection_info()
-        info['platform_version'] = PLATFORM_VERSION
-        info['last_sync'] = sync_settings["last_sync"]
-        info['next_sync'] = sync_settings['next_sync']
+
+        # Старое поведение
+        target_collection = (
+            collection or qdrant_service.collection_name
+        )
+
+        # Проверка существования
+        collections = (
+            qdrant_service
+            .qdrant_client
+            .get_collections()
+            .collections
+        )
+
+        existing_collections = {
+            c.name for c in collections
+        }
+
+        if target_collection not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{target_collection}' not found"
+            )
+
+        # Получаем info БЕЗ переключения глобального состояния
+        info_obj = qdrant_service.qdrant_client.get_collection(
+            collection_name=target_collection
+        )
+
+        info = {
+            "name": target_collection,
+            "points_count": info_obj.points_count,
+            "vectors_count": (
+                info_obj.vectors_count
+                if hasattr(info_obj, "vectors_count")
+                else info_obj.points_count
+            ),
+            "status": (
+                info_obj.status.value
+                if hasattr(info_obj.status, "value")
+                else str(info_obj.status)
+            ),
+            "platform_version": PLATFORM_VERSION,
+            "last_sync": sync_settings["last_sync"],
+            "next_sync": sync_settings["next_sync"]
+        }
+
         return info
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(
+            f"[COLLECTION INFO ERROR] {e}",
+            exc_info=True
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.post("/api/collections/refresh_metadata")
 async def refresh_collection_metadata():
