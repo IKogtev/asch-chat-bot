@@ -160,7 +160,28 @@
                 </div>
                 <!-- Tree tab -->
                 <div id="tree_files-tab" class="tab-content">
-                    <div class="section-header">
+                    <!-- MANAGER OVERLAY -->
+                    <div id="manager-tree-overlay" style="display:none;">
+
+                        <div class="header-info manager-tree-info">
+                            <span id="manager-collection-info"></span>
+                        </div>
+
+                        <div class="section-header">
+                            <h2>Дерево файлов</h2>
+
+                            <button
+                                id="manager-sync-btn"
+                                type="button"
+                                onclick="syncAll(this)"
+                                class="btn btn-primary"
+                            >
+                                🔄 Принудительная синхронизация документов
+                            </button>
+                        </div>
+                    </div>
+                    <!-- ADMIN -->
+                    <div id="default-tree-header" class="section-header">
                         <h2>Дерево файлов</h2>
                     </div>
                     <div id="filesystem-tree"></div>
