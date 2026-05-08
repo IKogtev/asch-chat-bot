@@ -21,7 +21,7 @@ pipeline {
     )
     hidden(
       name: 'ADK_API_BASE',
-      defaultValue: 'chatbot-dev',
+      defaultValue: 'chatbot-prod',
       description: 'Google ADK Agent environment'
     )
   }

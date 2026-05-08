@@ -45,7 +45,7 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:f9bde9a5409ab11cd737bf3f61710e261de8da7934f8b9391d072dce08f61e5f
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:faad1f88738acc4b0d141997d2736bf683087fde92b96b17cf8a623f461ac1f2
                   command:
                     - cat
                   tty: true
@@ -70,7 +70,7 @@ pipeline {
 
       steps {
         withCredentials([
-          string(credentialsId: 'LLM_API_KEY', variable: 'LLM_API_KEY')
+          string(credentialsId: 'LLM_API_KEY_GOOGLE_ADK_AGENT', variable: 'LLM_API_KEY')
         ]) {
           container('adk-agent-tester') {
             sh '''
