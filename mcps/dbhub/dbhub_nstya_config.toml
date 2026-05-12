@@ -1,0 +1,90 @@
+###############################################################################
+# DATA SOURCES
+###############################################################################
+
+[[sources]]
+id = "nstya_data"
+type = "postgres"
+dsn = "postgres://aszh-bot:aszh-bot@postgres:5432/nstya_data?sslmode=disable"
+description = "NSTYA data loaded from kb_storage/tables Excel files."
+query_timeout = 30
+search_path = "public"
+
+###############################################################################
+# BASE TOOLS
+###############################################################################
+
+[[tools]]
+name = "execute_sql"
+source = "nstya_data"
+readonly = true
+max_rows = 1000
+
+[[tools]]
+name = "search_objects"
+source = "nstya_data"
+
+###############################################################################
+# DATA CATALOG TOOLS
+###############################################################################
+
+[[tools]]
+name = "search_table"
+source = "nstya_data"
+readonly = true
+description = "Return all known tables with their business descriptions from the data catalog."
+statement = """
+SELECT *
+FROM public.dc_entities
+ORDER BY source_table;
+"""
+
+[[tools]]
+name = "search_column"
+source = "nstya_data"
+readonly = true
+description = "Return business descriptions of columns for a specific source table."
+statement = """
+SELECT
+  business_name,
+  column_content,
+  "column"
+FROM public.dc_columns
+WHERE source_table = $1
+ORDER BY "column";
+"""
+
+parameters = [
+  { name = "source_table", type = "string", required = true, description = "Physical table name to search columns for." }
+]
+
+[[tools]]
+name = "search_analytic"
+source = "nstya_data"
+readonly = true
+description = "Return business descriptions of analytic values for a specific table column."
+statement = """
+SELECT
+  value,
+  description
+FROM public.dc_analytics
+WHERE source_table = $1
+  AND "column" = $2
+ORDER BY value;
+"""
+
+parameters = [
+  { name = "source_table", type = "string", required = true, description = "Physical table name." },
+  { name = "column", type = "string", required = true, description = "Column name to search analytics for." }
+]
+
+[[tools]]
+name = "search_semantic_template"
+source = "nstya_data"
+readonly = true
+description = "Return all known semantic templates from the data catalog."
+statement = """
+SELECT *
+FROM public.dc_semantic_templates
+ORDER BY template_id;
+"""

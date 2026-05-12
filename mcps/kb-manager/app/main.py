@@ -28,6 +28,8 @@ import pandas as pd
 from collections import Counter
 import re
 import pymorphy3
+import csv
+import io
 
 load_dotenv()
 
@@ -155,6 +157,7 @@ ROLE_PERMISSIONS = {
 }
 # Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
+MAX_BOT_API = os.getenv("BOT_MAX_API", "http://bot-max:8002")
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
@@ -248,7 +251,7 @@ for name, cfg in COLLECTIONS_CFG.items():
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
-    "interval_hours": 3,
+    "interval_hours": int(os.getenv("SYNC_INTERVAL_HOURS", 12)),
     "interval_seconds": None,
     "last_sync": None,
     "next_sync":None,
@@ -532,28 +535,20 @@ def verify_password(password: str, hashed: str) -> bool:
     return pwd_context.verify(password, hashed)
 
 async def init_db(pool: asyncpg.Pool):
-    """Инициализация базы данных"""
-    logger.info("Initializing database...")
-    # Получаем список пользователей динамически
+    """Инициализация пользователей (таблица уже создана через alembic)"""
+    logger.info("Initializing UI users...")
     users_to_init = get_users_from_env()
     async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ui_users (
-                id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL
-            );
-        """)
         for username, password, role in users_to_init:
             hashed = hash_password(password)
             await conn.execute("""
                 INSERT INTO ui_users (username, password, role)
                 VALUES ($1, $2, $3)
-                ON CONFLICT (username) DO NOTHING;
+                ON CONFLICT (username) DO UPDATE 
+                SET password = EXCLUDED.password, role = EXCLUDED.role;
             """, username, hashed, role)
             
-    logger.info(f"Database initialized with {len(users_to_init)} users.")
+    logger.info(f"UI users initialized with {len(users_to_init)} users.")
 
 async def get_user_from_db(username: str, pool: asyncpg.Pool):
     """Получение пользователя из базы данных по имени"""
@@ -932,16 +927,71 @@ async def download_document(document_id: str):
 ##################################
 
 @app.get("/api/collections/info")
-async def collection_info():
+async def collection_info(collection: Optional[str] = None):
     """Get collection information"""
     try:
-        info = qdrant_service.get_collection_info()
-        info['platform_version'] = PLATFORM_VERSION
-        info['last_sync'] = sync_settings["last_sync"]
-        info['next_sync'] = sync_settings['next_sync']
+
+        # Старое поведение
+        target_collection = (
+            collection or qdrant_service.collection_name
+        )
+
+        # Проверка существования
+        collections = (
+            qdrant_service
+            .qdrant_client
+            .get_collections()
+            .collections
+        )
+
+        existing_collections = {
+            c.name for c in collections
+        }
+
+        if target_collection not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{target_collection}' not found"
+            )
+
+        # Получаем info БЕЗ переключения глобального состояния
+        info_obj = qdrant_service.qdrant_client.get_collection(
+            collection_name=target_collection
+        )
+
+        info = {
+            "name": target_collection,
+            "points_count": info_obj.points_count,
+            "vectors_count": (
+                info_obj.vectors_count
+                if hasattr(info_obj, "vectors_count")
+                else info_obj.points_count
+            ),
+            "status": (
+                info_obj.status.value
+                if hasattr(info_obj.status, "value")
+                else str(info_obj.status)
+            ),
+            "platform_version": PLATFORM_VERSION,
+            "last_sync": sync_settings["last_sync"],
+            "next_sync": sync_settings["next_sync"]
+        }
+
         return info
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(
+            f"[COLLECTION INFO ERROR] {e}",
+            exc_info=True
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.post("/api/collections/refresh_metadata")
 async def refresh_collection_metadata():
@@ -1230,7 +1280,8 @@ async def send_news(
     reuse_file_path: Optional[str] = Form(None), 
     target_group: str = Form("all")
 ):
-    """отправить новость"""
+    """Отправить новость одновременно на Telegram и MAX ботов.
+    Возвращает комбинированный результат."""
     try:
         multipart_data = []
         # откладываем время 
@@ -1250,24 +1301,86 @@ async def send_news(
             multipart_data.append(("reuse_file_path", (None, reuse_file_path)))
         
         # файлы
+        # Читаем файлы в память один раз, чтобы переиспользовать для обоих запросов
+        file_cache = {}
         if not reuse_file_path:
             for f in files:
                 content = await f.read()
                 multipart_data.append(
                     ("files", (f.filename, content, f.content_type))
                 )
+                file_cache[f.filename] = content  # кэшируем для повторного использования
         else:
             logger.info("Using reused file, skipping new upload")
+        
+        # 2. Внутренняя функция для отправки в конкретного бота
+        async def send_to_bot(name: str, url: str, news_id=None):
+            try:
+                # Создаём новый multipart для каждого запроса, 
+                # чтобы избежать проблем с повторным чтением стримов
+                request_data = []
+                for item in multipart_data:
+                    if item[0] == "files":
+                        # Восстанавливаем content из кэша
+                        filename = item[1][0]
+                        content = file_cache.get(filename) or await files[0].read()
+                        request_data.append(
+                            ("files", (filename, content, item[1][2]))
+                        )
+                    else:
+                        request_data.append(item)
+                # передаём news_id
+                if news_id:
+                    request_data.append(("news_id", (None, str(news_id))))
 
-        resp = await http_client.post(
-            f"{TELEGRAM_BOT_API}/broadcast",
-            files=multipart_data
-        )
-        resp.raise_for_status()
-        bot_response = resp.json()
+                resp = await http_client.post(
+                    f"{url}/broadcast",
+                    files=request_data
+                )
+                resp.raise_for_status()
+                return name, resp.json()
+            except Exception as e:
+                logger.error(f"{name.upper()} send error: {e}")
+                return name, {"status": "error", "error": str(e)}
 
-        return bot_response
-    
+        # Telegram создаёт новость
+        tg_name, tg_result = await send_to_bot("telegram", TELEGRAM_BOT_API)
+
+        if tg_result.get("status") != "ok":
+            raise Exception("Telegram failed — не создаём новость")
+
+        news_id = tg_result.get("news_id")
+
+        # MAX использует уже созданную
+        max_name, max_result = await send_to_bot("max", MAX_BOT_API, news_id=news_id)
+        # 4. Сбор и форматирование результата
+        final_response = {
+            "status": "ok",
+            "results": {},
+            "sent": 0,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        results_map = {
+            tg_name: tg_result,
+            max_name: max_result
+        }
+        
+        for bot_name, bot_result in results_map.items():
+            if isinstance(bot_result, Exception):
+                # Обработка исключений из gather
+                logger.error(f"⚠️ Exception in gather: {bot_result}")
+                continue
+            final_response["results"][bot_name] = bot_result
+            
+            if isinstance(bot_result, dict) and bot_result.get("status") == "ok":
+                final_response["sent"] += bot_result.get("sent", 0)
+                logger.info(f"✅ {bot_name.upper()}: {bot_result.get('sent', 0)} пользователей")
+            else:
+                logger.warning(f"⚠️ {bot_name.upper()}: {bot_result}")
+
+        # 5. Логирование итогового результата
+        logger.info(f"📊 Итого отправлено: {final_response['sent']} пользователей")
+        return final_response
     except Exception as e:
         logger.error(f"News send error: {e}")
         raise HTTPException(500, str(e))
@@ -1561,7 +1674,7 @@ async def get_subscribers():
 async def update_subscriber_group(data: dict):
     """Обновить группу пользователя"""
     try:
-        user_id = int(data.get("user_id"))
+        global_user_id = data.get("global_user_id")
         group = data.get("group")
         value = bool(data.get("value"))
         
@@ -1571,7 +1684,7 @@ async def update_subscriber_group(data: dict):
         resp = await http_client.post(
             f"{TELEGRAM_BOT_API}/api/subscribers/group",
             json={
-                "user_id": user_id,
+                "global_user_id": global_user_id,
                 "group": group,
                 "value": value
             }
@@ -1584,7 +1697,127 @@ async def update_subscriber_group(data: dict):
     except Exception as e:
         logger.error(f"Error updating subscriber group: {e}")
         raise HTTPException(500, f"Failed to update group: {str(e)}")
+# блокировка пользователя
+@app.post("/api/subscribers/block")
+async def block_subscriber(data: dict):
+    """Заблокировать или разблокировать пользователя сразу в двух ботах"""
+    try:
+        async def send_to_bot(name: str, url: str):
+            try:
+                resp = await http_client.post(
+                    f"{url}/api/subscribers/block",
+                    json=data
+                )
+                resp.raise_for_status()
+                return name, resp.json()
+            except Exception as e:
+                return name, {"status": "error", "error": str(e)}
 
+        tg_name, tg_result = await send_to_bot("telegram", TELEGRAM_BOT_API)
+        max_name, max_result = await send_to_bot("max", MAX_BOT_API)
+
+        return {
+            "status": "ok",
+            "results": {
+                tg_name: tg_result,
+                max_name: max_result
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/api/subscribers/export")
+async def export_subscribers(
+    search: str = None,
+    group: str = None
+):
+    """
+    Экспорт пользователей с фильтрами:
+    - search: строка поиска
+    - group: manager | coach | both | none | all
+    """
+
+    try:
+        resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
+        resp.raise_for_status()
+        users = resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching subscribers: {e}")
+        raise HTTPException(500, "Failed to fetch subscribers")
+
+    # фильтрация
+    def matches(u):
+        # поиск
+        if search:
+            q = search.lower()
+            # Ищем во всех полях, включая ID и аккаунты
+            main_fields = [
+                str(u.get("global_user_id", "")),
+                (u.get("username") or ""),
+                (u.get("first_name") or ""),
+                (u.get("last_name") or "")
+            ]
+            if any(q in f.lower() for f in main_fields):
+                return True
+            # ищем в аккаунтах
+            accounts = u.get("accounts", [])
+            for acc in accounts:
+                p_id = str(acc.get("platform_user_id", ""))
+                p_username = (acc.get("username") or "").lower()
+                if q in p_id or q in p_username:
+                    return True
+            
+            return False
+                
+        # фильтр группы
+        if group == "manager":
+            return u.get("manager_group")
+        elif group == "coach":
+            return u.get("coach_group")
+        elif group == "both":
+            return u.get("manager_group") and u.get("coach_group")
+        elif group == "none":
+            return not u.get("manager_group") and not u.get("coach_group")
+
+        return True
+
+    filtered = [u for u in users if matches(u)]
+
+    # 📄 формируем CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "User ID",
+        "Username",
+        "First Name",
+        "Last Name",
+        "Manager",
+        "Coach",
+        "Last Seen",
+        "Accounts Count"
+    ])
+    for u in filtered:
+        writer.writerow([
+            u.get("global_user_id"),
+            u.get("username"),
+            u.get("first_name"),
+            u.get("last_name"),
+            "Yes" if u.get("manager_group") else "No",
+            "Yes" if u.get("coach_group") else "No",
+            u.get("last_seen"),
+            len(u.get("accounts", []))
+        ])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=subscribers.csv"
+        }
+    )
+            
 ##################################
 # Работа с логами для мониторинга
 ##################################
@@ -1663,16 +1896,19 @@ async def get_events(request: Request):
         }
         for r in rows
     ]
-
-####################
-# Работа аналитики
-####################
 # экспорт событий для аналитики за период
 @app.get("/api/analytics/export")
-async def export(from_ts: str, to_ts: str, request: Request):
+async def export(request: Request, from_ts: Optional[str]=None, to_ts: Optional[str]=None):
     """Экспорт событий за период в excel для аналитики"""
-    from_ts = datetime.fromisoformat(from_ts)
-    to_ts = datetime.fromisoformat(to_ts)
+    if from_ts:
+        from_dt = datetime.fromisoformat(from_ts)
+    else:
+        from_dt = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    if to_ts:
+        to_dt = datetime.fromisoformat(to_ts)
+    else:
+        to_dt = datetime.now(timezone.utc)
     pool = request.app.state.db_pool
 
     query = """
@@ -1682,105 +1918,25 @@ async def export(from_ts: str, to_ts: str, request: Request):
     LIMIT 10000
     """
     async with pool.acquire() as conn:
-        rows = await conn.fetch(query, from_ts, to_ts)
+        rows = await conn.fetch(query, from_dt, to_dt)
     # формируем dataframe
     df = pd.DataFrame([dict(r) for r in rows])
     #  фиксим проблему со временем в pandas убирая timezone
     for col in df.columns:
         if str(df[col].dtype).startswith("datetime64[ns,"):
             df[col] = df[col].dt.tz_convert(None)
-    file_path = "/tmp/analytics.xlsx"
+    file_path = "/tmp/analytics_logs.xlsx"
     df.to_excel(file_path, index=False)
     # сохраняем обязательно с media_type для корректной выгрузки файла
     return FileResponse(
         file_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="analytics.xlsx"
+        filename="analytics_logs.xlsx"
     )
 
-# выгрузка диалогов
-@app.get("/api/analytics/export-dialogs")
-async def export_dialogs(from_ts: str, to_ts: str, request: Request):
-    """Экспорт диалогов за период в excel для аналитики"""
-    from_ts = datetime.fromisoformat(from_ts)
-    to_ts = datetime.fromisoformat(to_ts)
-    pool = request.app.state.db_pool
-
-    query = """
-    WITH msg_counts AS (
-        SELECT session_id, COUNT(*) as msg_count
-        FROM events
-        WHERE event_type = 'message_received'
-           AND created_at BETWEEN $1 AND $2
-        GROUP BY session_id
-    ),
-
-    downloads AS (
-        SELECT
-            session_id,
-            string_agg(payload->>'file_path', ', ') as files
-        FROM events
-        WHERE event_type IN ('document_download', 'document_download_menu')
-          AND created_at BETWEEN $1 AND $2
-        GROUP BY session_id
-    )
-
-    SELECT
-        m.session_id,
-        m.user_name,
-        -- приводим время к МСК для удобства чтения
-        -- (m.created_at AT TIME ZONE 'UTC' + INTERVAL '3 hour') as message_time,
-        (m.created_at + INTERVAL '3 hour') as message_time,
-        m.payload->>'text' as message,
-
-        r.payload->>'text' as response,
-        (r.payload->>'response_time_ms')::int as response_time_ms,
-
-        mc.msg_count,
-        m.channel,
-
-        d.files as downloaded_files
-
-    FROM events m
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
-
-    LEFT JOIN msg_counts mc
-      ON m.session_id = mc.session_id
-    
-    LEFT JOIN downloads d
-      ON m.session_id = d.session_id
-
-    WHERE m.event_type = 'message_received'
-       AND m.created_at BETWEEN $1 AND $2
-    
-    ORDER BY m.created_at
-    """
-
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, from_ts, to_ts)
-
-    df = pd.DataFrame([dict(r) for r in rows])
-    # убираем timezone из datetime колонок
-    for col in df.columns:
-        if str(df[col].dtype).startswith("datetime64[ns,"):
-            df[col] = df[col].dt.tz_localize(None)
-    # форматируем время ответа в понятный вид измерений
-    if "response_time_ms" in df.columns:
-        df["response_time_ms"] = df["response_time_ms"].apply(
-            lambda x: f"{int(x)} ms" if pd.notnull(x) else ""
-        )
-
-    file_path = "/tmp/dialogs.xlsx"
-    df.to_excel(file_path, index=False)
-    # сохраняем обязательно с media_type для корректной выгрузки файла
-    return FileResponse(
-            file_path,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename="dialogs.xlsx"
-    )
-
+####################
+# Работа аналитики
+####################
 # пользователи которые взаимодействовали с документом
 @app.get("/api/analytics/document-users")
 async def document_users(filename: str, from_ts: str, to_ts: str, request: Request):
@@ -1789,23 +1945,64 @@ async def document_users(filename: str, from_ts: str, to_ts: str, request: Reque
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
     query = """
+    WITH users AS (
+
+        SELECT DISTINCT ON (user_id)
+
+            user_id::text as global_user_id,
+
+            COALESCE(
+                NULLIF(TRIM(CONCAT(first_name, ' ', last_name)), ''),
+                username,
+                'unknown'
+            ) as user_name
+
+        FROM user_accounts
+
+        ORDER BY
+            user_id,
+            last_seen DESC
+    )
+
     SELECT
-        user_id,
-        MAX(user_name) as user_name,
-        payload->>'source' as source,
+
+        e.user_id::text as global_user_id,
+
+        COALESCE(
+            u.user_name,
+            'unknown'
+        ) as user_name,
+
+        COALESCE(
+            e.payload->>'source',
+            'unknown'
+        ) as source,
+
         COUNT(*) as downloads
-    FROM events
-    WHERE event_type IN ('document_download', 'document_download_menu')
 
-    AND COALESCE(
-            payload->>'filename',
-            split_part(payload->>'file_path', '/', array_length(string_to_array(payload->>'file_path', '/'), 1))
-        ) = $1
+    FROM events e
 
-    AND user_id IS NOT NULL
-    AND created_at BETWEEN $2 AND $3
+    LEFT JOIN users u
+        ON u.global_user_id = e.user_id::text
 
-    GROUP BY user_id, source
+    WHERE e.event_type IN (
+        'document_download',
+        'document_download_menu'
+    )
+
+      AND e.created_at BETWEEN $2 AND $3
+
+      AND (
+          e.payload->>'filename' = $1
+          OR e.payload->>'text' = $1
+          OR e.payload->>'file_path' ILIKE '%' || $1 || '%'
+      )
+
+    GROUP BY
+        e.user_id,
+        u.user_name,
+        source
+
     ORDER BY downloads DESC
     """
 
@@ -1813,7 +2010,6 @@ async def document_users(filename: str, from_ts: str, to_ts: str, request: Reque
         rows = await conn.fetch(query, filename, from_ts, to_ts)
 
     return [dict(r) for r in rows]
-
 # аналитика активности самых активных часов и дней
 @app.get("/api/analytics/activity")
 async def activity(from_ts: str, to_ts: str, request: Request):
@@ -1838,7 +2034,6 @@ async def activity(from_ts: str, to_ts: str, request: Request):
         rows = await conn.fetch(query, from_ts, to_ts)
 
     return [dict(r) for r in rows]
-
 # облако популярных слов
 @app.get("/api/analytics/top-words")
 async def top_words(from_ts: str, to_ts: str, request: Request):
@@ -1879,7 +2074,6 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
     top = counter.most_common(50)
 
     return [{"text": w, "value": c} for w, c in top]
-
 # аналитика фраз топ
 @app.get("/api/analytics/top-phrases")
 async def top_phrases(from_ts: str, to_ts: str, request: Request):
@@ -1934,7 +2128,6 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
     top = counter.most_common(50)
 
     return [{"text": p, "value": c} for p, c in top]
-
 # статистика по пользователям
 @app.get("/api/analytics/stats")
 async def get_stats(from_ts: str, to_ts: str, request: Request):
@@ -1944,13 +2137,17 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
     to_ts = datetime.fromisoformat(to_ts)
     
     query = """
-    WITH user_messages AS (
-        SELECT user_id, COUNT(*) as msg_count
-        FROM events
-        WHERE event_type = 'message_received'
-        AND user_id IS NOT NULL
-        AND created_at BETWEEN $1 AND $2
-        GROUP BY user_id
+    WITH base_users AS (
+        SELECT
+            COALESCE(ua.user_id::text, e.user_id::text) as gid,
+            COUNT(*) as msg_count
+        FROM events e
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = e.user_id::text
+            AND ua.platform = e.channel
+        WHERE e.event_type = 'message_received'
+        AND e.created_at BETWEEN $1 AND $2
+        GROUP BY COALESCE(ua.user_id::text, e.user_id::text)
     ),
 
     response_times AS (
@@ -1963,34 +2160,28 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
 
     totals AS (
         SELECT
-            COUNT(DISTINCT user_id) as unique_users,
-            COUNT(*) as total_messages
-        FROM events
-        WHERE event_type IN ('message_received', 'response')
-        AND user_id IS NOT NULL
-        AND created_at BETWEEN $1 AND $2
+            COUNT(DISTINCT COALESCE(ua.user_id::text, e.user_id::text)) as unique_users,
+            COUNT(*) FILTER (WHERE e.event_type = 'message_received') as total_messages
+        FROM events e
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id::text = e.user_id::text
+            AND ua.platform = e.channel
+        WHERE e.created_at BETWEEN $1 AND $2
     )
-
     SELECT
         t.unique_users,
         t.total_messages,
-
-        -- сообщения
-        (SELECT AVG(msg_count) FROM user_messages) as avg_messages_per_user,
-        (SELECT MAX(msg_count) FROM user_messages) as max_messages_per_user,
-
-        -- response time
+        (SELECT AVG(msg_count) FROM base_users) as avg_messages_per_user,
+        (SELECT MAX(msg_count) FROM base_users) as max_messages_per_user,
         (SELECT AVG(rt) FROM response_times) as avg_response_time,
         (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY rt) FROM response_times) as median_response_time
-
-    FROM totals t
+    FROM totals t;
     """
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(query, from_ts, to_ts)
 
     return dict(row)
-
 # аналитика по самым активным каналам
 @app.get("/api/analytics/channels")
 async def channels(from_ts: str, to_ts: str, request: Request):
@@ -2022,38 +2213,64 @@ async def top_users(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
+    # сколько дней в диапозоне 
+    days = max((to_ts - from_ts).days, 1)
+    # округляем до недельного блока
+    normalized_days = ((days + 6)//7)*7
     query = """
-    WITH period_messages AS (
-        SELECT user_id, MAX(user_name) as user_name,
-          COUNT(*) as messages
-        FROM events
-        WHERE event_type = 'message_received'
-          AND user_id IS NOT NULL
-          AND created_at BETWEEN $1 AND $2
-        GROUP BY user_id
+    WITH users AS (
+        SELECT DISTINCT ON (user_id)
+            user_id::text as global_user_id,
+
+            COALESCE(
+                NULLIF(TRIM(CONCAT(first_name, ' ', last_name)), ''),
+                username,
+                'Аноним'
+            ) as user_name
+
+        FROM user_accounts
+
+        ORDER BY
+            user_id,
+            last_seen DESC
     ),
 
-    weekly_messages AS (
-        SELECT user_id, COUNT(*) as weekly_messages
-        FROM events
-        WHERE event_type = 'message_received'
-          AND user_id IS NOT NULL
-          AND created_at > NOW() - INTERVAL '7 days'
-        GROUP BY user_id
-    )
+    period_messages AS (
+        SELECT
+            e.user_id::text as global_user_id,
+            COUNT(*) as messages
 
+        FROM events e
+
+        WHERE e.event_type = 'message_received'
+          AND e.created_at BETWEEN $1 AND $2
+
+        GROUP BY e.user_id
+    )
+    
     SELECT
-        p.user_id,
-        p.user_name,
+        p.global_user_id,
+
+        COALESCE(u.user_name, 'Аноним') as user_name,
+
         p.messages,
-        COALESCE(w.weekly_messages / 7.0, 0) as avg_weekly_messages
+
+        ROUND(
+            p.messages::numeric / $3,
+            2
+        ) as avg_weekly_messages
+
     FROM period_messages p
-    LEFT JOIN weekly_messages w ON p.user_id = w.user_id
+
+    LEFT JOIN users u
+        ON u.global_user_id = p.global_user_id
+
     ORDER BY p.messages DESC
-    LIMIT 10
+
+    LIMIT 100
     """
     async with pool.acquire() as conn:
-        rows = await conn.fetch(query, from_ts, to_ts)
+        rows = await conn.fetch(query, from_ts, to_ts, normalized_days)
 
     return [dict(r) for r in rows]
 
@@ -2065,29 +2282,30 @@ async def top_documents(from_ts: str, to_ts: str, request: Request):
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
     query = """
+    WITH cleaned_events AS (
+        SELECT
+            COALESCE(
+                payload->>'filename',
+                payload->>'text',
+                reverse(split_part(reverse(payload->>'file_path'), '/', 1))
+            ) as file_name,
+            payload->>'file_path' as file_path,
+            payload->>'source' as source
+        FROM events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND created_at BETWEEN $1 AND $2
+    )
     SELECT
-        payload->>'doc_id' as doc_id,
-
-        COALESCE(
-            payload->>'filename',
-            split_part(payload->>'file_path', '/', array_length(string_to_array(payload->>'file_path', '/'), 1))
-        ) as file_name,
-
-        -- берем ЛЮБОЙ file_path (например MAX)
-        MAX(payload->>'file_path') as file_path,
-
+        file_name,
+        MAX(file_path) as file_path,
         COUNT(*) as total_downloads,
-
-        COUNT(*) FILTER (WHERE payload->>'source' = 'search') as search_downloads,
-        COUNT(*) FILTER (WHERE payload->>'source' = 'menu') as menu_downloads
-
-    FROM events
-    WHERE event_type IN ('document_download', 'document_download_menu')
-    AND created_at BETWEEN $1 AND $2
-
-    GROUP BY doc_id, file_name
+        COUNT(*) FILTER (WHERE source = 'search') as search_downloads,
+        COUNT(*) FILTER (WHERE source = 'menu') as menu_downloads
+    FROM cleaned_events
+    WHERE file_name IS NOT NULL AND file_name != ''
+    GROUP BY file_name
     ORDER BY total_downloads DESC
-    LIMIT 20
+    LIMIT 50;
     """
 
     async with pool.acquire() as conn:
@@ -2118,6 +2336,296 @@ async def document_sources(from_ts: str, to_ts: str, request: Request):
 
     return [dict(r) for r in rows]
 
+####################
+# Работа с диалогами
+####################
+# выгрузка диалогов
+@app.get("/api/analytics/export-dialogs")
+async def export_dialogs(from_ts: str, to_ts: str, request: Request):
+    """Экспорт диалогов за период в excel для аналитики"""
+    from_ts = datetime.fromisoformat(from_ts)
+    to_ts = datetime.fromisoformat(to_ts)
+    pool = request.app.state.db_pool
+
+    query = """
+    WITH base_events AS (
+        SELECT
+            e.*,
+
+            -- events.user_id уже глобальный user_id
+            e.user_id::text as global_user_id
+
+        FROM events e
+    ),
+
+    users AS (
+        SELECT DISTINCT ON (user_id)
+            user_id::text as global_user_id,
+            first_name,
+            last_name
+        FROM user_accounts
+        ORDER BY user_id, last_seen DESC
+    ),
+
+    messages AS (
+        SELECT
+            be.payload->>'turn_id' as turn_id,
+            be.session_id,
+            be.global_user_id,
+            be.channel,
+            be.created_at as message_time,
+            be.payload->>'text' as message,
+
+            COALESCE(
+                NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
+                'Аноним'
+            ) as user_name
+
+        FROM base_events be
+
+        LEFT JOIN users u
+            ON u.global_user_id = be.global_user_id
+
+        WHERE be.event_type = 'message_received'
+          AND be.created_at BETWEEN $1 AND $2
+    ),
+
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as response,
+            (payload->>'response_time_ms')::int as response_time_ms
+        FROM base_events
+        WHERE event_type = 'response'
+        ORDER BY payload->>'turn_id', created_at DESC
+    ),
+
+    downloads_turn AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            STRING_AGG(payload->>'file_path', ' | ' ORDER BY created_at) as files
+        FROM base_events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND payload->>'file_path' IS NOT NULL
+        GROUP BY payload->>'turn_id'
+    ),
+
+    downloads_session AS (
+        SELECT
+            session_id,
+            STRING_AGG(
+                DISTINCT payload->>'file_path',
+                ', ' ORDER BY payload->>'file_path'
+            ) as all_files
+        FROM base_events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND created_at BETWEEN $1 AND $2
+          AND payload->>'file_path' IS NOT NULL
+        GROUP BY session_id
+    ),
+
+    msg_counts AS (
+        SELECT session_id, COUNT(*) as msg_count
+        FROM base_events
+        WHERE event_type = 'message_received'
+          AND created_at BETWEEN $1 AND $2
+        GROUP BY session_id
+    )
+
+    SELECT
+        m.session_id,
+        m.user_name,
+        (m.message_time + INTERVAL '3 hour') as message_time,
+        m.message,
+
+        CASE
+            WHEN r.response IS NOT NULL THEN r.response
+            WHEN dt.files IS NOT NULL THEN dt.files
+            ELSE ''
+        END as response,
+
+        r.response_time_ms,
+        mc.msg_count,
+        m.channel,
+        ds.all_files as downloaded_files
+
+    FROM messages m
+
+    LEFT JOIN responses r ON r.turn_id = m.turn_id
+    LEFT JOIN downloads_turn dt ON dt.turn_id = m.turn_id
+    LEFT JOIN downloads_session ds ON ds.session_id = m.session_id
+    LEFT JOIN msg_counts mc ON mc.session_id = m.session_id
+
+    ORDER BY m.message_time
+    """
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, from_ts, to_ts)
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    # убираем timezone из datetime колонок
+    for col in df.columns:
+        if str(df[col].dtype).startswith("datetime64[ns,"):
+            df[col] = df[col].dt.tz_localize(None)
+    # форматируем время ответа в понятный вид измерений
+    if "response_time_ms" in df.columns:
+        # Заполнить нулями Nan
+        df["response_time_sec"] = (df["response_time_ms"].fillna(0) / 1000).round(2)
+        df.drop(columns=["response_time_ms"], inplace=True)
+    
+    # оптимизируем названия в выгрузке
+    def clean_file_names(files):
+        if not files:
+            return ""
+        return " | ".join(f.split("/")[-1] for f in files.split(" | "))
+
+    def clean_files_pipe(files):
+        """для response (| разделитель)"""
+        if not files:
+            return ""
+        return " | ".join(f.split("/")[-1] for f in files.split(" | "))
+
+    def clean_files_csv(files):
+        """для downloaded_files (, разделитель)"""
+        if not files:
+            return ""
+        return ", ".join(f.split("/")[-1] for f in files.split(", "))
+
+    # response (может быть текст или файлы)
+    df["response"] = df["response"].fillna("").apply(
+        lambda x: clean_files_pipe(x) if "|" in x else clean_file_names(x)
+    )
+
+    # все скачанные файлы
+    df["downloaded_files"] = df["downloaded_files"].fillna("").apply(clean_files_csv)
+    file_path = "/tmp/dialogs.xlsx"
+    df.to_excel(file_path, index=False)
+    # сохраняем обязательно с media_type для корректной выгрузки файла
+    return FileResponse(
+            file_path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename="dialogs.xlsx"
+    )
+
+# просмотр диалогов по всем пользователям
+@app.get("/api/analytics/dialogs")
+async def get_dialogs(
+    request: Request,
+    from_ts: str,
+    to_ts: str,
+    user: str = None,
+    text: str = None
+):
+    pool = request.app.state.db_pool
+
+    from_dt = datetime.fromisoformat(from_ts)
+    to_dt = datetime.fromisoformat(to_ts)
+
+    query = """
+    WITH turns AS (
+        SELECT
+            e.payload->>'turn_id' as turn_id,
+
+            -- events.user_id уже глобальный user_id
+            MAX(e.user_id::text) as global_user_id,
+
+            MIN(e.created_at) as message_time,
+            MAX(e.channel) as channel
+
+        FROM events e
+
+        WHERE e.payload->>'turn_id' IS NOT NULL
+          AND e.created_at BETWEEN $1 AND $2
+
+        GROUP BY e.payload->>'turn_id'
+    ),
+
+    messages AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as message
+        FROM events
+        WHERE event_type = 'message_received'
+        ORDER BY payload->>'turn_id', created_at ASC
+    ),
+
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as response,
+            (payload->>'response_time_ms')::int as response_time
+        FROM events
+        WHERE event_type = 'response'
+        ORDER BY payload->>'turn_id', created_at DESC
+    ),
+
+    docs AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            STRING_AGG(payload->>'file_path', '||') as file_paths
+        FROM events
+        WHERE event_type IN ('document_download', 'document_download_menu')
+          AND payload->>'file_path' IS NOT NULL
+        GROUP BY payload->>'turn_id'
+    ),
+
+    users AS (
+        SELECT DISTINCT ON (user_id)
+            user_id::text as global_user_id,
+            first_name,
+            last_name
+        FROM user_accounts
+        ORDER BY user_id, last_seen DESC
+    )
+
+    SELECT
+        t.global_user_id,
+
+        COALESCE(
+            NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
+            'Аноним'
+        ) as user_name,
+
+        t.channel,
+        t.message_time,
+
+        m.message,
+        r.response,
+        r.response_time,
+
+        d.file_paths
+
+    FROM turns t
+    LEFT JOIN messages m ON m.turn_id = t.turn_id
+    LEFT JOIN responses r ON r.turn_id = t.turn_id
+    LEFT JOIN docs d ON d.turn_id = t.turn_id
+    LEFT JOIN users u ON u.global_user_id = t.global_user_id
+
+    WHERE t.message_time BETWEEN $1 AND $2
+    """
+
+    params = [from_dt, to_dt]
+    # фильтр по пользователям
+    if user:
+        # Поиск по ID или имени
+        query += f"""
+        AND (
+            CAST(t.global_user_id AS TEXT) ILIKE ${len(params)+1}
+            OR CONCAT(u.first_name, ' ', u.last_name) ILIKE ${len(params)+1}
+        )
+        """
+        params.append(f"%{user}%")
+    # фильтр по тексту
+    if text:
+        query += f" AND m.message ILIKE ${len(params)+1}"
+        params.append(f"%{text}%")
+
+    query += " ORDER BY t.message_time DESC LIMIT 500"
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+
+    return [dict(r) for r in rows]
 # просмотр диалогов по каждому пользователю
 @app.get("/api/analytics/user-dialogs")
 async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request):
@@ -2127,32 +2635,86 @@ async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request)
     to_ts = datetime.fromisoformat(to_ts)
 
     query = """
+    WITH target_events AS (
+        -- Собираем все события конкретного пользователя (через global_user_id или платформенный ID)    
+        SELECT
+            e.*
+        FROM events e
+        WHERE e.user_id::text = $1
+    ),
+
+    messages AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            session_id,
+            created_at as message_time,
+            payload->>'text' as message,
+            channel
+
+        FROM target_events
+
+        WHERE event_type = 'message_received'
+          AND created_at BETWEEN $2 AND $3
+    ),
+
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+            payload->>'turn_id' as turn_id,
+            payload->>'text' as response,
+            (payload->>'response_time_ms')::int as response_time
+
+        FROM target_events
+
+        WHERE event_type = 'response'
+          AND payload->>'turn_id' IS NOT NULL
+
+        ORDER BY payload->>'turn_id', created_at DESC
+    ),
+    
+    downloads_turn AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+
+            STRING_AGG(
+                payload->>'file_path',
+                '||'
+                ORDER BY created_at
+            ) as file_paths
+
+        FROM target_events
+
+        WHERE event_type IN (
+            'document_download',
+            'document_download_menu'
+        )
+          AND payload->>'file_path' IS NOT NULL
+
+        GROUP BY payload->>'turn_id'
+    )
+
     SELECT
-        m.created_at as message_time,
-        m.payload->>'text' as message,
+        m.message_time,
+        m.message,
+        m.channel,
 
-        r.payload->>'text' as response,
-        (r.payload->>'response_time_ms')::int as response_time,
+        CASE
+            WHEN r.response IS NOT NULL THEN r.response
+            WHEN dt.file_paths IS NOT NULL THEN dt.file_paths
+            ELSE ''
+        END as response,
 
-        d.payload->>'file_path' as file_path
+        r.response_time,
 
-    FROM events m
+        dt.file_paths
 
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
+    FROM messages m
 
-    LEFT JOIN events d
-      ON m.session_id = d.session_id
-     AND d.event_type IN ('document_download', 'document_download_menu')
-     AND d.created_at >= m.created_at
-     AND d.created_at <= m.created_at + INTERVAL '10 seconds'
+    LEFT JOIN responses r
+        ON r.turn_id = m.turn_id
+    LEFT JOIN downloads_turn dt
+        ON dt.turn_id = m.turn_id
 
-    WHERE m.event_type = 'message_received'
-      AND m.user_id = $1
-      AND m.created_at BETWEEN $2 AND $3
-
-    ORDER BY m.created_at
+    ORDER BY m.message_time ASC
     LIMIT 500
     """
 
@@ -2170,18 +2732,79 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
     to_ts = datetime.fromisoformat(to_ts)
 
     query = """
+    WITH target_events AS (
+        SELECT
+            e.*
+        FROM events e
+        WHERE e.user_id::text = $1
+    ),
+
+    messages AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+            created_at as message_time,
+            payload->>'text' as message
+
+        FROM target_events
+
+        WHERE event_type = 'message_received'
+          AND created_at BETWEEN $2 AND $3
+    ),
+
+    responses AS (
+        SELECT DISTINCT ON (payload->>'turn_id')
+
+            payload->>'turn_id' as turn_id,
+
+            payload->>'text' as response
+
+        FROM target_events
+
+        WHERE event_type = 'response'
+
+        ORDER BY payload->>'turn_id', created_at DESC
+    ),
+
+    downloads_turn AS (
+        SELECT
+            payload->>'turn_id' as turn_id,
+
+            STRING_AGG(
+                payload->>'file_path',
+                ' || '
+                ORDER BY created_at
+            ) as file_paths
+
+        FROM target_events
+
+        WHERE event_type IN (
+            'document_download',
+            'document_download_menu'
+        )
+          AND payload->>'file_path' IS NOT NULL
+
+        GROUP BY payload->>'turn_id'
+    )
+
     SELECT
-        m.created_at,
-        m.payload->>'text' as message,
-        r.payload->>'text' as response
-    FROM events m
-    LEFT JOIN events r
-      ON m.payload->>'turn_id' = r.payload->>'turn_id'
-     AND r.event_type = 'response'
-    WHERE m.event_type = 'message_received'
-      AND m.user_id = $1
-      AND m.created_at BETWEEN $2 AND $3
-    ORDER BY m.created_at
+        m.message_time,
+        m.message,
+
+        CASE
+            WHEN r.response IS NOT NULL THEN r.response
+            WHEN dt.file_paths IS NOT NULL THEN dt.file_paths
+            ELSE ''
+        END as response
+
+    FROM messages m
+
+    LEFT JOIN responses r
+        ON r.turn_id = m.turn_id
+
+    LEFT JOIN downloads_turn dt
+        ON dt.turn_id = m.turn_id
+
+    ORDER BY m.message_time
     """
 
     async with pool.acquire() as conn:

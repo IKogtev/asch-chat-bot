@@ -160,7 +160,28 @@
                 </div>
                 <!-- Tree tab -->
                 <div id="tree_files-tab" class="tab-content">
-                    <div class="section-header">
+                    <!-- MANAGER OVERLAY -->
+                    <div id="manager-tree-overlay" style="display:none;">
+
+                        <div class="header-info manager-tree-info">
+                            <span id="manager-collection-info"></span>
+                        </div>
+
+                        <div class="section-header">
+                            <h2>Дерево файлов</h2>
+
+                            <button
+                                id="manager-sync-btn"
+                                type="button"
+                                onclick="syncAll(this)"
+                                class="btn btn-primary"
+                            >
+                                🔄 Принудительная синхронизация документов
+                            </button>
+                        </div>
+                    </div>
+                    <!-- ADMIN -->
+                    <div id="default-tree-header" class="section-header">
                         <h2>Дерево файлов</h2>
                     </div>
                     <div id="filesystem-tree"></div>
@@ -318,21 +339,12 @@
                     <div id="user-groups-list">
                         <div class="loading">Загрузка пользователей...</div>
                     </div>
-                    <!-- пагинация -->
-                    <div class="pagination-controls">
-                        <select id="page-size" onchange="changePageSize()">
-                            <option value="20">20</option>
-                            <option value="50">50</option>
-                            <option value="100">100</option>
-                        </select>
-
-                        <div id="pagination-pages"></div>
-                    </div>
                 </div>
                 <!-- Logs Tab -->
                 <div id="logs-tab" class="tab-content">
                     <div class="section-header">
                         <h2>🧾 Логи</h2>
+                        <button onclick="exportAnalytics()" class="btn btn-primary btn-small">📥 Выгрузка логов</button>
                         <button onclick="loadLogs()" class="btn btn-secondary">🔄 Обновить логи</button>
                     </div>
                     <!-- Фильтры по столбцам -->
@@ -351,14 +363,9 @@
                 <div id="analytics-tab" class="tab-content">
                     <div class="section-header">
                         <h2>📊 Аналитика</h2>
-                    </div>
-                    <div class="filters">
                         <input type="datetime-local" id="from" class="date-input">
                         <input type="datetime-local" id="to" class="date-input">
-
-                        <button onclick="loadAnalytics()" class="btn btn-add btn-small">Загрузить</button>
-                        <button onclick="exportAnalytics()" class="btn btn-primary btn-small">📥 Логи</button>
-                        <button onclick="exportDialogs()" class="btn btn-primary btn-small">💬 Диалоги</button>
+                        <button onclick="loadAnalytics()" class="btn btn-add">Показать</button>
                     </div>
                     <!-- GRID -->
                     <div class="dashboard">
@@ -378,6 +385,28 @@
                             <div id="phrase-cloud"></div>
                         </div>
                     </div>
+                </div>
+                <!-- Dialogs Tab -->
+                <div id="dialogs-tab" class="tab-content">
+                    <div class="section-header">
+                        <h2>💬 Диалоги</h2>
+                        <button onclick="updateDialogs()" class="btn btn-secondary">🔄 Обновить</button>
+                        <button onclick="exportDialogs()" class="btn btn-primary">📥 Выгрузить диалоги</button>
+                    </div>
+
+                    <!-- Фильтры -->
+                    <div class="filters">
+                        <input type="datetime-local" id="dialogs-from" class="date-input">
+                        <input type="datetime-local" id="dialogs-to" class="date-input">
+
+                        <input type="text" id="dialogs-user" placeholder="User ID / name">
+                        <input type="text" id="dialogs-text" placeholder="Поиск по тексту пользователя">
+
+                        <button onclick="loadDialogs()" class="btn btn-add btn-small">Показать</button>
+                    </div>
+
+                    <!-- Таблица -->
+                    <div id="dialogs-table"></div>
                 </div>
                 <!-- Modal for viewing document chunks -->
                 <div id="chunks-modal" class="modal">
@@ -579,6 +608,11 @@
                     <button class="tab-button" onclick="showTab('analytics', event)" data-tab="analytics">
                         <span class="icon">📊</span>
                         <span class="label">Аналитика</span>
+                    </button>
+                    <button class="tab-button" onclick="showTab('dialogs', event)" data-tab="dialogs">
+                        <span class="icon">💬</span>
+                        <span class="label">Диалоги</span>
+                    </button>
                     </button>
                     <button class="tab-button" onclick="logout()">
                         <span class="icon">➜]</span>

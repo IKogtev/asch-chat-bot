@@ -16,6 +16,7 @@ let currentPromptContent = ""; //текст текущего промпта
 let promptFiles = []; // список файлов промптов для агента
 let botStartMessageContent = ""; // стартовое сообщение текст
 let newsEditor = null; // текстовое поле отправки новости
+let newsHistoryTimer = null; // Переменная для хранения таймера
 let currentAgent = null; // текущий агент
 let promptEditorMDE = null; // редактор промпта в markdown формате
 let currentUser = null; // текущий пользователь
@@ -40,20 +41,24 @@ let statSources = [];
 let currentPage = 1;
 let pageSize = 20;
 let allUsersCache = [];
+// фильтр пользователей
+let activeStatsFilter = "all";
+let filteredUsersCache = []; // кэш фильтрованных пользователей
 
 
 // Initialize on load
-document.addEventListener('DOMContentLoaded', () => {
-    checkAuth(); //Проверка авторизации
-    loadAliasData(); // загрузка данных Алиаса
-    loadCollections(); // загрузка коллекций
-    loadActiveCollections(); // загрузка активных коллекций
-    loadCollectionInfo(); // загрузка информации о коллекциях
-    loadDocuments(); // загрузка документов
+document.addEventListener('DOMContentLoaded', async () => {
+    await checkAuth(); //Проверка авторизации
+    await loadAliasData(); // загрузка данных Алиаса
+    await loadCollections(); // загрузка коллекций
+    await loadActiveCollections(); // загрузка активных коллекций
+    await loadCollectionInfo(); // загрузка информации о коллекциях
+    await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
+    await loadDocuments(); // загрузка документов
     setupDragAndDrop(); 
-    loadSyncSettings();
+    await loadSyncSettings();
     subscribeToSync();
-    loadFilesystemTree();
+    await loadFilesystemTree();
     startLogsAutoRefresh();
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
@@ -173,6 +178,7 @@ async function switchCollection(collectionName, collectionType) {
         await loadCollections();
         await loadActiveCollections();
         await loadCollectionInfo();
+        await loadManagerCollectionInfo();
         await loadDocuments();
         await loadFilesystemTree();
         
@@ -207,6 +213,44 @@ async function loadCollectionInfo() {
          
         } catch (error) {
         console.error('Error loading collection info:', error);
+    }
+}
+// collection info for manager 
+async function loadManagerCollectionInfo() {
+
+    try {
+
+        const response = await fetch(`${API_BASE}/api/collections/info?collection=kb_collection`);
+        const data = await response.json();
+
+        document.getElementById("manager-collection-info").innerHTML = `
+            Документы
+            <strong>${data.points_count - 1 || 0}</strong>
+
+            | Версия платформы
+            <strong>${data.platform_version || 0}</strong>
+
+            | Последняя Синхронизация
+            <strong>
+                ${data.last_sync
+                    ? formatDate(data.last_sync)
+                    : "В процессе"}
+            </strong>
+
+            | Следующая Синхронизация
+            <strong>
+                ${data.next_sync
+                    ? formatDate(data.next_sync)
+                    : "Пока не установлена"}
+            </strong>
+        `;
+
+    } catch (error) {
+
+        console.error(
+            "Error loading manager collection info:",
+            error
+        );
     }
 }
 // кнопка удаления коллекции
@@ -445,7 +489,6 @@ function showTab(tabName, event=null) {
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
     if (event && event.currentTarget) {
-        // event.target.classList.add('active');
         event.currentTarget.classList.add('active');
     }
     else {
@@ -461,6 +504,21 @@ function showTab(tabName, event=null) {
     } else if (tabName === 'search') {
         loadKnowledgeBasesForSearch();
     } else if (tabName === 'tree_files'){
+        const managerOverlay = document.getElementById("manager-tree-overlay");
+        const defaultHeader = document.getElementById("default-tree-header");
+        //  отображаем 1 из 2 интерфейсов в зависимости от роли пользователя
+        if (currentUser?.role === "manager") {
+
+            managerOverlay.style.display = "block";
+            defaultHeader.style.display = "none";
+
+            loadManagerCollectionInfo();
+
+        } else {
+            managerOverlay.style.display = "none";
+            defaultHeader.style.display = "flex";
+        }
+        // строим дерево файловой системы
         loadFilesystemTree();
     } else if (tabName === 'news_send'){
         loadNewsHistory();
@@ -475,6 +533,8 @@ function showTab(tabName, event=null) {
         initAnalytics();   // выставим даты
         loadAnalytics();   // загрузим
         analyticsLoaded = true;
+    } else if (tabName === 'dialogs'){
+        updateDialogs()
     }
 }
 
@@ -492,7 +552,10 @@ function updateHeaderVisibility(tabName) {
         "tree_files"
     ];
 
-    if (allowedTabs.includes(tabName)) {
+    if (
+    allowedTabs.includes(tabName) &&
+        currentUser?.role !== "manager"
+    ) {
         header.style.display = "block";
     } else {
         header.style.display = "none";
@@ -659,6 +722,7 @@ async function changeSyncInterval(){
     if(res.ok){
         loadSyncSettings()
         loadCollectionInfo()
+        loadManagerCollectionInfo();
     }
 }
 // функция разворачивания kb 
@@ -703,6 +767,29 @@ function shiftToUTC(dateStr) {
 
     return dt.toISOString();
 }
+// формат под datetime-local
+function formatMSK(dt) {
+    return dt.toLocaleString('sv-SE', {
+        timeZone: 'Europe/Moscow',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }).replace(',', 'T');
+}
+// превращаем технический статус в русский текст
+function getStatusName(status) {
+    const statuses = {
+        'pending': 'В ожидании',
+        'sent': 'Отправлено',
+        'processing': 'Отправляется...',
+        'error': 'Ошибка'
+    };
+    // Если придет какой-то новый статус, которого нет в списке — вернем его как есть
+    return statuses[status] || status;
+}
 // #############################
 // DOCUMENTS TAB LOGIC
 // #############################
@@ -730,6 +817,7 @@ async function loadDocuments() {
                 </div>
             `;
             loadCollectionInfo();
+            loadManagerCollectionInfo();
             return;
         }
                                 
@@ -800,6 +888,7 @@ async function loadDocuments() {
             </div>
         `).join('');
         loadCollectionInfo();
+        loadManagerCollectionInfo();
         loadFilesystemTree();
     } catch (error) {
         container.innerHTML = `
@@ -861,6 +950,7 @@ document.addEventListener("click", async function (e) {
             if (button.innerText==="✅ Синхронизация"){
                 await loadDocuments();
                 await loadCollectionInfo();
+                await loadManagerCollectionInfo();
             }
 
         } catch (err) {
@@ -1391,6 +1481,15 @@ async function loadFilesystemTree() {
     container.innerHTML = "⏳ Загрузка...";
 
     try {
+        // MANAGER -> полное дерево kb_collection
+        if (currentUser?.role === "manager") {
+            const res = await fetch("/api/filesystem/folders");
+            const data = await res.json();
+
+            container.innerHTML = renderManagerTree(data);
+            return;
+        }
+        // ADMIN / обычный режим → lazy loading по коллекциям
         const res = await fetch(
             `/api/filesystem/node?path=&collection_name=${encodeURIComponent(currentCollection)}`
         );
@@ -1424,6 +1523,48 @@ function renderNode(path, data) {
     });
 
     html += "</ul>";
+    return html;
+}
+
+// реденринг полного дерева для менеджера
+function renderManagerTree(tree, currentPath = "") {
+    let html = "<ul class='tree'>";
+
+    for (const [key, value] of Object.entries(tree)) {
+
+        // files
+        if (key === "files" && Array.isArray(value)) {
+            value.forEach(file => {
+                html += `
+                    <li class="file">
+                        📄 ${escapeHtml(file)}
+                    </li>
+                `;
+            });
+
+            continue;
+        }
+
+        // folders
+        const newPath = currentPath
+            ? `${currentPath}/${key}`
+            : key;
+
+        html += `
+            <li class="folder">
+                <details>
+                    <summary>
+                        📁 ${escapeHtml(key)}
+                    </summary>
+
+                    ${renderManagerTree(value, newPath)}
+                </details>
+            </li>
+        `;
+    }
+
+    html += "</ul>";
+
     return html;
 }
 // открытие папок внутри дерева
@@ -1539,7 +1680,7 @@ async function sendNews() {
     } finally {
         sendBtn.disabled = false;
         sendBtn.innerText = "📤 Отправить новость";
-        loadNewsHistory();
+        await loadNewsHistory();
     }
 }
 // удаление файла прикрепленного к новости
@@ -1576,7 +1717,10 @@ document.getElementById("news-files").addEventListener("change", (e) => {
 // загрузка истории новостей
 async function loadNewsHistory() {
     const container = document.getElementById("news-history");
-    container.innerHTML = '<div class="loading">Загрузка...</div>';
+    const isFirstLoad = container.innerHTML.includes("loading") || container.innerHTML === "";
+    if (isFirstLoad) {
+        container.innerHTML = '<div class="loading">Загрузка...</div>';
+    }
 
     try {
         const res = await fetch("/api/news");
@@ -1593,12 +1737,14 @@ async function loadNewsHistory() {
                     <p>Нет новостей</p>
                 </div>
             `;
+            stopNewsPolling(); // Останавливаем опрос, если новостей нет
             return;
         }
 
         container.innerHTML = data.map(n =>{
             const files = n.files || [];
             const targetGroup = n.target_group || "all";
+            const statusRussian = getStatusName(n.status);
             const filesHtml = files.length > 0
                 ? files.map(f => `
                     <div class="news-file">
@@ -1612,7 +1758,7 @@ async function loadNewsHistory() {
                 `).join("")
                 : '<div class="news-no-files">Без файлов</div>';
             return `
-                <div class="document-card">
+                <div class="document-card" ${n.status === 'pending' ? 'status-pending' : ''}">
                     <div class="document-header">
                         <div class="document-title">
                             📰 ID: ${n.id}
@@ -1631,7 +1777,7 @@ async function loadNewsHistory() {
                     <div class="news-meta">
                         <span> Создано: ${formatDate(n.created_at)}</span>
                         <span> Отправлено: ${n.scheduled_at ? formatDate(n.scheduled_at) : formatDate(n.created_at)}</span>
-                        <span> Статус: ${n.status}</span>
+                        <span> Статус: ${statusRussian}</span>
                         <span> Получатели: ${getTargetGroupName(targetGroup) || n.target_group || "all"}</span>
                     </div>
                     <div class="news-content">
@@ -1644,12 +1790,40 @@ async function loadNewsHistory() {
             `; 
         }).join("");
 
+        // --- ЛОГИКА АВТО-ОБНОВЛЕНИЯ ---
+        // Проверяем, есть ли хотя бы одна новость в статусе "pending"
+        const hasPending = data.some(n => n.status === "pending" || n.status === "processing");
+
+        if (hasPending) {
+            console.log("Есть ожидающие новости, запускаю поллинг...");
+            startNewsPolling();
+        } else {
+            console.log("Все новости отправлены, останавливаю поллинг.");
+            stopNewsPolling();
+        }
+
     } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
-            </div>
-        `;
+        console.error(e);
+        if (isFirstLoad) container.innerHTML = `<div class="result-message error">Ошибка: ${e.message}</div>`;
+    }
+}
+// Функция запуска опроса
+function startNewsPolling() {
+    if (newsHistoryTimer) return; // Чтобы не плодить кучу таймеров
+    newsHistoryTimer = setInterval(() => {
+        // Проверяем, активна ли вкладка новостей (чтобы не грузить сервер вхолостую)
+        const newsTab = document.getElementById("news_send-tab");
+        if (newsTab && newsTab.classList.contains("active") || newsTab.style.display !== "none") {
+            loadNewsHistory();
+        }
+    }, 10000); // 10 секунд — оптимально для новостей
+}
+
+// Функция остановки опроса
+function stopNewsPolling() {
+    if (newsHistoryTimer) {
+        clearInterval(newsHistoryTimer);
+        newsHistoryTimer = null;
     }
 }
 // функция удаления новости из истории
@@ -2167,133 +2341,214 @@ async function saveBotStartMessage() {
 // #############################
 
 // Загрузка списка пользователей с группами
-async function loadUserGroups() {
+async function loadUserGroups(skipFetch = false) {
     const container = document.getElementById("user-groups-list");
     const searchQuery = document.getElementById("user-search")?.value || "";
-    const groupFilter = document.getElementById("group-filter")?.value || "all";
     if (!container) return;
-
-    container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
-    try {
-        const res = await fetch("/api/subscribers");  
-        if (!res.ok) {
-            throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
-        }
-        const users = await res.json();
-        allUsersCache = users;
-        // Фильтрация по поиску
-        let filtered = users.filter(u => {
-            if (!searchQuery) return true;
-            const q = searchQuery.toLowerCase();
-            return (
-                String(u.user_id).includes(q) ||
-                (u.username && u.username.toLowerCase().includes(q)) ||
-                (u.first_name && u.first_name.toLowerCase().includes(q)) ||
-                (u.last_name && u.last_name.toLowerCase().includes(q))
-            );
-        });
-        
-        // Фильтрация по группе
-        if (groupFilter === "manager_group") {
-            filtered = filtered.filter(u => u.manager_group);
-        } else if (groupFilter === "coach_group") {
-            filtered = filtered.filter(u => u.coach_group);
-        } else if (groupFilter === "no_groups") {
-            filtered = filtered.filter(u => !u.manager_group && !u.coach_group);
-        }
-        // пагинация расчеты
-        const start = (currentPage - 1) * pageSize;
-        const end = start + pageSize;
-        const paginated = filtered.slice(start, end);
-        renderPagination(filtered.length);
-        // Обновление статистики
-        updateGroupStats(users);
-        if (filtered.length === 0) {
+    // Загружаем с API только если нужно
+    if (!skipFetch) {
+        container.innerHTML = '<div class="loading">Загрузка пользователей...</div>';
+        try {
+            const res = await fetch("/api/subscribers");  
+            if (!res.ok) {
+                throw new Error(`Ошибка ${res.status}: ${res.statusText}`);
+            }
+            const users = await res.json();
+            allUsersCache = users;
+        } catch (e) {
             container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>Пользователи не найдены</p>
+                <div class="result-message error">
+                    Ошибка загрузки: ${e.message}
                 </div>
             `;
+            console.error(e);
             return;
         }
-        
+    }    
+    // Фильтрация по поиску
+    filteredUsersCache = allUsersCache.filter(u => {
+        const q = searchQuery.toLowerCase();
+        // поиск по global_user_id, username, first_name, last_name
+        const matchesMainInfo = !searchQuery || (
+            String(u.global_user_id).toLowerCase().includes(q) ||
+            (u.username && u.username.toLowerCase().includes(q)) ||
+            (u.first_name && u.first_name.toLowerCase().includes(q)) ||
+            (u.last_name && u.last_name.toLowerCase().includes(q))
+        );
+        // поиск по аккаунтам
+        const matchesAccounts = !searchQuery || (u.accounts && u.accounts.some(acc => 
+            String(acc.platform_user_id).includes(q) || 
+            (acc.username && acc.username.toLowerCase().includes(q))
+        ));
+        const matchesSearch = matchesMainInfo || matchesAccounts;
+        // Фильтрация по группе
+        let matchesGroup = true;
+        if (activeStatsFilter === "manager") matchesGroup = !!u.manager_group;
+        else if (activeStatsFilter === "coach") matchesGroup = !!u.coach_group;
+        else if (activeStatsFilter === "both") matchesGroup = (u.manager_group && u.coach_group);
+        else if (activeStatsFilter === "none") matchesGroup = (!u.manager_group && !u.coach_group);
+        return matchesSearch && matchesGroup;
+    });
+    // пагинация расчеты
+    const totalPages = Math.max(1, Math.ceil(filteredUsersCache.length / pageSize));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    const start = (currentPage - 1) * pageSize;
+    const end = start + pageSize;
+    const paginated = filteredUsersCache.slice(start, end);
+    // Обновление статистики
+    updateGroupStats(allUsersCache);
+    if (paginated.length === 0) {
         container.innerHTML = `
-            <table class="user-groups-table">
-                <thead>
-                    <tr>
-                        <th>User ID</th>
-                        <th>Username</th>
-                        <th>Имя</th>
-                        <th>Фамилия</th>
-                        <th class="text-center">👔 Менеджер</th>
-                        <th class="text-center">🎓 Коуч</th>
-                        <th>Последний вход</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${filtered.map(u => `
-                        <tr>
-                            <td class="font-monospace">${u.user_id}</td>
-                            <td>${escapeHtml(u.username || '-')}</td>
-                            <td>${escapeHtml(u.first_name || '')}</td>
-                            <td>${escapeHtml(u.last_name || '')}</td>
-                            <td class="text-center">
-                                <input type="checkbox" 
-                                      ${u.manager_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'manager_group', this.checked)">
-                            </td>
-                            <td class="text-center">
-                                <input type="checkbox" 
-                                      ${u.coach_group ? 'checked' : ''} 
-                                      onchange="toggleUserGroup(${u.user_id}, 'coach_group', this.checked)">
-                            </td>
-                            <td>${formatDate(u.last_seen)}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        `;
-        
-    } catch (e) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки: ${e.message}
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>Пользователи не найдены</p>
             </div>
         `;
-        console.error("Error loading user groups:", e);
+        return;
+    }
+        
+    container.innerHTML = `
+        <table class="user-groups-table">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Username</th>
+                    <th>Имя</th>
+                    <th>Фамилия</th>
+                    <th class="text-center">👔 Менеджер</th>
+                    <th class="text-center">🎓 Коуч</th>
+                    <th>Аккаунты</th>
+                    <th>Последний вход</th>
+                    <th class="text-center">🚫 Блок</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${paginated.map(u => {
+                    // Логика отображения: если имя unknown, пробуем показать username
+                    const displayName = (u.first_name === 'unknown' && u.username) ? u.username : (u.first_name || 'unknown');
+                    const displayLastName = u.last_name || '';    
+                    return `
+                    <tr class="${u.is_blocked ? 'user-blocked' : ''}">
+                        <td class="font-monospace">${u.global_user_id}</td>
+                        <td>${escapeHtml(u.username || '-')}</td>
+                        <td>${escapeHtml(displayName || '')}</td>
+                        <td>${escapeHtml(displayLastName || '')}</td>
+                        <td class="text-center">
+                            <input type="checkbox" 
+                                    ${u.manager_group ? 'checked' : ''} 
+                                    onchange="toggleUserGroup('${u.global_user_id}', 'manager_group', this.checked)">
+                        </td>
+                        <td class="text-center">
+                            <input type="checkbox" 
+                                    ${u.coach_group ? 'checked' : ''} 
+                                    onchange="toggleUserGroup('${u.global_user_id}', 'coach_group', this.checked)">
+                        </td>
+                        <td>
+                            <div class="accounts-cell">
+                                <button class="btn btn-secondary btn-small" onclick="toggleAccountsRow('${u.global_user_id}')">
+                                    📱 Аккаунты (${u.accounts.length})
+                                </button>
+                                <div id="acc-details-${u.global_user_id}" class="accounts-details-hidden" style="display:none;">
+                                    ${u.accounts.map(acc => `
+                                        <div class="account-badge-mini">
+                                            <span class="platform-tag">${acc.platform}</span>: <code>${acc.platform_user_id}</code>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </td>
+                        <td>${formatDate(u.last_seen)}</td>
+                        <td>
+                            <input type="checkbox" 
+                                ${u.is_blocked ? 'checked' : ''} 
+                                onchange="toggleUserBlock('${u.global_user_id}', this.checked)">
+                        </td>
+                    </tr>
+                    `;
+                }).join('')}
+            </tbody>
+        </table>
+        <!-- пагинация -->
+        <div class="pagination-wrapper">
+            <div class="pagination-controls">
+                <span>Показывать по:</span>
+                <select id="page-size" onchange="changePageSize()">
+                    <option value="20" ${pageSize === 20 ? 'selected' : ''}>20</option>
+                    <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
+                    <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
+                </select>
+            </div>
+
+            <div class="pagination">
+                <button onclick="prevPage()" ${currentPage === 1 ? "disabled" : ""} class="btn btn-primary btn-small">⬅ Назад</button>
+                
+                <span class="page-info">Страница <strong>${currentPage}</strong> из <strong>${totalPages}</strong></span>
+
+                <button onclick="nextPage()" ${currentPage >= totalPages ? "disabled" : ""} class="btn btn-primary btn-small">Вперед ➡</button>
+            </div>
+        </div>
+    `;
+}
+
+async function toggleUserBlock(globalUserId, value) {
+    try {
+        const res = await fetch("/api/subscribers/block", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                global_user_id: globalUserId,
+                value: value
+            })
+        });
+
+        if (!res.ok) {
+            throw new Error(`Ошибка ${res.status}`);
+        }
+
+        const action = value ? "заблокирован" : "разблокирован";
+
+        showNotification(
+            `Пользователь ${globalUserId} ${action}`,
+            "success"
+        );
+
+        await loadUserGroups();
+
+    } catch (e) {
+        alert(`Ошибка блокировки: ${e.message}`);
+        await loadUserGroups();
     }
 }
-// рендеринг пагинации
-function renderPagination(totalItems) {
-    const pagesDiv = document.getElementById("pagination-pages");
-
-    const totalPages = Math.ceil(totalItems / pageSize);
-
-    let buttons = "";
-
-    for (let i = 1; i <= totalPages; i++) {
-        buttons += `
-            <button 
-                class="page-btn ${i === currentPage ? 'active' : ''}"
-                onclick="goToPage(${i})">
-                ${i}
-            </button>
-        `;
+// отображение/скрытие строки с аккаунтами пользователя
+function toggleAccountsRow(userId) {
+    const el = document.getElementById(`acc-details-${userId}`);
+    if (el) {
+        el.style.display = el.style.display === 'none' ? 'block' : 'none';
     }
-
-    pagesDiv.innerHTML = buttons;
 }
-// Навигация
-function goToPage(page) {
-    currentPage = page;
-    loadUserGroups();
+
+function nextPage() {
+    const totalPages = Math.ceil(filteredUsersCache.length / pageSize);
+    if (currentPage < totalPages) {
+        currentPage++;
+        loadUserGroups(true); // Листаем без запроса к API
+    }
+}
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        loadUserGroups(true); // Листаем без запроса к API
+    }
 }
 // изменение размера страницы
 function changePageSize() {
-    pageSize = parseInt(document.getElementById("page-size").value);
-    currentPage = 1;
-    loadUserGroups();
+    const select = document.getElementById("page-size");
+    if (select) {
+        pageSize = parseInt(select.value);
+        currentPage = 1; // Всегда возвращаемся на 1 страницу
+        loadUserGroups(true); // Листаем без запроса к API
+    }
 }
 // Обновление статистики по группам
 function updateGroupStats(users) {
@@ -2309,37 +2564,48 @@ function updateGroupStats(users) {
     statsDiv.innerHTML = `
         <h3>📊 Статистика пользователей</h3>
         <div class="groups-stats-grid">
-            <div class="groups-stat-card groups-stat-total">
+            <div class="groups-stat-card groups-stat-total ${activeStatsFilter === 'all' ? 'active' : ''}"
+                onclick="applyStatsFilter('all')">
                 <div class="groups-stat-number">${total}</div>
                 <div class="groups-stat-label">Всего пользователей</div>
             </div>
-            <div class="groups-stat-card groups-stat-managers">
+            <div class="groups-stat-card groups-stat-managers ${activeStatsFilter === 'manager' ? 'active' : ''}"
+                onclick="applyStatsFilter('manager')">
                 <div class="groups-stat-number">${managers}</div>
                 <div class="groups-stat-label">👔 Менеджеры</div>
             </div>
-            <div class="groups-stat-card groups-stat-couchs">
+            <div class="groups-stat-card groups-stat-couchs ${activeStatsFilter === 'coach' ? 'active' : ''}"
+                onclick="applyStatsFilter('coach')">
                 <div class="groups-stat-number">${couchs}</div>
                 <div class="groups-stat-label">🎓 Коучи</div>
             </div>
-            <div class="groups-stat-card groups-stat-both">
+            <div class="groups-stat-card groups-stat-both ${activeStatsFilter === 'both' ? 'active' : ''}"
+                onclick="applyStatsFilter('both')">
                 <div class="groups-stat-number">${both}</div>
                 <div class="groups-stat-label">В обеих группах</div>
             </div>
-            <div class="groups-stat-card groups-stat-none">
+            <div class="groups-stat-card groups-stat-none ${activeStatsFilter === 'none' ? 'active' : ''}"
+                onclick="applyStatsFilter('none')">
                 <div class="groups-stat-number">${noGroups}</div>
                 <div class="groups-stat-label">Без групп</div>
             </div>
         </div>
     `;
 }
+// функция фильтра
+function applyStatsFilter(filter) {
+    activeStatsFilter = filter;
+    currentPage = 1; // сброс страницы
+    loadUserGroups();
+}
 // Переключение группы пользователя
-async function toggleUserGroup(userId, group, value) {
+async function toggleUserGroup(globalUserId, group, value) {
     try {
         const res = await fetch("/api/subscribers/group", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                user_id: userId,
+                global_user_id: globalUserId,
                 group: group,
                 value: value
             })
@@ -2352,7 +2618,7 @@ async function toggleUserGroup(userId, group, value) {
         const groupName = group === "manager_group" ? "👔 Менеджер" : "🎓 Коуч";
         const action = value ? "добавлен в" : "удалён из";
         
-        showNotification(`Пользователь ${userId} ${action} группы "${groupName}"`, "success");
+        showNotification(`Пользователь ${globalUserId} ${action} группы "${groupName}"`, "success");
         
         // Перезагружаем список для обновления статистики
         await loadUserGroups();
@@ -2365,40 +2631,17 @@ async function toggleUserGroup(userId, group, value) {
 }
 // Экспорт пользователей в CSV
 function exportUsers() {
-    const table = document.querySelector("#user-groups-list table");
-    if (!table) {
-        alert("Нет данных для экспорта");
-        return;
+    const search = document.getElementById("user-search")?.value || "";
+
+    const params = new URLSearchParams();
+
+    if (search) params.set("search", search);
+
+    if (activeStatsFilter && activeStatsFilter !== "all") {
+        params.set("group", activeStatsFilter);
     }
-    
-    let csv = [];
-    const rows = table.querySelectorAll("tr");
-    
-    rows.forEach(row => {
-        const cols = row.querySelectorAll("th, td");
-        const rowData = [];
-        
-        cols.forEach((col, index) => {
-            // Для чекбоксов берём состояние
-            const checkbox = col.querySelector("input[type='checkbox']");
-            if (checkbox) {
-                rowData.push(`"${checkbox.checked ? 'Yes' : 'No'}"`);
-            } else {
-                rowData.push(`"${col.textContent.trim().replace(/"/g, '""')}"`);
-            }
-        });
-        
-        csv.push(rowData.join(","));
-    });
-    
-    const csvContent = csv.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `users_groups_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-    
-    showNotification("Экспорт выполнен успешно", "success");
+
+    window.open(`/api/subscribers/export?${params.toString()}`);
 }
 
 /// #############################
@@ -2464,7 +2707,8 @@ function applyRoleAccess() {
         "bot_settings",
         "user_groups",
         "logs",
-        "analytics"
+        "analytics",
+        "dialogs"
     ];
     tabNames.forEach(name => {
         const tab = document.getElementById(`${name}-tab`);
@@ -2483,11 +2727,11 @@ function applyRoleAccess() {
     if (role === "manager") {
         // manager ограничен
         const allowed = [
-            "search",
             "tree_files",
             "news_send",
             "user_groups",
-            "analytics"
+            "analytics",
+            "dialogs"
         ];
 
         allowed.forEach(name => {
@@ -2669,6 +2913,14 @@ function startLogsAutoRefresh() {
         loadLogs(false);
     }, 10000); // каждые 10 секунд
 }
+// функция экспорта логов для аналитики
+function exportAnalytics() {
+    // Временно убрал промежуток за который делать выгрузку
+    // const from = document.getElementById("from").value;
+    // const to = document.getElementById("to").value;
+    // window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
+    window.open("/api/analytics/export");
+}
 // #############################
 // ANALYTICS TAB LOGIC
 // #############################
@@ -2680,60 +2932,64 @@ function initAnalytics() {
     // 7 дней назад
     const from = new Date(now);
     from.setDate(from.getDate() - 7);
-    // формат под datetime-local
-    function formatMSK(dt) {
-        return dt.toLocaleString('sv-SE', {
-            timeZone: 'Europe/Moscow',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }).replace(',', 'T');
-    }
 
     document.getElementById("from").value = formatMSK(from);
     document.getElementById("to").value = formatMSK(to);
 }
-// функция экспорта аналитики
-function exportAnalytics() {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-
-    window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
-}
 // функция открытия модалки с пользователями, загрузившими конкретный документ
 async function openUsersModal(filename) {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-
+    const fromRaw = document.getElementById("from").value;
+    const toRaw = document.getElementById("to").value;
+    // сдвигаем к времени бд
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
+    const modalList = document.getElementById("users-list");
+    document.getElementById("users-modal").style.display = "block";
     const users = await fetch(
         `/api/analytics/document-users?filename=${encodeURIComponent(filename)}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
-    document.getElementById("users-list").innerHTML =
-        users.length === 0
-            ? "<div>Нет данных</div>"
-            : users.map(u => `
-                <div>
-                    ${u.user_id} (${u.user_name || "unknown"})
-                    — ${u.downloads}
-                    ${u.source === "search" ? "🔍" : "📂"}
-                </div>
-            `).join("");
-    document.getElementById("users-modal").style.display = "block";
+    if (users.length === 0) {
+        modalList.innerHTML = `<div class="empty-state">Никто еще не скачивал этот файл</div>`;
+    } else {
+        modalList.innerHTML = `
+            <div class="modal-table-container">
+                <table class="modal-table">
+                    <thead>
+                        <tr>
+                            <th>Пользователь</th>
+                            <th>Источник</th>
+                            <th class="text-center">Скачиваний</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${users.map(u => `
+                            <tr>
+                                <td>
+                                    <span class="user-name-text">${escapeHtml(u.user_name || 'unknown')}</span>
+                                    <code class="user-id-code">${u.global_user_id}</code>
+                                </td>
+                                <td>
+                                    <span class="source-badge">
+                                        ${u.source === "search" ? "🔍 Поиск" : "📂 Меню"}
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    <strong>${u.downloads}</strong>
+                                </td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+    
 }
 // функция закрытия модалки с пользователями
 function closeUsersModal() {
     const modal = document.getElementById("users-modal");
     modal.style.display = "none";
     document.getElementById("users-list").innerHTML = "";
-}
-// функция экспорта диалогов 
-function exportDialogs() {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-    window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }
 // функция трансформации времени в корректное для визуализации
 function formatTime(ms) {
@@ -2747,7 +3003,7 @@ function renderStats(stats, channels) {
     const el = document.getElementById("stats");
 
     el.innerHTML = `
-        <h3>📊 Статистика</h3>
+        <h3>📈 Статистика</h3>
 
         <p><b>Уникальные пользователи:</b> ${stats.unique_users}</p>
         <p><b>Сообщений всего:</b> ${stats.total_messages}</p>
@@ -2796,10 +3052,10 @@ function drawUsers() {
 
         ${page.length === 0 ? "<div>Нет пользователей</div>" : page.map(u => `
             <div class="user-card">
-                <b>${u.user_id} | ${u.user_name || "unknown"}</b>
+                <b>${u.global_user_id} | ${u.user_name || "unknown"}</b>
                 <div>Всего сообщений: ${u.messages}</div>
                 <div>В среднем за неделю сообщений: ${u.avg_weekly_messages.toFixed(1)}</div>
-                <button onclick="openUserDialogs('${u.user_id}', '${u.user_name || "unknown"}')" class="btn btn-primary btn-small">
+                <button onclick="openUserDialogs('${u.global_user_id}', '${u.user_name || "unknown"}')" class="btn btn-primary btn-small">
                     👁 Диалог
                 </button>
             </div>
@@ -2829,7 +3085,7 @@ function searchUsers(q) {
     userSearch = q;
     const query = q.toLowerCase();
     filteredUsers = allUsers.filter(u =>
-        (u.user_id || "").toLowerCase().includes(query) ||
+        (u.global_user_id || "").toLowerCase().includes(query) ||
         (u.user_name || "").toLowerCase().includes(query)
     );
     userPage = 0;
@@ -2924,7 +3180,7 @@ function prevDocs() {
         drawDocs();
     }
 }
-// рендеринг топа пользователей
+// рендеринг топа документов
 function renderTopDocs(docs, sources) {
     allDocs = docs;
     statSources = sources;
@@ -3073,9 +3329,11 @@ async function loadAnalytics() {
 }
 // открытие окна диалогов пользователя
 async function openUserDialogs(userId, userName) {
-    const from = document.getElementById("from").value;
-    const to = document.getElementById("to").value;
-
+    const fromRaw = document.getElementById("from").value;
+    const toRaw = document.getElementById("to").value;
+    // сдвигаем к времени бд
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
     const dialogs = await fetch(
         `/api/analytics/user-dialogs?user_id=${userId}&from_ts=${from}&to_ts=${to}`
     ).then(r => r.json());
@@ -3099,17 +3357,30 @@ function renderUserDialogs(dialogs) {
         dialogs.length === 0
             ? "<div>Нет диалогов</div>"
             : dialogs.map(d => {
-
+                // Определяем иконку/название мессенджера
+                let channelBadge = "";
+                if (d.channel === "telegram") {
+                    channelBadge = `<span class="badge" style="background:#0088cc; color:white; padding:2px 6px; border-radius:4px; font-size:11px;">Telegram</span>`;
+                } else if (d.channel === "max") {
+                    channelBadge = `<span class="badge" style="background:#ff4b4b; color:white; padding:2px 6px; border-radius:4px; font-size:11px;">Max</span>`;
+                } else if (d.channel) {
+                    channelBadge = `<span class="badge" style="background:#666; color:white; padding:2px 6px; border-radius:4px; font-size:11px;">${d.channel}</span>`;
+                }
                 let answer;
                 // преобразуем ответ с добавлением времени ответа
                 if (d.response) {
-                    answer = `${d.response} (${formatTime(d.response_time || 0)})`;
-                } else if (d.file_path) {
-                    const shortFile = d.file_path.split("/").pop();
-                    answer = `📄 ${shortFile} (${formatTime(d.response_time || 0)} )`;
+                    if (d.file_paths && d.response.includes("||")) {
+                        answer = d.response
+                            .split("||")
+                            .map(f => "📄 " + f.split("/").pop())
+                            .join("<br>");
+                    } else {
+                        answer = escapeHtml(d.response);
+                    }
                 } else {
-                    answer = `Нет ответа (${formatTime(d.response_time || 0)})`;
+                    answer = "—";
                 }
+                answer += ` <small style="color:#999;">(${formatTime(d.response_time || 0)})</small>`;
 
                 return `
                     <div class="dialog-item">
@@ -3118,6 +3389,7 @@ function renderUserDialogs(dialogs) {
                                     timeZone: "Europe/Moscow"
                                 })}
                             </span>
+                            ${channelBadge}
                         </div>
 
                         <div class="dialog-q">🧑 ${d.message || "-"}</div>
@@ -3130,4 +3402,132 @@ function renderUserDialogs(dialogs) {
 function closeDialogsModal() {
     document.getElementById("dialogs-modal").style.display = "none";
     document.getElementById("dialogs-list").innerHTML = "";
+}
+// #############################
+// DIALOGS TAB LOGIC
+// #############################
+// инициализация дат
+function initDialogs() {
+    const fromEl = document.getElementById("dialogs-from");
+    const toEl = document.getElementById("dialogs-to");
+    const now = new Date();
+    const to = new Date(now);
+    const from = new Date(now);
+    from.setDate(from.getDate() - 1); // по умолчанию 1 день
+    const fromStr = formatMSK(from)
+    const toStr = formatMSK(to)
+    fromEl.value = fromStr;
+    toEl.value = toStr;
+}
+// проверка существования диалогов
+function ensureDialogsDates() {
+    const fromEl = document.getElementById("dialogs-from");
+    const toEl = document.getElementById("dialogs-to");
+
+    if (!fromEl.value || !toEl.value) {
+        initDialogs();
+    }
+}
+// обновление диалогов при изменении дат или фильтров
+function updateDialogs(){
+    initDialogs();
+    loadDialogs();
+}
+// загрузка диалогов
+async function loadDialogs() {
+    ensureDialogsDates();
+    const fromRaw = document.getElementById("dialogs-from").value;
+    const toRaw = document.getElementById("dialogs-to").value;
+    const from = shiftToUTC(fromRaw);
+    const to = shiftToUTC(toRaw);
+
+    const user = document.getElementById("dialogs-user").value;
+    const text = document.getElementById("dialogs-text").value;
+
+    const params = new URLSearchParams({
+        from_ts: from,
+        to_ts: to
+    });
+
+    if (user) params.set("user", user);
+    if (text) params.set("text", text);
+
+    const res = await fetch(`/api/analytics/dialogs?${params}`);
+    if (!res.ok) {
+        const text = await res.text();
+        console.error("Server error:", text);
+        alert("Ошибка сервера, смотри консоль");
+        return;
+    }
+    const data = await res.json();
+
+    renderDialogs(data);
+}
+// рендер таблицы диалогов
+function renderDialogs(data) {
+    const container = document.getElementById("dialogs-table");
+
+    if (!data || data.length === 0) {
+        container.innerHTML = "<p class='empty-state'>За этот период диалогов не найдено</p>";
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="modern-table">
+            <thead>
+                <tr>
+                    <th>Пользователь</th>
+                    <th>Платформа</th>
+                    <th>Время (МСК)</th>
+                    <th>Запрос</th>
+                    <th>Ответ бота</th>
+                    <th>Скорость</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${data.map(row => {
+
+                    // ✅ нормальное имя
+                    let userName = (row.user_name || '').trim();
+                    if (!userName || userName === "None None") {
+                        userName = "Аноним";
+                    }
+                    const date = row.message_time ? new Date(row.message_time).toLocaleString('ru-RU') : '---';
+                    const respTime = row.response_time ? `${(row.response_time / 1000).toFixed(2)}с` : '';
+                    let answer;
+                    if (row.response) {
+                        answer = row.response;
+                    } else if (row.file_paths) {
+                        const files = row.file_paths.split("||")
+                            .map(f => "📄 " + f.split('/').pop())
+                            .join("<br>");
+                        answer = files;
+                    } else {
+                        answer = "—";
+                    }
+                    return `
+                    <tr>
+                        <td class="user-cell">
+                            <strong>${escapeHtml(userName)}</strong><br>
+                            <small>${escapeHtml(row.global_user_id)}</small>
+                        </td>
+                        <td>
+                            ${row.channel === 'telegram' ? '📨 Telegram' : '⚡ Max'}
+                        </td>
+                        <td class="time-cell">${date}</td>
+                        <td class="msg-cell">${escapeHtml(row.message || '')}</td>
+                        <td class="resp-cell">${escapeHtml(answer)}</td>
+                        <td class="meta-cell">${respTime}</td>
+                    </tr>
+                `}).join('')}
+            </tbody>
+        </table>
+    `;
+}
+// функция экспорта диалогов 
+function exportDialogs() {
+    const from = shiftToUTC(document.getElementById("dialogs-from").value);
+    const to = shiftToUTC(document.getElementById("dialogs-to").value);
+
+    window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }
