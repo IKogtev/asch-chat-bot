@@ -2,7 +2,6 @@ import asyncpg
 import aiohttp
 import json
 from typing import Optional
-from uuid import uuid4
 # Импортируем логгер из
 from utils import setup_logger
 from bot.services.config import Settings
@@ -31,67 +30,100 @@ class PostgresChatStore:
             logger.error(f"Ошибка подключения к БД: {e}", exc_info=True)
             raise
 
-    async def append(self, user_id: int, role: str, content: str) -> None:
+    async def append(self, user_id: str, role: str, content: str, global_user_id=None) -> None:
         """Добавление сообщения в историю"""
         if not self.pool:
             logger.warning("Pool не инициализирован, сообщение не сохранено")
             return
 
+        #  не сохраняем без global_user_id
+        if not global_user_id:
+            logger.warning(f"Skip append: no global_user_id for user_id={user_id}")
+            return
         query = """
-        INSERT INTO chat_history (user_id, role, content)
-        VALUES ($1, $2, $3)
+        INSERT INTO chat_history (user_id, global_user_id, role, content)
+        VALUES ($1, $2, $3, $4)
         """
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute(query, user_id, role, content)
+                await conn.execute(query, user_id, global_user_id, role, content)
             logger.debug(f"Сохранено сообщение: user={user_id}, role={role}, len={len(content)}")
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
 
-    async def get_history(self, user_id: int) -> list[dict]:
+    async def get_history(self, user_id: str, global_user_id=None) -> list[dict]:
         """Получение истории диалога"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return []
-
-        query = """
-        SELECT role, content, created_at
-        FROM chat_history
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        """
         try:
             async with self.pool.acquire() as conn:
+                if global_user_id:
+                    rows = await conn.fetch("""
+                        SELECT role, content, created_at
+                        FROM chat_history
+                        WHERE global_user_id = $1
+                        ORDER BY created_at DESC
+                        LIMIT $2
+                    """, global_user_id, self.max_turns)
+
+                    if rows:
+                        history = [
+                            {"role": row["role"], "content": row["content"]}
+                            for row in reversed(rows)
+                        ]
+                        logger.debug(f"[GLOBAL] История для global_user_id={global_user_id}: {len(history)}")
+                        return history
+                # fallback
+                query = """
+                SELECT role, content, created_at
+                FROM chat_history
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """
+
                 rows = await conn.fetch(query, user_id, self.max_turns)
 
             history = [
                 {"role": row["role"], "content": row["content"]}
                 for row in reversed(rows)
             ]
-            logger.debug(f"Загружена история для user={user_id}: {len(history)} сообщений")
+            logger.debug(f"[LEGACY] История для user={user_id}: {len(history)} сообщений")
             return history
+
         except Exception as e:
             logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
             return []
 
-    async def reset(self, user_id: int) -> None:
+    async def reset(self, user_id: str, global_user_id=None) -> None:
         """Очистка истории пользователя"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return
 
-        query = "DELETE FROM chat_history WHERE user_id = $1"
         try:
             async with self.pool.acquire() as conn:
-                result = await conn.execute(query, user_id)
-            logger.info(f"История очищена для user={user_id}: {result}")
+                if global_user_id:
+                    result = await conn.execute(
+                        "DELETE FROM chat_history WHERE global_user_id = $1",
+                        global_user_id
+                    )
+                    logger.info(f"[GLOBAL RESET] global_user_id={global_user_id}: {result}")
+                    return
+                
+                result = await conn.execute(
+                    "DELETE FROM chat_history WHERE user_id = $1",
+                    user_id
+                )
+                logger.info(f"[LEGACY RESET] user_id={user_id}: {result}")
+
         except Exception as e:
             logger.error(f"Ошибка очистки истории: {e}", exc_info=True)
 
     async def save_search_results(
         self,
-        user_id: int,
+        user_id: str,
         session_id: str,
         query: str,
         items: list[dict],
@@ -109,7 +141,7 @@ class PostgresChatStore:
         )
 
 
-    async def get_last_search_meta(self, user_id: int, session_id: str) -> dict | None:
+    async def get_last_search_meta(self, user_id: str, session_id: str) -> dict | None:
         """Получаем последнюю метаинформацию"""
         if not self.pool:
             return None
@@ -124,7 +156,7 @@ class PostgresChatStore:
         return dict(row) if row else None
 
 
-    async def get_last_search_results(self, user_id: int, session_id: str) -> list[dict]:
+    async def get_last_search_results(self, user_id: str, session_id: str) -> list[dict]:
         """Получаем последние результаты поиска"""
         if not self.pool:
             return []
@@ -140,7 +172,7 @@ class PostgresChatStore:
         return [dict(r) for r in rows]
 
 
-    async def get_result_by_rank(self, user_id: int, session_id: str, rank: int) -> dict | None:
+    async def get_result_by_rank(self, user_id: str, session_id: str, rank: int) -> dict | None:
         """Получаем результаты поиска по рангу"""
         if not self.pool:
             return None
@@ -155,7 +187,7 @@ class PostgresChatStore:
         return dict(row) if row else None
 
 
-    async def update_shown_count(self, user_id: int, session_id: str, shown_count: int) -> None:
+    async def update_shown_count(self, user_id: str, session_id: str, shown_count: int) -> None:
         """Обновляем количество показанных"""
         if not self.pool:
             return
@@ -165,7 +197,7 @@ class PostgresChatStore:
         await update_doc_search_shown_count(self.pool, user_id, session_id, shown_count)
 
 
-    async def reset_search_state(self, user_id: int, session_id: str) -> None:
+    async def reset_search_state(self, user_id: str, session_id: str) -> None:
         """Сбрасываем состояние поиска"""
         if not self.pool:
             return
@@ -194,19 +226,19 @@ class SubscriberStore:
 
     async def add(
             self,
-            user_id: int,
+            user_id: str,
             username: str | None,
             first_name: str,
             last_name: str,
             last_seen: datetime,
-            phone_number: str | None=None):
+            phone_number: str | None=None, 
+            platform: str="telegram"):
         """добавление пользователя в таблицу"""
-        logger.info(f"Added a new user: {user_id} (@{username})")
         query = """
         INSERT INTO subscribers (
             user_id, username, first_name, last_name, phone_number,
-            last_seen, region, manager_group, coach_group
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            last_seen, region, manager_group, coach_group, platform
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (user_id) DO UPDATE SET
             username = EXCLUDED.username,
             first_name = EXCLUDED.first_name,
@@ -225,17 +257,18 @@ class SubscriberStore:
                 last_seen,
                 None, # region
                 False, # manager_group
-                False # coach_group
+                False, # coach_group
+                platform
             )
 
-    async def get_phone(self, user_id: int) -> str | None:
+    async def get_phone(self, user_id: str) -> str | None:
         """Проверить есть ли телефон у пользователя"""
         query = "SELECT phone_number FROM subscribers WHERE user_id =$1"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)
         return row["phone_number"] if row else None
 
-    async def update_phone(self, user_id: int, phone_number: str):
+    async def update_phone(self, user_id: str, phone_number: str):
         """Обновить номер телефона"""
         query = """
         UPDATE subscribers
@@ -244,29 +277,63 @@ class SubscriberStore:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, phone_number, user_id)
-        logger.info(f"✓ Телефон обновлён для user_id={user_id}: {phone_number}")
 
     async def get_all_with_groups(self) -> list[dict]:
         """Получение всех пользователей с информацией с группами"""
         logger.info("Получаем пользователей с группами")
         query = """
-        SELECT user_id, username, first_name, last_name,
-               phone_number, last_seen, created_at,
-               manager_group, coach_group
-        FROM subscribers
-        ORDER BY last_seen DESC
+        SELECT 
+            s.user_id,
+            s.username,
+            s.first_name,
+            s.last_name,
+            s.phone_number,
+            s.last_seen,
+            s.created_at,
+            s.manager_group,
+            s.coach_group,
+            s.platform,
+            ua.user_id as global_user_id
+        FROM subscribers s
+        LEFT JOIN user_accounts ua
+            ON ua.platform_user_id = s.user_id
+            AND ua.platform = s.platform
+        LEFT JOIN users u
+            ON u.id = ua.user_id
+        WHERE (u.is_blocked = FALSE OR u.is_blocked IS NULL)
+        ORDER BY s.last_seen DESC
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [dict(r) for r in rows]
 
-    async def get_user_data(self, user_id: int) -> dict | None:
-        """Получение полных данных пользователя для передачи в ADK"""
+    async def get_user_data(self, user_id: str) -> dict | None:
+        """
+        Получение полных данных пользователя для передачи в ADK
+        + проверка блокировки (через users)
+        """
         query = """
-        SELECT user_id, username, first_name, last_name, phone_number,
-               region, manager_group, coach_group
-        FROM subscribers
-        WHERE user_id = $1
+        SELECT 
+            s.user_id,
+            s.username,
+            s.first_name,
+            s.last_name,
+            s.phone_number,
+            s.region,
+            s.manager_group,
+            s.coach_group,
+            u.id as global_user_id,
+            u.is_blocked
+
+        FROM subscribers s
+        LEFT JOIN user_accounts ua 
+            ON ua.platform_user_id = s.user_id 
+            AND ua.platform = s.platform
+        LEFT JOIN users u 
+            ON u.id = ua.user_id
+
+        WHERE s.user_id = $1
+        LIMIT 1
         """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)
@@ -282,10 +349,12 @@ class SubscriberStore:
             "phone_number": row["phone_number"],
             "region": row["region"],
             "manager_group": row["manager_group"],
-            "coach_group": row["coach_group"]
+            "coach_group": row["coach_group"],
+            "global_user_id": str(row["global_user_id"]) if row["global_user_id"] else None,
+            "is_blocked": row["is_blocked"] or False
         }
 
-    async def update_user_group(self, user_id: int, group: str, value: bool):
+    async def update_user_group(self, user_id: str, group: str, value: bool):
         """Обновление принадлежности пользователя к группе"""
         if group not in ("manager_group", "coach_group"):
             raise ValueError(f"Invalid group: {group}")
@@ -305,32 +374,15 @@ class NewsStore:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    async def create_news(self, text, scheduled_at=None, group="all", files=None):
-        """Создание новостей для рассылки"""
+    async def create_news(self, text, scheduled_at=None, group="all", files=None, source="multi"):
+        """Создание новостей для рассылки с привязкой к источнику"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("""
-                INSERT INTO news (text, scheduled_at, target_group, files)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO news (text, scheduled_at, target_group, files, source, status, sent_channels)
+                VALUES ($1, $2, $3, $4, $5, 'pending', '[]'::jsonb)
                 RETURNING id
-            """, text, scheduled_at, group, json.dumps(files or []))
+            """, text, scheduled_at, group, json.dumps(files or []), source)
             return row["id"]
-
-    async def get_pending_news(self):
-        """Получение новостей в ожидании к отправке"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT * FROM news
-                WHERE status = 'pending'
-            """)
-            return [dict(r) for r in rows]
-
-    async def mark_sent(self, news_id: int):
-        """Отметить новость как отправленную"""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE news SET status = 'sent'
-                WHERE id = $1
-            """, news_id)
 
     def _parse_news_row(self, row: asyncpg.Record) -> dict:
         """Приватный метод для нормализации данных новости из БД"""
@@ -382,6 +434,52 @@ class NewsStore:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(query, news_id)
+    
+    async def get_pending_news_for_channel(self, channel: str):
+        """Получение новостей в ожидании для конкретного канала"""
+        rows = await self.pool.fetch("""
+            SELECT *
+            FROM news
+            WHERE 
+                status = 'pending'
+                AND (
+                    sent_channels IS NULL 
+                    OR NOT EXISTS (
+                        SELECT 1 
+                        FROM jsonb_array_elements_text(sent_channels) elem 
+                        WHERE elem = $1
+                    )
+                )
+                AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+            ORDER BY scheduled_at ASC NULLS FIRST
+        """, channel)
+        return [dict(r) for r in rows]
+    
+    async def mark_channel_sent(self, news_id: int, channel: str):
+        """Пометка, что новость отправлена в указанный канал"""
+        await self.pool.execute("""
+            UPDATE news
+            SET sent_channels = (
+                SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb)
+                FROM (
+                    SELECT jsonb_array_elements_text(sent_channels) as elem
+                    WHERE sent_channels IS NOT NULL
+                    UNION
+                    SELECT $2
+                ) subquery
+            )
+            WHERE id = $1
+        """, news_id, channel)
+    
+    async def mark_sent_if_done(self, news_id: int, expected_channels=2):
+        """Когда все каналы отработали — помечаем новость завершённой"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE news
+                SET status = 'sent'
+                WHERE id = $1
+                AND jsonb_array_length(sent_channels) >= $2
+            """, news_id, expected_channels)
 
 # Хранилище для взаимодействия с ADK API
 class AdkApiClient:

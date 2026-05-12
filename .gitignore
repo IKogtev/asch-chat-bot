@@ -16,6 +16,7 @@ kb_storage/wait
 kb_storage/bot/upload
 kb_storage/archive_kb
 kb_storage/knowledge_base
+kb_storage/tables
 kb_storage/kb
 data/
 venv*/
