@@ -4,6 +4,7 @@
 """
 import json
 import copy
+import logging
 from typing import Any, AsyncGenerator, Callable, Dict
 
 from google.adk.agents import InvocationContext, LlmAgent
@@ -88,6 +89,18 @@ def strip_thought_parts(event: Event) -> Event | None:
     )
 
 
+def _extract_thought_texts(event: Event) -> list[str]:
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None) or []
+    texts: list[str] = []
+    for part in parts:
+        if getattr(part, "thought", False) is True:
+            text = getattr(part, "text", None)
+            if text:
+                texts.append(str(text))
+    return texts
+
+
 def is_mcp_session_error(exc: BaseException) -> bool:
     message = f"{type(exc).__name__}: {exc!r}"
     return any(marker in message for marker in MCP_SESSION_ERROR_MARKERS)
@@ -96,6 +109,14 @@ def is_mcp_session_error(exc: BaseException) -> bool:
 async def _run_agent_and_collect_events(ctx: InvocationContext, agent: LlmAgent) -> list[Event]:
     events: list[Event] = []
     async for event in agent.run_async(ctx):
+        thought_texts = _extract_thought_texts(event)
+        is_debug_enabled = getattr(logger, "isEnabledFor", lambda level: False)
+        if thought_texts and is_debug_enabled(logging.DEBUG):
+            logger.debug(
+                "%s thought parts stripped: %s",
+                getattr(event, "author", "unknown"),
+                truncate_for_log("\n\n".join(thought_texts), 2000),
+            )
         sanitized_event = strip_thought_parts(event)
         if sanitized_event is not None:
             events.append(sanitized_event)

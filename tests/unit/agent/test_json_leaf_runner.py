@@ -174,6 +174,59 @@ def test_run_json_leaf_agent_yields_sanitized_events() -> None:
 
 
 @pytest.mark.unit
+def test_run_json_leaf_agent_logs_stripped_thought_parts_in_debug() -> None:
+    class _DebugLogger:
+        def __init__(self):
+            self.calls = []
+
+        def isEnabledFor(self, level):
+            return True
+
+        def debug(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+        def warning(self, *args, **kwargs):
+            pass
+
+        def error(self, *args, **kwargs):
+            pass
+
+        def info(self, *args, **kwargs):
+            pass
+
+    old_logger = json_leaf_runner_module.logger
+    debug_logger = _DebugLogger()
+    json_leaf_runner_module.logger = debug_logger
+    try:
+        visible = types.SimpleNamespace(text="visible")
+        thought = types.SimpleNamespace(text="hidden reasoning", thought=True)
+        event = _make_event([thought, visible])
+        event.author = "kb_answer_agent"
+        ctx = _make_ctx('{"status":"ok"}')
+
+        events = asyncio.run(
+            _drain(
+                run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=_FakeAgent([event]),
+                    output_key="owasp_result_json",
+                    parsed_state_key="_owasp_result_parsed",
+                    validator=lambda data, context: data,
+                    log_label="owasp_result_json",
+                    validation_error_user_message="stub",
+                )
+            )
+        )
+    finally:
+        json_leaf_runner_module.logger = old_logger
+
+    assert len(events) == 1
+    assert events[0].content.parts == [visible]
+    assert "hidden reasoning" in debug_logger.calls[0][0][2]
+    assert "thought parts stripped" in debug_logger.calls[0][0][0]
+
+
+@pytest.mark.unit
 def test_run_json_leaf_agent_raises_non_fatal_validation_failure_for_invalid_json() -> None:
     ctx = _make_ctx("not-json")
 
