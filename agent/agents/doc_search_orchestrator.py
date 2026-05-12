@@ -182,6 +182,18 @@ class DocSearchOrchestrator(BaseAgent):
             raise ValueError(f"State key '{key}' must be dict, got {type(value)}")
         return value
 
+    def _recreate_doc_search_agent(self, current_agent: LlmAgent) -> LlmAgent:
+        from .doc_search_agent import create_doc_search_agent
+
+        model = getattr(current_agent, "model", None)
+        if model is None:
+            raise RuntimeError("Cannot recreate doc_search_agent without model")
+
+        new_agent = create_doc_search_agent(model)
+        self.doc_search_agent = new_agent
+        self.sub_agents = [new_agent]
+        return new_agent
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         """
         Основная логика асинхронного запуска агента:
@@ -224,6 +236,7 @@ class DocSearchOrchestrator(BaseAgent):
             validator=validate_doc_search_result,
             log_label="doc_search_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            retry_agent_factory=self._recreate_doc_search_agent,
         ):
             yield event
 

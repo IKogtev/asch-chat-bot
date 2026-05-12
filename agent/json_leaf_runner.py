@@ -14,6 +14,14 @@ from .helpers import extract_json, truncate_for_log
 
 logger = setup_logger("json_leaf_runner", "agent.log")
 
+MCP_SESSION_ERROR_MARKERS = (
+    "Connection closed",
+    "Failed to get tools from MCP server",
+    "Attempted to exit cancel scope in a different task",
+    "Session termination failed",
+    "McpError",
+)
+
 
 class AgentValidationFailure(Exception):
     """Non-fatal validation/parsing failure for a leaf agent result."""
@@ -80,6 +88,20 @@ def strip_thought_parts(event: Event) -> Event | None:
     )
 
 
+def is_mcp_session_error(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc!r}"
+    return any(marker in message for marker in MCP_SESSION_ERROR_MARKERS)
+
+
+async def _run_agent_and_collect_events(ctx: InvocationContext, agent: LlmAgent) -> list[Event]:
+    events: list[Event] = []
+    async for event in agent.run_async(ctx):
+        sanitized_event = strip_thought_parts(event)
+        if sanitized_event is not None:
+            events.append(sanitized_event)
+    return events
+
+
 async def run_json_leaf_agent(
     ctx: InvocationContext,
     agent: LlmAgent,
@@ -88,11 +110,48 @@ async def run_json_leaf_agent(
     validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
     log_label: str,
     validation_error_user_message: str,
+    retry_agent_factory: Callable[[LlmAgent], LlmAgent] | None = None,
 ) -> AsyncGenerator[Event, None]:
-    async for event in agent.run_async(ctx):
-        sanitized_event = strip_thought_parts(event)
-        if sanitized_event is not None:
-            yield sanitized_event
+    current_agent = agent
+    attempt = 1
+    retried_after_mcp_session_error = False
+    while True:
+        try:
+            events = await _run_agent_and_collect_events(ctx, current_agent)
+            break
+        except Exception as exc:
+            if (
+                attempt >= 2
+                and retry_agent_factory is not None
+                and is_mcp_session_error(exc)
+            ):
+                logger.error(
+                    "%s MCP session retry failed after recreating leaf agent: %s",
+                    log_label,
+                    exc,
+                    exc_info=True,
+                )
+
+            if attempt >= 2 or retry_agent_factory is None or not is_mcp_session_error(exc):
+                raise
+
+            logger.warning(
+                "%s MCP session error, recreating leaf agent and retrying once: %s",
+                log_label,
+                exc,
+                exc_info=True,
+            )
+            ctx.session.state.pop(output_key, None)
+            ctx.session.state.pop(parsed_state_key, None)
+            current_agent = retry_agent_factory(current_agent)
+            attempt += 1
+            retried_after_mcp_session_error = True
+
+    if retried_after_mcp_session_error:
+        logger.info("%s MCP session retry succeeded", log_label)
+
+    for event in events:
+        yield event
 
     raw = str(ctx.session.state.get(output_key) or "").strip()
     logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))

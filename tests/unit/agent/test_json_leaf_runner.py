@@ -226,3 +226,44 @@ def test_run_json_leaf_agent_raises_non_fatal_validation_failure_for_invalid_sch
 
     assert exc.value.validation_error == "Invalid status: bad"
     assert exc.value.user_message == "blocked"
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_retries_once_on_mcp_session_error() -> None:
+    class _McpAgent:
+        def __init__(self, *, fail: bool):
+            self.fail = fail
+
+        async def run_async(self, ctx):
+            if self.fail:
+                raise RuntimeError("Failed to get tools from MCP server: Connection closed")
+            ctx.session.state["owasp_result_json"] = '{"status":"ok"}'
+            if False:
+                yield None
+
+    retries = []
+
+    def retry_factory(agent):
+        retries.append(agent)
+        return _McpAgent(fail=False)
+
+    ctx = _make_ctx("")
+
+    events = asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_McpAgent(fail=True),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=lambda data, context: data,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+                retry_agent_factory=retry_factory,
+            )
+        )
+    )
+
+    assert events == []
+    assert len(retries) == 1
+    assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}

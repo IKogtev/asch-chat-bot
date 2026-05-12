@@ -238,6 +238,23 @@ class RootAgent(BaseAgent):
             raise ValueError(f"State key '{key}' must be str, got {type(value)}")
         return value
 
+    def _recreate_kb_answer_agent(self, current_agent: LlmAgent) -> LlmAgent:
+        from .agents.kb_answer_agent import create_kb_answer_agent
+
+        model = getattr(current_agent, "model", None)
+        if model is None:
+            raise RuntimeError("Cannot recreate kb_answer_agent without model")
+
+        new_agent = create_kb_answer_agent(model)
+        self.kb_answer_agent = new_agent
+        self.sub_agents = [
+            self.owasp_agent,
+            self.dispatcher_agent,
+            self.doc_search_orchestrator,
+            self.kb_answer_agent,
+        ]
+        return new_agent
+
     async def _run_json_leaf_agent(
         self,
         ctx: InvocationContext,
@@ -247,6 +264,7 @@ class RootAgent(BaseAgent):
         validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
         log_label: str,
         validation_error_user_message: str,
+        retry_agent_factory: Callable[[LlmAgent], LlmAgent] | None = None,
     ) -> AsyncGenerator[Event, None]:
         """Запускает leaf-агента с JSON-валидацией через `json_leaf_runner`."""
         async for event in run_json_leaf_agent(
@@ -257,6 +275,7 @@ class RootAgent(BaseAgent):
             validator=validator,
             log_label=log_label,
             validation_error_user_message=validation_error_user_message,
+            retry_agent_factory=retry_agent_factory,
         ):
             yield event
 
@@ -476,6 +495,7 @@ class RootAgent(BaseAgent):
             validator=validate_kb_answer_result,
             log_label="kb_answer_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            retry_agent_factory=self._recreate_kb_answer_agent,
         ):
             yield event
 

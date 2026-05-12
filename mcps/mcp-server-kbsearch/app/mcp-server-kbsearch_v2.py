@@ -852,7 +852,15 @@ async def auth_guard(scope, receive, send):
         # Для HTTP-запросов используем объект Request для удобства
         request = Request(scope, receive)
         auth_header = request.headers.get("Authorization", "")
-        logger.info(f"=== AUTH CHECK, Path: {scope['path']}")
+        session_id = request.headers.get("mcp-session-id")
+        client = scope.get("client")
+        logger.info(
+            "MCP request: method=%s path=%s client=%s session_id_present=%s",
+            scope.get("method"),
+            scope.get("path"),
+            client[0] if client else None,
+            bool(session_id),
+        )
 
         if API_TOKEN and not auth_header.startswith(f"Bearer {API_TOKEN}"):
             response = JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -929,7 +937,7 @@ if __name__ == "__main__":
         app=app,
         host=MCP_HOST,
         port=MCP_PORT,
-        log_level="info",
+        log_level=os.getenv("LOG_LEVEL", "info").lower(),
         access_log=True
     )
     server = uvicorn.Server(config)
