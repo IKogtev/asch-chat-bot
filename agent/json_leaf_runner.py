@@ -3,6 +3,7 @@
 для оркестраторов и root.
 """
 import json
+import copy
 from typing import Any, AsyncGenerator, Callable, Dict
 
 from google.adk.agents import InvocationContext, LlmAgent
@@ -32,6 +33,53 @@ class AgentValidationFailure(Exception):
         super().__init__(f"{log_label}: {validation_error}")
 
 
+def _copy_with_updates(obj: Any, updates: Dict[str, Any]) -> Any:
+    if hasattr(obj, "model_copy"):
+        return obj.model_copy(deep=True, update=updates)
+
+    cloned = copy.copy(obj)
+    for key, value in updates.items():
+        setattr(cloned, key, value)
+    return cloned
+
+
+def _has_meaningful_actions(event: Event) -> bool:
+    actions = getattr(event, "actions", None)
+    if not actions:
+        return False
+
+    values = getattr(actions, "__dict__", None)
+    if isinstance(values, dict):
+        return any(value not in (None, False, {}, [], "") for value in values.values())
+
+    if hasattr(actions, "model_dump"):
+        dumped = actions.model_dump(exclude_none=True)
+        return any(value not in (None, False, {}, [], "") for value in dumped.values())
+
+    return True
+
+
+def strip_thought_parts(event: Event) -> Event | None:
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts:
+        return event
+
+    filtered_parts = [
+        part for part in parts if getattr(part, "thought", False) is not True
+    ]
+    if len(filtered_parts) == len(parts):
+        return event
+
+    if not filtered_parts and not _has_meaningful_actions(event):
+        return None
+
+    return _copy_with_updates(
+        event,
+        {"content": _copy_with_updates(content, {"parts": filtered_parts})},
+    )
+
+
 async def run_json_leaf_agent(
     ctx: InvocationContext,
     agent: LlmAgent,
@@ -42,7 +90,9 @@ async def run_json_leaf_agent(
     validation_error_user_message: str,
 ) -> AsyncGenerator[Event, None]:
     async for event in agent.run_async(ctx):
-        yield event
+        sanitized_event = strip_thought_parts(event)
+        if sanitized_event is not None:
+            yield sanitized_event
 
     raw = str(ctx.session.state.get(output_key) or "").strip()
     logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))

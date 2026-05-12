@@ -32,46 +32,6 @@ class EventLogger:
             max_size=10
         )
 
-        await self._ensure_table()
-
-    # =========================
-    # 🔧 INIT DB
-    # =========================
-    async def _ensure_table(self):
-        """Создаёт таблицу если её нет"""
-        logger.info("Инициализация таблицы для логирования событий...")
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-            """)
-
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS events (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-                    user_id TEXT,
-                    user_name TEXT,
-                    session_id TEXT,
-
-                    event_type TEXT NOT NULL,
-                    channel TEXT,
-
-                    payload JSONB,
-
-                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-                );
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
-            """)
-
     # =========================
     # 📝 LOG EVENT
     # =========================

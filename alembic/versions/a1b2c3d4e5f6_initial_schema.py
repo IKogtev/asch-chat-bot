@@ -134,6 +134,15 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
+    #  TODO alembic migration
+#     ALTER TABLE news 
+# ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'telegram',
+# ADD COLUMN IF NOT EXISTS sent_channels JSONB DEFAULT '[]'::jsonb;
+
+# -- Индекс для ускорения выборки по каналу
+# CREATE INDEX IF NOT EXISTS idx_news_source_pending 
+# ON news (source, scheduled_at, status) 
+# WHERE status = 'pending';
 
 
 def downgrade() -> None:
