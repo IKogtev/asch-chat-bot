@@ -72,6 +72,11 @@ services:
       - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN}
       - FAQSEARCH_MCP_TIMEOUT_SEC=${FAQSEARCH_MCP_TIMEOUT_SEC:-60}
 
+      # MCP dbhub
+      - DBHUB_MCP_URL=${DBHUB_MCP_URL:-http://dbhub:8080/mcp}
+      - DBHUB_MCP_TOKEN=${DBHUB_MCP_TOKEN:-${MCP_TOKEN}}
+      - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
+
       # Documents paths
       - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
       - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
@@ -79,6 +84,12 @@ services:
       - ARCHIVE_DOCUMENTS_COLLECTION=${ARCHIVE_DOCUMENTS_COLLECTION:-archive_kb_collection}
       - KB_DOCUMENTS_PATH=${KB_DOCUMENTS_PATH:-knowledge_base/}
       - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
+
+      # Context compaction
+      - AGENT_CONTEXT_COMPACTION_INTERVAL=8
+      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=2
+      - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
+      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=12
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
@@ -93,6 +104,20 @@ services:
       faq:
         condition: service_healthy
 
+  # НОВЫЙ сервис для миграций alembic, запускается перед всем!!!
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: aszh-bot-migration
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "cd /app && alembic upgrade head"]
+    networks:
+      - aszh-bot-network
   bot:
     build:
       context: .
@@ -100,6 +125,8 @@ services:
     container_name: aszh-bot
     restart: unless-stopped
     depends_on:
+      migration:
+          condition: service_completed_successfully
       postgres:
         condition: service_healthy
       adk-agent:
@@ -118,18 +145,50 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.6.5
+      - PLATFORM_VERSION=0.7.0
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
-    # Run Alembic then the bot. Fresh volume: upgrade creates tables. If the DB already had
-    # tables from legacy ensure_schema but no alembic_version row, run once:
-    #   docker compose run --rm bot sh -c "cd /app && alembic stamp a1b2c3d4e5f6"
-    command: ["sh", "-c", "cd /app && alembic upgrade head && exec python -m bot.bot_v6"]
+    command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
+  bot-max:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: aszh-bot-max
+    restart: unless-stopped
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      adk-agent:
+        condition: service_started
+      kb-manager:
+        condition: service_started
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    volumes:
+      - ./kb_storage/bot/:/app/data
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - MAX_BOT_TOKEN=REDACTED_EXAMPLE
+      - ADK_API_BASE=http://adk-agent:8000
+      - ADK_APP_NAME=agent
+      - KB_MANAGER_URL=http://kb-manager:5000
+      - PLATFORM_VERSION=0.7.0
+      - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
+      - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
+      - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
+    command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
+    networks:
+      - aszh-bot-network
+    
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -167,16 +226,25 @@ services:
       - FAQ_COLLECTION_NAME=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.6.5
+      - PLATFORM_VERSION=0.7.0
       - BOT_TELEGRAM_API=http://bot:8001
+      - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
       # шифрование паролей в postges
       - SECRET_KEY=super-secret-key-change-this
       # путь к базе данных
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
+      - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
+      # настройка интервала синхронизации при старте
+      - SYNC_INTERVAL_HOURS=12
     depends_on:
-      - qdrant
-      - postgres
+      migration:
+          condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - aszh-bot-network
     healthcheck:
@@ -262,7 +330,8 @@ services:
       - QDRANT_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
       - USE_QDRANT=true
     depends_on:
-      - qdrant
+      kb-manager:
+        condition: service_healthy
     networks:
       - aszh-bot-network
     healthcheck:
@@ -271,6 +340,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  dbhub:
+    image: bytebase/dbhub:latest
+    container_name: dbhub
+    restart: unless-stopped
+    environment:
+      - DBHUB_LOG_LEVEL=info
+    volumes:
+      - ./mcps/dbhub/dbhub_nstya_config.toml:/config/dbhub_nstya_config.toml:ro
+    command:
+      - --transport
+      - http
+      - --port
+      - "8080"
+      - --config
+      - /config/dbhub_nstya_config.toml
+    depends_on:
+      - postgres
+    networks:
+      - aszh-bot-network
   
   file-manager:
     image: filegator/filegator:latest
@@ -304,7 +393,8 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
-
+      - DEBUG_EXCEPTIONS=true
+      
       # MCP kb_search
       - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
       - MCP_TOKEN=${MCP_TOKEN}
@@ -315,9 +405,20 @@ services:
       - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN}
       - FAQSEARCH_MCP_TIMEOUT_SEC=${FAQSEARCH_MCP_TIMEOUT_SEC:-60}
 
+      # MCP dbhub
+      - DBHUB_MCP_URL=${DBHUB_MCP_URL:-http://dbhub:8080/mcp}
+      - DBHUB_MCP_TOKEN=${DBHUB_MCP_TOKEN:-${MCP_TOKEN}}
+      - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
+
       - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
       - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
       - FAQ_DOCUMENTS_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
+
+      # Context compaction
+      - AGENT_CONTEXT_COMPACTION_INTERVAL=8
+      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=2
+      - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
+      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=12
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:

@@ -452,6 +452,8 @@ class Indexer:
         else:
             payload={}
         payload.update(updates)
+        payload["text"] = payload.get("text") or "__collection_meta__"
+        payload["__type__"] = self.collection_meta_type
         payload["last_updated"] = datetime.now().isoformat()
         client.upsert(
             collection_name=collection_name,
@@ -497,10 +499,12 @@ class Indexer:
         limit = int(payload.get("limit", 10))
         offset = payload.get("offset", None) # добавление пагинации
         conditions = []
-        must_not_conditions =FieldCondition(
-                        key="__type__",
-                        match=MatchValue(value=self.collection_meta_type),
-                    )
+        must_not_conditions = [
+            FieldCondition(
+                key="__type__",
+                match=MatchValue(value=self.collection_meta_type),
+            )
+        ]
         if category:
             conditions.append(
                 FieldCondition(
@@ -515,7 +519,7 @@ class Indexer:
                     match=MatchValue(value=kb_id)
                 )
             )
-        q_filter = Filter(must=conditions, must_not=must_not_conditions) if conditions else None
+        q_filter = Filter(must=conditions, must_not=must_not_conditions)
         try:
             client = self._get_qdrant_client()
             #  scroll листает базу
@@ -578,6 +582,7 @@ class Indexer:
         vector_size = self._resolve_embedding_dim()
         meta_id = meta_id_for_collection(collection_name)
         payload = {
+            "text": "__collection_meta__",
             "__type__": self.collection_meta_type,
             "index_status": "empty",
             "document_count": 0,
@@ -754,6 +759,16 @@ class Indexer:
                 )
             if conditions:
                 qdrant_filter = Filter(must=conditions)
+        meta_exclusion = [
+            FieldCondition(
+                key="__type__",
+                match=MatchValue(value=self.collection_meta_type)
+            )
+        ]
+        if qdrant_filter:
+            qdrant_filter.must_not = (qdrant_filter.must_not or []) + meta_exclusion
+        else:
+            qdrant_filter = Filter(must_not=meta_exclusion)
         vector_store = QdrantVectorStore(
             client=client,
             collection_name=collection_name,

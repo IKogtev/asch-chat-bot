@@ -109,6 +109,24 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
 
 
 @pytest.mark.unit
+def test_validate_dispatcher_result_accepts_product_selection_with_query() -> None:
+    result = validate_dispatcher_result(
+        {
+            "status": "ok",
+            "route": "product_selection",
+            "intent": "product_compare",
+            "reason": "product comparison",
+            "search_query": "Fort Knox and protected capital",
+        },
+        VALIDATION_CONTEXT,
+    )
+
+    assert result["route"] == "product_selection"
+    assert result["intent"] == "product_compare"
+    assert result["search_query"] == "Fort Knox and protected capital"
+
+
+@pytest.mark.unit
 def test_assistant_capabilities_smalltalk_examples_include_conversational_variants() -> None:
     examples = dispatcher_module.ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES
 
@@ -198,6 +216,23 @@ def test_validate_dispatcher_result_rejects_smalltalk_with_query() -> None:
 
 
 @pytest.mark.unit
+def test_validate_dispatcher_result_rejects_product_intent_with_wrong_route() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "product_filter",
+                "reason": "wrong route",
+                "search_query": "capital protection",
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "product intents must use route='product_selection'" in str(exc.value)
+
+
+@pytest.mark.unit
 def test_validate_dispatcher_result_requires_search_query_for_main_intent() -> None:
     with pytest.raises(ValueError) as exc:
         validate_dispatcher_result(
@@ -211,7 +246,24 @@ def test_validate_dispatcher_result_requires_search_query_for_main_intent() -> N
             VALIDATION_CONTEXT,
         )
 
-    assert "search_query is required for doc_search and kb_answer intents" in str(exc.value)
+    assert "search_query is required for doc_search, kb_answer, and product intents" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_dispatcher_result_requires_search_query_for_product_intent() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": "product_recommendation",
+                "reason": "missing query",
+                "search_query": "",
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "search_query is required for doc_search, kb_answer, and product intents" in str(exc.value)
 
 
 @pytest.mark.unit
