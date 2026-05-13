@@ -180,8 +180,14 @@ embedding_api_base = os.getenv("EMBEDDING_API_BASE", "https://dsrv1.llm.nstcloud
 embedding_api_key = os.getenv("EMBEDDING_API_KEY", "REDACTED_EXAMPLE")
 embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+# Изображения индексируем без OCR: только в KB-коллекции, в FAQ не нужны.
+# Реальный текст для них не извлекаем — в DocumentLoader подставляется плейсхолдер,
+# чтобы sparse-индекс мог матчить по имени файла и пути.
+SUPPORTED_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".ico",
+}
 SUPPORTED_FAQ_EXTENSIONS = {".md", ".csv", ".xls", ".xlsx", ".txt", ".pdf", ".docx"}
-SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx",".csv", ".xls", ".xlsx"}
+SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx", ".csv", ".xls", ".xlsx"} | SUPPORTED_IMAGE_EXTENSIONS
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))

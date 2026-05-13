@@ -26,6 +26,7 @@ from utils.indexer import Indexer, IndexRuntime, IndexerConfig
 from utils.preprocessors.document_loader import DocumentLoader
 # Используем одинаковую функцию для оптимального логирования качевала из faq идентична
 from utils.logger import setup_logger
+from utils.search_profile import normalize_search_profile, search_mode_for_profile
 
 # ============================================================================
 # КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ
@@ -70,11 +71,12 @@ CHUNK_SIZE = int(os.getenv("KB_CHUNK_SIZE", 512))
 CHUNK_OVERLAP = int(os.getenv("KB_CHUNK_OVERLAP", 50))
 SIMILARITY_TOP_K = int(os.getenv("KB_SIMILARITY_TOP_K", 10))
 SIMILARITY_CUTOFF = float(os.getenv("KB_SIMILARITY_CUTOFF", 0.35))
-SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT",['.txt', '.pdf', '.docx', '.md']))
-# hybrid | dense — для hybrid-коллекций; dense = только семантика по вектору dense
-KB_DEFAULT_SEARCH_MODE = os.getenv("KB_DEFAULT_SEARCH_MODE", "hybrid").strip().lower()
-if KB_DEFAULT_SEARCH_MODE not in ("hybrid", "dense"):
-    KB_DEFAULT_SEARCH_MODE = "hybrid"
+SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT", [
+    '.txt', '.pdf', '.docx', '.md',
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.svg', '.ico',
+]))
+# hybrid | dense для Qdrant hybrid-коллекций: задаётся по search_profile (см. utils/search_profile.py);
+# для профиля default — env KB_DEFAULT_SEARCH_MODE.
 
 # Qdrant settings
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -397,10 +399,11 @@ async def kb_search(
         """] = None,
     top_k: Annotated[int, "Number of results to return (default: SIMILARITY_TOP_K)"] = SIMILARITY_TOP_K,
     include_metadata: Annotated[bool, "Include document metadata in the output"] = True,
-    search_mode: Annotated[
+    search_profile: Annotated[
         str,
-        "For hybrid-indexed KB: 'hybrid' = dense + sparse BM25 + RRF (default); 'dense' = only dense vector similarity.",
-    ] = KB_DEFAULT_SEARCH_MODE,
+        "Scenario preset: drives hybrid vs dense on Qdrant hybrid collections and RRF tuning. "
+        "Use 'doc_search', 'kb_answer', or 'default'.",
+    ] = "default",
 ):
     """
     Search over pre-indexed files in the internal knowledge base.
@@ -409,15 +412,16 @@ async def kb_search(
     Use this tool when a user asks something that should be matched against the indexed documents.
     `top_k` controls how many matching passages to return.
     Set `include_metadata=True` if document metadata is needed.
-    For collections indexed with sparse vectors, `search_mode='dense'` runs semantic search only (no RRF).
+    For Qdrant hybrid collections, `search_profile` selects search mode (`hybrid` vs `dense`) and RRF/candidate tuning;
+    for profile `default`, search mode follows env `KB_DEFAULT_SEARCH_MODE`.
 
     Not for web search or database queries. Only searches the pre-indexed documents.
     """
-    sm = (search_mode or KB_DEFAULT_SEARCH_MODE).strip().lower()
-    if sm not in ("hybrid", "dense"):
-        sm = "hybrid"
+    profile = normalize_search_profile(search_profile)
+    sm = search_mode_for_profile(profile)
     logger.info(
-        f"Поиск: '{query}' (top_k={top_k}, search_mode={sm}), collection={collection}, filters={filters}"
+        f"Поиск: '{query}' (top_k={top_k}, search_mode={sm}, search_profile={profile}), "
+        f"collection={collection}, filters={filters}"
     )
 
     async with kb_lock:
@@ -443,7 +447,9 @@ async def kb_search(
                 if sm == "dense":
                     rows = indexer.hybrid_dense_search(query, collection, filters, top_k)
                 else:
-                    rows = indexer.hybrid_search_rrf(query, collection, filters, top_k)
+                    rows = indexer.hybrid_search_rrf(
+                        query, collection, filters, top_k, search_profile=profile
+                    )
                 if not rows:
                     res = ToolResult(
                         content="Ничего не найдено",

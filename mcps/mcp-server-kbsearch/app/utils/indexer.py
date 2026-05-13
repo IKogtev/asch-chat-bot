@@ -21,6 +21,7 @@ from qdrant_client.http.models import (
 from utils.utillites import RemoteEmbedding, chunk_id_to_uuid, meta_id_for_collection
 from utils.logger import setup_logger
 from utils.rrf import reciprocal_rank_fusion
+from utils.search_profile import hybrid_rrf_params_for_profile
 from utils.qdrant_hybrid import (
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
@@ -242,6 +243,7 @@ class Indexer:
                     bm25_document_text(
                         item.get("text") or "",
                         (item.get("meta") or {}).get("section_path"),
+                        (item.get("meta") or {}).get("source")
                     )
                     or " "
                     for item in batch
@@ -309,6 +311,7 @@ class Indexer:
         collection: Optional[str],
         filters: Optional[Dict[str, Any]],
         top_k: int,
+        search_profile: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Dense + sparse BM25 in Qdrant, merged with RRF (same contract as kb-manager search)."""
         client = self._get_qdrant_client()
@@ -335,8 +338,8 @@ class Indexer:
                 )
         q_filter = Filter(must=must, must_not=must_not)
 
-        rrf_k = int(os.getenv("KB_HYBRID_RRF_K", "60"))
-        fetch = max(top_k * int(os.getenv("KB_HYBRID_CANDIDATE_MULT", "100")), 100)
+        rrf_k, candidate_mult = hybrid_rrf_params_for_profile(search_profile or "default")
+        fetch = max(top_k * candidate_mult, 100)
 
         query_vector = self.embed_model.get_text_embedding_batch([query])[0]
         sparse_model = self._get_sparse_embedder()

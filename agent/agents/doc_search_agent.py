@@ -196,6 +196,7 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
    - query={search_query}
    - collection={doc_search_collection}
    - include_metadata=true
+   - search_profile="doc_search" (обязательно при каждом вызове kb_search)
 3. Если {search_query} пустой, используй {user_query}.
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.

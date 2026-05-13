@@ -235,7 +235,7 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 
 4. Если faq_search дал частично релевантный, слабый или неполный результат:
    - вызови kb_search
-   - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true
+   - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true, search_profile="kb_answer"
    - если {{search_query}} пустой, используй {{user_query}}
    - используй kb_search только как дополнение к faq_search
    - если ответ собран по обоим источникам, верни source="faq_search+kb_search"
