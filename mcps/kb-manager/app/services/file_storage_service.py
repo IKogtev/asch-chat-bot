@@ -67,10 +67,20 @@ class FileStorageService:
                 self.logger.info(f"Ignored path: {rel}")
                 continue
 
-            if path.stat().st_size < 1000:
-                continue
-            if path.suffix.lower() not in self.allowed_ext:
+            suffix = path.suffix.lower()
+            if suffix not in self.allowed_ext:
                 self.logger.debug(f"Skipping unsupported file: {path.name} (suffix: {path.suffix})")
+                continue
+            size = path.stat().st_size
+            # Полностью пустые файлы пропускаем всегда.
+            if size == 0:
+                self.logger.debug(f"Skipping empty file: {path.name}")
+                continue
+            # Для бинарных форматов (.pdf/.docx/.xlsx/.xls) файл < 1 КБ почти наверняка
+            # битый/заглушка — оставляем старую защиту. Для .txt/.md/.csv и картинок
+            # маленький размер — это нормально.
+            if suffix in {".pdf", ".docx", ".xls", ".xlsx"} and size < 1000:
+                self.logger.info(f"Skipping suspiciously small binary file: {path.name} ({size} bytes)")
                 continue
 
 

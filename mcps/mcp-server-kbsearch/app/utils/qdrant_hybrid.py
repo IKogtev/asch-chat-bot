@@ -17,12 +17,21 @@ DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "lexical"
 
 
-def bm25_document_text(chunk_text: str, section_path: Optional[List[Any]]) -> str:
-    """Text indexed for sparse BM25: chunk body plus folder path for lexical grounding."""
+def bm25_document_text(
+    chunk_text: str,
+    section_path: Optional[List[Any]],
+    source_name: Optional[str] = None,
+) -> str:
+    """Text indexed for sparse BM25: chunk body, folder path, and file name for lexical grounding."""
     text = (chunk_text or "").strip()
-    if not section_path:
-        return text
-    path = " > ".join(str(p) for p in section_path if p is not None)
+    name = (source_name or "").strip()
+    path_parts = [str(p) for p in (section_path or []) if p is not None]
+    if name:
+        path_parts.append(name)
+    path = " > ".join(path_parts) if path_parts else ""
+
+    if not text and not path:
+        return " "
     if not path:
         return text
     if not text:

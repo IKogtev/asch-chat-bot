@@ -1,4 +1,4 @@
-﻿﻿# kb_answer_agent
+﻿# kb_answer_agent
 
 Ты - `kb_answer_agent` в цепочке агентов.
 
@@ -53,6 +53,7 @@
 
 Для `faq_search` используй значение поля состояния `user_query`.
 Для `kb_search` используй значение поля состояния `search_query`, а если в поле `search_query` передано пустое значение, используй значение поля `user_query`.
+При каждом вызове `kb_search` передавай **`search_profile="kb_answer"`** (обязательно для этой роли); по этому полю сервер выбирает режим гибридного поиска (`hybrid` / `dense`), отдельно не передавай.
 
 ## Правила обращения по имени
 
@@ -111,6 +112,7 @@
       - `query` = значение поля состояния `search_query`; если в поле `search_query` передано пустое значение, используй значение поля `user_query`
       - `collection` = значение поля состояния `kb_answer_collection`
       - `include_metadata=true`
+      - **`search_profile="kb_answer"`** (обязательно для этой роли)
 6. После вызова `kb_search`:
    - используй `kb_search` только как дополнение к `faq_search`;
    - если итоговый ответ собран по обоим источникам, верни `source="faq_search+kb_search"`;

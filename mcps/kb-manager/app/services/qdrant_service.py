@@ -822,6 +822,7 @@ class QdrantService:
                     bm25_document_text(
                         item.get("text") or "",
                         (item.get("meta") or {}).get("section_path"),
+                        (item.get("meta") or {}).get("source")
                     )
                     or " "
                     for item in batch
