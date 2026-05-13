@@ -1,8 +1,4 @@
-google-adk==1.33.0
-mcp==1.27.0
-anyio==4.13.0
-starlette==0.52.1
-uvicorn[standard]==0.46.0
+google-adk==1.31.1
 litellm==1.81.15
 python-dotenv==1.0.1
 asyncpg==0.31.0

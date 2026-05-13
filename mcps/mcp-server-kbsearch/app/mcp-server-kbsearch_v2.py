@@ -414,7 +414,6 @@ async def kb_search(
             content="База знаний не инициализирована",
             structured_content=None
             )
-            res.isError = True
             return res
             
         if not indexer.cfg.use_qdrant and not kb_runtime.initialized:            
@@ -422,7 +421,6 @@ async def kb_search(
                 content="Локальный FAQ не инициализирован",
                 structured_content=None
             )
-            res.isError = True
             return res
    
         try:
@@ -435,7 +433,6 @@ async def kb_search(
                     content="Ничего не найдено",   
                     structured_content=None
                 )
-                res.isError = False
                 return res
 
             rescored = []
@@ -544,7 +541,6 @@ QUESTION
                             content=prompt,
                             structured_content=None
                                             )
-            res.isError = False
             return res
 
         except Exception as e:
@@ -553,7 +549,6 @@ QUESTION
             content=f"Ошибка при поиске: {e}",
             structured_content=None
         )
-            res.isError = True
             return res
 @mcp.tool()
 async def get_kb_info() -> Dict:

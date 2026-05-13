@@ -86,6 +86,7 @@ class QdrantService:
 
         alias_name = self._alias_name_for_type(collection_type)
         payload = {
+            "text": "__collection_meta__",
             "__type__": "collection_meta",
             "index_status": "empty",
             "documents_count": 0,
@@ -697,6 +698,8 @@ class QdrantService:
         else:
             payload={}
         payload.update(updates)
+        payload["text"] = payload.get("text") or "__collection_meta__"
+        payload["__type__"] = "collection_meta"
         payload["last_update"] = datetime.now().isoformat()
         self.qdrant_client.upsert(
             collection_name=self.collection_name,
