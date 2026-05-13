@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -56,6 +57,7 @@ async def save_doc_search_results(
     n = len(items)
     shown = min(int(shown_count), n) if n else 0
 
+    t0 = time.monotonic()
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -80,23 +82,38 @@ async def save_doc_search_results(
                 n,
                 shown,
             )
-            for item in items:
-                await conn.execute(
+            if items:
+                rows = [
+                    (
+                        user_id,
+                        session_id,
+                        search_id,
+                        int(item["rank"]),
+                        str(item["document_id"]),
+                        str(item["source_name"]),
+                        item.get("source_path"),
+                        item.get("score"),
+                        (item.get("snippet") or "")[:2000],
+                    )
+                    for item in items
+                ]
+                await conn.executemany(
                     """
                     INSERT INTO search_results
                     (user_id, session_id, search_id, rank, document_id, source_name, source_path, score, snippet)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
-                    user_id,
-                    session_id,
-                    search_id,
-                    int(item["rank"]),
-                    str(item["document_id"]),
-                    str(item["source_name"]),
-                    item.get("source_path"),
-                    item.get("score"),
-                    (item.get("snippet") or "")[:2000],
+                    rows,
                 )
+    elapsed_ms = (time.monotonic() - t0) * 1000.0
+    logger.debug(
+        "save_doc_search_results: wall_ms=%.1f rows=%d shown=%d user_id=%s session_id=%s",
+        elapsed_ms,
+        n,
+        shown,
+        user_id,
+        session_id,
+    )
     return search_id
 
 
