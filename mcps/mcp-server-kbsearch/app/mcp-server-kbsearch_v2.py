@@ -480,10 +480,6 @@ async def kb_search(
                     f"Найдено {len(results)} результатов (Qdrant hybrid, mode={sm})"
                 )
 
-                def cleanup_label(text: str) -> str:
-                    text = re.sub(r"^\d+[_\-\s]*", "", text)
-                    return text.strip()
-
                 def build_prompt_hybrid(results: list[dict], question: str) -> str:
                     blocks = []
                     doc_res = {}
@@ -594,11 +590,6 @@ QUESTION
                 )
                 res["metadata"] = metadata
 
-            
-
-            def cleanup_label(text: str) -> str:
-                text = re.sub(r"^\d+[_\-\s]*", "", text)
-                return text.strip()
             
             def build_prompt(results: list[dict], question: str) -> str:
                 blocks = []
