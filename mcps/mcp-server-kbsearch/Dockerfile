@@ -13,6 +13,11 @@ COPY app/requirements-server.txt .
 # Установка Python зависимостей
 RUN pip install --no-cache-dir -r requirements-server.txt
 
+# Кэш BM25 (Qdrant/bm25) в образе — без обращения к HF при старте контейнера
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed
+RUN mkdir -p /app/.cache/fastembed \
+    && python -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25', language='russian')"
+
 # Копирование кода приложения
 COPY app/mcp-server-kbsearch_v2.py /app/
 COPY app/utils /app/utils

@@ -281,9 +281,16 @@ class Indexer:
             from fastembed import SparseTextEmbedding
 
             lang = os.getenv("SPARSE_BM25_LANGUAGE", "russian")
+            _local_only = os.getenv("FASTEMBED_LOCAL_FILES_ONLY", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
             self._sparse_embedder = SparseTextEmbedding(
                 model_name="Qdrant/bm25",
                 language=lang,
+                local_files_only=_local_only,
             )
         return self._sparse_embedder
 

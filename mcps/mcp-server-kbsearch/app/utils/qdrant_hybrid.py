@@ -14,7 +14,7 @@ from qdrant_client.models import (
 )
 
 DENSE_VECTOR_NAME = "dense"
-SPARSE_VECTOR_NAME = "lexical"
+SPARSE_VECTOR_NAME = "sparse"
 
 
 def bm25_document_text(
@@ -22,7 +22,7 @@ def bm25_document_text(
     section_path: Optional[List[Any]],
     source_name: Optional[str] = None,
 ) -> str:
-    """Text indexed for sparse BM25: chunk body, folder path, and file name for lexical grounding."""
+    """Text indexed for sparse BM25: chunk body, folder path, and file name for grounding sparse vector."""
     text = (chunk_text or "").strip()
     name = (source_name or "").strip()
     path_parts = [str(p) for p in (section_path or []) if p is not None]
@@ -64,7 +64,7 @@ def hybrid_collection_create_kwargs(vector_size: int, distance: Distance = Dista
 
 def collection_hybrid_mode(client: QdrantClient, collection_name: str) -> str:
     """
-    Return 'hybrid' if collection uses named dense + lexical sparse, else 'legacy'.
+    Return 'hybrid' if collection uses named dense + sparse vector, else 'legacy'.
     """
     info = client.get_collection(collection_name=collection_name)
     params = info.config.params
