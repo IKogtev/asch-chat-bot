@@ -378,6 +378,62 @@ def compute_final_score(dense_score: float, lexical_score: float, content: str) 
     penalty = low_info_penalty(content)
     return base - penalty
 
+
+def rescore_legacy_retriever_nodes(
+    nodes: list,
+    query: str,
+    search_mode: str,
+    top_k: int,
+    *,
+    similarity_cutoff: float | None = None,
+    include_metadata: bool = True,
+) -> list[dict]:
+    """
+    Переранжирование узлов retriever для legacy-коллекций (без Qdrant sparse).
+
+    search_mode: ``dense`` — только dense_score; иначе dense + пост-лексический скор.
+    """
+    cutoff = SIMILARITY_CUTOFF if similarity_cutoff is None else similarity_cutoff
+    rescored: list[dict] = []
+    for node in nodes:
+        content = node.get_content()
+        metadata = node.metadata or {}
+        dense_score = float(node.score or 0.0)
+        if search_mode == "dense":
+            lexical_score = None
+            final_score = dense_score
+        else:
+            lexical_score = compute_lexical_score(query, content, metadata)
+            final_score = compute_final_score(dense_score, lexical_score, content)
+        entry: dict = {
+            "node": node,
+            "dense_score": dense_score,
+            "final_score": final_score,
+        }
+        if lexical_score is not None:
+            entry["lexical_score"] = lexical_score
+        rescored.append(entry)
+    rescored.sort(key=lambda x: x["final_score"], reverse=True)
+    rescored = rescored[:top_k]
+
+    results: list[dict] = []
+    for i, item in enumerate(rescored):
+        node = item["node"]
+        result: dict = {
+            "rank": i,
+            "score": item["final_score"],
+            "dense_score": item["dense_score"],
+            "content": node.get_content(),
+        }
+        if "lexical_score" in item:
+            result["lexical_score"] = item["lexical_score"]
+        if include_metadata:
+            result["metadata"] = node.metadata or {}
+        if item["final_score"] >= cutoff:
+            results.append(result)
+    return results
+
+
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
 # ============================================================================
@@ -548,41 +604,15 @@ QUESTION
                 res.isError = False
                 return res
 
-            rescored = []
-            for node in nodes:
-                content = node.get_content()
-                metadata = node.metadata or {}
-                dense_score = float(node.score or 0.0)
-                lexical_score = compute_lexical_score(query, content, metadata)
-                final_score = compute_final_score(dense_score, lexical_score, content)
+            results = rescore_legacy_retriever_nodes(
+                nodes,
+                query,
+                profile_cfg.search_mode,
+                top_k,
+                include_metadata=include_metadata,
+            )
 
-                rescored.append({
-                    "node": node,
-                    "dense_score": dense_score,
-                    "lexical_score": lexical_score,
-                    "final_score": final_score,
-                })
-
-            rescored.sort(key=lambda x: x["final_score"], reverse=True)
-            rescored = rescored[:top_k]
-
-            results = []
-            for i, item in enumerate(rescored):
-                node = item["node"]
-                result = {
-                    "rank": i,
-                    "score": item["final_score"],
-                    "dense_score": item["dense_score"],
-                    "lexical_score": item["lexical_score"],
-                    "content": node.get_content(),
-                }
-
-                if include_metadata:
-                    result["metadata"] = node.metadata or {}
-                if item["final_score"]>=SIMILARITY_CUTOFF:
-                    results.append(result)
-
-            logger.info(f"Найдено {len(results)} результатов после hybrid rerank")
+            logger.info(f"Найдено {len(results)} результатов (search_mode={profile_cfg.search_mode})")
 
             for res in results:
                 metadata = res.get("metadata") or {}
