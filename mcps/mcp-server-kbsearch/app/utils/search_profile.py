@@ -1,30 +1,51 @@
 """
-Пресеты вызова kb_search по аргументу `search_profile`:
+Пресеты вызова kb_search по аргументу `search_profile`.
 
-- RRF и ширина выборки (KB_HYBRID_* при None в пресете);
-- режим Qdrant hybrid-коллекции: `hybrid` vs `dense` (см. PROFILE_SEARCH_MODE).
+Каждый профиль задаётся переменными окружения:
+  - search_mode: hybrid | dense
+  - rrf_k, candidate_mult — для гибридного RRF (читаются всегда, применяются при search_mode=hybrid)
+
+Профиль default:
+  KB_DEFAULT_SEARCH_MODE, KB_HYBRID_RRF_K, KB_HYBRID_CANDIDATE_MULT
+Профиль doc_search:
+  KB_SEARCH_MODE_DOC_SEARCH, KB_RRF_K_DOC_SEARCH, KB_CANDIDATE_MULT_DOC_SEARCH
+Профиль kb_answer:
+  KB_SEARCH_MODE_ANSWER, KB_RRF_K_ANSWER, KB_CANDIDATE_MULT_ANSWER
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping, Optional
+from dataclasses import dataclass
 
 ALLOWED_SEARCH_PROFILES = frozenset({"default", "doc_search", "kb_answer"})
+_VALID_SEARCH_MODES = frozenset({"hybrid", "dense"})
 
-PROFILE_HYBRID: dict[str, dict[str, Any | None]] = {
-    "default": {"rrf_k": None, "candidate_mult": None},
-    "doc_search": {"rrf_k": 40, "candidate_mult": 120},
-    "kb_answer": {"rrf_k": 60, "candidate_mult": 10},
+# (имя env, значение по умолчанию)
+PROFILE_SEARCH_MODE_ENV: dict[str, tuple[str, str]] = {
+    "default": ("KB_DEFAULT_SEARCH_MODE", "hybrid"),
+    "doc_search": ("KB_SEARCH_MODE_DOC_SEARCH", "hybrid"),
+    "kb_answer": ("KB_SEARCH_MODE_ANSWER", "dense"),
 }
 
-# hybrid = dense + sparse + RRF; dense = только dense-вектор.
-# None для профиля = взять KB_DEFAULT_SEARCH_MODE из окружения.
-PROFILE_SEARCH_MODE: dict[str, Optional[str]] = {
-    "default": None,
-    "doc_search": "hybrid",
-    "kb_answer": "dense",
+PROFILE_RRF_K_ENV: dict[str, tuple[str, str]] = {
+    "default": ("KB_HYBRID_RRF_K", "60"),
+    "doc_search": ("KB_RRF_K_DOC_SEARCH", "40"),
+    "kb_answer": ("KB_RRF_K_ANSWER", "60"),
 }
+
+PROFILE_CANDIDATE_MULT_ENV: dict[str, tuple[str, str]] = {
+    "default": ("KB_HYBRID_CANDIDATE_MULT", "100"),
+    "doc_search": ("KB_CANDIDATE_MULT_DOC_SEARCH", "120"),
+    "kb_answer": ("KB_CANDIDATE_MULT_ANSWER", "10"),
+}
+
+
+@dataclass(frozen=True)
+class SearchProfileConfig:
+    search_mode: str
+    rrf_k: int
+    candidate_mult: int
 
 
 def normalize_search_profile(raw: str | None) -> str:
@@ -32,25 +53,35 @@ def normalize_search_profile(raw: str | None) -> str:
     return key if key in ALLOWED_SEARCH_PROFILES else "default"
 
 
-def search_mode_for_profile(profile: str) -> str:
-    """hybrid | dense для hybrid-коллекций; для профиля default — из env KB_DEFAULT_SEARCH_MODE."""
+def _env_search_mode(env_name: str, default: str) -> str:
+    fallback = default.strip().lower()
+    if fallback not in _VALID_SEARCH_MODES:
+        fallback = "hybrid"
+    raw = os.getenv(env_name, default).strip().lower()
+    return raw if raw in _VALID_SEARCH_MODES else fallback
+
+
+def search_profile_config(profile: str) -> SearchProfileConfig:
+    """search_mode, rrf_k и candidate_mult для профиля — все из env."""
     key = normalize_search_profile(profile)
-    override = PROFILE_SEARCH_MODE.get(key)
-    if override is not None:
-        sm = str(override).strip().lower()
-        return sm if sm in ("hybrid", "dense") else "hybrid"
-    sm = os.getenv("KB_DEFAULT_SEARCH_MODE", "hybrid").strip().lower()
-    return sm if sm in ("hybrid", "dense") else "hybrid"
+    sm_env, sm_default = PROFILE_SEARCH_MODE_ENV.get(
+        key, PROFILE_SEARCH_MODE_ENV["default"]
+    )
+    rrf_env, rrf_default = PROFILE_RRF_K_ENV.get(key, PROFILE_RRF_K_ENV["default"])
+    mult_env, mult_default = PROFILE_CANDIDATE_MULT_ENV.get(
+        key, PROFILE_CANDIDATE_MULT_ENV["default"]
+    )
+    return SearchProfileConfig(
+        search_mode=_env_search_mode(sm_env, sm_default),
+        rrf_k=int(os.getenv(rrf_env, rrf_default)),
+        candidate_mult=int(os.getenv(mult_env, mult_default)),
+    )
+
+
+def search_mode_for_profile(profile: str) -> str:
+    return search_profile_config(profile).search_mode
 
 
 def hybrid_rrf_params_for_profile(profile: str) -> tuple[int, int]:
-    """Возвращает (rrf_k, candidate_mult) для hybrid_search_rrf."""
-    key = normalize_search_profile(profile)
-    preset: Mapping[str, Any] = PROFILE_HYBRID.get(key) or PROFILE_HYBRID["default"]
-    rrf = preset.get("rrf_k")
-    mult = preset.get("candidate_mult")
-    rrf_k = int(rrf if rrf is not None else os.getenv("KB_HYBRID_RRF_K", "60"))
-    candidate_mult = int(
-        mult if mult is not None else os.getenv("KB_HYBRID_CANDIDATE_MULT", "100")
-    )
-    return rrf_k, candidate_mult
+    cfg = search_profile_config(profile)
+    return cfg.rrf_k, cfg.candidate_mult
