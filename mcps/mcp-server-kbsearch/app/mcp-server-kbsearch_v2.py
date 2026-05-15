@@ -26,7 +26,7 @@ from utils.indexer import Indexer, IndexRuntime, IndexerConfig
 from utils.preprocessors.document_loader import DocumentLoader
 # Используем одинаковую функцию для оптимального логирования качевала из faq идентична
 from utils.logger import setup_logger
-from utils.search_profile import normalize_search_profile, search_mode_for_profile
+from utils.search_profile import normalize_search_profile, search_profile_config
 
 # ============================================================================
 # КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ
@@ -75,8 +75,7 @@ SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT", [
     '.txt', '.pdf', '.docx', '.md',
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.svg', '.ico',
 ]))
-# hybrid | dense для Qdrant hybrid-коллекций: задаётся по search_profile (см. utils/search_profile.py);
-# для профиля default — env KB_DEFAULT_SEARCH_MODE.
+# hybrid | dense и RRF-параметры для Qdrant hybrid-коллекций — по search_profile (utils/search_profile.py).
 
 # Qdrant settings
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -412,15 +411,18 @@ async def kb_search(
     Use this tool when a user asks something that should be matched against the indexed documents.
     `top_k` controls how many matching passages to return.
     Set `include_metadata=True` if document metadata is needed.
-    For Qdrant hybrid collections, `search_profile` selects search mode (`hybrid` vs `dense`) and RRF/candidate tuning;
-    for profile `default`, search mode follows env `KB_DEFAULT_SEARCH_MODE`.
+    For Qdrant hybrid collections, `search_profile` selects search mode (`hybrid` vs `dense`) and
+    hybrid RRF tuning via env (see utils/search_profile.py: KB_DEFAULT_SEARCH_MODE, KB_SEARCH_MODE_*,
+    KB_RRF_K_*, KB_CANDIDATE_MULT_*, KB_HYBRID_*).
 
     Not for web search or database queries. Only searches the pre-indexed documents.
     """
     profile = normalize_search_profile(search_profile)
-    sm = search_mode_for_profile(profile)
+    profile_cfg = search_profile_config(profile)
     logger.info(
-        f"Поиск: '{query}' (top_k={top_k}, search_mode={sm}, search_profile={profile}), "
+        f"Поиск: '{query}' (top_k={top_k}, search_profile={profile}, "
+        f"search_mode={profile_cfg.search_mode}, rrf_k={profile_cfg.rrf_k}, "
+        f"candidate_mult={profile_cfg.candidate_mult}), "
         f"collection={collection}, filters={filters}"
     )
 
@@ -444,7 +446,7 @@ async def kb_search(
    
         try:
             if indexer.cfg.use_qdrant and indexer.hybrid_search_enabled(collection):
-                if sm == "dense":
+                if profile_cfg.search_mode == "dense":
                     rows = indexer.hybrid_dense_search(query, collection, filters, top_k)
                 else:
                     rows = indexer.hybrid_search_rrf(
@@ -477,7 +479,7 @@ async def kb_search(
                     results.append(entry)
 
                 logger.info(
-                    f"Найдено {len(results)} результатов (Qdrant hybrid, mode={sm})"
+                    f"Найдено {len(results)} результатов (Qdrant hybrid, mode={profile_cfg.search_mode})"
                 )
 
                 def build_prompt_hybrid(results: list[dict], question: str) -> str:
