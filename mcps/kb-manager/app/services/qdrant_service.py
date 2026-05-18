@@ -1,6 +1,6 @@
 """Qdrant service for Qdrant document management"""
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 import qdrant_client
 from llama_index.core import Settings
@@ -82,6 +82,25 @@ class QdrantService:
     def _hybrid_mode(self, collection_name: Optional[str] = None) -> str:
         name = collection_name or self.collection_name
         return collection_hybrid_mode(self.qdrant_client, name)
+
+    def _is_faq_collection_type(
+        self, ctype: CollectionType | CollectionTypeAlias | None
+    ) -> bool:
+        """FAQ остаётся на legacy-схеме (один dense-вектор) для совместимости с mcp-server-faq."""
+        if ctype is None:
+            return False
+        if isinstance(ctype, CollectionTypeAlias):
+            return ctype == CollectionTypeAlias.faq
+        return ctype == CollectionType.FAQ
+
+    def _create_collection_vector_kwargs(
+        self,
+        *,
+        use_legacy_single_dense: bool,
+    ) -> dict[str, Any]:
+        if use_legacy_single_dense:
+            return {"vectors_config": VectorParams(size=self.vector_size, distance=Distance.COSINE)}
+        return hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE)
 
     def _get_sparse_embedder(self):
         if self._sparse_embedder is None:
@@ -181,11 +200,17 @@ class QdrantService:
             for name, ctype in self.collections_config.items():
                 # 1. create collection
                 if name not in existing:
+                    faq_legacy = self._is_faq_collection_type(ctype)
                     self.qdrant_client.create_collection(
                         collection_name=name,
-                        **hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE),
+                        **self._create_collection_vector_kwargs(
+                            use_legacy_single_dense=faq_legacy,
+                        ),
                     )
-                    print(f"[INIT] Created collection: {name}")
+                    print(
+                        f"[INIT] Created collection: {name} "
+                        f"({'legacy FAQ' if faq_legacy else 'hybrid'})"
+                    )
                 else:
                     print(f"[INIT] Exists: {name}")
 
@@ -210,16 +235,26 @@ class QdrantService:
             collections = self.qdrant_client.get_collections().collections
             collection_names = [c.name for c in collections]
             if self.collection_name not in collection_names:
+                faq_legacy = self._is_faq_collection_type(self.collection_type)
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
-                    **hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE),
+                    **self._create_collection_vector_kwargs(
+                        use_legacy_single_dense=faq_legacy,
+                    ),
                 )
-                print(f"Created collection: {self.collection_name}")
+                print(
+                    f"Created collection: {self.collection_name} "
+                    f"({'legacy FAQ' if faq_legacy else 'hybrid'})"
+                )
             else:
                 print(f"Collection {self.collection_name} already exists")
-            self._ensure_collection_meta(self.collection_name, CollectionTypeAlias.kb)
-            # self.switch_alias(self.collection_name, self.collection_type)
-            self.switch_alias(self.collection_name, CollectionTypeAlias.kb)
+            default_alias_kind = (
+                CollectionTypeAlias.faq
+                if self._is_faq_collection_type(self.collection_type)
+                else CollectionTypeAlias.kb
+            )
+            self._ensure_collection_meta(self.collection_name, default_alias_kind)
+            self.switch_alias(self.collection_name, default_alias_kind)
         except Exception as e:
             print(f"Error ensuring collection: {e}")
     
@@ -947,16 +982,30 @@ class QdrantService:
         client.delete_collection(collection_name)
         return True
 
-    def create_collection(self, collection_name: str) -> bool:
+    def create_collection(
+        self,
+        collection_name: str,
+        *,
+        schema_kind: Literal["faq", "kb"] | None = None,
+    ) -> bool:
+        """
+        schema_kind: ``faq`` — legacy один вектор; ``kb`` — hybrid dense+sparse.
+        Если не передан, по умолчанию ``kb`` (как для коллекций документов).
+        """
         client = self.qdrant_client
         if client.collection_exists(collection_name):
             raise ValueError("Collection already exists")
-                
+
+        kind = schema_kind or "kb"
+        faq_legacy = kind == "faq"
         client.create_collection(
             collection_name=collection_name,
-            **hybrid_collection_create_kwargs(self.vector_size, Distance.COSINE),
+            **self._create_collection_vector_kwargs(
+                use_legacy_single_dense=faq_legacy,
+            ),
         )
-        self._ensure_collection_meta(collection_name, CollectionTypeAlias.kb)
+        meta_type = CollectionTypeAlias.faq if faq_legacy else CollectionTypeAlias.kb
+        self._ensure_collection_meta(collection_name, meta_type)
 
         return True
     

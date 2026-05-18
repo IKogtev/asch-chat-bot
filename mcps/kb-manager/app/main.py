@@ -229,6 +229,12 @@ for name, cfg in COLLECTIONS_CFG.items():
     cfg["root_path"] = root_path
     collections_config_for_qdrant[name] = cfg["type"]
 
+_default_service_collection_type = CollectionType.DOCUMENTS
+for _coll_name, _cfg in COLLECTIONS_CFG.items():
+    if _coll_name == collection_name:
+        _default_service_collection_type = _cfg["type"]
+        break
+
 # Инициализация QdrantService
 qdrant_service = QdrantService(
     collection_name=collection_name, # Дефолтная коллекция
@@ -236,6 +242,7 @@ qdrant_service = QdrantService(
     embedding_api_key=embedding_api_key,
     embedding_model=embedding_model,
     embedding_dimensions=embedding_dimensions,
+    collection_type=_default_service_collection_type,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     qdrant_host=QDRANT_HOST,
@@ -1068,6 +1075,11 @@ async def create_collection(request: Request):
 
     version = payload.get("version")
     collection_type = payload.get("type", "faq")  # faq | kb
+    if collection_type not in ("faq", "kb"):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "type must be 'faq' or 'kb'"},
+        )
     collection_name = f"{collection_type}_collection_v{str(version)}"
     if not version:
         return JSONResponse(
@@ -1077,7 +1089,8 @@ async def create_collection(request: Request):
 
     try:
         created = qdrant_service.create_collection(
-            collection_name = collection_name
+            collection_name=collection_name,
+            schema_kind=collection_type,
         )
         return {
             "success": created,
