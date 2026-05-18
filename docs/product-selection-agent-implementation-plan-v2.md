@@ -352,7 +352,7 @@ PRODUCT_KITS_ROOT=kb_storage\kb\Комплекты документов по п�
 }
 ```
 
-7. `AdkApiClient.run()` оставляет совместимый возврат `(answer, events)`. Нужно добавить в `AdkApiClient` helper, который извлекает `_bot_action` из `events`, как bot сейчас извлекает факт нового `doc_search` через сохраненное состояние:
+7. `AdkApiClient.run()` оставляет совместимый возврат `(answer, events)`. Helper `bot.services.adk_events.extract_bot_action` извлекает `_bot_action` из `events`, как bot сейчас извлекает факт нового `doc_search` через сохраненное состояние:
    - просмотреть `actions.stateDelta`;
    - просмотреть `actions.state_delta`;
    - при необходимости просмотреть другие поля события, если фактический ADK response хранит state delta иначе.
@@ -378,7 +378,7 @@ Unit-тесты для этапа:
 
 - `RootAgent` создает `_bot_action` для `product_kit`;
 - `RootAgent` не создает `_bot_action` для `product_card`, `product_filter`, `product_compare`, `needs_clarification`, `no_data`;
-- `AdkApiClient` извлекает `_bot_action` из событий ADK;
+- `bot.services.adk_events.extract_bot_action` извлекает `_bot_action` из событий ADK;
 - handler при наличии `send_product_kit` вызывает сервис комплектов и отправляет файлы;
 - handler при ошибке сервиса отправляет понятное сообщение и логирует сбой.
 
