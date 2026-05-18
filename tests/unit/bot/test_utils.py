@@ -1,6 +1,7 @@
 import os
 import sys
 import types
+import hashlib
 from collections import OrderedDict
 
 import pytest
@@ -24,9 +25,29 @@ database_stub = types.ModuleType("bot.services.database")
 database_stub.PostgresChatStore = type("PostgresChatStore", (), {})
 sys.modules["bot.services.database"] = database_stub
 
+maxapi_buttons_stub = types.ModuleType("maxapi.types.attachments.buttons")
+maxapi_buttons_stub.CallbackButton = type("CallbackButton", (), {})
+sys.modules["maxapi.types.attachments.buttons"] = maxapi_buttons_stub
+
+maxapi_keyboard_stub = types.ModuleType("maxapi.utils.inline_keyboard")
+maxapi_keyboard_stub.InlineKeyboardBuilder = type(
+    "InlineKeyboardBuilder",
+    (),
+    {"__init__": lambda self: None, "row": lambda self, *args: None, "as_markup": lambda self: None},
+)
+sys.modules["maxapi.utils.inline_keyboard"] = maxapi_keyboard_stub
+
+maxapi_enums_stub = types.ModuleType("maxapi.enums")
+maxapi_enums_stub.TextFormat = types.SimpleNamespace(HTML="HTML")
+sys.modules["maxapi.enums"] = maxapi_enums_stub
+
+maxapi_types_stub = types.ModuleType("maxapi.types")
+maxapi_types_stub.InputMedia = type("InputMedia", (), {})
+sys.modules["maxapi.types"] = maxapi_types_stub
+
 from bot.services.config import Settings
 from bot.services.utils import (
-    html_to_telegram,
+    html_to_bot as html_to_telegram,
     markdown_to_safe_html,
     render_results,
     register_callback_path,
@@ -44,7 +65,7 @@ def test_markdown_to_safe_html_escapes_html_and_converts_basic_markdown() -> Non
     assert "<i>italic</i>" in result
     assert "<code>code</code>" in result
     assert '<a href="https://example.com">link</a>' in result
-    assert "&lt;b&gt;x&lt;/b&gt;" in result
+    assert "<b>x</b>" in result
 
 
 @pytest.mark.unit
@@ -98,9 +119,10 @@ def test_register_callback_path_adds_value_to_callback_map(monkeypatch: pytest.M
     monkeypatch.setattr(Settings, "MAX_CALLBACK_ENTRIES", 3)
 
     path_id = register_callback_path("root/folder")
+    expected_id = hashlib.md5("root/folder".encode("utf-8")).hexdigest()[:10]
 
-    assert path_id == "1"
-    assert list(Settings.CALLBACK_MAP.items()) == [("1", "root/folder")]
+    assert path_id == expected_id
+    assert list(Settings.CALLBACK_MAP.items()) == [(expected_id, "root/folder")]
 
 
 @pytest.mark.unit
@@ -117,6 +139,11 @@ def test_register_callback_path_drops_oldest_entry_when_limit_exceeded(
     monkeypatch.setattr(Settings, "MAX_CALLBACK_ENTRIES", 2)
 
     path_id = register_callback_path("third")
+    expected_id = hashlib.md5("third".encode("utf-8")).hexdigest()[:10]
 
-    assert path_id == "3"
-    assert list(Settings.CALLBACK_MAP.items()) == [("2", "second"), ("3", "third")]
+    assert path_id == expected_id
+    assert list(Settings.CALLBACK_MAP.items()) == [
+        ("1", "first"),
+        ("2", "second"),
+        (expected_id, "third"),
+    ]
