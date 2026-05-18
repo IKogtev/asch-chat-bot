@@ -109,12 +109,16 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
 
 
 @pytest.mark.unit
-def test_validate_dispatcher_result_accepts_product_selection_with_query() -> None:
+@pytest.mark.parametrize(
+    "intent",
+    ["product_card", "product_kit", "product_filter", "product_compare"],
+)
+def test_validate_dispatcher_result_accepts_product_selection_with_query(intent: str) -> None:
     result = validate_dispatcher_result(
         {
             "status": "ok",
             "route": "product_selection",
-            "intent": "product_compare",
+            "intent": intent,
             "reason": "product comparison",
             "search_query": "Fort Knox and protected capital",
         },
@@ -122,7 +126,7 @@ def test_validate_dispatcher_result_accepts_product_selection_with_query() -> No
     )
 
     assert result["route"] == "product_selection"
-    assert result["intent"] == "product_compare"
+    assert result["intent"] == intent
     assert result["search_query"] == "Fort Knox and protected capital"
 
 
@@ -256,7 +260,7 @@ def test_validate_dispatcher_result_requires_search_query_for_product_intent() -
             {
                 "status": "ok",
                 "route": "product_selection",
-                "intent": "product_recommendation",
+                "intent": "product_card",
                 "reason": "missing query",
                 "search_query": "",
             },
@@ -264,6 +268,27 @@ def test_validate_dispatcher_result_requires_search_query_for_product_intent() -
         )
 
     assert "search_query is required for doc_search, kb_answer, and product intents" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "intent",
+    ["product_recommendation", "product_explanation", "product_alternatives"],
+)
+def test_validate_dispatcher_result_rejects_removed_product_intents(intent: str) -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": intent,
+                "reason": "removed intent",
+                "search_query": "Fort Knox",
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "invalid intent" in str(exc.value)
 
 
 @pytest.mark.unit

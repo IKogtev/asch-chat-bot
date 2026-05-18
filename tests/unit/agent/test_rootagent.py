@@ -411,10 +411,11 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
         assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
         ctx.session.state["_product_selection_result_parsed"] = {
             "status": "ok",
-            "mode": "product_recommendation",
+            "mode": "product_card",
             "message": " Product selection answer ",
-            "source": "dbhub",
             "used_tables": ["products"],
+            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "clarification_options": [],
         }
         if False:
             yield None
@@ -427,14 +428,14 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
             ctx,
             "Original question",
             "",
-            "product_recommendation",
+            "product_card",
         )
     ]
 
     assert events == []
     assert ctx.session.state["first_name"] == "Ivan"
     assert ctx.session.state["product_selection_search_query"] == "Original question"
-    assert ctx.session.state["product_selection_intent"] == "product_recommendation"
+    assert ctx.session.state["product_selection_intent"] == "product_card"
     assert ctx.session.state["_root_final_text"] == "Product selection answer"
 
 
