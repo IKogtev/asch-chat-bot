@@ -1,7 +1,6 @@
 # Release notes: гибридный поиск Qdrant, профили `kb_search` и подготовка запросов `doc_search`
 
 **Дата:** 2026-05-15  
-**Обновлено:** 2026-05-15 (legacy fallback по `search_profile`, unit-тесты)  
 **Ветка:** `kb_search_ways`  
 **Область:** индексация и поиск в Qdrant (`kb-manager`, MCP `kb_search`), агенты `doc_search_agent` / `kb_answer_agent`, промпты в `kb_storage/prompts`.
 
@@ -13,15 +12,15 @@
 2. **Профили поиска** — аргумент MCP `search_profile` (`default` | `doc_search` | `kb_answer`) задаёт режим `hybrid` / `dense` и параметры RRF; агенты передают профиль явно.
 3. **Индексация без текста** — изображения и пустые файлы попадают в индекс (заглушка + путь/имя в sparse), чтобы `doc_search` находил файлы по имени и папкам.
 4. **Промпт `doc_search_agent`** — расширены правила нормализации `query` для `kb_search` (типы материалов, канон названий продуктов, спецпапки, релевантность по `FILE_NAME` / `RELATIVE_PATH`).
-5. **Legacy-коллекции** — для коллекций без sparse в Qdrant тот же `search_profile` выбирает **`dense`** (только скор retriever) или **`hybrid`** (dense + пост-лексический скор по контенту и метаданным); логика вынесена в `rescore_legacy_retriever_nodes`.
-
+5. **Legacy-коллекции** — для коллекций без sparse в Qdrant через тот же `search_profile` выбирается **`dense`** (только скор retriever) или **`hybrid`** (dense + пост-лексический скор по контенту и метаданным) поиск; логика вынесена в `rescore_legacy_retriever_nodes`.
+6. **kb-manager: FAQ при создании** — по типу в `collections_config` / `collection_type` и по полю **`type`** в API коллекции FAQ создаются в **legacy**-схеме (один dense-вектор), коллекции документов — **hybrid**.
 ---
 
 ## 1. Гибридный поиск в Qdrant
 
 ### Схема коллекции
 
-Новые коллекции создаются с **именованными** векторами:
+Новые коллекции типа kb (FAQ остаются по старому, только с dense) создаются с **именованными** векторами:
 
 | Имя | Назначение |
 |-----|------------|
@@ -85,6 +84,21 @@ flowchart TD
 **Зависимость:** `fastembed` (sparse BM25), переменная `SPARSE_BM25_LANGUAGE` (по умолчанию `russian`).
 
 > **Важно:** гибридный поиск работает только на коллекциях, созданных/переиндексированных в hybrid-режиме. После обновления нужна **переиндексация** активной коллекции документов.
+
+### kb-manager: какие коллекции в какой схеме
+
+**Файл:** `mcps/kb-manager/app/services/qdrant_service.py`
+
+| Тип в `collections_config` | Создание коллекции |
+|------------------------------|-------------------|
+| Документы (`CollectionType.DOCUMENTS`) | `hybrid_collection_create_kwargs` — `dense` + `sparse` |
+| FAQ (`CollectionType.FAQ`) | Один `VectorParams` (legacy), совместимость с `mcp-server-faq` (LlamaIndex без `vector_name`) |
+
+- **`ensure_collections`** — схема по значению типа в `collections_config` для каждого имени коллекции.
+- **`ensure_collection`** (старт сервиса) — схема по `collection_type`, согласованному с `QDRANT_COLLECTION` через `COLLECTIONS_CFG` в `main.py`.
+- **`create_collection(..., schema_kind="faq"|"kb")`** — схема только по явному `type` из API (`POST /api/collections/create`).
+
+**Если коллекция с таким именем уже есть в Qdrant**, она не пересоздаётся автоматически.
 
 ---
 
@@ -209,7 +223,6 @@ flowchart LR
 2. `doc_search`: «файлы сториз Fort Knox», «презентер Альфа Kids» — файлы в выдаче, в т.ч. без текстового слоя.
 3. `kb_answer`: содержательный вопрос по продукту — ответ из FAQ/KB, без деградации из-за лексического шума.
 4. При необходимости подкрутить env-профили (`KB_SEARCH_MODE_*`, `KB_RRF_K_*`, `KB_CANDIDATE_MULT_*`).
-5. На **legacy**-коллекции: убедиться, что `doc_search` (hybrid) даёт выдачу по имени файла, а `kb_answer` (dense) — стабильнее по смыслу; при пустой выдаче проверить `KB_SIMILARITY_CUTOFF`.
 
 ---
 
@@ -217,7 +230,7 @@ flowchart LR
 
 | Компонент | Что делает |
 |-----------|------------|
-| **kb-manager / indexer** | Hybrid upsert, индекс «пустых» и картинок, BM25 по пути и имени |
+| **kb-manager / indexer** | Hybrid upsert для **документных** коллекций; **FAQ** — legacy-схема при создании коллекции; индекс «пустых» и картинок, BM25 по пути и имени для KB |
 | **MCP `kb_search`** | Выбор dense / hybrid+RRF по `search_profile` на hybrid-коллекциях; на legacy — `rescore_legacy_retriever_nodes` с тем же `search_mode` |
 | **`doc_search_agent`** | Нормализация `query`, `search_profile=doc_search`, JSON для БД |
 | **`kb_answer_agent`** | FAQ + при необходимости KB с `search_profile=kb_answer` |
