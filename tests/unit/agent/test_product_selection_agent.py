@@ -72,14 +72,14 @@ validate_product_selection_result = product_selection_module.validate_product_se
 
 
 @pytest.mark.unit
-def test_validate_product_selection_result_accepts_dbhub_answer() -> None:
+def test_validate_product_selection_result_accepts_filter_answer() -> None:
     result = validate_product_selection_result(
         {
             "status": "ok",
             "mode": "product_filter",
             "message": "Products found",
-            "source": "dbhub",
             "used_tables": "products",
+            "clarification_options": [],
         },
         {},
     )
@@ -88,9 +88,85 @@ def test_validate_product_selection_result_accepts_dbhub_answer() -> None:
         "status": "ok",
         "mode": "product_filter",
         "message": "Products found",
-        "source": "dbhub",
         "used_tables": ["products"],
+        "resolved_product": None,
+        "clarification_options": [],
     }
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_product_card_with_resolved_product() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "product_card",
+            "message": "Product card",
+            "used_tables": ["products"],
+            "resolved_product": {
+                "id": 2832,
+                "name": " Fort Knox 6 месяцев ",
+                "ignored": "x",
+            },
+        },
+        {},
+    )
+
+    assert result["resolved_product"] == {
+        "id": "2832",
+        "name": "Fort Knox 6 месяцев",
+    }
+    assert result["clarification_options"] == []
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_product_kit_with_product_id() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "product_kit",
+            "message": "Product kit",
+            "used_tables": ["products"],
+            "resolved_product": {
+                "id": "2832",
+                "name": "Fort Knox 6 месяцев",
+            },
+        },
+        {},
+    )
+
+    assert result["mode"] == "product_kit"
+    assert result["resolved_product"]["id"] == "2832"
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_needs_clarification() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "needs_clarification",
+            "message": "Уточните срок или валюту.",
+            "used_tables": ["products"],
+            "clarification_options": [
+                {
+                    "id": 2832,
+                    "name": "Защищенный капитал 5 лет",
+                    "term": "5 лет",
+                    "currency": "рубли",
+                    "extra": "x",
+                }
+            ],
+        },
+        {},
+    )
+
+    assert result["clarification_options"] == [
+        {
+            "id": "2832",
+            "name": "Защищенный капитал 5 лет",
+            "term": "5 лет",
+            "currency": "рубли",
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -100,15 +176,15 @@ def test_validate_product_selection_result_accepts_no_data() -> None:
             "status": "ok",
             "mode": "no_data",
             "message": "No data",
-            "source": "none",
             "used_tables": [],
         },
         {},
     )
 
     assert result["mode"] == "no_data"
-    assert result["source"] == "none"
     assert result["used_tables"] == []
+    assert result["resolved_product"] is None
+    assert result["clarification_options"] == []
 
 
 @pytest.mark.unit
@@ -116,16 +192,21 @@ def test_validate_product_selection_result_accepts_no_data() -> None:
     ("payload", "parts"),
     [
         (
-            {"status": "bad", "mode": "product_filter", "message": "x", "source": "dbhub"},
+            {"status": "bad", "mode": "product_filter", "message": "x"},
             ("product_selection_agent", "basic_fields", "invalid status"),
         ),
         (
-            {"status": "ok", "mode": "bad", "message": "x", "source": "dbhub"},
+            {"status": "ok", "mode": "bad", "message": "x"},
             ("product_selection_agent", "basic_fields", "invalid mode"),
         ),
         (
-            {"status": "ok", "mode": "product_filter", "message": "x", "source": "bad"},
-            ("product_selection_agent", "basic_fields", "source must be"),
+            {
+                "status": "ok",
+                "mode": "product_filter",
+                "message": "x",
+                "resolved_product": "bad",
+            },
+            ("product_selection_agent", "basic_fields", "expected dict"),
         ),
     ],
 )
@@ -146,7 +227,6 @@ def test_validate_product_selection_result_requires_message() -> None:
                 "status": "ok",
                 "mode": "product_filter",
                 "message": "   ",
-                "source": "dbhub",
                 "used_tables": ["products"],
             },
             {},
@@ -156,34 +236,68 @@ def test_validate_product_selection_result_requires_message() -> None:
 
 
 @pytest.mark.unit
-def test_validate_product_selection_result_requires_none_source_for_no_data() -> None:
+def test_validate_product_selection_result_rejects_removed_modes() -> None:
+    for mode in ["product_recommendation", "product_explanation", "product_alternatives"]:
+        with pytest.raises(ValueError) as exc:
+            validate_product_selection_result(
+                {
+                    "status": "ok",
+                    "mode": mode,
+                    "message": "Removed mode",
+                    "used_tables": ["products"],
+                },
+                {},
+            )
+
+        assert "invalid mode" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["product_card", "product_kit"])
+def test_validate_product_selection_result_requires_resolved_product(mode: str) -> None:
     with pytest.raises(ValueError) as exc:
         validate_product_selection_result(
             {
                 "status": "ok",
-                "mode": "no_data",
-                "message": "No data",
-                "source": "dbhub",
+                "mode": mode,
+                "message": "Product answer",
                 "used_tables": ["products"],
             },
             {},
         )
 
-    assert "mode='no_data' requires source='none'" in str(exc.value)
+    assert "requires resolved_product" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_validate_product_selection_result_rejects_none_source_for_data_answer() -> None:
+def test_validate_product_selection_result_requires_id_for_product_kit() -> None:
     with pytest.raises(ValueError) as exc:
         validate_product_selection_result(
             {
                 "status": "ok",
-                "mode": "product_compare",
-                "message": "Comparison",
-                "source": "none",
-                "used_tables": [],
+                "mode": "product_kit",
+                "message": "Product kit",
+                "used_tables": ["products"],
+                "resolved_product": {"name": "Fort Knox"},
             },
             {},
         )
 
-    assert "product result with data must use source='dbhub'" in str(exc.value)
+    assert "requires resolved_product.id" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_requires_options_for_needs_clarification() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_product_selection_result(
+            {
+                "status": "ok",
+                "mode": "needs_clarification",
+                "message": "Уточните срок или валюту.",
+                "used_tables": ["products"],
+                "clarification_options": [],
+            },
+            {},
+        )
+
+    assert "requires clarification_options" in str(exc.value)
