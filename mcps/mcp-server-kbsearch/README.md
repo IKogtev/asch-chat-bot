@@ -161,6 +161,8 @@ POST /kb/update?source_type=local_folder&mode=replace&source_path=/path/to/docs
 | `QDRANT_HOST` | хост qdrant | qdrant |
 | `QDRANT_PORT` | порт qdrant | 6333 |
 | `QDRANT_URL` | путь к qdrant | http://qdrant:6333 |
+| `KB_QDRANT_RETRY_INTERVAL` | интервал повторных попыток загрузки KB из Qdrant (сек) | 1 |
+| `KB_QDRANT_INIT_TIMEOUT` | макс. время ожидания Qdrant при старте; по истечении процесс завершается для перезапуска контейнера (сек, `0` = без выхода) | 60 |
 
 ## 📝 Примеры использования
 
