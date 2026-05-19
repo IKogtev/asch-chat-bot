@@ -21,6 +21,7 @@ INDEXER_PATH = (
 _rrf = load_kbsearch_module("utils/rrf.py", "kbsearch_rrf_for_indexer")
 _search_profile = load_kbsearch_module("utils/search_profile.py", "kbsearch_sp_for_indexer")
 _qdrant_hybrid = load_kbsearch_module("utils/qdrant_hybrid.py", "kbsearch_qh_for_indexer")
+_qdrant_filters = load_kbsearch_module("utils/qdrant_search_filters.py", "kbsearch_qsf_for_indexer")
 
 _hybrid_mode_stub = {"fn": _qdrant_hybrid.collection_hybrid_mode}
 _rrf_params_stub = {"fn": _search_profile.hybrid_rrf_params_for_profile}
@@ -91,6 +92,7 @@ def _load_indexer_class():
         "hybrid_collection_create_kwargs": _qdrant_hybrid.hybrid_collection_create_kwargs,
         "meta_point_vectors": _qdrant_hybrid.meta_point_vectors,
         "sparse_embedding_to_vector": _qdrant_hybrid.sparse_embedding_to_vector,
+        "build_hybrid_qdrant_filter": _qdrant_filters.build_hybrid_qdrant_filter,
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(INDEXER_PATH), "exec"), namespace)
     return namespace["Indexer"]
@@ -179,6 +181,61 @@ def test_hybrid_search_rrf_merges_lists_with_profile_rrf_k() -> None:
     assert calls[0]["limit"] == max(2 * 10, 100)
     assert calls[0]["using"] == DENSE_VECTOR_NAME
     assert calls[1]["using"] == SPARSE_VECTOR_NAME
+
+
+@pytest.mark.unit
+def test_hybrid_search_rrf_doc_search_excludes_archive_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOC_SEARCH_ARCHIVE_SECTION", "5 Архив")
+    _hybrid_mode_stub["fn"] = lambda client, name: "hybrid"
+    _rrf_params_stub["fn"] = lambda profile: (40, 10)
+
+    indexer = _make_hybrid_indexer()
+    calls: list[dict] = []
+
+    def fake_query_points(**kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(points=[_fake_hit("a", 0.9)])
+
+    indexer._get_qdrant_client = lambda: types.SimpleNamespace(query_points=fake_query_points)
+
+    indexer.hybrid_search_rrf("fort knox", "kb_hybrid", None, top_k=1, search_profile="doc_search")
+
+    qf = calls[0]["query_filter"]
+    archive_excludes = [c for c in qf.must_not if c.key == "section_path"]
+    assert len(archive_excludes) == 1
+    assert archive_excludes[0].match.value == "5 Архив"
+
+
+@pytest.mark.unit
+def test_hybrid_search_rrf_doc_search_archive_filter_no_must_not_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOC_SEARCH_ARCHIVE_SECTION", "5 Архив")
+    _hybrid_mode_stub["fn"] = lambda client, name: "hybrid"
+    _rrf_params_stub["fn"] = lambda profile: (40, 10)
+
+    indexer = _make_hybrid_indexer()
+    calls: list[dict] = []
+
+    def fake_query_points(**kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(points=[_fake_hit("a", 0.9)])
+
+    indexer._get_qdrant_client = lambda: types.SimpleNamespace(query_points=fake_query_points)
+
+    indexer.hybrid_search_rrf(
+        "fort knox",
+        "kb_hybrid",
+        filters={"section_path": "5 Архив"},
+        top_k=1,
+        search_profile="doc_search",
+    )
+
+    qf = calls[0]["query_filter"]
+    assert len([c for c in qf.must_not if c.key == "section_path"]) == 0
+    assert qf.must[0].key == "section_path"
 
 
 @pytest.mark.unit
