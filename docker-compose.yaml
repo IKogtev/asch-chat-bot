@@ -139,6 +139,7 @@ services:
       - .env
     volumes:
       - ./kb_storage/bot/:/app/data
+      - ./kb_storage/kb:/app/kb_storage/kb:ro
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -149,6 +150,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
+      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/Комплекты документов по продуктам
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
@@ -175,6 +177,7 @@ services:
       - .env
     volumes:
       - ./kb_storage/bot/:/app/data
+      - ./kb_storage/kb:/app/kb_storage/kb:ro
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - MAX_BOT_TOKEN=REDACTED_EXAMPLE
@@ -185,6 +188,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
+      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/Комплекты документов по продуктам
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network

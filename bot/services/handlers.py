@@ -14,6 +14,8 @@ from utils.event_logger import EventLogger
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
 from utils.doc_search_format import parse_download_ranks
+from bot.services.adk_events import extract_bot_action
+from bot.services.product_kits import get_product_kit
 
 from bot.services.utils import (
     markdown_to_safe_html,
@@ -44,6 +46,84 @@ BOT_START_TIME = time.time()
 RECENT_MESSAGES = {}
 STARTUP_GRACE_PERIOD = 5  # сек
 OLD_MESSAGE_THRESHOLD = 15  # сек
+
+
+# Отправка комплекта документов продукта по структурному действию от ADK.
+async def handle_product_kit_action(
+    bot_res,
+    bot_action: dict,
+    user_id: int | str,
+    session_id: str,
+    turn_id: str,
+    start_time: float,
+    platform: str,
+) -> bool:
+    """Находит папку продукта по ID, отправляет файлы комплекта и пишет события в лог."""
+    product_id = str(bot_action.get("product_id") or "").strip()
+    product_name = str(bot_action.get("product_name") or "").strip()
+    result = get_product_kit(product_id=product_id, product_name=product_name)
+
+    if result["status"] != "ok":
+        response_time = int((time.time() - start_time) * 1000)
+        await bot_res.send(result["message"])
+        await eventlogger.log_event(
+            event_type="product_kit_status",
+            user_id=str(user_id),
+            session_id=session_id,
+            channel=platform,
+            payload={
+                "turn_id": turn_id,
+                "product_id": product_id,
+                "product_name": product_name,
+                "status": result["status"],
+                "text": result["message"],
+                "response_time_ms": response_time,
+            },
+        )
+        return False
+
+    sent = 0
+    for file_info in result["files"]:
+        await bot_res.send(
+            "",
+            is_doc={"path": file_info["path"], "name": file_info["name"]},
+        )
+        sent += 1
+        await eventlogger.log_event(
+            event_type="document_download",
+            user_id=str(user_id),
+            session_id=session_id,
+            channel=platform,
+            payload={
+                "file_path": file_info["path"],
+                "text": file_info["name"],
+                "doc_id": None,
+                "rank": None,
+                "source": "product_kit",
+                "turn_id": turn_id,
+                "product_id": product_id,
+                "product_name": product_name,
+            },
+        )
+
+    response_time = int((time.time() - start_time) * 1000)
+    await eventlogger.log_event(
+        event_type="product_kit_sent",
+        user_id=str(user_id),
+        session_id=session_id,
+        channel=platform,
+        payload={
+            "turn_id": turn_id,
+            "product_id": product_id,
+            "product_name": product_name,
+            "files_sent": sent,
+            "skipped_files": result.get("skipped_files", []),
+            "response_time_ms": response_time,
+        },
+    )
+    return sent > 0
+
+
 # синхронизация пользователей с адк 
 async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str, global_user_id=None) -> None:
     """
@@ -714,13 +794,41 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             search_id_before = meta_before["search_id"] if meta_before else None
 
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-            answer, _ = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+            answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
             work = answer or ""
 
             # сохраняем историю диалога
             await store.append(user_id, "user", user_text, global_user_id)
             await store.append(user_id, "model", answer, global_user_id)
+
+            bot_action = extract_bot_action(events)
+            if isinstance(bot_action, dict) and bot_action.get("type") == "send_product_kit":
+                if work.strip():
+                    final_text = markdown_to_safe_html(work)
+                    await bot_res.send(final_text)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(global_user_id),
+                        session_id=session_id,
+                        channel=platform,
+                        payload={
+                            "turn_id": turn_id,
+                            "text": final_text,
+                            "response_time_ms": response_time,
+                        },
+                    )
+
+                await handle_product_kit_action(
+                    bot_res=bot_res,
+                    bot_action=bot_action,
+                    user_id=global_user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    start_time=start_time,
+                    platform=platform,
+                )
+                return
 
             # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
             meta_after = await store.get_last_search_meta(global_user_id, session_id)
@@ -749,9 +857,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
 
             # 2. Если это просто текстовый ответ от нейронки
             if work and work.strip():
-                # Проверяем, нужно ли конвертировать Markdown в HTML
-                is_already_html = "<b>" in work or work.lstrip().startswith("<")
-                final_text = work if is_already_html else markdown_to_safe_html(work)
+                # Приводим ответ агента к единому bot-safe HTML.
+                final_text = markdown_to_safe_html(work)
                 response_time = int((time.time() - start_time) * 1000)
                 # Отправляем одной командой для любой платформы!
                 await bot_res.send(final_text)

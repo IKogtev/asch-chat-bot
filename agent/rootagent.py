@@ -296,6 +296,7 @@ class RootAgent(BaseAgent):
                     "_kb_answer_result_parsed",
                     "_product_selection_result_parsed",
                     "_root_final_text",
+                    "_bot_action",
                 ],
             )
 
@@ -533,3 +534,17 @@ class RootAgent(BaseAgent):
 
         product_selection = self._get_required_state_dict(ctx, "_product_selection_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(product_selection["message"])
+
+        if product_selection["mode"] == "product_kit":
+            resolved_product = product_selection.get("resolved_product") or {}
+            product_id = str(resolved_product.get("id") or "").strip()
+            product_name = str(resolved_product.get("name") or "").strip()
+            if product_id:
+                ctx.session.state["_bot_action"] = {
+                    "type": "send_product_kit",
+                    "product_id": product_id,
+                    "product_name": product_name,
+                }
+                return
+
+        ctx.session.state.pop("_bot_action", None)
