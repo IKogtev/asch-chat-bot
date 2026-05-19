@@ -15,6 +15,8 @@ def test_doc_search_prompt_requires_search_profile() -> None:
 
     assert 'search_profile="doc_search"' in text
     assert "режим гибридного поиска" in text.lower() or "hybrid" in text
+    assert "каждый документ из CONTEXT" in text
+    assert "is_relevant" in text
 
 
 @pytest.mark.unit

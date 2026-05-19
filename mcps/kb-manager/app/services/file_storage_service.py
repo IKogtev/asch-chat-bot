@@ -26,10 +26,12 @@ class FileStorageService:
         chunk_size: int,
         chunk_overlap: int,
         service_dir: Path,
-        ext_allowed: set
+        ext_allowed: set,
+        qdrant_collection_name: str,
     ):
         self.root = root_path
         self.qdrant = qdrant_service
+        self.qdrant_collection_name = qdrant_collection_name
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.service_dir = service_dir
@@ -149,7 +151,9 @@ class FileStorageService:
         self.logger.info("Starting filesystem sync")  
         try:
             disk_files = self.scan_files(kb_id)
-            indexed_docs = self.qdrant.list_documents()
+            indexed_docs = self.qdrant.list_documents(
+                collection_name=self.qdrant_collection_name
+            )
             indexed_map = {}
             # строим index_map для сопоставления
             for doc in indexed_docs:
@@ -219,7 +223,10 @@ class FileStorageService:
                 # --- Переиндексация если нужно ---
                 if reindex_needed:
                     for doc in stored_docs:
-                        self.qdrant.delete_document(doc["document_id"])
+                        self.qdrant.delete_document(
+                            doc["document_id"],
+                            collection_name=self.qdrant_collection_name,
+                        )
 
                     self._index_file(file, kb_id, collection_type)
         
@@ -229,7 +236,10 @@ class FileStorageService:
                 if filename not in disk_filenames:
                     self.logger.info(f"DELETED FILE: {filename}")
                     for doc in docs:
-                        self.qdrant.delete_document(doc["document_id"])
+                        self.qdrant.delete_document(
+                            doc["document_id"],
+                            collection_name=self.qdrant_collection_name,
+                        )
 
             self.logger.info("Filesystem sync completed")
         except Exception as e:
@@ -267,7 +277,8 @@ class FileStorageService:
             self.qdrant.upload_points_qdrant(
                 documents,
                 docs_count,
-                points_count
+                points_count,
+                collection_name=self.qdrant_collection_name,
             )
         except Exception as e:
             self.logger.error(f"[SYNC SERVICE] Failed to index {file_info.get('filename')}: {e}")

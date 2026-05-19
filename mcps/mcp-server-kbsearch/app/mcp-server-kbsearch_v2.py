@@ -379,60 +379,6 @@ def compute_final_score(dense_score: float, lexical_score: float, content: str) 
     return base - penalty
 
 
-def rescore_legacy_retriever_nodes(
-    nodes: list,
-    query: str,
-    search_mode: str,
-    top_k: int,
-    *,
-    similarity_cutoff: float | None = None,
-    include_metadata: bool = True,
-) -> list[dict]:
-    """
-    Переранжирование узлов retriever для legacy-коллекций (без Qdrant sparse).
-
-    search_mode: ``dense`` — только dense_score; иначе dense + пост-лексический скор.
-    """
-    cutoff = SIMILARITY_CUTOFF if similarity_cutoff is None else similarity_cutoff
-    rescored: list[dict] = []
-    for node in nodes:
-        content = node.get_content()
-        metadata = node.metadata or {}
-        dense_score = float(node.score or 0.0)
-        if search_mode == "dense":
-            lexical_score = None
-            final_score = dense_score
-        else:
-            lexical_score = compute_lexical_score(query, content, metadata)
-            final_score = compute_final_score(dense_score, lexical_score, content)
-        entry: dict = {
-            "node": node,
-            "dense_score": dense_score,
-            "final_score": final_score,
-        }
-        if lexical_score is not None:
-            entry["lexical_score"] = lexical_score
-        rescored.append(entry)
-    rescored.sort(key=lambda x: x["final_score"], reverse=True)
-    rescored = rescored[:top_k]
-
-    results: list[dict] = []
-    for i, item in enumerate(rescored):
-        node = item["node"]
-        result: dict = {
-            "rank": i,
-            "score": item["final_score"],
-            "dense_score": item["dense_score"],
-            "content": node.get_content(),
-        }
-        if "lexical_score" in item:
-            result["lexical_score"] = item["lexical_score"]
-        if include_metadata:
-            result["metadata"] = node.metadata or {}
-        if item["final_score"] >= cutoff:
-            results.append(result)
-    return results
-
 
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
@@ -503,11 +449,14 @@ async def kb_search(
         try:
             if indexer.cfg.use_qdrant and indexer.hybrid_search_enabled(collection):
                 if profile_cfg.search_mode == "dense":
-                    rows = indexer.hybrid_dense_search(query, collection, filters, top_k)
+                    print("Ищем в dense коллекции")
+                    rows = indexer.hybrid_dense_search(query, collection, filters, top_k*1.5)
                 else:
+                    print("Ищем в гибридной коллекции")
                     rows = indexer.hybrid_search_rrf(
-                        query, collection, filters, top_k, search_profile=profile
+                        query, collection, filters, top_k*1.5, search_profile=profile
                     )
+                    
                 if not rows:
                     res = ToolResult(
                         content="Ничего не найдено",
@@ -551,7 +500,7 @@ async def kb_search(
                             doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
 
                     logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
-
+                    i=0
                     for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
                         text = item["content"].strip()
                         metadata = item.get("metadata", {})
@@ -568,6 +517,9 @@ TEXT:
 {text}
 """
                         blocks.append(block)
+                        i+=1
+                        if i==top_k:
+                            break
 
                     context = "\n---\n\n".join(blocks)
 
@@ -589,96 +541,24 @@ QUESTION
                 )
                 res.isError = False
                 return res
-            
-            # fallback для старых коллекций
-            logger.debug("No sparse vectors in collection, use old approach")
-            candidate_k = max(top_k * 5, 30)
-            retriever = indexer.get_retriever_for_collection(collection, candidate_k, filters)
-            nodes = retriever.retrieve(query)
-
-            if not nodes:
+            elif indexer.cfg.use_qdrant and not indexer.hybrid_search_enabled(collection):
                 res = ToolResult(
-                    content="Ничего не найдено",   
-                    structured_content=None
+                    content="Коллекция не является гибридной. Удалите коллекцию и перезапустите kb_manager.",
+                    structured_content=None,
                 )
-                res.isError = False
+                res.isError = True
                 return res
-
-            results = rescore_legacy_retriever_nodes(
-                nodes,
-                query,
-                profile_cfg.search_mode,
-                top_k,
-                include_metadata=include_metadata,
-            )
-
-            logger.info(f"Найдено {len(results)} результатов (search_mode={profile_cfg.search_mode})")
-
-            for res in results:
-                metadata = res.get("metadata") or {}
-                metadata["relative_path"] = get_file_link(
-                    metadata.get("source", ""),
-                    metadata.get("section_path", [])
+            else:
+                res = ToolResult(
+                    content="Коллекция не найдена. Убедитесь что коллекция существует и перезапустите контейнер.",
+                    structured_content=None,
                 )
-                res["metadata"] = metadata
-
-            
-            def build_prompt(results: list[dict], question: str) -> str:
-                blocks = []
-                doc_res = {}
-                for item in results:
-                    doc_id = item["metadata"]["document_id"]
-                    if not doc_id in doc_res.keys():
-                        doc_res.update({doc_id:item})
-                    else:
-                        doc_res[doc_id]["content"] += "\n..." + item["content"]
-                        doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
-                        
-                # logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
-                
-                for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
-                    text = item["content"].strip()
-                    metadata = item.get("metadata", {})
-                    relative_path = metadata.get("relative_path", "")
-                    source = metadata.get("source", "")
-
-                    block = f"""rank [{i+1}] FILE_NAME: {source}
-RELATIVE_PATH: {relative_path}
-
-DOCUMENT_ID: {doc_id}
-
-{text}
-"""
-                    blocks.append(block)
-
-                context = "\n---\n\n".join(blocks)
-
-                return f"""Используй только информацию из CONTEXT.
-Если ответа нет в контексте не придумывай сам.
-
-CONTEXT
-{context}
-
-QUESTION
-{question}
-"""
-            prompt = build_prompt(results, query)
-            res = ToolResult(
-                            content=prompt,
-                            structured_content=None
-                                            )
-            logger.debug(prompt)
-            res.isError = False
-            return res
-
+                res.isError = True
+                return res
         except Exception as e:
-            logger.error(f"Ошибка при поиске: {e}", exc_info=True)
-            res = ToolResult(
-            content=f"Ошибка при поиске: {e}",
-            structured_content=None
-        )
-            res.isError = True
-            return res
+            logger.debug(f"Ошибка поиска: {e}")
+            raise e
+            
 @mcp.tool()
 async def get_kb_info() -> Dict:
     """
