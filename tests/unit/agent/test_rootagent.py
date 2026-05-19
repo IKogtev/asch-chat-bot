@@ -411,10 +411,11 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
         assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
         ctx.session.state["_product_selection_result_parsed"] = {
             "status": "ok",
-            "mode": "product_recommendation",
+            "mode": "product_card",
             "message": " Product selection answer ",
-            "source": "dbhub",
             "used_tables": ["products"],
+            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "clarification_options": [],
         }
         if False:
             yield None
@@ -427,15 +428,55 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
             ctx,
             "Original question",
             "",
-            "product_recommendation",
+            "product_card",
         )
     ]
 
     assert events == []
     assert ctx.session.state["first_name"] == "Ivan"
     assert ctx.session.state["product_selection_search_query"] == "Original question"
-    assert ctx.session.state["product_selection_intent"] == "product_recommendation"
+    assert ctx.session.state["product_selection_intent"] == "product_card"
     assert ctx.session.state["_root_final_text"] == "Product selection answer"
+    assert "_bot_action" not in ctx.session.state
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_sets_bot_action_for_product_kit() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "product_kit",
+            "message": " Kit answer ",
+            "used_tables": ["products"],
+            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "clarification_options": [],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "Original question",
+            "Fort Knox",
+            "product_kit",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "Kit answer"
+    assert ctx.session.state["_bot_action"] == {
+        "type": "send_product_kit",
+        "product_id": "2832",
+        "product_name": "Fort Knox",
+    }
 
 
 @pytest.mark.unit
