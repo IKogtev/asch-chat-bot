@@ -148,6 +148,7 @@ class QdrantService:
 
         alias_name = self._alias_name_for_type(collection_type)
         payload = {
+            "text": "__collection_meta__",
             "__type__": "collection_meta",
             "index_status": "empty",
             "documents_count": 0,
@@ -375,11 +376,14 @@ class QdrantService:
         chunks.sort(key=lambda x: x["chunk_index"])
         return chunks
     
-    def delete_document(self, document_id: str) -> bool:
+    def delete_document(
+        self, document_id: str, *, collection_name: Optional[str] = None
+    ) -> bool:
         """Delete all chunks of a document"""
+        target = collection_name or self.collection_name
         # Check if document exists
         result = self.qdrant_client.scroll(
-            collection_name=self.collection_name,
+            collection_name=target,
             scroll_filter=Filter(
                 should=[
                     FieldCondition(
@@ -399,7 +403,7 @@ class QdrantService:
         
         # Delete by filter using proper Qdrant models
         self.qdrant_client.delete(
-            collection_name=self.collection_name,
+            collection_name=target,
             points_selector=Filter(
                 should=[
                     FieldCondition(
@@ -411,22 +415,28 @@ class QdrantService:
         )
         # Обновляем document_count в метаданных после удаления
         try:
-            actual_documents = self.list_documents()
-            info = self.qdrant_client.get_collection(collection_name=self.collection_name)
+            actual_documents = self.list_documents(collection_name=target)
+            info = self.qdrant_client.get_collection(collection_name=target)
             self.upsert_meta(
                 document_count=len(actual_documents),
                 points_count=int(str(info.points_count)) - 1,
+                collection_name=target,
                 last_update=datetime.now().isoformat(),
             )
         except Exception:
             pass
         return True
     
-    def list_documents(self) -> List[Dict[str, Any]]:
+    def list_documents(
+        self, *, collection_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """List all documents (one entry per document, not per chunk)"""
+        target = collection_name or self.collection_name
+        ctype = self.collections_config.get(target)
+        faq_listing = self._is_faq_collection_type(ctype)
         # Scroll through all points
         result = self.qdrant_client.scroll(
-            collection_name=self.collection_name,
+            collection_name=target,
             limit=10000,
             with_payload=True,
             with_vectors=False
@@ -466,7 +476,7 @@ class QdrantService:
                         docs[doc_id]["_max_chunk_index"],
                         chunk_index
                     )
-                if self.collection_type == 'faq':
+                if faq_listing:
                     docs[doc_id]['question_preview'] = payload.get("text", "")
                     docs[doc_id]['answer_preview'] = payload.get("answer")
 
@@ -479,10 +489,12 @@ class QdrantService:
         
         return list(docs.values())
     
-    def list_knowledge_bases(self) -> List[Dict[str, Any]]:
+    def list_knowledge_bases(
+        self, *, collection_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """List all knowledge bases with document counts"""
         # Get all documents
-        documents = self.list_documents()
+        documents = self.list_documents(collection_name=collection_name)
         
         # Group by kb_id
         kb_dict = {}
@@ -774,8 +786,13 @@ class QdrantService:
             return 'faq'
         return "documents"
     
-    def switch_collection(self, collection_name: str, collection_type:CollectionType):
-        if collection_name == self.collection_name:
+    def switch_collection(self, collection_name: str, collection_type: CollectionType):
+        """
+        Переключение коллекции для UI и интерактивных API (поиск, список документов).
+        Индексация filesystem sync использует qdrant_collection_name у FileStorageService
+        и не зависит от этого состояния.
+        """
+        if collection_name == self.collection_name and collection_type == self.collection_type:
             return
         self.collection_name = collection_name
         self.collection_type = collection_type
@@ -814,14 +831,21 @@ class QdrantService:
 
         return payload
 
-    def content_hash_exists(self, kb_id: str, content_hash: str) -> bool:
+    def content_hash_exists(
+        self,
+        kb_id: str,
+        content_hash: str,
+        *,
+        collection_name: Optional[str] = None,
+    ) -> bool:
         """
         Проверяем есть ли уже chunk с таким content_hash в рамках kb_id
         """
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
+        target = collection_name or self.collection_name
         result = self.qdrant_client.scroll(
-            collection_name=self.collection_name,
+            collection_name=target,
             scroll_filter=Filter(
                 must=[
                     FieldCondition(
@@ -840,18 +864,22 @@ class QdrantService:
         points = result[0]
         return len(points) > 0
 
-    def upload_points_qdrant(self,
-                    docs_texts: list,
-                    docs_count: int,
-                    points_count: int, 
-                    ) -> dict:
-        
+    def upload_points_qdrant(
+        self,
+        docs_texts: list,
+        docs_count: int,
+        points_count: int,
+        *,
+        collection_name: Optional[str] = None,
+    ) -> dict:
         if not docs_texts:
             return {"error": "No documents found"}
+        target = collection_name or self.collection_name
         batch_size = 50
-        hybrid = self._hybrid_mode() == "hybrid"
+        hybrid = self._hybrid_mode(target) == "hybrid"
         sparse_model = self._get_sparse_embedder() if hybrid else None
-        for i in range(0, points_count, batch_size):
+        total = len(docs_texts)
+        for i in range(0, total, batch_size):
             batch = docs_texts[i: i+batch_size]
             # извлекаем тексты 
             texts_batch = [item['text'] for item in batch]
@@ -880,7 +908,9 @@ class QdrantService:
                     raise ValueError("content_hash is required for deduplication")
 
                 # проверка на дубль
-                if self.content_hash_exists(kb_id, content_hash):
+                if self.content_hash_exists(
+                    kb_id, content_hash, collection_name=target
+                ):
                     continue
                 if not chunk_id:
                     raise ValueError("chunk_id is required for qdrant point")
@@ -904,10 +934,10 @@ class QdrantService:
             # вставляем подготовленные точки в qdrant 
             if not points:
                 continue
-            self.qdrant_client.upsert(collection_name=self.collection_name, points=points)
+            self.qdrant_client.upsert(collection_name=target, points=points)
         # После загрузки пересчитываем document_count по фактическим данным коллекции
-        info = self.qdrant_client.get_collection(collection_name=self.collection_name)
-        actual_documents = self.list_documents()
+        info = self.qdrant_client.get_collection(collection_name=target)
+        actual_documents = self.list_documents(collection_name=target)
         actual_doc_count = len(actual_documents)
         meta = {
             'last_update': datetime.now().isoformat(),
@@ -918,24 +948,28 @@ class QdrantService:
             'source': "update from ui",
             '__type__': "collection_meta"
         }
-        self.upsert_meta(**meta)
+        self.upsert_meta(**meta, collection_name=target)
         return {
             "documens_count": points_count
         }
     
-    def upsert_meta(self, **updates):
-        meta_id = meta_id_for_collection(self.collection_name)
-        points = self.qdrant_client.retrieve(self.collection_name, [meta_id])
+    def upsert_meta(self, *, collection_name: Optional[str] = None, **updates):
+        target = collection_name or self.collection_name
+        meta_id = meta_id_for_collection(target)
+        points = self.qdrant_client.retrieve(target, [meta_id])
         if points:
             payload = points[0].payload or {}    
         else:
             payload={}
         payload.update(updates)
+        payload["text"] = payload.get("text") or "__collection_meta__"
+        payload["__type__"] = "collection_meta"
+
         payload["last_update"] = datetime.now().isoformat()
-        mode = self._hybrid_mode()
+        mode = self._hybrid_mode(target)
         vector = meta_point_vectors(self.vector_size, mode)
         self.qdrant_client.upsert(
-            collection_name=self.collection_name,
+            collection_name=target,
             points=[
                 PointStruct(
                     id=meta_id,

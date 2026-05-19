@@ -2,13 +2,13 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 from ..config import KBSEARCH_MCP_URL, MCP_TIMEOUT_SEC, MCP_TOKEN
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
+from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
 from .validation_utils import build_validation_error
 
 logger = setup_logger("doc_search_agent", "agent.log")
@@ -162,7 +162,7 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
         try:
             headers = {"Authorization": f"Bearer {MCP_TOKEN}"} if MCP_TOKEN else None
 
-            kbsearch_toolset = McpToolset(
+            kbsearch_toolset = RefreshingMcpToolset(
                 connection_params=StreamableHTTPConnectionParams(
                     url=KBSEARCH_MCP_URL,
                     headers=headers,
@@ -201,6 +201,7 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
+7. В results — каждый документ из CONTEXT kb_search; отсев только через is_relevant: false, не укорачивай список.
 
 Формат ответа:
 {
