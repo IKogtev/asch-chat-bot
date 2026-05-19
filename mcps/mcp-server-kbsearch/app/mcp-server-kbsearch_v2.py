@@ -450,11 +450,13 @@ async def kb_search(
             if indexer.cfg.use_qdrant and indexer.hybrid_search_enabled(collection):
                 if profile_cfg.search_mode == "dense":
                     print("Ищем в dense коллекции")
-                    rows = indexer.hybrid_dense_search(query, collection, filters, top_k*1.5)
+                    rows = indexer.hybrid_dense_search(
+                        query, collection, filters, int(top_k * 1.5), search_profile=profile
+                    )
                 else:
                     print("Ищем в гибридной коллекции")
                     rows = indexer.hybrid_search_rrf(
-                        query, collection, filters, top_k*1.5, search_profile=profile
+                        query, collection, filters, int(top_k*1.5), search_profile=profile
                     )
                     
                 if not rows:

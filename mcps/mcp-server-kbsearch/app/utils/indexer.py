@@ -22,6 +22,7 @@ from utils.utillites import RemoteEmbedding, chunk_id_to_uuid, meta_id_for_colle
 from utils.logger import setup_logger
 from utils.rrf import reciprocal_rank_fusion
 from utils.search_profile import hybrid_rrf_params_for_profile
+from utils.qdrant_search_filters import build_hybrid_qdrant_filter
 from utils.qdrant_hybrid import (
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
@@ -326,24 +327,7 @@ class Indexer:
         if collection_hybrid_mode(client, collection_name) != "hybrid":
             raise ValueError("Collection is not hybrid-indexed")
 
-        must_not = [
-            FieldCondition(
-                key="__type__",
-                match=MatchValue(value="collection_meta"),
-            )
-        ]
-        must = []
-        if filters:
-            for key, value in filters.items():
-                if value is None:
-                    continue
-                must.append(
-                    FieldCondition(
-                        key=key,
-                        match=MatchValue(value=value),
-                    )
-                )
-        q_filter = Filter(must=must, must_not=must_not)
+        q_filter = build_hybrid_qdrant_filter(filters, search_profile)
 
         rrf_k, candidate_mult = hybrid_rrf_params_for_profile(search_profile or "default")
         fetch = max(top_k * candidate_mult, 100)
@@ -409,6 +393,7 @@ class Indexer:
         collection: Optional[str],
         filters: Optional[Dict[str, Any]],
         top_k: int,
+        search_profile: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Только dense по именованному вектору (коллекция hybrid, sparse в индексе не используется в запросе)."""
         client = self._get_qdrant_client()
@@ -416,24 +401,7 @@ class Indexer:
         if collection_hybrid_mode(client, collection_name) != "hybrid":
             raise ValueError("Collection is not hybrid-indexed")
 
-        must_not = [
-            FieldCondition(
-                key="__type__",
-                match=MatchValue(value="collection_meta"),
-            )
-        ]
-        must = []
-        if filters:
-            for key, value in filters.items():
-                if value is None:
-                    continue
-                must.append(
-                    FieldCondition(
-                        key=key,
-                        match=MatchValue(value=value),
-                    )
-                )
-        q_filter = Filter(must=must, must_not=must_not)
+        q_filter = build_hybrid_qdrant_filter(filters, search_profile)
 
         query_vector = self.embed_model.get_text_embedding_batch([query])[0]
         resp = client.query_points(
