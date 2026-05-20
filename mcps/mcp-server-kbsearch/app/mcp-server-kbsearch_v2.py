@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 import re
 import json
 import os, shutil
+import time
+import sys
 
 # вынесенная работа с хранилищем, аналогичная с faq 
 from utils.storager import LocalStorage, SourceType, UpdateMode
@@ -79,6 +81,9 @@ USE_QDRANT = os.getenv("USE_QDRANT", "false").lower() == "true"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "kb_collection_active")
+# Повторное подключение к Qdrant при недоступности на старте
+KB_QDRANT_RETRY_INTERVAL = float(os.getenv("KB_QDRANT_RETRY_INTERVAL", "10"))
+KB_QDRANT_INIT_TIMEOUT = float(os.getenv("KB_QDRANT_INIT_TIMEOUT", "600"))
 # Дополнительные параметры индексации, не обязательные 
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
 MAP_TRUE = False
@@ -130,18 +135,29 @@ logger.debug(f"Indexer config:\n{idx_config}")
 # ============================================================================
 kb_lock = asyncio.Lock()
 kb_runtime = IndexRuntime()
+qdrant_init_task: asyncio.Task | None = None
 
 
 def get_kb_status() -> Dict:
     """Получить текущий статус KB."""
-    metadata = indexer.get_active_metadata()
+    metadata = indexer.get_active_metadata() if kb_runtime.initialized else {}
     return {
         "initialized": kb_runtime.initialized,
         "index_exists": bool(kb_runtime.initialized),
         "points_count": metadata.get("points_count", 0),
         "document_count": metadata.get("document_count", 0),
         "metadata": metadata,
-        "last_update": kb_runtime.last_update
+        "last_update": kb_runtime.last_update,
+        "qdrant_init": {
+            "use_qdrant": USE_QDRANT,
+            "waiting": USE_QDRANT and not kb_runtime.initialized,
+            "retry_in_progress": bool(
+                qdrant_init_task and not qdrant_init_task.done()
+            ),
+            "retry_interval_sec": KB_QDRANT_RETRY_INTERVAL,
+            "init_timeout_sec": KB_QDRANT_INIT_TIMEOUT,
+            "qdrant_reachable": indexer.is_qdrant_reachable() if USE_QDRANT else None,
+        },
     }
 
 # ============================================================================
@@ -202,6 +218,47 @@ async def background_rebuild_index(target_collection=None):
 # ИНИЦИАЛИЗАЦИЯ KB ПРИ ЗАПУСКЕ
 # ============================================================================
 
+async def qdrant_init_retry_loop() -> None:
+    """
+    Фоновые попытки загрузить KB из Qdrant, пока алиас и коллекция не станут доступны.
+    По истечении KB_QDRANT_INIT_TIMEOUT завершает процесс (restart: unless-stopped / K8s).
+    """
+    if not USE_QDRANT or kb_runtime.initialized:
+        return
+
+    start = time.monotonic()
+    attempt = 0
+    logger.info(
+        f"Фоновое подключение к Qdrant: интервал {KB_QDRANT_RETRY_INTERVAL}s, "
+        f"таймаут {KB_QDRANT_INIT_TIMEOUT}s (0 = без выхода)"
+    )
+
+    while not kb_runtime.initialized:
+        attempt += 1
+        elapsed = time.monotonic() - start
+
+        if KB_QDRANT_INIT_TIMEOUT > 0 and elapsed >= KB_QDRANT_INIT_TIMEOUT:
+            logger.error(
+                f"Таймаут загрузки KB из Qdrant ({KB_QDRANT_INIT_TIMEOUT}s, "
+                f"попыток: {attempt}). Завершение процесса для перезапуска."
+            )
+            sys.exit(1)
+
+        if attempt > 1:
+            logger.info(
+                f"Повторная загрузка KB из Qdrant (попытка {attempt}, "
+                f"прошло {elapsed:.0f}s)..."
+            )
+
+        if await load_state():
+            logger.info(
+                f"✓ KB загружена из Qdrant после {attempt} попыток ({elapsed:.0f}s)"
+            )
+            return
+
+        await asyncio.sleep(KB_QDRANT_RETRY_INTERVAL)
+
+
 async def initialize_kb_on_startup() -> None:
     """
     Инициализация KB при запуске сервера.
@@ -210,6 +267,8 @@ async def initialize_kb_on_startup() -> None:
     1. Если индекс существует на диске - загружаем его
     2. Если документы есть - создаём новый индекс
     3. Если ничего нет - загружаем из источника по умолчанию
+
+    При USE_QDRANT=true только загрузка из Qdrant; при сбое — фоновые повторы.
     """
     logger.info("=" * 70)
     logger.info("ИНИЦИАЛИЗАЦИЯ БАЗЫ ЗНАНИЙ")
@@ -219,6 +278,13 @@ async def initialize_kb_on_startup() -> None:
         # Шаг 1: Пытаемся загрузить существующий индекс
         if await load_state():
             logger.info("✓ KB инициализирована из сохранённого индекса")
+            return
+
+        if USE_QDRANT:
+            logger.warning(
+                "Qdrant/KB недоступны при старте — поиск включится после успешной "
+                f"загрузки (повтор каждые {KB_QDRANT_RETRY_INTERVAL}s)"
+            )
             return
         
         # Шаг 2: Проверяем наличие документов
@@ -871,6 +937,7 @@ original_lifespan = mcp_app.router.lifespan_context
 
 @asynccontextmanager
 async def lifespan(app):
+    global qdrant_init_task
     logger.info("=" * 70)
     logger.info("ИНИЦИАЛИЗАЦИЯ СЕРВЕРА")
     logger.info("=" * 70)
@@ -880,13 +947,29 @@ async def lifespan(app):
         # инициализация KB
         await initialize_kb_on_startup()
 
+        if USE_QDRANT and not kb_runtime.initialized:
+            qdrant_init_task = asyncio.create_task(qdrant_init_retry_loop())
+
         logger.info("=" * 70)
         logger.info(f"MCP KB SEARCH SERVER v{SCRIPT_VERSION} ЗАПУЩЕН")
         logger.info(f"MCP endpoint: {MCP_KBSEARCH}")
         logger.info(f"REST endpoints: /kb/status, /kb/update, /kb/clear")
+        if USE_QDRANT and not kb_runtime.initialized:
+            logger.info(
+                f"Ожидание Qdrant: retry={KB_QDRANT_RETRY_INTERVAL}s, "
+                f"timeout={KB_QDRANT_INIT_TIMEOUT}s"
+            )
         logger.info("=" * 70)
 
         yield  # тут сервер живёт
+
+        if qdrant_init_task and not qdrant_init_task.done():
+            qdrant_init_task.cancel()
+            try:
+                await qdrant_init_task
+            except asyncio.CancelledError:
+                pass
+        qdrant_init_task = None
 
     logger.info("Завершение работы сервера...")
 

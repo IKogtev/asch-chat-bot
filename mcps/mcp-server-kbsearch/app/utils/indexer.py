@@ -119,7 +119,23 @@ class Indexer:
             prefer_grpc=True
         )
         return self._qdrant_client_instance
-    
+
+    def reset_qdrant_client(self) -> None:
+        """Сброс кэшированного клиента после сетевой ошибки (следующий запрос создаст новый)."""
+        self._qdrant_client_instance = None
+
+    def is_qdrant_reachable(self) -> bool:
+        """Проверка доступности Qdrant без загрузки индекса."""
+        if not self.cfg.use_qdrant:
+            return False
+        try:
+            self._get_qdrant_client().get_collections()
+            return True
+        except Exception as e:
+            self.logger.warning(f"Qdrant недоступен: {e}")
+            self.reset_qdrant_client()
+            return False
+
     def ensure_qdrant_collection(self, force_recreate: bool=False, check_collection: Optional[str]=None):
         """
         Проверяет существование коллекции и валидирует её. 
@@ -735,6 +751,7 @@ class Indexer:
             return True
         except Exception as e:
             self.logger.error(f"Runtime reload failed: {e}", exc_info=True)
+            self.reset_qdrant_client()
             return False
     
     def get_retriever_for_collection(self, collection, top_k, filters: dict | None=None):
