@@ -78,12 +78,13 @@ services:
       - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
 
       # Documents paths
-      - ACTIVE_DOCUMENTS_PATH=${ACTIVE_DOCUMENTS_PATH:-kb/}
-      - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
-      - ARCHIVE_DOCUMENTS_PATH=${ARCHIVE_DOCUMENTS_PATH:-archive_kb/}
-      - ARCHIVE_DOCUMENTS_COLLECTION=${ARCHIVE_DOCUMENTS_COLLECTION:-archive_kb_collection}
-      - KB_DOCUMENTS_PATH=${KB_DOCUMENTS_PATH:-knowledge_base/}
-      - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
+      - ACTIVE_DOCUMENTS_PATH=kb/
+      - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
+      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
+      - FAQ_DOCUMENTS_COLLECTION=faq_collection
 
       # Context compaction
       - AGENT_CONTEXT_COMPACTION_INTERVAL=8
@@ -221,13 +222,19 @@ services:
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - QDRANT_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
+      - QDRANT_COLLECTION=kb_collection
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
       - LOG_TO_FILE=false
-      - FAQ_DOCUMENTS_PATH=${FAQ_DOCUMENTS_PATH:-faq/}
-      - FAQ_COLLECTION_NAME=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
+      - ACTIVE_DOCUMENTS_PATH=kb/
+      - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
+      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
+      - FAQ_DOCUMENTS_PATH=faq/
+      - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
       - PLATFORM_VERSION=0.7.0
@@ -292,7 +299,7 @@ services:
       - QDRANT_HOST=qdrant 
       - QDRANT_PORT=6333
       - QDRANT_URL=http://qdrant:6333
-      - QDRANT_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
+      - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
       - KB_QDRANT_RETRY_INTERVAL=${KB_QDRANT_RETRY_INTERVAL:-5}
       - KB_QDRANT_INIT_TIMEOUT=${KB_QDRANT_INIT_TIMEOUT:-60}
@@ -337,7 +344,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_URL=http://qdrant:6333
-      - QDRANT_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
+      - QDRANT_COLLECTION=faq_collection
       - USE_QDRANT=true
       - FAQ_QDRANT_RETRY_INTERVAL=${FAQ_QDRANT_RETRY_INTERVAL:-10}
       - FAQ_QDRANT_INIT_TIMEOUT=${FAQ_QDRANT_INIT_TIMEOUT:-600}
@@ -422,9 +429,9 @@ services:
       - DBHUB_MCP_TOKEN=${DBHUB_MCP_TOKEN:-${MCP_TOKEN}}
       - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
 
-      - ACTIVE_DOCUMENTS_COLLECTION=${ACTIVE_DOCUMENTS_COLLECTION:-kb_collection}
-      - KB_DOCUMENTS_COLLECTION=${KB_DOCUMENTS_COLLECTION:-kb_collection}
-      - FAQ_DOCUMENTS_COLLECTION=${FAQ_DOCUMENTS_COLLECTION:-faq_collection}
+      - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
+      - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
+      - FAQ_DOCUMENTS_COLLECTION=faq_collection
 
       # Context compaction
       - AGENT_CONTEXT_COMPACTION_INTERVAL=8
