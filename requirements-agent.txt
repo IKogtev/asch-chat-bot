@@ -1,4 +1,5 @@
 google-adk
+mcp>=1.24.0,<2.0.0
 litellm==1.81.15
 python-dotenv==1.0.1
 asyncpg==0.31.0

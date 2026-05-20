@@ -26,10 +26,12 @@ class FileStorageService:
         chunk_size: int,
         chunk_overlap: int,
         service_dir: Path,
-        ext_allowed: set
+        ext_allowed: set,
+        qdrant_collection_name: str,
     ):
         self.root = root_path
         self.qdrant = qdrant_service
+        self.qdrant_collection_name = qdrant_collection_name
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.service_dir = service_dir
@@ -67,10 +69,20 @@ class FileStorageService:
                 self.logger.info(f"Ignored path: {rel}")
                 continue
 
-            if path.stat().st_size < 1000:
-                continue
-            if path.suffix.lower() not in self.allowed_ext:
+            suffix = path.suffix.lower()
+            if suffix not in self.allowed_ext:
                 self.logger.debug(f"Skipping unsupported file: {path.name} (suffix: {path.suffix})")
+                continue
+            size = path.stat().st_size
+            # Полностью пустые файлы пропускаем всегда.
+            if size == 0:
+                self.logger.debug(f"Skipping empty file: {path.name}")
+                continue
+            # Для бинарных форматов (.pdf/.docx/.xlsx/.xls) файл < 1 КБ почти наверняка
+            # битый/заглушка — оставляем старую защиту. Для .txt/.md/.csv и картинок
+            # маленький размер — это нормально.
+            if suffix in {".pdf", ".docx", ".xls", ".xlsx"} and size < 1000:
+                self.logger.info(f"Skipping suspiciously small binary file: {path.name} ({size} bytes)")
                 continue
 
 
@@ -139,7 +151,9 @@ class FileStorageService:
         self.logger.info("Starting filesystem sync")  
         try:
             disk_files = self.scan_files(kb_id)
-            indexed_docs = self.qdrant.list_documents()
+            indexed_docs = self.qdrant.list_documents(
+                collection_name=self.qdrant_collection_name
+            )
             indexed_map = {}
             # строим index_map для сопоставления
             for doc in indexed_docs:
@@ -209,7 +223,10 @@ class FileStorageService:
                 # --- Переиндексация если нужно ---
                 if reindex_needed:
                     for doc in stored_docs:
-                        self.qdrant.delete_document(doc["document_id"])
+                        self.qdrant.delete_document(
+                            doc["document_id"],
+                            collection_name=self.qdrant_collection_name,
+                        )
 
                     self._index_file(file, kb_id, collection_type)
         
@@ -219,7 +236,10 @@ class FileStorageService:
                 if filename not in disk_filenames:
                     self.logger.info(f"DELETED FILE: {filename}")
                     for doc in docs:
-                        self.qdrant.delete_document(doc["document_id"])
+                        self.qdrant.delete_document(
+                            doc["document_id"],
+                            collection_name=self.qdrant_collection_name,
+                        )
 
             self.logger.info("Filesystem sync completed")
         except Exception as e:
@@ -257,7 +277,8 @@ class FileStorageService:
             self.qdrant.upload_points_qdrant(
                 documents,
                 docs_count,
-                points_count
+                points_count,
+                collection_name=self.qdrant_collection_name,
             )
         except Exception as e:
             self.logger.error(f"[SYNC SERVICE] Failed to index {file_info.get('filename')}: {e}")
