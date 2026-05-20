@@ -41,7 +41,8 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - `kb_answer` и `smalltalk` допустимы только с `route="kb_answer"`;
     - follow-up intent (`show_more`, `show_all`, `file_download`) не должен содержать `search_query`;
     - `smalltalk` должен иметь пустой `search_query`;
-    - для `doc_search` и `kb_answer` обязателен непустой `search_query`.
+    - для `doc_search` с `intent="doc_search"` ожидается **дословный** текст последнего сообщения пользователя в `search_query` (нормализацию под поиск делает downstream `doc_search_agent`);
+    - для `kb_answer` обязателен непустой `search_query` (может быть нормализован диспетчером).
 
     Возвращает нормализованный словарь с полями:
     - `status`

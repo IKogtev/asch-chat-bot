@@ -2,8 +2,9 @@
 Общий запуск LlmAgent с парсингом JSON в session.state
 для оркестраторов и root.
 """
-import json
 import copy
+import json
+import time
 from typing import Any, AsyncGenerator, Callable, Dict
 
 from google.adk.agents import InvocationContext, LlmAgent
@@ -89,14 +90,21 @@ async def run_json_leaf_agent(
     log_label: str,
     validation_error_user_message: str,
 ) -> AsyncGenerator[Event, None]:
+    _doc_timing = log_label == "doc_search_result_json"
+    _t_llm0 = time.monotonic() if _doc_timing else None
     async for event in agent.run_async(ctx):
         sanitized_event = strip_thought_parts(event)
         if sanitized_event is not None:
             yield sanitized_event
 
+    _llm_ms: float | None = None
+    if _doc_timing and _t_llm0 is not None:
+        _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
+
     raw = str(ctx.session.state.get(output_key) or "").strip()
     logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))
 
+    _t_parse0 = time.monotonic() if _doc_timing else None
     try:
         extracted = extract_json(raw)
         logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
@@ -119,6 +127,14 @@ async def run_json_leaf_agent(
             raw=raw,
             user_message=validation_error_user_message,
         ) from exc
+
+    if _doc_timing and _t_parse0 is not None and _llm_ms is not None:
+        _parse_ms = (time.monotonic() - _t_parse0) * 1000.0
+        logger.debug(
+            "doc_search LLM timing: agent.run_async wall_ms=%.1f; json_extract+validate wall_ms=%.1f",
+            _llm_ms,
+            _parse_ms,
+        )
 
     ctx.session.state[parsed_state_key] = parsed
     logger.debug("%s parsed: %s", log_label, json.dumps(parsed, ensure_ascii=False))
