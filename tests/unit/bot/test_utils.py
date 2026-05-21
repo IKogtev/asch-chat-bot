@@ -65,7 +65,7 @@ def test_markdown_to_safe_html_escapes_html_and_converts_basic_markdown() -> Non
     assert "<i>italic</i>" in result
     assert "<code>code</code>" in result
     assert '<a href="https://example.com">link</a>' in result
-    assert "<b>x</b>" in result
+    assert "&lt;b&gt;x&lt;/b&gt;" in result
 
 
 @pytest.mark.unit
