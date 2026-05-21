@@ -22,7 +22,6 @@ from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.enums import TextFormat
 from maxapi.types import InputMedia
 import hashlib
-from utils.bot_response_format import format_bot_response
 
 # Настройка логгера
 logger = setup_logger('utils_processing', 'utils_processing.log')
@@ -46,8 +45,23 @@ def get_filename(filepath: str) -> str:
     return Path(filepath).name
 
 def markdown_to_safe_html(text: str) -> str:
-    """Конвертация ответа в единый безопасный HTML для Telegram и Max."""
-    return format_bot_response(text)
+    """Конвертация Markdown в безопасный HTML для Telegram"""
+    # Экранируем HTML
+    text = html_module.escape(text)
+    
+    # **bold** -> <b>bold</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    
+    # *italic* -> <i>italic</i> (только если не внутри bold)
+    text = re.sub(r'(?<!</b>)\*([^*]+?)\*(?!<b>)', r'<i>\1</i>', text)
+    
+    # `code` -> <code>code</code>
+    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+    
+    # [text](url) -> <a href="url">text</a>
+    text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
+    
+    return text
 
 def render_results(items: list[dict], total: int, offset: int = 0) -> str:
     """Рендер списка документов (логика общая с агентом doc_search)."""

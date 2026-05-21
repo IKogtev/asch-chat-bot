@@ -805,7 +805,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             bot_action = extract_bot_action(events)
             if isinstance(bot_action, dict) and bot_action.get("type") == "send_product_kit":
                 if work.strip():
-                    final_text = markdown_to_safe_html(work)
+                    is_already_html = "<b>" in work or work.lstrip().startswith("<")
+                    final_text = work if is_already_html else markdown_to_safe_html(work)
                     await bot_res.send(final_text)
                     await eventlogger.log_event(
                         event_type="response",
@@ -857,8 +858,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
 
             # 2. Если это просто текстовый ответ от нейронки
             if work and work.strip():
-                # Приводим ответ агента к единому bot-safe HTML.
-                final_text = markdown_to_safe_html(work)
+                # Проверяем, нужно ли конвертировать Markdown в HTML
+                is_already_html = "<b>" in work or work.lstrip().startswith("<")
+                final_text = work if is_already_html else markdown_to_safe_html(work)
                 response_time = int((time.time() - start_time) * 1000)
                 # Отправляем одной командой для любой платформы!
                 await bot_res.send(final_text)
