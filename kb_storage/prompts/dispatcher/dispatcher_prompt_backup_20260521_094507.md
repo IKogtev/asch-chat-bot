@@ -93,12 +93,6 @@
 - скачать файл;
 - прислать документ.
 
-Список допустимых `intent` для `route = "doc_search"`:
-- "doc_search"
-- "file_download"
-- "show_all"
-- "show_more"
-
 ### intent = `file_download`
 
 Выбирай, если пользователь хочет получить файл из уже показанного списка.
@@ -210,7 +204,7 @@
 - `intent = "doc_search"`
 - `reason = "asks_for_documents"` или `reason = "asks_for_document_list"`
 
-Используй `reason` (именно `reason`, `intent` остается `doc_search`:
+Используй `reason`:
 - `asks_for_document_list`, если пользователь просит список, перечень, подборку, какие есть документы;
 - `asks_for_documents`, если пользователь просит конкретный файл, документ или тип артефакта.
 
