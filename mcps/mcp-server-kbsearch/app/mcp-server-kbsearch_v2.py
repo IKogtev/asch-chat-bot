@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 import re
 import json
 import os, shutil
+import time
+import sys
 
 # вынесенная работа с хранилищем, аналогичная с faq 
 from utils.storager import LocalStorage, SourceType, UpdateMode
@@ -26,6 +28,7 @@ from utils.indexer import Indexer, IndexRuntime, IndexerConfig
 from utils.preprocessors.document_loader import DocumentLoader
 # Используем одинаковую функцию для оптимального логирования качевала из faq идентична
 from utils.logger import setup_logger
+from utils.search_profile import normalize_search_profile, search_profile_config
 
 # ============================================================================
 # КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ
@@ -70,7 +73,11 @@ CHUNK_SIZE = int(os.getenv("KB_CHUNK_SIZE", 512))
 CHUNK_OVERLAP = int(os.getenv("KB_CHUNK_OVERLAP", 50))
 SIMILARITY_TOP_K = int(os.getenv("KB_SIMILARITY_TOP_K", 10))
 SIMILARITY_CUTOFF = float(os.getenv("KB_SIMILARITY_CUTOFF", 0.35))
-SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT",['.txt', '.pdf', '.docx', '.md']))
+SUPPORTED_EXTENSIONS = list(os.getenv("SUPPORTED_EXT", [
+    '.txt', '.pdf', '.docx', '.md',
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.svg', '.ico',
+]))
+# hybrid | dense и RRF-параметры для Qdrant hybrid-коллекций — по search_profile (utils/search_profile.py).
 
 # Qdrant settings
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kb_collection")
@@ -79,6 +86,9 @@ USE_QDRANT = os.getenv("USE_QDRANT", "false").lower() == "true"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "kb_collection_active")
+# Повторное подключение к Qdrant при недоступности на старте
+KB_QDRANT_RETRY_INTERVAL = float(os.getenv("KB_QDRANT_RETRY_INTERVAL", "10"))
+KB_QDRANT_INIT_TIMEOUT = float(os.getenv("KB_QDRANT_INIT_TIMEOUT", "600"))
 # Дополнительные параметры индексации, не обязательные 
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
 MAP_TRUE = False
@@ -130,18 +140,29 @@ logger.debug(f"Indexer config:\n{idx_config}")
 # ============================================================================
 kb_lock = asyncio.Lock()
 kb_runtime = IndexRuntime()
+qdrant_init_task: asyncio.Task | None = None
 
 
 def get_kb_status() -> Dict:
     """Получить текущий статус KB."""
-    metadata = indexer.get_active_metadata()
+    metadata = indexer.get_active_metadata() if kb_runtime.initialized else {}
     return {
         "initialized": kb_runtime.initialized,
         "index_exists": bool(kb_runtime.initialized),
         "points_count": metadata.get("points_count", 0),
         "document_count": metadata.get("document_count", 0),
         "metadata": metadata,
-        "last_update": kb_runtime.last_update
+        "last_update": kb_runtime.last_update,
+        "qdrant_init": {
+            "use_qdrant": USE_QDRANT,
+            "waiting": USE_QDRANT and not kb_runtime.initialized,
+            "retry_in_progress": bool(
+                qdrant_init_task and not qdrant_init_task.done()
+            ),
+            "retry_interval_sec": KB_QDRANT_RETRY_INTERVAL,
+            "init_timeout_sec": KB_QDRANT_INIT_TIMEOUT,
+            "qdrant_reachable": indexer.is_qdrant_reachable() if USE_QDRANT else None,
+        },
     }
 
 # ============================================================================
@@ -202,6 +223,47 @@ async def background_rebuild_index(target_collection=None):
 # ИНИЦИАЛИЗАЦИЯ KB ПРИ ЗАПУСКЕ
 # ============================================================================
 
+async def qdrant_init_retry_loop() -> None:
+    """
+    Фоновые попытки загрузить KB из Qdrant, пока алиас и коллекция не станут доступны.
+    По истечении KB_QDRANT_INIT_TIMEOUT завершает процесс (restart: unless-stopped / K8s).
+    """
+    if not USE_QDRANT or kb_runtime.initialized:
+        return
+
+    start = time.monotonic()
+    attempt = 0
+    logger.info(
+        f"Фоновое подключение к Qdrant: интервал {KB_QDRANT_RETRY_INTERVAL}s, "
+        f"таймаут {KB_QDRANT_INIT_TIMEOUT}s (0 = без выхода)"
+    )
+
+    while not kb_runtime.initialized:
+        attempt += 1
+        elapsed = time.monotonic() - start
+
+        if KB_QDRANT_INIT_TIMEOUT > 0 and elapsed >= KB_QDRANT_INIT_TIMEOUT:
+            logger.error(
+                f"Таймаут загрузки KB из Qdrant ({KB_QDRANT_INIT_TIMEOUT}s, "
+                f"попыток: {attempt}). Завершение процесса для перезапуска."
+            )
+            sys.exit(1)
+
+        if attempt > 1:
+            logger.info(
+                f"Повторная загрузка KB из Qdrant (попытка {attempt}, "
+                f"прошло {elapsed:.0f}s)..."
+            )
+
+        if await load_state():
+            logger.info(
+                f"✓ KB загружена из Qdrant после {attempt} попыток ({elapsed:.0f}s)"
+            )
+            return
+
+        await asyncio.sleep(KB_QDRANT_RETRY_INTERVAL)
+
+
 async def initialize_kb_on_startup() -> None:
     """
     Инициализация KB при запуске сервера.
@@ -210,6 +272,8 @@ async def initialize_kb_on_startup() -> None:
     1. Если индекс существует на диске - загружаем его
     2. Если документы есть - создаём новый индекс
     3. Если ничего нет - загружаем из источника по умолчанию
+
+    При USE_QDRANT=true только загрузка из Qdrant; при сбое — фоновые повторы.
     """
     logger.info("=" * 70)
     logger.info("ИНИЦИАЛИЗАЦИЯ БАЗЫ ЗНАНИЙ")
@@ -219,6 +283,13 @@ async def initialize_kb_on_startup() -> None:
         # Шаг 1: Пытаемся загрузить существующий индекс
         if await load_state():
             logger.info("✓ KB инициализирована из сохранённого индекса")
+            return
+
+        if USE_QDRANT:
+            logger.warning(
+                "Qdrant/KB недоступны при старте — поиск включится после успешной "
+                f"загрузки (повтор каждые {KB_QDRANT_RETRY_INTERVAL}s)"
+            )
             return
         
         # Шаг 2: Проверяем наличие документов
@@ -301,7 +372,6 @@ def overlap_score(text: str, terms: list[str]) -> float:
 def phrase_score(text: str, query: str) -> float:
     text_norm = normalize_text(text)
     query_norm = normalize_text(query)
-    logger.debug(f"Phrase score{text_norm} : {query_norm}")
     if not text_norm or not query_norm:
         return 0.0
     return 1.0 if query_norm in text_norm else 0.0
@@ -374,6 +444,8 @@ def compute_final_score(dense_score: float, lexical_score: float, content: str) 
     penalty = low_info_penalty(content)
     return base - penalty
 
+
+
 # ============================================================================
 # MCP СЕРВЕР И ENDPOINTS
 # ============================================================================
@@ -394,6 +466,11 @@ async def kb_search(
         """] = None,
     top_k: Annotated[int, "Number of results to return (default: SIMILARITY_TOP_K)"] = SIMILARITY_TOP_K,
     include_metadata: Annotated[bool, "Include document metadata in the output"] = True,
+    search_profile: Annotated[
+        str,
+        "Scenario preset: drives hybrid vs dense on Qdrant hybrid collections and RRF tuning. "
+        "Use 'doc_search', 'kb_answer', or 'default'.",
+    ] = "default",
 ):
     """
     Search over pre-indexed files in the internal knowledge base.
@@ -402,10 +479,20 @@ async def kb_search(
     Use this tool when a user asks something that should be matched against the indexed documents.
     `top_k` controls how many matching passages to return.
     Set `include_metadata=True` if document metadata is needed.
+    For Qdrant hybrid collections, `search_profile` selects search mode (`hybrid` vs `dense`) and
+    hybrid RRF tuning via env (see utils/search_profile.py: KB_DEFAULT_SEARCH_MODE, KB_SEARCH_MODE_*,
+    KB_RRF_K_*, KB_CANDIDATE_MULT_*, KB_HYBRID_*).
 
     Not for web search or database queries. Only searches the pre-indexed documents.
     """
-    logger.info(f"Поиск: '{query}' (top_k={top_k}), collection={collection}, filters={filters}")
+    profile = normalize_search_profile(search_profile)
+    profile_cfg = search_profile_config(profile)
+    logger.info(
+        f"Поиск: '{query}' (top_k={top_k}, search_profile={profile}, "
+        f"search_mode={profile_cfg.search_mode}, rrf_k={profile_cfg.rrf_k}, "
+        f"candidate_mult={profile_cfg.candidate_mult}), "
+        f"collection={collection}, filters={filters}"
+    )
 
     async with kb_lock:
         if not kb_runtime.initialized or not indexer.retriever:
@@ -426,111 +513,85 @@ async def kb_search(
             return res
    
         try:
-            candidate_k = max(top_k * 5, 30)
-            retriever = indexer.get_retriever_for_collection(collection, candidate_k, filters)
-            nodes = retriever.retrieve(query)
+            if indexer.cfg.use_qdrant and indexer.hybrid_search_enabled(collection):
+                if profile_cfg.search_mode == "dense":
+                    print("Ищем в dense коллекции")
+                    rows = indexer.hybrid_dense_search(
+                        query, collection, filters, int(top_k * 1.5), search_profile=profile
+                    )
+                else:
+                    print("Ищем в гибридной коллекции")
+                    rows = indexer.hybrid_search_rrf(
+                        query, collection, filters, int(top_k*1.5), search_profile=profile
+                    )
+                    
+                if not rows:
+                    res = ToolResult(
+                        content="Ничего не найдено",
+                        structured_content=None,
+                    )
+                    res.isError = False
+                    return res
 
-            if not nodes:
-                res = ToolResult(
-                    content="Ничего не найдено",   
-                    structured_content=None
+                results = []
+                for i, item in enumerate(rows):
+                    metadata = dict(item.get("metadata") or {})
+                    metadata["relative_path"] = get_file_link(
+                        metadata.get("source", ""),
+                        metadata.get("section_path", []),
+                    )
+                    entry = {
+                        "rank": i,
+                        "score": item["score"],
+                        "dense_score": item.get("dense_score"),
+                        "sparse_score": item.get("sparse_score"),
+                        "lexical_score": None,
+                        "content": item["text"],
+                        "metadata": metadata,
+                    }
+                    results.append(entry)
+
+                logger.info(
+                    f"Найдено {len(results)} результатов (Qdrant hybrid, mode={profile_cfg.search_mode})"
                 )
-                res.isError = False
-                return res
 
-            rescored = []
-            for node in nodes:
-                content = node.get_content()
-                metadata = node.metadata or {}
-                dense_score = float(node.score or 0.0)
-                lexical_score = compute_lexical_score(query, content, metadata)
-                final_score = compute_final_score(dense_score, lexical_score, content)
+                def build_prompt_hybrid(results: list[dict], question: str) -> str:
+                    blocks = []
+                    doc_res = {}
+                    for item in results:
+                        meta = item.get("metadata") or {}
+                        doc_id = meta.get("document_id") or meta.get("chunk_id") or f"row_{item['rank']}"
+                        if doc_id not in doc_res.keys():
+                            doc_res.update({doc_id: item})
+                        else:
+                            doc_res[doc_id]["content"] += "\n...\n" + item["content"]
+                            doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
 
-                rescored.append({
-                    "node": node,
-                    "dense_score": dense_score,
-                    "lexical_score": lexical_score,
-                    "final_score": final_score,
-                })
+                    logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
+                    i=0
+                    for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
+                        text = item["content"].strip()
+                        metadata = item.get("metadata", {})
+  
+                        relative_path = metadata.get("relative_path", "")
+                        source = metadata.get("source", "")
 
-            rescored.sort(key=lambda x: x["final_score"], reverse=True)
-            rescored = rescored[:top_k]
-
-            results = []
-            for i, item in enumerate(rescored):
-                node = item["node"]
-                result = {
-                    "rank": i,
-                    "score": item["final_score"],
-                    "dense_score": item["dense_score"],
-                    "lexical_score": item["lexical_score"],
-                    "content": node.get_content(),
-                }
-
-                if include_metadata:
-                    result["metadata"] = node.metadata or {}
-                if item["final_score"]>=SIMILARITY_CUTOFF:
-                    results.append(result)
-
-            logger.info(f"Найдено {len(results)} результатов после hybrid rerank")
-
-            for res in results:
-                metadata = res.get("metadata") or {}
-                metadata["relative_path"] = get_file_link(
-                    metadata.get("source", ""),
-                    metadata.get("section_path", [])
-                )
-                res["metadata"] = metadata
-
-            
-
-            def cleanup_label(text: str) -> str:
-                text = re.sub(r"^\d+[_\-\s]*", "", text)
-                return text.strip()
-
-            def make_title(metadata: dict) -> str:
-                section = metadata.get("section_path", [])
-                source = metadata.get("source", "")
-
-                cleaned = [cleanup_label(x) for x in section if x]
-
-                if len(cleaned) >= 2:
-                    return " — ".join(cleaned[-2:])
-                if cleaned:
-                    return cleaned[-1]
-                return source
-            
-            def build_prompt(results: list[dict], question: str) -> str:
-                blocks = []
-                doc_res = {}
-                for item in results:
-                    doc_id = item["metadata"]["document_id"]
-                    if not doc_id in doc_res.keys():
-                        doc_res.update({doc_id:item})
-                    else:
-                        doc_res[doc_id]["content"] += "\n..." + item["content"]
-                        doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
-                        
-                logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
-                
-                for i, (doc_id, item) in enumerate(sorted(doc_res.items(), key=lambda item: item[1]["rank"])):
-                    text = item["content"].strip()
-                    metadata = item.get("metadata", {})
-                    title = make_title(metadata)
-                    relative_path = metadata.get("relative_path", "")
-
-                    block = f"""rank [{i+1}] {title}
+                        block = f"""rank [{i+1}] FILE_NAME: {source}
 RELATIVE_PATH: {relative_path}
 
 DOCUMENT_ID: {doc_id}
 
+TEXT:
 {text}
 """
-                    blocks.append(block)
+                        blocks.append(block)
+                        i+=1
+                        if i==top_k:
+                            break
 
-                context = "\n---\n\n".join(blocks)
+                    context = "\n---\n\n".join(blocks)
 
-                return f"""Используй только информацию из CONTEXT.
+                    return f"""Используй только информацию из CONTEXT.
 Если ответа нет в контексте не придумывай сам.
 
 CONTEXT
@@ -539,22 +600,33 @@ CONTEXT
 QUESTION
 {question}
 """
-            prompt = build_prompt(results, query)
-            res = ToolResult(
-                            content=prompt,
-                            structured_content=None
-                                            )
-            res.isError = False
-            return res
 
+                prompt = build_prompt_hybrid(results, query)
+                logger.debug(f"res:\n{prompt}")
+                res = ToolResult(
+                    content=prompt,
+                    structured_content=None,
+                )
+                res.isError = False
+                return res
+            elif indexer.cfg.use_qdrant and not indexer.hybrid_search_enabled(collection):
+                res = ToolResult(
+                    content="Коллекция не является гибридной. Удалите коллекцию и перезапустите kb_manager.",
+                    structured_content=None,
+                )
+                res.isError = True
+                return res
+            else:
+                res = ToolResult(
+                    content="Коллекция не найдена. Убедитесь что коллекция существует и перезапустите контейнер.",
+                    structured_content=None,
+                )
+                res.isError = True
+                return res
         except Exception as e:
-            logger.error(f"Ошибка при поиске: {e}", exc_info=True)
-            res = ToolResult(
-            content=f"Ошибка при поиске: {e}",
-            structured_content=None
-        )
-            res.isError = True
-            return res
+            logger.debug(f"Ошибка поиска: {e}")
+            raise e
+            
 @mcp.tool()
 async def get_kb_info() -> Dict:
     """
@@ -871,6 +943,7 @@ original_lifespan = mcp_app.router.lifespan_context
 
 @asynccontextmanager
 async def lifespan(app):
+    global qdrant_init_task
     logger.info("=" * 70)
     logger.info("ИНИЦИАЛИЗАЦИЯ СЕРВЕРА")
     logger.info("=" * 70)
@@ -880,13 +953,29 @@ async def lifespan(app):
         # инициализация KB
         await initialize_kb_on_startup()
 
+        if USE_QDRANT and not kb_runtime.initialized:
+            qdrant_init_task = asyncio.create_task(qdrant_init_retry_loop())
+
         logger.info("=" * 70)
         logger.info(f"MCP KB SEARCH SERVER v{SCRIPT_VERSION} ЗАПУЩЕН")
         logger.info(f"MCP endpoint: {MCP_KBSEARCH}")
         logger.info(f"REST endpoints: /kb/status, /kb/update, /kb/clear")
+        if USE_QDRANT and not kb_runtime.initialized:
+            logger.info(
+                f"Ожидание Qdrant: retry={KB_QDRANT_RETRY_INTERVAL}s, "
+                f"timeout={KB_QDRANT_INIT_TIMEOUT}s"
+            )
         logger.info("=" * 70)
 
         yield  # тут сервер живёт
+
+        if qdrant_init_task and not qdrant_init_task.done():
+            qdrant_init_task.cancel()
+            try:
+                await qdrant_init_task
+            except asyncio.CancelledError:
+                pass
+        qdrant_init_task = None
 
     logger.info("Завершение работы сервера...")
 

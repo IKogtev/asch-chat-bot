@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 
 #  LlamaIndex
 from llama_index.core import VectorStoreIndex, Settings
@@ -20,6 +20,18 @@ from qdrant_client.http.models import (
 # утилиты
 from utils.utillites import RemoteEmbedding, chunk_id_to_uuid, meta_id_for_collection
 from utils.logger import setup_logger
+from utils.rrf import reciprocal_rank_fusion
+from utils.search_profile import hybrid_rrf_params_for_profile
+from utils.qdrant_search_filters import build_hybrid_qdrant_filter
+from utils.qdrant_hybrid import (
+    DENSE_VECTOR_NAME,
+    SPARSE_VECTOR_NAME,
+    bm25_document_text,
+    collection_hybrid_mode,
+    hybrid_collection_create_kwargs,
+    meta_point_vectors,
+    sparse_embedding_to_vector,
+)
 from dataclasses import dataclass, field
 
 @dataclass
@@ -78,7 +90,8 @@ class Indexer:
             api_key=str(self.cfg.embed_api_key),
             model_name=str(self.cfg.embed_model_name),
         )
-        
+        self._sparse_embedder = None
+
         self.node_parser = SentenceSplitter(
             chunk_size=self.cfg.chunk_size,
             chunk_overlap=self.cfg.chunk_overlap
@@ -119,6 +132,22 @@ class Indexer:
             prefer_grpc=True
         )
         return self._qdrant_client_instance
+
+    def reset_qdrant_client(self) -> None:
+        """Сброс кэшированного клиента после сетевой ошибки (следующий запрос создаст новый)."""
+        self._qdrant_client_instance = None
+
+    def is_qdrant_reachable(self) -> bool:
+        """Проверка доступности Qdrant без загрузки индекса."""
+        if not self.cfg.use_qdrant:
+            return False
+        try:
+            self._get_qdrant_client().get_collections()
+            return True
+        except Exception as e:
+            self.logger.warning(f"Qdrant недоступен: {e}")
+            self.reset_qdrant_client()
+            return False
     
     def ensure_qdrant_collection(self, force_recreate: bool=False, check_collection: Optional[str]=None):
         """
@@ -137,8 +166,14 @@ class Indexer:
             # eсли коллекция существует
             self.logger.info(f"Qdrant collection '{col_name}' exists, validating...")
             info = client.get_collection(col_name)
-            existing_size = info.config.params.vectors.size
-            existing_distance = info.config.params.vectors.distance
+            vecs = info.config.params.vectors
+            if isinstance(vecs, dict) and DENSE_VECTOR_NAME in vecs:
+                dparams = vecs[DENSE_VECTOR_NAME]
+                existing_size = dparams.size
+                existing_distance = dparams.distance
+            else:
+                existing_size = vecs.size
+                existing_distance = vecs.distance
             # проверяем что размер вектора и дистанция которую использует коллекция одинакова с той,
             #  которую мы пытались создать
             if existing_size != vector_size or existing_distance != distance:
@@ -209,6 +244,8 @@ class Indexer:
         """функция для вставки документов в qdrant с батчингом эмбеддингов."""
         client = self._get_qdrant_client()
         total = len(docs_texts)
+        hybrid = collection_hybrid_mode(client, collection_name) == "hybrid"
+        sparse_model = self._get_sparse_embedder() if hybrid else None
         self.logger.info(f"Начинаем upsert {total} чанков (batch_size={batch_size})...")
         # разбиваем на пакеты
         for i in range(0, total, batch_size):
@@ -217,6 +254,18 @@ class Indexer:
             texts_batch = [item['text'] for item in batch]
             # генерируем эмбеддинги пачкой один запрос к API вместо 50
             embeddings_batch = self.embed_model.get_text_embedding_batch(texts_batch)
+            sparse_batch = None
+            if hybrid and sparse_model is not None:
+                sparse_texts = [
+                    bm25_document_text(
+                        item.get("text") or "",
+                        (item.get("meta") or {}).get("section_path"),
+                        (item.get("meta") or {}).get("source")
+                    )
+                    or " "
+                    for item in batch
+                ]
+                sparse_batch = list(sparse_model.embed(sparse_texts))
             points = []
             for j, item in enumerate(batch):
                 meta = item.get("meta", {})
@@ -226,16 +275,192 @@ class Indexer:
                 # генерация UUID
                 point_id = chunk_id_to_uuid(chunk_id)
                 payload = self._build_qdrant_payload(item)
+                if hybrid and sparse_batch is not None:
+                    vec = {
+                        DENSE_VECTOR_NAME: embeddings_batch[j],
+                        SPARSE_VECTOR_NAME: sparse_embedding_to_vector(sparse_batch[j]),
+                    }
+                else:
+                    vec = embeddings_batch[j]
                 points.append(
                     PointStruct(
                         id=point_id,
-                        vector=embeddings_batch[j], # берем вектор из пачки пакетов 
+                        vector=vec,
                         payload=payload, 
                     )
                 )
             # вставляем подготовленные точки в qdrant 
             client.upsert(collection_name=collection_name, points=points)
         self.logger.info("Upsert complete")
+
+    def _get_sparse_embedder(self):
+        if self._sparse_embedder is None:
+            from fastembed import SparseTextEmbedding
+
+            lang = os.getenv("SPARSE_BM25_LANGUAGE", "russian")
+            _local_only = os.getenv("FASTEMBED_LOCAL_FILES_ONLY", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            self._sparse_embedder = SparseTextEmbedding(
+                model_name="Qdrant/bm25",
+                language=lang,
+                local_files_only=_local_only,
+            )
+        return self._sparse_embedder
+
+    def _resolve_search_collection_name(self, collection: Optional[str]) -> str:
+        client = self._get_qdrant_client()
+        collection_name = collection
+        if collection_name is None:
+            collection_name = self.get_active_collection()
+        if collection_name is None:
+            collection_name = self.cfg.qdrant_alias
+        if not client.collection_exists(collection_name):
+            collection_name = self.get_active_collection() or self.cfg.qdrant_collection
+        return collection_name
+
+    def hybrid_search_enabled(self, collection: Optional[str]) -> bool:
+        if not self.cfg.use_qdrant:
+            return False
+        client = self._get_qdrant_client()
+        name = self._resolve_search_collection_name(collection)
+        return collection_hybrid_mode(client, name) == "hybrid"
+
+    def hybrid_search_rrf(
+        self,
+        query: str,
+        collection: Optional[str],
+        filters: Optional[Dict[str, Any]],
+        top_k: int,
+        search_profile: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Dense + sparse BM25 in Qdrant, merged with RRF (same contract as kb-manager search)."""
+        client = self._get_qdrant_client()
+        collection_name = self._resolve_search_collection_name(collection)
+        if collection_hybrid_mode(client, collection_name) != "hybrid":
+            raise ValueError("Collection is not hybrid-indexed")
+
+        q_filter = build_hybrid_qdrant_filter(filters, search_profile)
+
+        rrf_k, candidate_mult = hybrid_rrf_params_for_profile(search_profile or "default")
+        fetch = max(top_k * candidate_mult, 100)
+
+        query_vector = self.embed_model.get_text_embedding_batch([query])[0]
+        sparse_model = self._get_sparse_embedder()
+        q_sparse = list(sparse_model.query_embed(query or " "))
+        if not q_sparse:
+            return []
+        sparse_vec = sparse_embedding_to_vector(q_sparse[0])
+
+        dresp = client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            using=DENSE_VECTOR_NAME,
+            limit=fetch,
+            query_filter=q_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        sresp = client.query_points(
+            collection_name=collection_name,
+            query=sparse_vec,
+            using=SPARSE_VECTOR_NAME,
+            limit=fetch,
+            query_filter=q_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        dense_ids = [h.id for h in (dresp.points or [])]
+        sparse_ids = [h.id for h in (sresp.points or [])]
+        fused = reciprocal_rank_fusion([dense_ids, sparse_ids], k=rrf_k)
+        hit_map: Dict[Any, Any] = {}
+        for h in (dresp.points or []) + (sresp.points or []):
+            if h.id not in hit_map:
+                hit_map[h.id] = h
+        dense_score_by_id = {
+            h.id: float(h.score) for h in (dresp.points or []) if h.score is not None
+        }
+        sparse_score_by_id = {
+            h.id: float(h.score) for h in (sresp.points or []) if h.score is not None
+        }
+
+        out: List[Dict[str, Any]] = []
+        for pid, rrf_score in fused[:top_k]:
+            hit = hit_map.get(pid)
+            if not hit:
+                continue
+            payload = hit.payload or {}
+            out.append({
+                "text": payload.get("text", ""),
+                "metadata": dict(payload),
+                "score": float(rrf_score),
+                "rrf_score": float(rrf_score),
+                "dense_score": dense_score_by_id.get(pid),
+                "sparse_score": sparse_score_by_id.get(pid),
+            })
+        return out
+
+    def hybrid_dense_search(
+        self,
+        query: str,
+        collection: Optional[str],
+        filters: Optional[Dict[str, Any]],
+        top_k: int,
+        search_profile: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Только dense по именованному вектору (коллекция hybrid, sparse в индексе не используется в запросе)."""
+        client = self._get_qdrant_client()
+        collection_name = self._resolve_search_collection_name(collection)
+        if collection_hybrid_mode(client, collection_name) != "hybrid":
+            raise ValueError("Collection is not hybrid-indexed")
+
+        q_filter = build_hybrid_qdrant_filter(filters, search_profile)
+
+        query_vector = self.embed_model.get_text_embedding_batch([query])[0]
+        resp = client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            using=DENSE_VECTOR_NAME,
+            limit=top_k,
+            query_filter=q_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        out: List[Dict[str, Any]] = []
+        for hit in resp.points or []:
+            payload = hit.payload or {}
+            sc = float(hit.score) if hit.score is not None else 0.0
+            out.append({
+                "text": payload.get("text", ""),
+                "metadata": dict(payload),
+                "score": sc,
+                "rrf_score": None,
+                "dense_score": sc,
+                "sparse_score": None,
+            })
+        return out
+
+    def _qdrant_vector_store(
+        self,
+        client,
+        collection_name: str,
+        filters=None,
+        mode_check_name: Optional[str] = None,
+    ):
+        kwargs: Dict[str, Any] = {"client": client, "collection_name": collection_name}
+        if filters is not None:
+            kwargs["filters"] = filters
+        mode_name = mode_check_name or collection_name
+        if collection_hybrid_mode(client, mode_name) == "hybrid":
+            kwargs["vector_name"] = DENSE_VECTOR_NAME
+        try:
+            return QdrantVectorStore(**kwargs)
+        except TypeError:
+            kwargs.pop("vector_name", None)
+            return QdrantVectorStore(**kwargs)
 
     def create_and_persist_index(self, docs_texts: List[Dict], doc_counter: int, points_count: int, target_collection: Optional[str]=None) -> bool:
         """
@@ -254,7 +479,7 @@ class Indexer:
                 self.logger.info(f"Используем Qdrant: {self.cfg.qdrant_host}:{self.cfg.qdrant_port}, collection={actual_collection}")
                 client = self._get_qdrant_client()
                 self.upsert_docs(docs_texts, actual_collection)
-                vector_store = QdrantVectorStore(client=client, collection_name=actual_collection)
+                vector_store = self._qdrant_vector_store(client, actual_collection)
                 self.index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embed_model)
                 self.logger.info("Векторы успешно загружены в Qdrant")
             else:
@@ -452,6 +677,8 @@ class Indexer:
         else:
             payload={}
         payload.update(updates)
+        payload["text"] = payload.get("text") or "__collection_meta__"
+        payload["__type__"] = self.collection_meta_type
         payload["last_updated"] = datetime.now().isoformat()
         client.upsert(
             collection_name=collection_name,
@@ -497,10 +724,12 @@ class Indexer:
         limit = int(payload.get("limit", 10))
         offset = payload.get("offset", None) # добавление пагинации
         conditions = []
-        must_not_conditions =FieldCondition(
-                        key="__type__",
-                        match=MatchValue(value=self.collection_meta_type),
-                    )
+        must_not_conditions = [
+            FieldCondition(
+                key="__type__",
+                match=MatchValue(value=self.collection_meta_type),
+            )
+        ]
         if category:
             conditions.append(
                 FieldCondition(
@@ -515,7 +744,7 @@ class Indexer:
                     match=MatchValue(value=kb_id)
                 )
             )
-        q_filter = Filter(must=conditions, must_not=must_not_conditions) if conditions else None
+        q_filter = Filter(must=conditions, must_not=must_not_conditions)
         try:
             client = self._get_qdrant_client()
             #  scroll листает базу
@@ -557,16 +786,17 @@ class Indexer:
         if client.collection_exists(collection_name):
             self.logger.info(f"Коллекция Qdrant '{collection_name}' уже существует, пропускаем создание")
             return False
+        create_kwargs = hybrid_collection_create_kwargs(
+            self._resolve_embedding_dim(),
+            Distance[self.cfg.distance_metric],
+        )
+        create_kwargs["on_disk_payload"] = True
+        create_kwargs["optimizers_config"] = OptimizersConfigDiff(
+            indexing_threshold=20000
+        )
         client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=self._resolve_embedding_dim(),
-                distance=Distance[self.cfg.distance_metric]
-            ),
-            on_disk_payload=True,
-            optimizers_config=OptimizersConfigDiff(
-                indexing_threshold=20000
-            )
+            **create_kwargs,
         )
         self._init_collection_meta(collection_name)
         self.logger.info(f"Создана новая коллекция: {collection_name}")
@@ -578,6 +808,7 @@ class Indexer:
         vector_size = self._resolve_embedding_dim()
         meta_id = meta_id_for_collection(collection_name)
         payload = {
+            "text": "__collection_meta__",
             "__type__": self.collection_meta_type,
             "index_status": "empty",
             "document_count": 0,
@@ -595,12 +826,14 @@ class Indexer:
                 "vector_size": vector_size,
             }
         }
+        mode = collection_hybrid_mode(client, collection_name)
+        vector = meta_point_vectors(vector_size, mode)
         client.upsert(
             collection_name=collection_name,
             points=[
                 PointStruct(
                     id=meta_id,
-                    vector=[0.0] * vector_size,
+                    vector=vector,
                     payload=payload
                 )
             ]
@@ -720,7 +953,9 @@ class Indexer:
                 return False
             self.logger.info(f"Reloading runtime from active collection: {active_collection}")
             client = self._get_qdrant_client()
-            vector_store = QdrantVectorStore(client=client, collection_name=self.cfg.qdrant_alias) # читаем через alias
+            vector_store = self._qdrant_vector_store(
+                client, self.cfg.qdrant_alias, mode_check_name=active_collection
+            )
             index = VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=self.embed_model)
             retriever = index.as_retriever(similarity_top_k=self.cfg.similarity_top_k, similarity_cutoff=self.cfg.similarity_cutoff)
             self.index = index
@@ -730,6 +965,7 @@ class Indexer:
             return True
         except Exception as e:
             self.logger.error(f"Runtime reload failed: {e}", exc_info=True)
+            self.reset_qdrant_client()
             return False
     
     def get_retriever_for_collection(self, collection, top_k, filters: dict | None=None):
@@ -754,11 +990,21 @@ class Indexer:
                 )
             if conditions:
                 qdrant_filter = Filter(must=conditions)
+        meta_exclusion = [
+            FieldCondition(
+                key="__type__",
+                match=MatchValue(value=self.collection_meta_type)
+            )
+        ]
+        if qdrant_filter:
+            qdrant_filter.must_not = (qdrant_filter.must_not or []) + meta_exclusion
+        else:
+            qdrant_filter = Filter(must_not=meta_exclusion)
         vector_store = QdrantVectorStore(
             client=client,
             collection_name=collection_name,
             filters=qdrant_filter)
-        index = VectorStoreIndex.from_vector_store(vector_store)
+        index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embed_model)
 
         return index.as_retriever(similarity_top_k=top_k, similarity_cutoff=self.cfg.similarity_cutoff)
 

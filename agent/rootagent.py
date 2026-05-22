@@ -15,6 +15,7 @@ from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
+from .agents.product_selection_agent import validate_product_selection_result
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -44,6 +45,7 @@ class RootAgent(BaseAgent):
     dispatcher_agent: LlmAgent
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
+    product_selection_agent: LlmAgent
     faq_collection: str
     kb_collection: str
 
@@ -56,6 +58,7 @@ class RootAgent(BaseAgent):
         dispatcher_agent: LlmAgent,
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
+        product_selection_agent: LlmAgent,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
     ):
@@ -65,6 +68,7 @@ class RootAgent(BaseAgent):
             dispatcher_agent=dispatcher_agent,
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
+            product_selection_agent=product_selection_agent,
             faq_collection=faq_collection,
             kb_collection=kb_collection,
             sub_agents=[
@@ -72,6 +76,7 @@ class RootAgent(BaseAgent):
                 dispatcher_agent,
                 doc_search_orchestrator,
                 kb_answer_agent,
+                product_selection_agent,
             ],
         )
 
@@ -289,7 +294,9 @@ class RootAgent(BaseAgent):
                     "_dispatcher_result_parsed",
                     "_doc_search_result_parsed",
                     "_kb_answer_result_parsed",
+                    "_product_selection_result_parsed",
                     "_root_final_text",
+                    "_bot_action",
                 ],
             )
 
@@ -407,6 +414,18 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
 
+            if dispatch["route"] == "product_selection":
+                async for event in self._handle_product_selection(
+                    ctx,
+                    user_text,
+                    dispatch["search_query"],
+                    dispatch["intent"],
+                ):
+                    yield event
+                final_text = self._get_required_state_text(ctx, "_root_final_text")
+                yield self._build_final_event_with_history(ctx, user_text, final_text)
+                return
+
             async for event in self._handle_kb_answer(
                 ctx,
                 user_text,
@@ -481,3 +500,51 @@ class RootAgent(BaseAgent):
 
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
+
+    async def _handle_product_selection(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        search_query: str,
+        intent: str,
+    ) -> AsyncGenerator[Event, None]:
+        effective_search_query = (search_query or user_message).strip()
+        logger.info(
+            "product_selection route: query=%s intent=%s",
+            truncate_for_log(effective_search_query, 300),
+            intent,
+        )
+
+        user_profile = self._get_user_profile(ctx)
+        for key, value in user_profile.items():
+            ctx.session.state[key] = value
+        ctx.session.state["product_selection_intent"] = intent
+        ctx.session.state["product_selection_search_query"] = effective_search_query
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.product_selection_agent,
+            output_key="product_selection_result_json",
+            parsed_state_key="_product_selection_result_parsed",
+            validator=validate_product_selection_result,
+            log_label="product_selection_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+        ):
+            yield event
+
+        product_selection = self._get_required_state_dict(ctx, "_product_selection_result_parsed")
+        ctx.session.state["_root_final_text"] = format_text_answer(product_selection["message"])
+
+        if product_selection["mode"] == "product_kit":
+            resolved_product = product_selection.get("resolved_product") or {}
+            product_id = str(resolved_product.get("id") or "").strip()
+            product_name = str(resolved_product.get("name") or "").strip()
+            if product_id:
+                ctx.session.state["_bot_action"] = {
+                    "type": "send_product_kit",
+                    "product_id": product_id,
+                    "product_name": product_name,
+                }
+                return
+
+        ctx.session.state.pop("_bot_action", None)
