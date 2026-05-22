@@ -38,6 +38,9 @@ tsconfig.json
 test-results/
 playwright.config.ts
 __pycache__
+.test_tmp/
+.tmp/
+.tmp_adk/
 
 # Adk agent tester
 *.xlsx
