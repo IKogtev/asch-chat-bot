@@ -2,6 +2,8 @@
 import os, shutil
 import re
 import asyncio
+import time
+import sys
 from pathlib import Path
 from typing import Annotated, Dict, Optional
 from datetime import datetime
@@ -83,6 +85,9 @@ USE_QDRANT = os.getenv("USE_QDRANT", "false").lower() == "true"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "faq_collection_active")
+# Повторное подключение к Qdrant при недоступности на старте
+FAQ_QDRANT_RETRY_INTERVAL = float(os.getenv("FAQ_QDRANT_RETRY_INTERVAL", "10"))
+FAQ_QDRANT_INIT_TIMEOUT = float(os.getenv("FAQ_QDRANT_INIT_TIMEOUT", "600"))
 # Дополнительные параметры индексации, не обязательные 
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
 MAP_TRUE = True
@@ -128,13 +133,14 @@ indexer = Indexer(idx_config)
 # -------------------------
 faq_lock = asyncio.Lock()
 faq_runtime = IndexRuntime()
+qdrant_init_task: asyncio.Task | None = None
 
 # -------------------------
 # СТАТУС FAQ
 # -------------------------
 def get_faq_status() -> Dict:
     """Получить текущий статус FAQ."""
-    metadata = indexer.get_active_metadata()
+    metadata = indexer.get_active_metadata() if faq_runtime.initialized else {}
     # documents_count соответствует количеству вопросов которые в индексе
     return {
         "initialized": faq_runtime.initialized,
@@ -142,6 +148,16 @@ def get_faq_status() -> Dict:
         "documents_count": metadata.get("documents_count", 0),
         "metadata": metadata,
         "last_update": faq_runtime.last_update,
+        "qdrant_init": {
+            "use_qdrant": USE_QDRANT,
+            "waiting": USE_QDRANT and not faq_runtime.initialized,
+            "retry_in_progress": bool(
+                qdrant_init_task and not qdrant_init_task.done()
+            ),
+            "retry_interval_sec": FAQ_QDRANT_RETRY_INTERVAL,
+            "init_timeout_sec": FAQ_QDRANT_INIT_TIMEOUT,
+            "qdrant_reachable": indexer.is_qdrant_reachable() if USE_QDRANT else None,
+        },
     }
 
 # --------- 
@@ -199,6 +215,47 @@ async def background_rebuild_index(target_collection=None):
 # -------------------------
 # ИНИЦИАЛИЗАЦИЯ ПРИ ЗАПУСКЕ
 # -------------------------
+async def qdrant_init_retry_loop() -> None:
+    """
+    Фоновые попытки загрузить FAQ из Qdrant, пока алиас и коллекция не станут доступны.
+    По истечении FAQ_QDRANT_INIT_TIMEOUT завершает процесс (restart: unless-stopped / K8s).
+    """
+    if not USE_QDRANT or faq_runtime.initialized:
+        return
+
+    start = time.monotonic()
+    attempt = 0
+    logger.info(
+        f"Фоновое подключение к Qdrant: интервал {FAQ_QDRANT_RETRY_INTERVAL}s, "
+        f"таймаут {FAQ_QDRANT_INIT_TIMEOUT}s (0 = без выхода)"
+    )
+
+    while not faq_runtime.initialized:
+        attempt += 1
+        elapsed = time.monotonic() - start
+
+        if FAQ_QDRANT_INIT_TIMEOUT > 0 and elapsed >= FAQ_QDRANT_INIT_TIMEOUT:
+            logger.error(
+                f"Таймаут загрузки FAQ из Qdrant ({FAQ_QDRANT_INIT_TIMEOUT}s, "
+                f"попыток: {attempt}). Завершение процесса для перезапуска."
+            )
+            sys.exit(1)
+
+        if attempt > 1:
+            logger.info(
+                f"Повторная загрузка FAQ из Qdrant (попытка {attempt}, "
+                f"прошло {elapsed:.0f}s)..."
+            )
+
+        if await load_state():
+            logger.info(
+                f"✓ FAQ загружена из Qdrant после {attempt} попыток ({elapsed:.0f}s)"
+            )
+            return
+
+        await asyncio.sleep(FAQ_QDRANT_RETRY_INTERVAL)
+
+
 async def initialize_faq_on_startup() -> None:
     """
     Инициализация FAQ при запуске сервера.
@@ -207,6 +264,8 @@ async def initialize_faq_on_startup() -> None:
     1. Если индекс существует на диске - загружаем его
     2. Если документы есть - создаём новый индекс
     3. Если ничего нет - загружаем из источника по умолчанию
+
+    При USE_QDRANT=true только загрузка из Qdrant; при сбое — фоновые повторы.
     """
     logger.info("=" * 70)
     logger.info("ИНИЦИАЛИЗАЦИЯ FAQ RAG ПРИ СТАРТЕ")
@@ -216,6 +275,14 @@ async def initialize_faq_on_startup() -> None:
         if await load_state():
             logger.info("✓ FAQ инициализирована из сохранённого индекса")
             return
+
+        if USE_QDRANT:
+            logger.warning(
+                "Qdrant/FAQ недоступны при старте — поиск включится после успешной "
+                f"загрузки (повтор каждые {FAQ_QDRANT_RETRY_INTERVAL}s)"
+            )
+            return
+
         # 2 - Проверка наличия документов
         doc_count = len(list(FAQ_DOCUMENTS_DIR.rglob("*.*")))
         if doc_count > 0:
@@ -682,16 +749,34 @@ lifespan_original = mcp_app.router.lifespan_context
 
 @asynccontextmanager
 async def lifespan(app):
+    global qdrant_init_task
     logger.info("=" * 70)
     logger.info("ИНИЦИАЛИЗАЦИЯ СЕРВЕРА FAQ-RAG")
     logger.info("=" * 70)
     # КРИТИЧНО - запускаем StreamableHTTPSessionManager
     async with lifespan_original(app):
         await initialize_faq_on_startup()
+
+        if USE_QDRANT and not faq_runtime.initialized:
+            qdrant_init_task = asyncio.create_task(qdrant_init_retry_loop())
+
         logger.info("=" * 70)
         logger.info("✓ Сервер готов")
+        if USE_QDRANT and not faq_runtime.initialized:
+            logger.info(
+                f"Ожидание Qdrant: retry={FAQ_QDRANT_RETRY_INTERVAL}s, "
+                f"timeout={FAQ_QDRANT_INIT_TIMEOUT}s"
+            )
         logger.info("=" * 70)
         yield # Тут сервер живёт
+
+        if qdrant_init_task and not qdrant_init_task.done():
+            qdrant_init_task.cancel()
+            try:
+                await qdrant_init_task
+            except asyncio.CancelledError:
+                pass
+        qdrant_init_task = None
 
     logger.info("Завершение работы сервера...")
 
