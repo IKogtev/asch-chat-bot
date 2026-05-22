@@ -32,6 +32,8 @@ from maxapi.types import InputMedia, RequestContactButton
 import re
 from maxapi.enums import TextFormat
 from maxapi.types.attachments import Contact
+import contextlib
+import asyncio
 
 logger = setup_logger('handlers', 'handlers.log')
 # инициализируем логер событий
@@ -712,7 +714,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
             meta_before = await store.get_last_search_meta(global_user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
-
+            # инициализация статуса "печатает..." для пользователя
+            await bot_res.start_typing()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, _ = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
@@ -762,6 +765,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                 )
         except Exception as e:
+            await bot_res.stop_typing()
             logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
             await eventlogger.log_event(
                 event_type="error",
@@ -781,6 +785,7 @@ class BotResponse:
         self.event = event
         self.platform = platform
         self.is_tg = platform == "telegram"
+        self._typing_task=None
 
     @property
     def payload(self):
@@ -805,6 +810,10 @@ class BotResponse:
         return getattr(self.event.message.body, 'attachments', [])
 
     async def send(self, text, menu=None, is_html=True, is_doc=None):
+        
+        # Перед отправкой ответа выключаем typing
+        await self.stop_typing()
+        
         if is_doc:
             return await self._send_document(is_doc['path'], is_doc['name'])
         
@@ -860,3 +869,45 @@ class BotResponse:
                 # Если передан флаг alert, добавляем эмодзи для заметности
                 msg = f"⚠️ {text.upper()}" if show_alert else text
                 await self.event.answer(msg)
+
+    async def _typing_loop(self):
+        """Фоновый loop отправки typing status"""
+
+        while True:
+            try:
+                if self.is_tg:
+                    chat = self.event.chat
+                    await chat.do("typing")
+                else:
+                    # MAX API
+                    chat_id = self.event.message.chat.chat_id
+
+                    await self.event.bot.api.request(
+                        method="POST",
+                        path=f"/chats/{chat_id}/actions",
+                        json={"action": "typing_on"}
+                    )
+
+            except Exception as e:
+                logger.debug(f"Typing status error: {e}")
+
+            # Telegram typing живет ~5 секунд
+            # поэтому обновляем каждые 4
+            await asyncio.sleep(4)
+
+    async def start_typing(self):
+        """Запуск typing-индикатора"""
+
+        if self._typing_task is None or self._typing_task.done():
+            self._typing_task = asyncio.create_task(self._typing_loop())
+
+    async def stop_typing(self):
+        """Остановка typing-индикатора"""
+
+        if self._typing_task:
+            self._typing_task.cancel()
+
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._typing_task
+
+            self._typing_task = None
