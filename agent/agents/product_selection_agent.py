@@ -144,6 +144,17 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "message"),
         )
 
+    logger.debug(
+        "product_selection validation context: mode=%s resolved_product=%s "
+        "clarification_options_count=%s used_tables=%s tool_calls=%s tool_events=%s",
+        mode,
+        resolved_product,
+        len(clarification_options),
+        used_tables,
+        sorted(tool_calls),
+        context.get("_adk_tool_event_summaries") or [],
+    )
+
     if mode in {"product_card", "product_kit"} and not resolved_product:
         raise build_validation_error(
             agent=agent_name,

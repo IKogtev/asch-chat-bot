@@ -102,6 +102,81 @@ def _extract_function_call_name(part: Any) -> str | None:
     return str(name).strip() or None
 
 
+def _safe_json_preview(value: Any, max_length: int = 500) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    return truncate_for_log(text, max_length)
+
+
+def _extract_function_call_summary(part: Any) -> dict[str, str] | None:
+    function_call = (
+        _get_mapping_or_attr(part, "function_call")
+        or _get_mapping_or_attr(part, "functionCall")
+    )
+    if not function_call:
+        return None
+
+    name = _get_mapping_or_attr(function_call, "name")
+    if not name:
+        return None
+
+    args = (
+        _get_mapping_or_attr(function_call, "args")
+        or _get_mapping_or_attr(function_call, "arguments")
+        or {}
+    )
+    return {
+        "type": "call",
+        "name": str(name).strip(),
+        "args_preview": _safe_json_preview(args, 500),
+    }
+
+
+def _extract_function_response_summary(part: Any) -> dict[str, str] | None:
+    function_response = (
+        _get_mapping_or_attr(part, "function_response")
+        or _get_mapping_or_attr(part, "functionResponse")
+    )
+    if not function_response:
+        return None
+
+    name = _get_mapping_or_attr(function_response, "name") or ""
+    response = (
+        _get_mapping_or_attr(function_response, "response")
+        or _get_mapping_or_attr(function_response, "result")
+        or {}
+    )
+    return {
+        "type": "response",
+        "name": str(name).strip(),
+        "response_preview": _safe_json_preview(response, 800),
+    }
+
+
+def _extract_tool_event_summaries(event: Event) -> list[dict[str, str]]:
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts and isinstance(event, dict):
+        content = event.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+    if not parts:
+        return []
+
+    summaries = []
+    for part in parts:
+        call_summary = _extract_function_call_summary(part)
+        if call_summary:
+            summaries.append(call_summary)
+            continue
+
+        response_summary = _extract_function_response_summary(part)
+        if response_summary:
+            summaries.append(response_summary)
+    return summaries
+
+
 def _extract_function_call_names(event: Event) -> list[str]:
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None)
@@ -131,8 +206,10 @@ async def run_json_leaf_agent(
     _doc_timing = log_label == "doc_search_result_json"
     _t_llm0 = time.monotonic() if _doc_timing else None
     tool_calls: list[str] = []
+    tool_event_summaries: list[dict[str, str]] = []
     async for event in agent.run_async(ctx):
         tool_calls.extend(_extract_function_call_names(event))
+        tool_event_summaries.extend(_extract_tool_event_summaries(event))
         sanitized_event = strip_thought_parts(event)
         if sanitized_event is not None:
             yield sanitized_event
@@ -142,6 +219,12 @@ async def run_json_leaf_agent(
         _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
 
     raw = str(ctx.session.state.get(output_key) or "").strip()
+    logger.debug(
+        "%s tool diagnostics: calls=%s events=%s",
+        log_label,
+        tool_calls,
+        json.dumps(tool_event_summaries, ensure_ascii=False),
+    )
     logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))
 
     _t_parse0 = time.monotonic() if _doc_timing else None
@@ -150,6 +233,7 @@ async def run_json_leaf_agent(
         logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
         validator_context = dict(getattr(ctx.session, "state", {}) or {})
         validator_context["_adk_tool_calls"] = tool_calls
+        validator_context["_adk_tool_event_summaries"] = tool_event_summaries
         parsed = validator(extracted, validator_context)
     except Exception as exc:
         logger.warning(
