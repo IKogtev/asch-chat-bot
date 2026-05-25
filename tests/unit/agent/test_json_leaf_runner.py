@@ -174,6 +174,35 @@ def test_run_json_leaf_agent_yields_sanitized_events() -> None:
 
 
 @pytest.mark.unit
+def test_run_json_leaf_agent_passes_tool_call_names_to_validator_context() -> None:
+    function_call = types.SimpleNamespace(
+        function_call=types.SimpleNamespace(name="execute_sql")
+    )
+    event = _make_event([function_call])
+    ctx = _make_ctx('{"status":"ok"}')
+
+    def validator(data, context):
+        assert context["_adk_tool_calls"] == ["execute_sql"]
+        return data
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent([event]),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=validator,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
+
+
+@pytest.mark.unit
 def test_run_json_leaf_agent_raises_non_fatal_validation_failure_for_invalid_json() -> None:
     ctx = _make_ctx("not-json")
 
