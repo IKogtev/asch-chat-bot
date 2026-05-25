@@ -584,6 +584,14 @@ async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher
 async def test_run_async_impl_uses_product_selection_message_fallback_on_validation_failure() -> None:
     agent = _make_agent()
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="show fort knox")], session_state={})
+    debug_messages = []
+    original_logger = rootagent_module.logger
+    rootagent_module.logger = types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        debug=lambda *a, **k: debug_messages.append(a[0] if a else ""),
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
 
     async def fake_run_json_leaf_agent(**kwargs):
         if kwargs["log_label"] == "owasp_result_json":
@@ -629,13 +637,89 @@ async def test_run_async_impl_uses_product_selection_message_fallback_on_validat
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
 
-    events = [event async for event in agent._run_async_impl(ctx)]
+    try:
+        events = [event async for event in agent._run_async_impl(ctx)]
+    finally:
+        rootagent_module.logger = original_logger
 
     assert len(events) == 1
     assert events[0].content.parts[0].text == (
         "Choose product\n"
         "Bundle Fort Knox 3+12 months (8958)\n"
         "Fort Knox 6 months (8793)"
+    )
+    assert any(
+        "product_selection fallback diagnostics" in message
+        for message in debug_messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="show product")], session_state={})
+    debug_messages = []
+    original_logger = rootagent_module.logger
+    rootagent_module.logger = types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        debug=lambda *a, **k: debug_messages.append(a[0] if a else ""),
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": "product_card",
+                "reason": "product_card",
+                "search_query": "product",
+            }
+            if False:
+                yield None
+            return
+
+        raise rootagent_module.AgentValidationFailure(
+            log_label="product_selection_result_json",
+            validation_error="product_selection_agent validation failed at tool_usage",
+            raw=json.dumps(
+                {
+                    "status": "ok",
+                    "mode": "product_card",
+                    "message": "Unsafe generated card",
+                    "resolved_product": {"id": "123", "name": "Generated product"},
+                    "clarification_options": [],
+                }
+            ),
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    try:
+        events = [event async for event in agent._run_async_impl(ctx)]
+    finally:
+        rootagent_module.logger = original_logger
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert any(
+        "product_selection fallback diagnostics" in message
+        for message in debug_messages
     )
 
 

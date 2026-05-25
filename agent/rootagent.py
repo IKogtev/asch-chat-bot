@@ -496,11 +496,34 @@ class RootAgent(BaseAgent):
                 exc.validation_error,
                 truncate_for_log(exc.raw, 500),
             )
+            product_selection_tool_usage_failure = (
+                exc.log_label == "product_selection_result_json"
+                and "tool_usage" in exc.validation_error
+            )
             fallback_message = (
                 self._fallback_product_selection_message(exc.raw)
-                if exc.log_label == "product_selection_result_json"
+                if (
+                    exc.log_label == "product_selection_result_json"
+                    and not product_selection_tool_usage_failure
+                )
                 else None
             )
+            if exc.log_label == "product_selection_result_json":
+                try:
+                    payload = extract_json(exc.raw)
+                except Exception:
+                    payload = {}
+                logger.debug(
+                    "product_selection fallback diagnostics: fallback_used=%s "
+                    "blocked_by_tool_usage=%s mode=%s resolved_product=%s "
+                    "clarification_options_count=%s message_preview=%s",
+                    bool(fallback_message),
+                    product_selection_tool_usage_failure,
+                    payload.get("mode"),
+                    payload.get("resolved_product"),
+                    len(payload.get("clarification_options") or []),
+                    truncate_for_log(payload.get("message"), 300),
+                )
             yield self._build_final_event_with_history(
                 ctx,
                 user_text,
@@ -595,6 +618,17 @@ class RootAgent(BaseAgent):
             yield event
 
         product_selection = self._get_required_state_dict(ctx, "_product_selection_result_parsed")
+        logger.debug(
+            "product_selection parsed summary: user_query=%s search_query=%s intent=%s "
+            "mode=%s resolved_product=%s clarification_options_count=%s used_tables=%s",
+            truncate_for_log(user_message, 300),
+            truncate_for_log(effective_search_query, 300),
+            intent,
+            product_selection.get("mode"),
+            product_selection.get("resolved_product"),
+            len(product_selection.get("clarification_options") or []),
+            product_selection.get("used_tables"),
+        )
         ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
             product_selection
         )

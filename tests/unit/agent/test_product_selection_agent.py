@@ -252,6 +252,41 @@ def test_validate_product_selection_result_requires_execute_sql_tool_call() -> N
 
 
 @pytest.mark.unit
+def test_validate_product_selection_result_logs_debug_context() -> None:
+    debug_messages = []
+    original_logger = product_selection_module.logger
+    product_selection_module.logger = types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        debug=lambda *a, **k: debug_messages.append(a[0] if a else ""),
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+
+    try:
+        validate_product_selection_result(
+            {
+                "status": "ok",
+                "mode": "product_filter",
+                "message": "Products found",
+                "used_tables": ["products"],
+            },
+            {
+                "_adk_tool_calls": ["execute_sql"],
+                "_adk_tool_event_summaries": [
+                    {"type": "call", "name": "execute_sql"}
+                ],
+            },
+        )
+    finally:
+        product_selection_module.logger = original_logger
+
+    assert any(
+        "product_selection validation context" in message
+        for message in debug_messages
+    )
+
+
+@pytest.mark.unit
 def test_validate_product_selection_result_rejects_removed_modes() -> None:
     for mode in ["product_recommendation", "product_explanation", "product_alternatives"]:
         with pytest.raises(ValueError) as exc:
