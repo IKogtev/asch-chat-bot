@@ -66,6 +66,7 @@ def _load_product_selection_module():
 
 product_selection_module = _load_product_selection_module()
 validate_product_selection_result = product_selection_module.validate_product_selection_result
+SQL_CONTEXT = {"_adk_tool_calls": ["execute_sql"]}
 
 
 @pytest.mark.unit
@@ -78,7 +79,7 @@ def test_validate_product_selection_result_accepts_filter_answer() -> None:
             "used_tables": "products",
             "clarification_options": [],
         },
-        {},
+        SQL_CONTEXT,
     )
 
     assert result == {
@@ -105,7 +106,7 @@ def test_validate_product_selection_result_accepts_product_card_with_resolved_pr
                 "ignored": "x",
             },
         },
-        {},
+        SQL_CONTEXT,
     )
 
     assert result["resolved_product"] == {
@@ -128,7 +129,7 @@ def test_validate_product_selection_result_accepts_product_kit_with_product_id()
                 "name": "Fort Knox 6 месяцев",
             },
         },
-        {},
+        SQL_CONTEXT,
     )
 
     assert result["mode"] == "product_kit"
@@ -153,7 +154,7 @@ def test_validate_product_selection_result_accepts_needs_clarification() -> None
                 }
             ],
         },
-        {},
+        SQL_CONTEXT,
     )
 
     assert result["clarification_options"] == [
@@ -175,7 +176,7 @@ def test_validate_product_selection_result_accepts_no_data() -> None:
             "message": "No data",
             "used_tables": [],
         },
-        {},
+        SQL_CONTEXT,
     )
 
     assert result["mode"] == "no_data"
@@ -230,6 +231,24 @@ def test_validate_product_selection_result_requires_message() -> None:
         )
 
     assert "message is required" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_requires_execute_sql_tool_call() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_product_selection_result(
+            {
+                "status": "ok",
+                "mode": "product_filter",
+                "message": "Products found",
+                "used_tables": ["products"],
+            },
+            {"_adk_tool_calls": ["search_table", "search_column"]},
+        )
+
+    message = str(exc.value)
+    assert "tool_usage" in message
+    assert "execute_sql" in message
 
 
 @pytest.mark.unit

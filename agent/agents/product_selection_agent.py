@@ -31,6 +31,7 @@ PRODUCT_SELECTION_MODES = {
 }
 
 PRODUCT_FIELD_KEYS = ("id", "name", "term", "currency")
+PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
 def _normalize_used_tables(value: Any) -> list[str]:
@@ -75,9 +76,20 @@ def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
     return options
 
 
+def _normalize_tool_calls(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        item = value.strip()
+        return {item} if item else set()
+    if isinstance(value, list):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return {str(value).strip()} if str(value).strip() else set()
+
+
 def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     agent_name = "product_selection_agent"
-    _ = context
+    tool_calls = _normalize_tool_calls(context.get("_adk_tool_calls"))
 
     if not isinstance(data, dict):
         raise build_validation_error(
@@ -159,6 +171,15 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "clarification_options"),
         )
 
+    if PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="tool_usage",
+            problem=f"required tool {PRODUCT_SELECTION_REQUIRED_TOOL!r} was not called",
+            data=data,
+            fields=("mode", "used_tables"),
+        )
+
     return {
         "status": status,
         "mode": mode,
@@ -217,6 +238,8 @@ Rules:
 - Do not use SELECT * for final user-facing answers.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
+- If mode="needs_clarification", clarification_options must be a non-empty array of objects.
+- Each clarification option must use only id, name, term, and currency fields; do not return options as strings.
 - Write message in Russian.
 - Do not include source in JSON.
 

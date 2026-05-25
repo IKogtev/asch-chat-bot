@@ -9,7 +9,7 @@ from google.adk.events import Event, EventActions
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
 from .config import DEBUG_EXCEPTIONS, FAQ_DOCUMENTS_COLLECTION, KB_DOCUMENTS_COLLECTION
-from .helpers import truncate_for_log, format_text_answer, format_reject_answer
+from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
@@ -243,6 +243,59 @@ class RootAgent(BaseAgent):
             raise ValueError(f"State key '{key}' must be str, got {type(value)}")
         return value
 
+    @staticmethod
+    def _format_clarification_option(option: Any) -> str:
+        if isinstance(option, dict):
+            name = str(option.get("name") or "").strip()
+            option_id = str(option.get("id") or "").strip()
+            term = str(option.get("term") or "").strip()
+            currency = str(option.get("currency") or "").strip()
+            details = [item for item in (term, currency) if item]
+            if option_id and name:
+                label = f"{option_id} {name}"
+            else:
+                label = option_id or name
+            if details:
+                label = f"{label} - {', '.join(details)}"
+            return label.strip()
+
+        return str(option or "").strip()
+
+    @classmethod
+    def _format_product_selection_answer(cls, product_selection: Dict[str, Any]) -> str:
+        message = format_text_answer(product_selection["message"])
+        if product_selection.get("mode") != "needs_clarification":
+            return message
+
+        options = [
+            cls._format_clarification_option(option)
+            for option in product_selection.get("clarification_options") or []
+        ]
+        options = [option for option in options if option]
+        if not options:
+            return message
+
+        return "\n".join([message, *options])
+
+    @classmethod
+    def _fallback_product_selection_message(cls, raw: str) -> str | None:
+        try:
+            payload = extract_json(raw)
+        except Exception:
+            return None
+
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            return None
+
+        return cls._format_product_selection_answer(
+            {
+                "mode": payload.get("mode"),
+                "message": message,
+                "clarification_options": payload.get("clarification_options") or [],
+            }
+        )
+
     async def _run_json_leaf_agent(
         self,
         ctx: InvocationContext,
@@ -443,7 +496,16 @@ class RootAgent(BaseAgent):
                 exc.validation_error,
                 truncate_for_log(exc.raw, 500),
             )
-            yield self._build_final_event_with_history(ctx, user_text, exc.user_message)
+            fallback_message = (
+                self._fallback_product_selection_message(exc.raw)
+                if exc.log_label == "product_selection_result_json"
+                else None
+            )
+            yield self._build_final_event_with_history(
+                ctx,
+                user_text,
+                fallback_message or exc.user_message,
+            )
 
         except Exception as exc:
             logger.error("RootAgent failure: %s", exc, exc_info=True)
@@ -533,7 +595,9 @@ class RootAgent(BaseAgent):
             yield event
 
         product_selection = self._get_required_state_dict(ctx, "_product_selection_result_parsed")
-        ctx.session.state["_root_final_text"] = format_text_answer(product_selection["message"])
+        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
+            product_selection
+        )
 
         if product_selection["mode"] == "product_kit":
             resolved_product = product_selection.get("resolved_product") or {}

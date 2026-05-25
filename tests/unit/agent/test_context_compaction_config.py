@@ -51,7 +51,7 @@ def _load_config_module(monkeypatch):
 def test_context_compaction_config_uses_safe_defaults(monkeypatch) -> None:
     config = _load_config_module(monkeypatch)
 
-    assert config.AGENT_CONTEXT_COMPACTION_INTERVAL == 8
-    assert config.AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE == 2
+    assert config.AGENT_CONTEXT_COMPACTION_INTERVAL == 36
+    assert config.AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE == 3
     assert config.AGENT_CONTEXT_TOKEN_THRESHOLD == 16000
-    assert config.AGENT_CONTEXT_EVENT_RETENTION_SIZE == 12
+    assert config.AGENT_CONTEXT_EVENT_RETENTION_SIZE == 36
