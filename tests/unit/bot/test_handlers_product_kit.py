@@ -45,7 +45,8 @@ class _FakeBotResponse:
 async def test_handle_product_kit_action_sends_files() -> None:
     eventlogger = _FakeEventLogger()
 
-    def fake_get_product_kit(product_id, product_name):
+    def fake_get_product_kit(product_id, product_name, folder_kit):
+        assert folder_kit == "Fort Knox (2832)"
         return {
             "status": "ok",
             "files": [{"path": "/tmp/a.pdf", "name": "a.pdf", "size": 1}],
@@ -63,7 +64,12 @@ async def test_handle_product_kit_action_sends_files() -> None:
 
     result = await handler(
         bot_res=bot_res,
-        bot_action={"type": "send_product_kit", "product_id": "2832", "product_name": "Fort Knox"},
+        bot_action={
+            "type": "send_product_kit",
+            "product_id": "2832",
+            "product_name": "Fort Knox",
+            "folder_kit": "Fort Knox (2832)",
+        },
         user_id=1,
         session_id="s1",
         turn_id="t1",
@@ -86,6 +92,7 @@ async def test_handle_product_kit_action_sends_files() -> None:
         "turn_id": "t1",
         "product_id": "2832",
         "product_name": "Fort Knox",
+        "folder_kit": "Fort Knox (2832)",
     }
 
 
@@ -94,7 +101,8 @@ async def test_handle_product_kit_action_sends_files() -> None:
 async def test_handle_product_kit_action_sends_status_message_when_no_files() -> None:
     eventlogger = _FakeEventLogger()
 
-    def fake_get_product_kit(product_id, product_name):
+    def fake_get_product_kit(product_id, product_name, folder_kit):
+        assert folder_kit == ""
         return {
             "status": "not_found",
             "message": "Комплект для продукта пока не загружен.",

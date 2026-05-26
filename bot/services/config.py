@@ -25,7 +25,7 @@ class Settings():
         os.getenv("UPLOAD_NEWS", "/app/data/upload")
     )
     PRODUCT_KITS_ROOT: Path = Path(
-        os.getenv("PRODUCT_KITS_ROOT", r"kb_storage\kb\Комплекты документов по продуктам")
+        os.getenv("PRODUCT_KITS_ROOT", r"kb_storage\kb\1 Продукты")
     )
     PRODUCT_KITS_MAX_FILES: int = int(os.getenv("PRODUCT_KITS_MAX_FILES", 10))
     PRODUCT_KITS_MAX_FILE_SIZE_MB: int = int(os.getenv("PRODUCT_KITS_MAX_FILE_SIZE_MB", 50))

@@ -415,7 +415,11 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
             "mode": "product_card",
             "message": " Product selection answer ",
             "used_tables": ["products"],
-            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "resolved_product": {
+                "id": "2832",
+                "name": "Fort Knox",
+                "folder_kit": "Fort Knox (2832)",
+            },
             "clarification_options": [],
         }
         if False:
@@ -524,6 +528,7 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
         "type": "send_product_kit",
         "product_id": "2832",
         "product_name": "Fort Knox",
+        "folder_kit": "Fort Knox (2832)",
     }
 
 

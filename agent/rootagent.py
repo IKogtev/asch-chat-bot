@@ -637,11 +637,13 @@ class RootAgent(BaseAgent):
             resolved_product = product_selection.get("resolved_product") or {}
             product_id = str(resolved_product.get("id") or "").strip()
             product_name = str(resolved_product.get("name") or "").strip()
+            folder_kit = str(resolved_product.get("folder_kit") or "").strip()
             if product_id:
                 ctx.session.state["_bot_action"] = {
                     "type": "send_product_kit",
                     "product_id": product_id,
                     "product_name": product_name,
+                    "folder_kit": folder_kit,
                 }
                 return
 

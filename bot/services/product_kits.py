@@ -29,6 +29,7 @@ def _resolve_inside(root: Path, child: Path) -> tuple[Path, Path]:
 def get_product_kit(
     product_id: str,
     product_name: str | None = None,
+    folder_kit: str | None = None,
     *,
     root: Path | None = None,
     max_files: int | None = None,
@@ -36,6 +37,7 @@ def get_product_kit(
 ) -> dict[str, Any]:
     normalized_product_id = str(product_id or "").strip()
     normalized_product_name = str(product_name or "").strip()
+    normalized_folder_kit = str(folder_kit or "").strip()
 
     if not normalized_product_id:
         return {
@@ -60,9 +62,10 @@ def get_product_kit(
     limit = max_files if max_files is not None else default_max_files
     max_size_mb = max_file_size_mb if max_file_size_mb is not None else default_max_file_size_mb
     max_size_bytes = max(int(max_size_mb), 0) * 1024 * 1024
+    folder_name = normalized_folder_kit or normalized_product_id
 
     try:
-        root_resolved, folder = _resolve_inside(kits_root, kits_root / normalized_product_id)
+        root_resolved, folder = _resolve_inside(kits_root, kits_root / folder_name)
     except ValueError:
         return {
             "status": "invalid_request",
