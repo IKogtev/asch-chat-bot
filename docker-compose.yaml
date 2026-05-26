@@ -267,8 +267,8 @@ services:
 
   kbsearch:
     build:
-      context: ./mcps/mcp-server-kbsearch
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcps/mcp-server-kbsearch/Dockerfile
     image: mcp-server-kbsearch:latest
     container_name: mcp-kbsearch
     restart: unless-stopped
@@ -317,8 +317,8 @@ services:
 
   faq:
     build:
-      context: ./mcps/mcp-server-faq
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcps/mcp-server-faq/Dockerfile
     image: mcp-faq-rag:latest
     container_name: mcp-faq
     restart: unless-stopped

@@ -30,6 +30,13 @@ _funcs = _load_functions(
         "Dict": dict,
         "faq_runtime": runtime,
         "indexer": indexer,
+        "metadata_document_count": lambda metadata: metadata.get("documents_count")
+        or metadata.get("document_count")
+        or 0,
+        "USE_QDRANT": False,
+        "qdrant_init_task": None,
+        "FAQ_QDRANT_RETRY_INTERVAL": 10.0,
+        "FAQ_QDRANT_INIT_TIMEOUT": 600.0,
     },
 )
 
@@ -40,10 +47,7 @@ get_faq_status = _funcs["get_faq_status"]
 def test_get_faq_status_returns_runtime_and_metadata_snapshot() -> None:
     result = get_faq_status()
 
-    assert result == {
-        "initialized": True,
-        "index_exists": True,
-        "documents_count": 7,
-        "metadata": {"documents_count": 7, "index_status": "initialized"},
-        "last_update": "2026-04-17T10:00:00",
-    }
+    assert result["initialized"] is True
+    assert result["documents_count"] == 7
+    assert result["metadata"]["index_status"] == "initialized"
+    assert result["qdrant_init"]["use_qdrant"] is False

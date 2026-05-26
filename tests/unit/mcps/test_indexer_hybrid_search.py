@@ -67,6 +67,7 @@ def _load_indexer_class():
         "Path": Path,
         "datetime": types.SimpleNamespace,
         "IndexerConfig": object,
+        "QdrantReadIndexer": object,
         "VectorStoreIndex": object,
         "Settings": object,
         "QdrantVectorStore": object,
