@@ -139,7 +139,8 @@
 
 Если найден ровно один продукт:
 - заполни `resolved_product.id`;
-- заполни `resolved_product.name`.
+- заполни `resolved_product.name`;
+- заполни `resolved_product.folder_kit`.
 
 Если найдено несколько вариантов:
 - верни `mode="needs_clarification"`;
@@ -150,7 +151,7 @@
 - не выбирай вариант сам.
 
 Для `product_kit` агент только разрешает продукт и возвращает `resolved_product`.
-Бот ищет папку комплекта по `resolved_product.id`.
+Бот ищет папку комплекта по `resolved_product.folder_kit`. Если поле пустое, используется fallback по `resolved_product.id`.
 
 ## Правила по сценариям
 
@@ -170,7 +171,8 @@
 `product_kit`:
 - напиши, что продукт найден и данные для отправки комплекта подготовлены;
 - не перечисляй файлы;
-- верни `resolved_product.id`.
+- верни `resolved_product.id`;
+- верни `resolved_product.folder_kit`.
 
 `product_filter`:
 - обязательно выведи список продуктов, если SQL вернул строки;
@@ -264,7 +266,8 @@ SQL должен быть:
   "used_tables": ["products"],
   "resolved_product": {
     "id": "<id продукта из успешного SQL>",
-    "name": "<название продукта из успешного SQL>"
+    "name": "<название продукта из успешного SQL>",
+    "folder_kit": "<папка комплекта из успешного SQL>"
   },
   "clarification_options": []
 }
@@ -282,7 +285,7 @@ SQL должен быть:
 - `message` обязателен и не должен быть пустым.
 - `used_tables` - массив физических имен таблиц, реально использованных в SQL.
 - Для `product_card` и `product_kit` при найденном продукте нужен `resolved_product`.
-- Для `product_kit` обязателен `resolved_product.id`; папка комплекта называется по ID продукта.
+- Для `product_kit` обязателен `resolved_product.id` и `resolved_product.folder_kit`.
 - Для `needs_clarification` обязателен непустой `clarification_options`: массив объектов, а не строк.
 - Объект варианта в `clarification_options` может содержать только поля `id`, `name`, `term`, `currency`.
 - Для `no_data` используй `used_tables=[]`, `resolved_product=null`, `clarification_options=[]`.

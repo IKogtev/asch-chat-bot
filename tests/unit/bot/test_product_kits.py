@@ -34,6 +34,56 @@ def test_get_product_kit_returns_not_found_for_missing_folder() -> None:
 
 
 @pytest.mark.unit
+def test_get_product_kit_uses_folder_kit_when_present(tmp_path) -> None:
+    folder = tmp_path / "Fort Knox (2832)"
+    folder.mkdir()
+    file_path = folder / "kit.pdf"
+    file_path.write_text("kit", encoding="utf-8")
+
+    result = get_product_kit("2832", "Fort Knox", folder_kit=folder.name, root=tmp_path)
+
+    assert result["status"] == "ok"
+    assert result["files"] == [
+        {"path": str(file_path.resolve()), "name": "kit.pdf", "size": file_path.stat().st_size}
+    ]
+
+
+@pytest.mark.unit
+def test_get_product_kit_ignores_files_in_nested_folders(tmp_path) -> None:
+    folder = tmp_path / "Fort Knox" / "Fort Knox (2832)"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    direct_file = folder / "kit.pdf"
+    nested_file = nested / "nested.pdf"
+    direct_file.write_text("kit", encoding="utf-8")
+    nested_file.write_text("nested", encoding="utf-8")
+
+    result = get_product_kit(
+        "2832",
+        "Fort Knox",
+        folder_kit="Fort Knox/Fort Knox (2832)",
+        root=tmp_path,
+    )
+
+    assert result["status"] == "ok"
+    assert result["files"] == [
+        {
+            "path": str(direct_file.resolve()),
+            "name": "kit.pdf",
+            "size": direct_file.stat().st_size,
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_get_product_kit_treats_not_found_folder_kit_as_missing() -> None:
+    result = get_product_kit("2832", "Fort Knox", folder_kit="не найдена", root=FIXTURES_ROOT)
+
+    assert result["status"] == "not_found"
+    assert result["files"] == []
+
+
+@pytest.mark.unit
 def test_get_product_kit_returns_empty_when_all_files_are_skipped() -> None:
     result = get_product_kit("hidden_only", root=FIXTURES_ROOT)
 

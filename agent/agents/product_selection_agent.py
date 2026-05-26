@@ -30,7 +30,8 @@ PRODUCT_SELECTION_MODES = {
     "no_data",
 }
 
-PRODUCT_FIELD_KEYS = ("id", "name", "term", "currency")
+PRODUCT_FIELD_KEYS = ("id", "name", "term", "currency", "folder_kit")
+CLARIFICATION_OPTION_FIELD_KEYS = ("id", "name", "term", "currency")
 PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
@@ -45,14 +46,17 @@ def _normalize_used_tables(value: Any) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
-def _normalize_product(value: Any) -> dict[str, str] | None:
+def _normalize_product(
+    value: Any,
+    field_keys: tuple[str, ...] = PRODUCT_FIELD_KEYS,
+) -> dict[str, str] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise TypeError(f"expected dict, got {type(value).__name__}")
 
     normalized = {}
-    for key in PRODUCT_FIELD_KEYS:
+    for key in field_keys:
         item = str(value.get(key, "")).strip()
         if item:
             normalized[key] = item
@@ -68,7 +72,7 @@ def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
 
     options: list[dict[str, str]] = []
     for item in value:
-        normalized = _normalize_product(item)
+        normalized = _normalize_product(item, CLARIFICATION_OPTION_FIELD_KEYS)
         if normalized is None:
             raise ValueError("clarification option must not be empty")
         options.append(normalized)
@@ -251,6 +255,7 @@ Rules:
 - If data is missing, return mode="no_data", used_tables=[].
 - If mode="needs_clarification", clarification_options must be a non-empty array of objects.
 - Each clarification option must use only id, name, term, and currency fields; do not return options as strings.
+- For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
 - Do not include source in JSON.
 
