@@ -163,87 +163,40 @@ async def test_server_availability() -> Dict[str, Any]:
 # ============================================================================
 
 async def test_faq_indexing() -> Dict[str, Any]:
-    """
-    Загрузить и проиндексировать базу знаний.
-    
-    Returns:
-        Dict с результатами индексации
-    """
+    """Проверка готовности индекса через /faq/status (индексация — kb-manager)."""
     logger.info("\n" + "=" * 70)
-    logger.info("2. ИНДЕКСАЦИЯ БЗ: ЗАГРУЗКА И ИНДЕКСИРОВАНИЕ ДОКУМЕНТОВ")
+    logger.info("2. СТАТУС FAQ (индексация через kb-manager, не MCP)")
     logger.info("=" * 70)
-    
+
     result = {
-        "name": "FAQ Indexing",
+        "name": "FAQ index status",
         "status": "FAILED",
         "details": {},
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
-    
+
     try:
-        # Отправляем запрос на обновление FAQ
-        logger.info("Отправляем запрос на загрузку и индексацию...")
-        
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            # Добавляем токен если требуется
-            headers = {}
-            if MCP_TOKEN:
-                headers["Authorization"] = f"Bearer {MCP_TOKEN}"
-            
-            params = {
-                "source_type": "local_folder",
-                "mode": "replace",
-                "source_path": FAQ_SOURCE_PATH
-            }
-            
-            start_time = time.time()
-            try:
-                response = await client.get(
-                    f"{MCP_SERVER_URL}/faq/update",
-                    params=params,
-                    headers=headers
-                )
-            except httpx.TimeoutException as e:
-                logger.error(f"✗ Timeout при индексации (может быть нормально): {e}")
-                result["status"] = "TIMEOUT"
-                result["details"]["error"] = "Timeout - indexing may still be in progress"
-                test_results["tests"]["faq_indexing"] = result
-                return result
-            
-            elapsed_time = time.time() - start_time
-            logger.info(f"Ответ сервера: {response.status_code} (время: {elapsed_time:.2f}s)")
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                
-                if response_data.get("success"):
-                    logger.info("✓ Индексация успешно завершена")
-                    result["status"] = "PASSED"
-                    result["details"]["response"] = response_data
-                    result["details"]["elapsed_time"] = elapsed_time
-                    
-                    # Получаем статус faq полный логер событий находится в status
-                    status = response_data.get("status", {})
-                    result["details"]["faq_status"] = status
-                    metadata = status.get('metadata', {})
-                    logger.info(f"  Статус FAQ: {str(metadata.get('index_status'))}")
-                    logger.info(f"  Вопросов в индексе: {status.get('question_count')}")
-                else:
-                    logger.error(f"✗ Ошибка индексации: {response_data.get('error')}")
-                    result["details"]["error"] = response_data.get("error")
-            else:
-                logger.error(f"✗ Ошибка HTTP: {response.status_code}")
-                result["details"]["error"] = response.text[:500]
-                
-    except (asyncio.TimeoutError, httpx.TimeoutException):
-        logger.error("✗ Timeout при индексации (может быть нормально для больших БЗ)")
-        result["details"]["error"] = "Timeout - indexing may still be in progress"
-        result["status"] = "TIMEOUT"
-        
+        response = requests.get(f"{MCP_SERVER_URL}/faq/status", timeout=30)
+        result["details"]["http_status"] = response.status_code
+        if response.status_code != 200:
+            result["details"]["error"] = response.text[:500]
+            test_results["tests"]["faq_indexing"] = result
+            return result
+
+        payload = response.json()
+        status = payload.get("status", {})
+        result["details"]["faq_status"] = status
+        if status.get("initialized"):
+            result["status"] = "PASSED"
+            logger.info("✓ FAQ MCP загрузил индекс из Qdrant")
+        else:
+            result["status"] = "SKIPPED"
+            result["details"]["note"] = "FAQ MCP ожидает данные в Qdrant (kb-manager)"
+            logger.warning("⚠ FAQ MCP ещё не инициализирован — проверьте kb-manager/Qdrant")
     except Exception as e:
-        logger.error(f"✗ Ошибка при индексации: {e}")
         result["details"]["error"] = str(e)
-    
+        logger.error(f"✗ Ошибка проверки статуса FAQ: {e}")
+
     test_results["tests"]["faq_indexing"] = result
     return result
 
@@ -251,104 +204,13 @@ async def test_faq_indexing() -> Dict[str, Any]:
 # 3. ИНДЕКСАЦИЯ БЗ S3: ЗАГРУЗКА И ИНДЕКСИРОВАНИЕ ДОКУМЕНТОВ ИЗ S3
 # ===========================================================================
 async def test_faq_indexing_s3() -> Dict[str, Any]:
-    """
-    Загрузить и проиндексировать базу знаний.
-    
-    Returns:
-        Dict с результатами индексации
-    """
-    logger.info("\n" + "=" * 70)
-    logger.info("3. ИНДЕКСАЦИЯ БЗ S3: ЗАГРУЗКА И ИНДЕКСИРОВАНИЕ ДОКУМЕНТОВ ИЗ S3")
-    logger.info("=" * 70)
-    
+    """Legacy placeholder: MCP больше не индексирует из S3."""
     result = {
-        "name": "FAQ Indexing from S3",
-        "status": "FAILED",
-        "details": {},
-        "timestamp": datetime.now().isoformat()
+        "name": "FAQ Indexing from S3 (removed)",
+        "status": "SKIPPED",
+        "details": {"note": "Endpoint /faq/update удалён; используйте kb-manager"},
+        "timestamp": datetime.now().isoformat(),
     }
-    
-    try:
-        # Проверяем наличие S3 credentials
-        if not S3_ACCESS_KEY or not S3_SECRET_KEY:
-            logger.error("✗ S3_ACCESS_KEY или S3_SECRET_KEY не заданы в переменных окружения")
-            result['details']['error'] = "Missing S3 credentials in environment variables"
-            test_results["tests"]["faq_indexing_s3"] = result
-            return result
-        
-        logger.info("S3 конфигурация:")
-        logger.info(f" Endpoint: {S3_ENDPOINT}")
-        logger.info(f" Bucket: {S3_BUCKET}")
-        logger.info(f" Prefix: {S3_PREFIX}")
-
-        # Отправляем запрос на обновление FAQ
-        logger.info("Отправляем запрос на загрузку и индексацию...")
-        
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            # Добавляем токен если требуется
-            headers = {}
-            if MCP_TOKEN:
-                headers["Authorization"] = f"Bearer {MCP_TOKEN}"
-            
-            params = {
-                "source_type": "s3",
-                "mode": "replace",
-                "s3_endpoint": S3_ENDPOINT,
-                "s3_bucket": S3_BUCKET,
-                "s3_prefix": S3_PREFIX,
-                "s3_access_key": S3_ACCESS_KEY,
-                "s3_secret_key": S3_SECRET_KEY,
-            }
-            
-            start_time = time.time()
-            try:
-                response = await client.get(
-                    f"{MCP_SERVER_URL}/faq/update",
-                    params=params,
-                    headers=headers,
-                    timeout=600.0
-                )
-            except httpx.TimeoutException as e:
-                logger.error(f"✗ Timeout при индексации (может быть нормально): {e}")
-                result["status"] = "TIMEOUT"
-                result["details"]["error"] = "Timeout - indexing may still be in progress"
-                test_results["tests"]["faq_indexing_s3"] = result
-                return result
-            
-            elapsed_time = time.time() - start_time
-            logger.info(f"Ответ сервера: {response.status_code} (время: {elapsed_time:.2f}s)")
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                
-                if response_data.get("success"):
-                    logger.info("✓ Индексация успешно завершена")
-                    result["status"] = "PASSED"
-                    result["details"]["response"] = response_data
-                    result["details"]["elapsed_time"] = elapsed_time
-                    result["details"]["source"] = "s3"
-                     # Получаем статус faq полный логер событий находится в status
-                    status = response_data.get("status", {})
-                    result["details"]["faq_status"] = status
-                    metadata = status.get('metadata', {})
-                    logger.info(f"  Статус FAQ: {str(metadata.get('index_status'))}")
-                    logger.info(f"  Вопросов в индексе: {status.get('question_count')}")
-                else:
-                    logger.error(f"✗ Ошибка индексации: {response_data.get('error')}")
-                    result["details"]["error"] = response_data.get("error")
-            else:
-                logger.error(f"✗ Ошибка HTTP: {response.status_code}")
-                result["details"]["error"] = response.text[:500]
-                
-    except (asyncio.TimeoutError, httpx.TimeoutException):
-        logger.error("✗ Timeout при индексации (может быть нормально для больших БЗ)")
-        result["details"]["error"] = "Timeout - indexing may still be in progress"
-        result["status"] = "TIMEOUT"
-        
-    except Exception as e:
-        logger.error(f"✗ Ошибка при индексации: {e}")
-        result["details"]["error"] = str(e)
-    
     test_results["tests"]["faq_indexing_s3"] = result
     return result
 # ============================================================================
