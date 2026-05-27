@@ -59,11 +59,11 @@ async def handle_product_kit_action(
     platform: str,
 ) -> bool:
     """Находит папку продукта по ID, отправляет файлы комплекта и пишет события в лог."""
-    product_id = str(bot_action.get("product_id") or "").strip()
+    product_code = str(bot_action.get("product_code") or "").strip()
     product_name = str(bot_action.get("product_name") or "").strip()
     folder_kit = str(bot_action.get("folder_kit") or "").strip()
     result = get_product_kit(
-        product_id=product_id,
+        product_code=product_code,
         product_name=product_name,
         folder_kit=folder_kit,
     )
@@ -78,7 +78,7 @@ async def handle_product_kit_action(
             channel=platform,
             payload={
                 "turn_id": turn_id,
-                "product_id": product_id,
+                "product_code": product_code,
                 "product_name": product_name,
                 "folder_kit": folder_kit,
                 "status": result["status"],
@@ -107,7 +107,7 @@ async def handle_product_kit_action(
                 "rank": None,
                 "source": "product_kit",
                 "turn_id": turn_id,
-                "product_id": product_id,
+                "product_code": product_code,
                 "product_name": product_name,
                 "folder_kit": folder_kit,
             },
@@ -121,7 +121,7 @@ async def handle_product_kit_action(
         channel=platform,
         payload={
             "turn_id": turn_id,
-            "product_id": product_id,
+            "product_code": product_code,
             "product_name": product_name,
             "folder_kit": folder_kit,
             "files_sent": sent,
@@ -964,7 +964,7 @@ class BotResponse:
 
     async def _send_document(self, path, filename):
         if self.is_tg:
-            return await self.event.message.answer_document(FSInputFile(path, filename=filename))
+            return await self.event.answer_document(FSInputFile(path, filename=filename))
         else:
             return await self.event.message.answer(attachments=[InputMedia(path=path)])
 

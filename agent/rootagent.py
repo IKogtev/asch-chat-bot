@@ -129,6 +129,15 @@ class RootAgent(BaseAgent):
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
         """Финальное событие root-агента."""
+        state_delta: Dict[str, Any] = {}
+        session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
+        bot_action = session_state.get("_bot_action")
+        if isinstance(bot_action, dict) and bot_action.get("type"):
+            state_delta["_bot_action"] = bot_action
+
+        actions = EventActions(end_of_agent=True)
+        actions.state_delta = state_delta
+
         return Event(
             author="root_agent",
             invocation_id=ctx.invocation_id,
@@ -136,7 +145,7 @@ class RootAgent(BaseAgent):
                 role="model",
                 parts=[genai_types.Part(text=text)],
             ),
-            actions=EventActions(end_of_agent=True),
+            actions=actions,
         )
 
     def _build_final_event_with_history(
@@ -247,14 +256,14 @@ class RootAgent(BaseAgent):
     def _format_clarification_option(option: Any) -> str:
         if isinstance(option, dict):
             name = str(option.get("name") or "").strip()
-            option_id = str(option.get("id") or "").strip()
+            option_code = str(option.get("code") or "").strip()
             term = str(option.get("term") or "").strip()
             currency = str(option.get("currency") or "").strip()
             details = [item for item in (term, currency) if item]
-            if option_id and name:
-                label = f"{option_id} {name}"
+            if option_code and name:
+                label = f"{option_code} {name}"
             else:
-                label = option_id or name
+                label = option_code or name
             if details:
                 label = f"{label} - {', '.join(details)}"
             return label.strip()
@@ -635,13 +644,13 @@ class RootAgent(BaseAgent):
 
         if product_selection["mode"] == "product_kit":
             resolved_product = product_selection.get("resolved_product") or {}
-            product_id = str(resolved_product.get("id") or "").strip()
+            product_code = str(resolved_product.get("code") or "").strip()
             product_name = str(resolved_product.get("name") or "").strip()
             folder_kit = str(resolved_product.get("folder_kit") or "").strip()
-            if product_id:
+            if product_code:
                 ctx.session.state["_bot_action"] = {
                     "type": "send_product_kit",
-                    "product_id": product_id,
+                    "product_code": product_code,
                     "product_name": product_name,
                     "folder_kit": folder_kit,
                 }
