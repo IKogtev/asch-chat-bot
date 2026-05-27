@@ -12,7 +12,7 @@ from app.models import (
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
 import hashlib, os, uuid, shutil, asyncio, aiofiles
 from contextlib import asynccontextmanager
-from app.utils.logger import setup_logger
+from utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx, mimetypes
@@ -165,7 +165,7 @@ BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
 # папка загрузки файлов
 BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
 
-logger = setup_logger(name="Test", service_dir="App")
+logger = setup_logger("kb_manager", log_file="kb_manager.log")
 
 # Initialize services
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))
@@ -180,8 +180,14 @@ embedding_api_base = os.getenv("EMBEDDING_API_BASE", "https://dsrv1.llm.nstcloud
 embedding_api_key = os.getenv("EMBEDDING_API_KEY", "REDACTED_EXAMPLE")
 embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+# Изображения индексируем без OCR: только в KB-коллекции, в FAQ не нужны.
+# Реальный текст для них не извлекаем — в DocumentLoader подставляется плейсхолдер,
+# чтобы sparse-индекс мог матчить по имени файла и пути.
+SUPPORTED_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".ico",
+}
 SUPPORTED_FAQ_EXTENSIONS = {".md", ".csv", ".xls", ".xlsx", ".txt", ".pdf", ".docx"}
-SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx",".csv", ".xls", ".xlsx"}
+SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx", ".csv", ".xls", ".xlsx"} | SUPPORTED_IMAGE_EXTENSIONS
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
@@ -223,6 +229,12 @@ for name, cfg in COLLECTIONS_CFG.items():
     cfg["root_path"] = root_path
     collections_config_for_qdrant[name] = cfg["type"]
 
+_default_service_collection_type = CollectionType.DOCUMENTS
+for _coll_name, _cfg in COLLECTIONS_CFG.items():
+    if _coll_name == collection_name:
+        _default_service_collection_type = _cfg["type"]
+        break
+
 # Инициализация QdrantService
 qdrant_service = QdrantService(
     collection_name=collection_name, # Дефолтная коллекция
@@ -230,6 +242,7 @@ qdrant_service = QdrantService(
     embedding_api_key=embedding_api_key,
     embedding_model=embedding_model,
     embedding_dimensions=embedding_dimensions,
+    collection_type=_default_service_collection_type,
     chunk_size=chunk_size,
     chunk_overlap=chunk_overlap,
     qdrant_host=QDRANT_HOST,
@@ -245,7 +258,8 @@ for name, cfg in COLLECTIONS_CFG.items():
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         service_dir=Path("app"),
-        ext_allowed=cfg["ext"]
+        ext_allowed=cfg["ext"],
+        qdrant_collection_name=name,
     )
 
 sync_lock = asyncio.Lock()
@@ -369,33 +383,40 @@ async def run_sync_all_safe():
 
     return {"status": "completed"}
 
+
+def _sync_collections_in_order() -> list[str]:
+    """FAQ-коллекции первыми (обычно небольшие), затем остальные в порядке конфига."""
+    faq_first = [
+        name
+        for name, cfg in COLLECTIONS_CFG.items()
+        if cfg.get("sync_type") == "faq"
+    ]
+    rest = [name for name in COLLECTIONS_CFG if name not in faq_first]
+    return faq_first + rest
+
+
 async def run_sync_all_once():
     """
     функция для правильного вызова синхронизации от типа, 
     в дальнейшем можно добавить другие типы коллекций если надо
     """
     
-    original_collection = qdrant_service.collection_name
-    original_type = qdrant_service.collection_type
-
-    for collection_name, cfg in COLLECTIONS_CFG.items():
+    for collection_name in _sync_collections_in_order():
+        cfg = COLLECTIONS_CFG[collection_name]
         logger.info(f"[SYNC] Processing {collection_name}")
         root = cfg["root_path"]
         storager = file_storages[collection_name]
 
         logger.info(f"[SYNC] {collection_name} from {root}")
-        # 1. переключаемся на коллекцию
-        qdrant_service.switch_collection(
-            collection_name,
-            cfg["type"]
-        )
 
-        # 2. удаление отсутствующих KB
+        # удаление отсутствующих KB (целевая коллекция — у storager, не UI)
         disk_kb_ids = {
             folder.name for folder in root.iterdir() if folder.is_dir()
         }
 
-        qdrant_kbs = qdrant_service.list_knowledge_bases()
+        qdrant_kbs = qdrant_service.list_knowledge_bases(
+            collection_name=collection_name
+        )
         qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
 
         deleted_kbs = qdrant_kb_ids - disk_kb_ids
@@ -410,11 +431,7 @@ async def run_sync_all_once():
             except Exception as e:
                 logger.error(f"[SYNC] delete error {kb_id}: {e}")
 
-        # 3. синхронизация существующих папок
         await sync_function(root, storager, cfg["sync_type"])
-
-    # вернуть состояние
-    qdrant_service.switch_collection(original_collection, original_type)
 
     return {"status": "success", "message": "SYNC completed"}          
 
@@ -481,19 +498,15 @@ async def filesystem_sync(
     storager = file_storages.get(collection_name)
     if not storager:
         return {"status": "error", "message": f"Storage for {collection_name} is not initialized"}
-    try: 
-        # Обязательно переключаем Qdrant на нужную коллекцию перед синхронизацией!
-        # Это критично, так как storager внутри себя обращается к qdrant_service
-        qdrant_service.switch_collection(collection_name, cfg["type"])
+    try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             lambda: storager.sync(
                 kb_id=kb_id,
-                # Передаем "kb" или "faq" из конфига, чтобы storager понимал логику парсинга
-                collection_type=cfg["sync_type"]
-                )
-            )
+                collection_type=cfg["sync_type"],
+            ),
+        )
 
     except Exception as e:
         logger.error(f"[SYNC KB] Error: {e}")
@@ -803,7 +816,12 @@ async def upload_document(
                     d["meta"]["version"] = max_version + 1
 
         # 5. загрузка в Qdrant 
-        qdrant_service.upload_points_qdrant(documents, docs_count, points_count)    
+        qdrant_service.upload_points_qdrant(
+            documents,
+            docs_count,
+            points_count,
+            collection_name=collection_name,
+        )    
 
         return JSONResponse({
             "success": True,
@@ -863,7 +881,8 @@ async def search_documents(request: SearchRequest):
         results = qdrant_service.search(
             query=request.query,
             limit=request.limit,
-            filters=request.filters
+            filters=request.filters,
+            search_mode=request.search_mode,
         )
         return results
     except Exception as e:
@@ -926,16 +945,71 @@ async def download_document(document_id: str):
 ##################################
 
 @app.get("/api/collections/info")
-async def collection_info():
+async def collection_info(collection: Optional[str] = None):
     """Get collection information"""
     try:
-        info = qdrant_service.get_collection_info()
-        info['platform_version'] = PLATFORM_VERSION
-        info['last_sync'] = sync_settings["last_sync"]
-        info['next_sync'] = sync_settings['next_sync']
+
+        # Старое поведение
+        target_collection = (
+            collection or qdrant_service.collection_name
+        )
+
+        # Проверка существования
+        collections = (
+            qdrant_service
+            .qdrant_client
+            .get_collections()
+            .collections
+        )
+
+        existing_collections = {
+            c.name for c in collections
+        }
+
+        if target_collection not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{target_collection}' not found"
+            )
+
+        # Получаем info БЕЗ переключения глобального состояния
+        info_obj = qdrant_service.qdrant_client.get_collection(
+            collection_name=target_collection
+        )
+
+        info = {
+            "name": target_collection,
+            "points_count": info_obj.points_count,
+            "vectors_count": (
+                info_obj.vectors_count
+                if hasattr(info_obj, "vectors_count")
+                else info_obj.points_count
+            ),
+            "status": (
+                info_obj.status.value
+                if hasattr(info_obj.status, "value")
+                else str(info_obj.status)
+            ),
+            "platform_version": PLATFORM_VERSION,
+            "last_sync": sync_settings["last_sync"],
+            "next_sync": sync_settings["next_sync"]
+        }
+
         return info
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(
+            f"[COLLECTION INFO ERROR] {e}",
+            exc_info=True
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.post("/api/collections/refresh_metadata")
 async def refresh_collection_metadata():
@@ -1006,6 +1080,11 @@ async def create_collection(request: Request):
 
     version = payload.get("version")
     collection_type = payload.get("type", "faq")  # faq | kb
+    if collection_type not in ("faq", "kb"):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "type must be 'faq' or 'kb'"},
+        )
     collection_name = f"{collection_type}_collection_v{str(version)}"
     if not version:
         return JSONResponse(
@@ -1015,7 +1094,8 @@ async def create_collection(request: Request):
 
     try:
         created = qdrant_service.create_collection(
-            collection_name = collection_name
+            collection_name=collection_name,
+            schema_kind=collection_type,
         )
         return {
             "success": created,

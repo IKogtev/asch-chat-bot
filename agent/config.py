@@ -41,10 +41,10 @@ DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAG
 # =============================================================================
 # CONTEXT COMPACTION
 # =============================================================================
-AGENT_CONTEXT_COMPACTION_INTERVAL = int(os.getenv("AGENT_CONTEXT_COMPACTION_INTERVAL", "8"))
-AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE = int(os.getenv("AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE", "2"))
+AGENT_CONTEXT_COMPACTION_INTERVAL = int(os.getenv("AGENT_CONTEXT_COMPACTION_INTERVAL", "60"))
+AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE = int(os.getenv("AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE", "3"))
 AGENT_CONTEXT_TOKEN_THRESHOLD = int(os.getenv("AGENT_CONTEXT_TOKEN_THRESHOLD", "16000"))
-AGENT_CONTEXT_EVENT_RETENTION_SIZE = int(os.getenv("AGENT_CONTEXT_EVENT_RETENTION_SIZE", "12"))
+AGENT_CONTEXT_EVENT_RETENTION_SIZE = int(os.getenv("AGENT_CONTEXT_EVENT_RETENTION_SIZE", "60"))
 
 # =============================================================================
 # KB_SEARCH MCP SETTINGS
@@ -60,6 +60,15 @@ FAQSEARCH_MCP_URL = os.getenv("FAQSEARCH_MCP_URL", "http://faq:7000/faq_rag/mcp"
 FAQSEARCH_MCP_TOKEN = os.getenv("FAQSEARCH_MCP_TOKEN", MCP_TOKEN).strip()
 FAQSEARCH_MCP_TIMEOUT_SEC = float(
     os.getenv("FAQSEARCH_MCP_TIMEOUT_SEC", str(MCP_TIMEOUT_SEC))
+)
+
+# =============================================================================
+# DBHUB MCP SETTINGS
+# =============================================================================
+DBHUB_MCP_URL = os.getenv("DBHUB_MCP_URL", "http://dbhub:8080/mcp").strip()
+DBHUB_MCP_TOKEN = os.getenv("DBHUB_MCP_TOKEN", MCP_TOKEN).strip()
+DBHUB_MCP_TIMEOUT_SEC = float(
+    os.getenv("DBHUB_MCP_TIMEOUT_SEC", str(MCP_TIMEOUT_SEC))
 )
 
 # =============================================================================
