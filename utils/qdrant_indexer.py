@@ -293,5 +293,5 @@ class QdrantReadIndexer:
         )
 
 
-# FAQ MCP imports this alias; KB MCP subclasses QdrantReadIndexer.
+# FAQ MCP uses hybrid Indexer (dense-only search); KB MCP subclasses the same class.
 Indexer = QdrantReadIndexer

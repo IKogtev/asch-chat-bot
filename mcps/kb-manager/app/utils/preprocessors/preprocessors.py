@@ -8,7 +8,7 @@ from typing import List, Optional, Set
 import pdfplumber
 from docx import Document
 from dataclasses import dataclass, asdict
-from app.utils.logger import setup_logger
+from utils.logger import setup_logger
 # ------------------------------
 # Регулярные паттерны для поиска
 #  -----------------------------

@@ -54,6 +54,7 @@ services:
     env_file:
       - .env
     environment:
+      - LOG_LEVEL=${AGENT_LOG_LEVEL:-DEBUG}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
@@ -142,6 +143,7 @@ services:
       - ./kb_storage/bot/:/app/data
       - ./kb_storage/kb:/app/kb_storage/kb:ro
     environment:
+      - LOG_LEVEL=${BOT_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
@@ -180,6 +182,7 @@ services:
       - ./kb_storage/bot/:/app/data
       - ./kb_storage/kb:/app/kb_storage/kb:ro
     environment:
+      - LOG_LEVEL=${BOT_MAX_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - MAX_BOT_TOKEN=REDACTED_EXAMPLE
       - ADK_API_BASE=http://adk-agent:8000
@@ -208,8 +211,8 @@ services:
 
   kb-manager:
     build:
-      context: ./mcps/kb-manager
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcps/kb-manager/Dockerfile
     image: kb-manager:latest
     container_name: kb-manager                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
     restart: unless-stopped
@@ -220,13 +223,14 @@ services:
       - ./kb_storage/prompts:/app/data/prompts
       - ./kb_storage/bot:/app/data/bot
     environment:
+      - LOG_LEVEL=${KB_MANAGER_LOG_LEVEL:-DEBUG}
+      - LOG_TO_FILE=false
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=kb_collection
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - LOG_TO_FILE=false
       - ACTIVE_DOCUMENTS_PATH=kb/
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
       - ARCHIVE_DOCUMENTS_PATH=archive_kb/
@@ -281,7 +285,7 @@ services:
       - MCP_TOKEN=${MCP_TOKEN:-REDACTED_EXAMPLE}
       - IN_DOCKER=true
       - LOG_TO_FILE=false
-      - LOG_LEVEL=${KB_LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${KB_LOG_LEVEL:-DEBUG}
 
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-REDACTED_EXAMPLE}
@@ -289,7 +293,7 @@ services:
 
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
-      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-20}
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-18}
       - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.15}
        
       - KB_RRF_K_DOC_SEARCH=60
@@ -331,7 +335,7 @@ services:
       - MCP_TOKEN=${FAQSEARCH_MCP_TOKEN:-REDACTED_EXAMPLE}
       - IN_DOCKER=true
       - LOG_TO_FILE=false
-      - LOG_LEVEL=${FAQ_LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${FAQ_LOG_LEVEL:-DEBUG}
 
       - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${OPENROUTER_API_KEY:-REDACTED_EXAMPLE}
@@ -409,6 +413,7 @@ services:
     env_file:
       - .env
     environment:
+      - LOG_LEVEL=${ADK_WEB_LOG_LEVEL:-DEBUG}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}

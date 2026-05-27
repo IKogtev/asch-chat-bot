@@ -12,7 +12,9 @@ RUN mkdir -p /app/.cache/fastembed \
 
 COPY mcps/mcp-server-kbsearch/app/mcp-server-kbsearch_v2.py /app/
 COPY mcps/mcp-server-kbsearch/app/utils /app/utils/
-COPY utils/qdrant_indexer.py utils/mcp_embedding.py /app/utils/
+COPY utils/qdrant_indexer.py utils/mcp_embedding.py utils/logger.py utils/__init__.py \
+     utils/indexer.py utils/qdrant_hybrid.py utils/rrf.py utils/qdrant_search_filters.py \
+     utils/search_profile.py /app/utils/
 
 ENV PYTHONUNBUFFERED=1 \
     MCP_HOST=0.0.0.0 \
