@@ -127,6 +127,7 @@ def test_validate_product_selection_result_accepts_product_kit_with_product_id()
             "resolved_product": {
                 "id": "2832",
                 "name": "Fort Knox 6 месяцев",
+                "folder_kit": "Fort Knox (2832)",
             },
         },
         SQL_CONTEXT,
@@ -134,6 +135,7 @@ def test_validate_product_selection_result_accepts_product_kit_with_product_id()
 
     assert result["mode"] == "product_kit"
     assert result["resolved_product"]["id"] == "2832"
+    assert result["resolved_product"]["folder_kit"] == "Fort Knox (2832)"
 
 
 @pytest.mark.unit
