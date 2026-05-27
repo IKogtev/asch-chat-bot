@@ -30,8 +30,8 @@ PRODUCT_SELECTION_MODES = {
     "no_data",
 }
 
-PRODUCT_FIELD_KEYS = ("id", "name", "term", "currency", "folder_kit")
-CLARIFICATION_OPTION_FIELD_KEYS = ("id", "name", "term", "currency")
+PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
+CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
 PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
@@ -168,11 +168,11 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "resolved_product"),
         )
 
-    if mode == "product_kit" and not resolved_product.get("id"):
+    if mode == "product_kit" and not resolved_product.get("code"):
         raise build_validation_error(
             agent=agent_name,
             stage="semantics",
-            problem="mode='product_kit' requires resolved_product.id",
+            problem="mode='product_kit' requires resolved_product.code",
             data=data,
             fields=("mode", "resolved_product"),
         )
@@ -186,7 +186,7 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "clarification_options"),
         )
 
-    if PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
+    if mode != "no_data" and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
         raise build_validation_error(
             agent=agent_name,
             stage="tool_usage",
@@ -254,7 +254,7 @@ Rules:
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
 - If mode="needs_clarification", clarification_options must be a non-empty array of objects.
-- Each clarification option must use only id, name, term, and currency fields; do not return options as strings.
+- Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
 - For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
 - Do not include source in JSON.

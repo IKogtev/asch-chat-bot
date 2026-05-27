@@ -19,7 +19,7 @@ def test_get_product_kit_returns_files_from_cyrillic_root() -> None:
     result = get_product_kit("2832", "Fort Knox", root=root)
 
     assert result["status"] == "ok"
-    assert result["product_id"] == "2832"
+    assert result["product_code"] == "2832"
     assert result["files"] == [
         {"path": str(file_path.resolve()), "name": "условия.pdf", "size": file_path.stat().st_size}
     ]
