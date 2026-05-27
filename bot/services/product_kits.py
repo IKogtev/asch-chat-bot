@@ -27,7 +27,7 @@ def _resolve_inside(root: Path, child: Path) -> tuple[Path, Path]:
 
 
 def get_product_kit(
-    product_id: str,
+    product_code: str,
     product_name: str | None = None,
     folder_kit: str | None = None,
     *,
@@ -35,14 +35,14 @@ def get_product_kit(
     max_files: int | None = None,
     max_file_size_mb: int | None = None,
 ) -> dict[str, Any]:
-    normalized_product_id = str(product_id or "").strip()
+    normalized_product_code = str(product_code or "").strip()
     normalized_product_name = str(product_name or "").strip()
     normalized_folder_kit = str(folder_kit or "").strip()
 
-    if not normalized_product_id:
+    if not normalized_product_code:
         return {
             "status": "invalid_request",
-            "product_id": normalized_product_id,
+            "product_code": normalized_product_code,
             "product_name": normalized_product_name,
             "message": "Не удалось определить ID продукта для комплекта.",
             "files": [],
@@ -62,14 +62,14 @@ def get_product_kit(
     limit = max_files if max_files is not None else default_max_files
     max_size_mb = max_file_size_mb if max_file_size_mb is not None else default_max_file_size_mb
     max_size_bytes = max(int(max_size_mb), 0) * 1024 * 1024
-    folder_name = normalized_folder_kit or normalized_product_id
+    folder_name = normalized_folder_kit or normalized_product_code
 
     try:
         root_resolved, folder = _resolve_inside(kits_root, kits_root / folder_name)
     except ValueError:
         return {
             "status": "invalid_request",
-            "product_id": normalized_product_id,
+            "product_code": normalized_product_code,
             "product_name": normalized_product_name,
             "message": "Некорректный путь комплекта продукта.",
             "files": [],
@@ -79,7 +79,7 @@ def get_product_kit(
     if not folder.exists() or not folder.is_dir():
         return {
             "status": "not_found",
-            "product_id": normalized_product_id,
+            "product_code": normalized_product_code,
             "product_name": normalized_product_name,
             "folder": str(folder),
             "message": "Комплект для продукта пока не загружен.",
@@ -118,7 +118,7 @@ def get_product_kit(
     if not files:
         return {
             "status": "empty",
-            "product_id": normalized_product_id,
+            "product_code": normalized_product_code,
             "product_name": normalized_product_name,
             "folder": str(folder),
             "message": "Папка комплекта продукта есть, но подходящих файлов в ней нет.",
@@ -128,7 +128,7 @@ def get_product_kit(
 
     return {
         "status": "ok",
-        "product_id": normalized_product_id,
+        "product_code": normalized_product_code,
         "product_name": normalized_product_name,
         "folder": str(folder),
         "message": "Комплект продукта найден.",

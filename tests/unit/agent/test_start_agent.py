@@ -47,10 +47,10 @@ def _load_start_agent_module(monkeypatch):
     config_stub = types.ModuleType("agent.config")
     config_stub.ACTIVE_DOCUMENTS_COLLECTION = "active_docs"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb_docs"
-    config_stub.AGENT_CONTEXT_COMPACTION_INTERVAL = 36
+    config_stub.AGENT_CONTEXT_COMPACTION_INTERVAL = 60
     config_stub.AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE = 3
     config_stub.AGENT_CONTEXT_TOKEN_THRESHOLD = 16000
-    config_stub.AGENT_CONTEXT_EVENT_RETENTION_SIZE = 36
+    config_stub.AGENT_CONTEXT_EVENT_RETENTION_SIZE = 60
     config_stub.build_common_model = lambda: object()
 
     def _agent_factory(name):
@@ -107,9 +107,9 @@ def test_start_agent_exports_app_with_context_compaction_config(monkeypatch) -> 
 
     assert module.app.name == "agent"
     assert module.app.root_agent is module.root_agent
-    assert module.app.events_compaction_config.compaction_interval == 36
+    assert module.app.events_compaction_config.compaction_interval == 60
     assert module.app.events_compaction_config.overlap_size == 3
     assert module.app.events_compaction_config.token_threshold == 16000
-    assert module.app.events_compaction_config.event_retention_size == 36
+    assert module.app.events_compaction_config.event_retention_size == 60
     assert module.app.events_compaction_config.summarizer.llm is not None
     assert module.root_agent.product_selection_agent.name == "product_selection_agent"
