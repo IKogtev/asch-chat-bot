@@ -62,6 +62,7 @@ json_leaf_runner_module = _load_json_leaf_runner_module()
 AgentValidationFailure = json_leaf_runner_module.AgentValidationFailure
 run_json_leaf_agent = json_leaf_runner_module.run_json_leaf_agent
 strip_thought_parts = json_leaf_runner_module.strip_thought_parts
+_extract_tool_event_summaries = json_leaf_runner_module._extract_tool_event_summaries
 
 
 class _FakeAgent:
@@ -171,6 +172,66 @@ def test_run_json_leaf_agent_yields_sanitized_events() -> None:
     assert events[0].content.parts == [visible]
     assert event.content.parts == [thought, visible]
     assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_passes_tool_call_names_to_validator_context() -> None:
+    function_call = types.SimpleNamespace(
+        function_call=types.SimpleNamespace(name="execute_sql", args={"sql": "select 1"})
+    )
+    event = _make_event([function_call])
+    ctx = _make_ctx('{"status":"ok"}')
+
+    def validator(data, context):
+        assert context["_adk_tool_calls"] == ["execute_sql"]
+        assert context["_adk_tool_event_summaries"] == [
+            {
+                "type": "call",
+                "name": "execute_sql",
+                "args_preview": '{"sql": "select 1"}',
+            }
+        ]
+        return data
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent([event]),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=validator,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
+
+
+@pytest.mark.unit
+def test_extract_tool_event_summaries_supports_dict_function_response() -> None:
+    event = {
+        "content": {
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "execute_sql",
+                        "response": {"rows": [{"id": 2832}], "success": True},
+                    }
+                }
+            ]
+        }
+    }
+
+    assert _extract_tool_event_summaries(event) == [
+        {
+            "type": "response",
+            "name": "execute_sql",
+            "response_preview": '{"rows": [{"id": 2832}], "success": true}',
+        }
+    ]
 
 
 @pytest.mark.unit

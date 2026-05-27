@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from enum import Enum
 from datetime import datetime
 
@@ -22,6 +22,10 @@ class SearchRequest(BaseModel):
     query: str
     limit: int = Field(default=10, ge=1, le=100)
     filters: Optional[Dict[str, Any]] = None
+    search_mode: Literal["hybrid", "dense"] = Field(
+        default="hybrid",
+        description="hybrid: dense + sparse BM25 + RRF; dense: только семантический поиск по вектору dense",
+    )
 
 
 class SearchResult(BaseModel):
@@ -38,6 +42,9 @@ class SearchResult(BaseModel):
     kb_id: Optional[str] = None
     user_id: Optional[str] = None
     created_at: Optional[datetime]
+    rrf_score: Optional[float] = None
+    dense_score: Optional[float] = None
+    sparse_score: Optional[float] = None
 
 class SwitchCollectionRequest(BaseModel):
     """Switch collection model"""

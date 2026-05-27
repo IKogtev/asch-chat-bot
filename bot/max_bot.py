@@ -38,10 +38,9 @@ async def setup_bot_commands(bot):
 
     try:
         await bot.set_my_commands(
-            BotCommand(name="start", description="Начать работу"),
-            BotCommand(name="help", description="Показать справку"),
-            BotCommand(name="version", description="Версия системы"),
-            BotCommand(name="reset", description="сбросить историю"),
+            BotCommand(name="start", description="Показать файлы"),
+            BotCommand(name="help", description="помощь | справка"),
+            BotCommand(name="reset", description="сбросить диалог"),
         )
         logger.info("Команды бота зарегистрированы")
     except Exception as e:

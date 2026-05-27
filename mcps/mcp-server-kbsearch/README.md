@@ -153,11 +153,16 @@ POST /kb/update?source_type=local_folder&mode=replace&source_path=/path/to/docs
 | `EMBEDDING_MODEL` | Модель эмбеддингов | Qwen/Qwen3-Embedding-0.6B |
 | `KB_CHUNK_SIZE` | Размер чанка | 512 |
 | `KB_CHUNK_OVERLAP` | Перекрытие чанков | 50 |
-| `KB_SIMILARITY_TOP_K` | Макс. результатов | 10 |
-| `KB_SIMILARITY_CUTOFF` | Порог релевантности | 0.5 |
+| `KB_SIMILARITY_TOP_K` | Макс. результатов | 20 |
+| `KB_SIMILARITY_CUTOFF` | Порог релевантности | 0.15 |
+| `KB_RRF_K_DOC_SEARCH` | Нормализацонный коэффициент RRF | 60 |
+| `KB_CANDIDATE_MULT_DOC_SEARCH` | Название папки с архивом | 120 |
+| `DOC_SEARCH_ARCHIVE_SECTION` | Имя папки архива для `must_not` при `search_profile=doc_search` | `5 Архив` |
 | `QDRANT_HOST` | хост qdrant | qdrant |
 | `QDRANT_PORT` | порт qdrant | 6333 |
 | `QDRANT_URL` | путь к qdrant | http://qdrant:6333 |
+| `KB_QDRANT_RETRY_INTERVAL` | интервал повторных попыток загрузки KB из Qdrant (сек) | 1 |
+| `KB_QDRANT_INIT_TIMEOUT` | макс. время ожидания Qdrant при старте; по истечении процесс завершается для перезапуска контейнера (сек, `0` = без выхода) | 60 |
 
 ## 📝 Примеры использования
 
