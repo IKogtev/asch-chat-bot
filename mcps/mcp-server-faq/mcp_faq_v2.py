@@ -306,7 +306,7 @@ async def faq_search(
             f"collection={collection}, filters={filters}"
         )
     else:
-        logger.error(f"Неправильный search_mode: {profile_cfg.search_mode}"
+        logger.error(f"Неправильный search_mode: {profile_cfg.search_mode}")
         res = ToolResult(
                 content=f"Ошибка при поиске FAQ: Неправильный search_mode - {profile_cfg.search_mode}",
                 structured_content=None
