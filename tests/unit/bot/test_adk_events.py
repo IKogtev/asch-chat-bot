@@ -13,7 +13,7 @@ def test_extract_bot_action_from_state_delta() -> None:
                 "state_delta": {
                     "_bot_action": {
                         "type": "send_product_kit",
-                        "product_id": "2832",
+                        "product_code": "2832",
                         "product_name": "Fort Knox",
                     }
                 }
@@ -25,7 +25,7 @@ def test_extract_bot_action_from_state_delta() -> None:
 
     assert result == {
         "type": "send_product_kit",
-        "product_id": "2832",
+        "product_code": "2832",
         "product_name": "Fort Knox",
     }
 

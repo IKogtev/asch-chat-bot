@@ -111,6 +111,7 @@ def _load_rootagent_module():
     @dataclass
     class EventActions:
         end_of_agent: bool = False
+        state_delta: dict | None = None
 
     @dataclass
     class Event:
@@ -235,6 +236,29 @@ def test_build_final_event_creates_end_of_agent_event() -> None:
     assert event.content.role == "model"
     assert event.content.parts[0].text == "Ответ"
     assert event.actions.end_of_agent is True
+    assert event.actions.state_delta == {}
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_bot_action_state_delta() -> None:
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            "_bot_action": {
+                "type": "send_product_kit",
+                "product_code": "2832",
+            }
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta == {
+        "_bot_action": {
+            "type": "send_product_kit",
+            "product_code": "2832",
+        }
+    }
 
 
 @pytest.mark.unit
@@ -416,7 +440,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
             "message": " Product selection answer ",
             "used_tables": ["products"],
             "resolved_product": {
-                "id": "2832",
+                "code": "2832",
                 "name": "Fort Knox",
                 "folder_kit": "Fort Knox (2832)",
             },
@@ -459,9 +483,9 @@ async def test_handle_product_selection_appends_clarification_options() -> None:
             "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [
-                {"id": "8958", "name": "Bundle Fort Knox 3+12 months"},
+                {"code": "8958", "name": "Bundle Fort Knox 3+12 months"},
                 {
-                    "id": "8793",
+                    "code": "8793",
                     "name": "Fort Knox 6 months",
                     "term": "short",
                     "currency": "RUB",
@@ -504,7 +528,11 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
             "mode": "product_kit",
             "message": " Kit answer ",
             "used_tables": ["products"],
-            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "resolved_product": {
+                "code": "2832",
+                "name": "Fort Knox",
+                "folder_kit": "Fort Knox (2832)",
+            },
             "clarification_options": [],
         }
         if False:
@@ -526,7 +554,7 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
     assert ctx.session.state["_root_final_text"] == "Kit answer"
     assert ctx.session.state["_bot_action"] == {
         "type": "send_product_kit",
-        "product_id": "2832",
+        "product_code": "2832",
         "product_name": "Fort Knox",
         "folder_kit": "Fort Knox (2832)",
     }
@@ -704,7 +732,7 @@ async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_fa
                     "status": "ok",
                     "mode": "product_card",
                     "message": "Unsafe generated card",
-                    "resolved_product": {"id": "123", "name": "Generated product"},
+                    "resolved_product": {"code": "123", "name": "Generated product"},
                     "clarification_options": [],
                 }
             ),

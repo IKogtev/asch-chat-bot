@@ -66,3 +66,4 @@ web/copilot-web/.next/
 web/copilot-web/node_modules/
 web/copilot-web/*
 setup-assistant-env.ps1
+AGENTS.md

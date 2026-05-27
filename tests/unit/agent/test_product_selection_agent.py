@@ -101,7 +101,7 @@ def test_validate_product_selection_result_accepts_product_card_with_resolved_pr
             "message": "Product card",
             "used_tables": ["products"],
             "resolved_product": {
-                "id": 2832,
+                "code": 2832,
                 "name": " Fort Knox 6 месяцев ",
                 "ignored": "x",
             },
@@ -110,14 +110,14 @@ def test_validate_product_selection_result_accepts_product_card_with_resolved_pr
     )
 
     assert result["resolved_product"] == {
-        "id": "2832",
+        "code": "2832",
         "name": "Fort Knox 6 месяцев",
     }
     assert result["clarification_options"] == []
 
 
 @pytest.mark.unit
-def test_validate_product_selection_result_accepts_product_kit_with_product_id() -> None:
+def test_validate_product_selection_result_accepts_product_kit_with_product_code() -> None:
     result = validate_product_selection_result(
         {
             "status": "ok",
@@ -125,7 +125,7 @@ def test_validate_product_selection_result_accepts_product_kit_with_product_id()
             "message": "Product kit",
             "used_tables": ["products"],
             "resolved_product": {
-                "id": "2832",
+                "code": "2832",
                 "name": "Fort Knox 6 месяцев",
                 "folder_kit": "Fort Knox (2832)",
             },
@@ -134,7 +134,7 @@ def test_validate_product_selection_result_accepts_product_kit_with_product_id()
     )
 
     assert result["mode"] == "product_kit"
-    assert result["resolved_product"]["id"] == "2832"
+    assert result["resolved_product"]["code"] == "2832"
     assert result["resolved_product"]["folder_kit"] == "Fort Knox (2832)"
 
 
@@ -148,7 +148,7 @@ def test_validate_product_selection_result_accepts_needs_clarification() -> None
             "used_tables": ["products"],
             "clarification_options": [
                 {
-                    "id": 2832,
+                    "code": 2832,
                     "name": "Защищенный капитал 5 лет",
                     "term": "5 лет",
                     "currency": "рубли",
@@ -161,7 +161,7 @@ def test_validate_product_selection_result_accepts_needs_clarification() -> None
 
     assert result["clarification_options"] == [
         {
-            "id": "2832",
+            "code": "2832",
             "name": "Защищенный капитал 5 лет",
             "term": "5 лет",
             "currency": "рубли",
@@ -185,6 +185,22 @@ def test_validate_product_selection_result_accepts_no_data() -> None:
     assert result["used_tables"] == []
     assert result["resolved_product"] is None
     assert result["clarification_options"] == []
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_no_data_without_execute_sql() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "no_data",
+            "message": "No data",
+            "used_tables": [],
+        },
+        {"_adk_tool_calls": ["search_table", "search_column"]},
+    )
+
+    assert result["mode"] == "no_data"
+    assert result["used_tables"] == []
 
 
 @pytest.mark.unit
@@ -323,7 +339,7 @@ def test_validate_product_selection_result_requires_resolved_product(mode: str) 
 
 
 @pytest.mark.unit
-def test_validate_product_selection_result_requires_id_for_product_kit() -> None:
+def test_validate_product_selection_result_requires_code_for_product_kit() -> None:
     with pytest.raises(ValueError) as exc:
         validate_product_selection_result(
             {
@@ -336,7 +352,7 @@ def test_validate_product_selection_result_requires_id_for_product_kit() -> None
             {},
         )
 
-    assert "requires resolved_product.id" in str(exc.value)
+    assert "requires resolved_product.code" in str(exc.value)
 
 
 @pytest.mark.unit
