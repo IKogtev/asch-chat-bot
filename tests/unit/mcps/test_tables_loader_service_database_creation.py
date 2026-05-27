@@ -8,7 +8,8 @@ import pytest
 
 def _load_tables_loader_module(monkeypatch):
     repo_root = Path(__file__).resolve().parents[3]
-    module_path = repo_root / "mcps" / "kb-manager" / "app" / "services" / "tables_loader_service.py"
+    services_dir = repo_root / "mcps" / "kb-manager" / "app" / "services"
+    module_path = services_dir / "tables_loader_service.py"
 
     asyncpg_stub = types.ModuleType("asyncpg")
     asyncpg_stub.Connection = type("Connection", (), {})
@@ -29,8 +30,15 @@ def _load_tables_loader_module(monkeypatch):
         )
     )
 
+    app_pkg = types.ModuleType("app")
+    app_pkg.__path__ = [str(repo_root / "mcps" / "kb-manager" / "app")]
+    services_pkg = types.ModuleType("app.services")
+    services_pkg.__path__ = [str(services_dir)]
+
     monkeypatch.setitem(sys.modules, "asyncpg", asyncpg_stub)
     monkeypatch.setitem(sys.modules, "pandas", pandas_stub)
+    monkeypatch.setitem(sys.modules, "app", app_pkg)
+    monkeypatch.setitem(sys.modules, "app.services", services_pkg)
 
     spec = importlib.util.spec_from_file_location("tables_loader_service_under_test", module_path)
     module = importlib.util.module_from_spec(spec)
@@ -126,3 +134,50 @@ async def test_ensure_database_exists_skips_create_when_database_exists(monkeypa
         ("fetchval", "nstya_data"),
         ("close",),
     ]
+
+
+@pytest.mark.unit
+def test_enrich_products_with_kit_folders_rebuilds_columns(monkeypatch, tmp_path) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    (tmp_path / "Fort Knox (2832)").mkdir()
+    monkeypatch.setenv("PRODUCT_KITS_ROOT", str(tmp_path))
+
+    class FakeAt:
+        def __init__(self, frame):
+            self.frame = frame
+
+        def __setitem__(self, key, value):
+            idx, column = key
+            self.frame.rows[idx][column] = value
+
+    class FakeDataFrame:
+        def __init__(self, rows):
+            self.rows = rows
+            self.columns = list(rows[0].keys())
+            self.at = FakeAt(self)
+
+        def copy(self):
+            return FakeDataFrame([row.copy() for row in self.rows])
+
+        def __len__(self):
+            return len(self.rows)
+
+        def __setitem__(self, column, value):
+            if column not in self.columns:
+                self.columns.append(column)
+            for row in self.rows:
+                row[column] = value
+
+        def iterrows(self):
+            for idx, row in enumerate(self.rows):
+                yield idx, row
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    df = FakeDataFrame([{"code": "2832", "name": "Fort Knox", "folder_kit": "old"}])
+
+    result = service._enrich_products_with_kit_folders(df)
+
+    assert result.rows[0]["folder_kit"] == "Fort Knox (2832)"
+    assert "Fort Knox (2832)" in result.rows[0]["folder_kit_status"]
+    assert service.product_kit_folders_found == 1
+    assert service.product_kit_products_total == 1

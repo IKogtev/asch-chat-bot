@@ -61,7 +61,12 @@ async def handle_product_kit_action(
     """Находит папку продукта по ID, отправляет файлы комплекта и пишет события в лог."""
     product_id = str(bot_action.get("product_id") or "").strip()
     product_name = str(bot_action.get("product_name") or "").strip()
-    result = get_product_kit(product_id=product_id, product_name=product_name)
+    folder_kit = str(bot_action.get("folder_kit") or "").strip()
+    result = get_product_kit(
+        product_id=product_id,
+        product_name=product_name,
+        folder_kit=folder_kit,
+    )
 
     if result["status"] != "ok":
         response_time = int((time.time() - start_time) * 1000)
@@ -75,6 +80,7 @@ async def handle_product_kit_action(
                 "turn_id": turn_id,
                 "product_id": product_id,
                 "product_name": product_name,
+                "folder_kit": folder_kit,
                 "status": result["status"],
                 "text": result["message"],
                 "response_time_ms": response_time,
@@ -103,6 +109,7 @@ async def handle_product_kit_action(
                 "turn_id": turn_id,
                 "product_id": product_id,
                 "product_name": product_name,
+                "folder_kit": folder_kit,
             },
         )
 
@@ -116,6 +123,7 @@ async def handle_product_kit_action(
             "turn_id": turn_id,
             "product_id": product_id,
             "product_name": product_name,
+            "folder_kit": folder_kit,
             "files_sent": sent,
             "skipped_files": result.get("skipped_files", []),
             "response_time_ms": response_time,

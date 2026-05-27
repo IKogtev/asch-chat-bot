@@ -52,6 +52,13 @@ def main() -> int:
             f"from {table.source_file}/{table.source_sheet}"
         )
 
+    if result.product_kit_products_total is not None:
+        print(
+            "Product kit folders found: "
+            f"{result.product_kit_folders_found} of "
+            f"{result.product_kit_products_total} products."
+        )
+
     if result.validation_errors:
         print("Validation warnings:")
         for error in result.validation_errors:

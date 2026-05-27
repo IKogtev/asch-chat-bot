@@ -153,7 +153,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/Комплекты документов по продуктам
+      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
@@ -192,7 +192,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/Комплекты документов по продуктам
+      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
@@ -251,6 +251,7 @@ services:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
+      - PRODUCT_KITS_ROOT=/app/data/kb_documents/kb/1 Продукты
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
     depends_on:
