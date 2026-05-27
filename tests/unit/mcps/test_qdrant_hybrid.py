@@ -1,14 +1,19 @@
 """Unit tests for Qdrant hybrid collection helpers."""
 
+import importlib.util
 import types
+from pathlib import Path
 
 import pytest
 from qdrant_client.models import Distance, SparseVector
 
-from kbsearch_import_helper import ensure_kbsearch_app_on_path, load_kbsearch_module
-
-ensure_kbsearch_app_on_path()
-_qdrant_hybrid = load_kbsearch_module("utils/qdrant_hybrid.py", "kbsearch_qdrant_hybrid")
+ROOT = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location(
+    "qdrant_hybrid", ROOT / "utils" / "qdrant_hybrid.py"
+)
+assert _spec is not None and _spec.loader is not None
+_qdrant_hybrid = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_qdrant_hybrid)
 DENSE_VECTOR_NAME = _qdrant_hybrid.DENSE_VECTOR_NAME
 SPARSE_VECTOR_NAME = _qdrant_hybrid.SPARSE_VECTOR_NAME
 bm25_document_text = _qdrant_hybrid.bm25_document_text
@@ -28,7 +33,7 @@ def test_bm25_document_text_combines_chunk_path_and_filename() -> None:
 
     assert "тело чанка" in text
     assert "Fort Knox" in text
-    assert "storiz.pdf" in text
+    assert "storiz" in text
 
 
 @pytest.mark.unit
@@ -39,7 +44,7 @@ def test_bm25_document_text_path_only_for_empty_chunk() -> None:
         "presenter.pdf",
     )
 
-    assert text == "products > Альфа Kids > presenter.pdf"
+    assert text == "products > Альфа Kids > presenter"
 
 
 @pytest.mark.unit

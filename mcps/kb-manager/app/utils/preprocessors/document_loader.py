@@ -5,7 +5,7 @@ from typing import List, Tuple, Dict, Optional
 from llama_index.core.node_parser import SentenceSplitter
 from datetime import datetime
 from app.utils.utillites import hash_file, compute_chunk_hash
-from app.utils.logger import setup_logger 
+from utils.logger import setup_logger 
 import pandas as pd
 # Импорт препроцессора теперь здесь, где ему и место
 from app.utils.preprocessors.preprocessors import FAQPreprocessor

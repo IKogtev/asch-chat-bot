@@ -22,8 +22,9 @@ from starlette.routing import Mount, Route
 from starlette.responses import JSONResponse
 from starlette.requests import Request
 from contextlib import asynccontextmanager
-from utils.qdrant_indexer import Indexer, IndexRuntime, IndexerConfig, metadata_document_count
+from utils.indexer import Indexer, IndexRuntime, IndexerConfig, metadata_document_count
 from utils.logger import setup_logger
+from utils.search_profile import search_profile_config
 
 import textwrap
 
@@ -82,6 +83,31 @@ idx_config = IndexerConfig(
 )
 # Создаём Indexer с текущими конфигами
 indexer = Indexer(idx_config)
+
+
+def _execute_faq_profile_search(
+    question: str,
+    collection: Optional[str],
+    filters: dict | None,
+    top_k: int,
+) -> list:
+    profile_cfg = search_profile_config("faq_search")
+    fetch_k = int(top_k * 1.5)
+    if profile_cfg.search_mode == "dense":
+        return indexer.hybrid_dense_search(
+            question,
+            collection,
+            filters,
+            fetch_k,
+            search_profile="faq_search",
+        )
+    return indexer.hybrid_search_rrf(
+        question,
+        collection,
+        filters,
+        fetch_k,
+        search_profile="faq_search",
+    )
 # -------------------------
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ + блокировка | Состояние сервера
 # -------------------------
@@ -267,11 +293,27 @@ async def faq_search(
     top_k = SIMILARITY_TOP_K
     MIN_SCORE = 0.35
     question = query
-
-    logger.info(
-        f"FAQ поиск: '{question}' (top_k={top_k}), collection={collection}, filters={filters}"
-    )
-
+    profile_cfg = search_profile_config("faq_search")
+    if profile_cfg.search_mode=="hybrid":
+        logger.info(
+            f"FAQ поиск: '{question}' (top_k={top_k}, search_mode={profile_cfg.search_mode}, "
+            f"rrf_k={profile_cfg.rrf_k}, candidate_mult={profile_cfg.candidate_mult}), "
+            f"collection={collection}, filters={filters}"
+        )
+    elif profile_cfg.search_mode=="dense":
+        logger.info(
+            f"FAQ поиск: '{question}' (top_k={top_k}, search_mode={profile_cfg.search_mode}, "
+            f"collection={collection}, filters={filters}"
+        )
+    else:
+        logger.error(f"Неправильный search_mode: {profile_cfg.search_mode}"
+        res = ToolResult(
+                content=f"Ошибка при поиске FAQ: Неправильный search_mode - {profile_cfg.search_mode}",
+                structured_content=None
+            )
+        res.isError = True
+        return res
+    
     async with faq_lock:
 
         if not indexer.cfg.use_qdrant and not faq_runtime.initialized:
@@ -281,15 +323,32 @@ async def faq_search(
             )
 
         try:
+            if not indexer.cfg.use_qdrant:
+                return ToolResult(
+                    content="USE_QDRANT=false: поиск недоступен. Включите Qdrant и kb-manager.",
+                    structured_content=None,
+                )
 
-            if collection:
-                retriever = indexer.get_retriever_for_collection(collection, top_k, filters)
-            else:
-                retriever = indexer.get_retriever_for_collection(None, top_k, filters)
+            if not indexer.hybrid_search_enabled(collection):
+                res = ToolResult(
+                    content=(
+                        "FAQ-коллекция не в hybrid-формате (dense+sparse). "
+                        "Переиндексируйте через kb-manager."
+                    ),
+                    structured_content=None,
+                )
+                res.isError = True
+                return res
 
-            nodes = retriever.retrieve(question)
+            loop = asyncio.get_running_loop()
+            rows = await loop.run_in_executor(
+                None,
+                lambda: _execute_faq_profile_search(
+                    question, collection, filters, top_k
+                ),
+            )
 
-            if not nodes:
+            if not rows:
                 return ToolResult(
                     content=textwrap.dedent(f"""
                     # Результат поиска FAQ
@@ -303,15 +362,14 @@ async def faq_search(
 
             candidates = []
 
-            for n in nodes:
-
-                score = getattr(n, "score", 0.0)
+            for row in rows:
+                score = row.get("score", 0.0)
                 if score < MIN_SCORE:
                     continue
 
-                payload = getattr(n, "metadata", {})
+                payload = row.get("metadata") or {}
                 answer = payload.get("answer")
-                faq_question = payload.get("question") or n.get_content()
+                faq_question = payload.get("question") or row.get("text", "")
 
                 category = payload.get("category", "Общее")
                 section = payload.get("section_path") or "Общее"
@@ -351,7 +409,7 @@ async def faq_search(
                 parts.append(f"**Раздел:** {item['section']}")
                 parts.append(f"**Вопрос:** {item['official_question']}")
                 parts.append(f"**Ответ:** {item['official_answer']}\n")
-
+            logger.debug(f"\nРезультаты поиска:\n{parts}")
             markdown = "\n".join(parts)
 
             return ToolResult(

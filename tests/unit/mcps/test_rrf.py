@@ -4,11 +4,10 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-KB_MGR_ROOT = ROOT / "mcps" / "kb-manager"
-if str(KB_MGR_ROOT) not in sys.path:
-    sys.path.insert(0, str(KB_MGR_ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from app.utils.rrf import reciprocal_rank_fusion  # noqa: E402
+from utils.rrf import reciprocal_rank_fusion  # noqa: E402
 
 
 @pytest.mark.unit
