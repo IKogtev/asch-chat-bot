@@ -38,7 +38,7 @@ def test_resolve_product_kit_folder_returns_not_found_without_candidates(tmp_pat
     )
 
     assert result.folder_kit == resolver.NOT_FOUND_VALUE
-    assert "(2832)" in result.folder_kit_status
+    assert "code='2832'" in result.folder_kit_status
     assert "[]" in result.folder_kit_status
 
 
