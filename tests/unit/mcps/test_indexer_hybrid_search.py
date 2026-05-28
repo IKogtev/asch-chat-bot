@@ -1,6 +1,8 @@
 """Unit tests for Indexer hybrid Qdrant search (RRF and dense-only)."""
 
 import ast
+import importlib.util
+import sys
 import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -9,19 +11,26 @@ import pytest
 
 from kbsearch_import_helper import load_kbsearch_module
 
-INDEXER_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "mcps"
-    / "mcp-server-kbsearch"
-    / "app"
-    / "utils"
-    / "indexer.py"
-)
+ROOT = Path(__file__).resolve().parents[3]
 
-_rrf = load_kbsearch_module("utils/rrf.py", "kbsearch_rrf_for_indexer")
-_search_profile = load_kbsearch_module("utils/search_profile.py", "kbsearch_sp_for_indexer")
-_qdrant_hybrid = load_kbsearch_module("utils/qdrant_hybrid.py", "kbsearch_qh_for_indexer")
-_qdrant_filters = load_kbsearch_module("utils/qdrant_search_filters.py", "kbsearch_qsf_for_indexer")
+
+def load_utils_module(relative_path: str, module_name: str):
+    path = ROOT / "utils" / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+INDEXER_PATH = ROOT / "utils" / "indexer.py"
+
+_rrf = load_utils_module("rrf.py", "kbsearch_rrf_for_indexer")
+_search_profile = load_utils_module("search_profile.py", "kbsearch_sp_for_indexer")
+_qdrant_hybrid = load_utils_module("qdrant_hybrid.py", "kbsearch_qh_for_indexer")
+_qdrant_filters = load_utils_module("qdrant_search_filters.py", "kbsearch_qsf_for_indexer")
 
 _hybrid_mode_stub = {"fn": _qdrant_hybrid.collection_hybrid_mode}
 _rrf_params_stub = {"fn": _search_profile.hybrid_rrf_params_for_profile}
@@ -67,6 +76,7 @@ def _load_indexer_class():
         "Path": Path,
         "datetime": types.SimpleNamespace,
         "IndexerConfig": object,
+        "QdrantReadIndexer": object,
         "VectorStoreIndex": object,
         "Settings": object,
         "QdrantVectorStore": object,

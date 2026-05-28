@@ -38,6 +38,9 @@ tsconfig.json
 test-results/
 playwright.config.ts
 __pycache__
+.test_tmp/
+.tmp/
+.tmp_adk/
 
 # Adk agent tester
 *.xlsx
@@ -63,3 +66,4 @@ web/copilot-web/.next/
 web/copilot-web/node_modules/
 web/copilot-web/*
 setup-assistant-env.ps1
+AGENTS.md

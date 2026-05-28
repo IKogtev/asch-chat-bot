@@ -35,6 +35,7 @@ def _load_rootagent_module():
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
 
     helpers_stub = types.ModuleType("agent.helpers")
+    helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
     helpers_stub.truncate_for_log = lambda text, max_length=200: (text or "")[:max_length]
     helpers_stub.format_text_answer = lambda text: str(text).strip()
     helpers_stub.format_reject_answer = lambda text: str(text).strip()
@@ -110,6 +111,7 @@ def _load_rootagent_module():
     @dataclass
     class EventActions:
         end_of_agent: bool = False
+        state_delta: dict | None = None
 
     @dataclass
     class Event:
@@ -234,6 +236,29 @@ def test_build_final_event_creates_end_of_agent_event() -> None:
     assert event.content.role == "model"
     assert event.content.parts[0].text == "Ответ"
     assert event.actions.end_of_agent is True
+    assert event.actions.state_delta == {}
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_bot_action_state_delta() -> None:
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            "_bot_action": {
+                "type": "send_product_kit",
+                "product_code": "2832",
+            }
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta == {
+        "_bot_action": {
+            "type": "send_product_kit",
+            "product_code": "2832",
+        }
+    }
 
 
 @pytest.mark.unit
@@ -414,7 +439,11 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
             "mode": "product_card",
             "message": " Product selection answer ",
             "used_tables": ["products"],
-            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "resolved_product": {
+                "code": "2832",
+                "name": "Fort Knox",
+                "folder_kit": "Fort Knox (2832)",
+            },
             "clarification_options": [],
         }
         if False:
@@ -442,6 +471,53 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_handle_product_selection_appends_clarification_options() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "needs_clarification",
+            "message": "Choose product",
+            "used_tables": ["products"],
+            "resolved_product": None,
+            "clarification_options": [
+                {"code": "8958", "name": "Bundle Fort Knox 3+12 months"},
+                {
+                    "code": "8793",
+                    "name": "Fort Knox 6 months",
+                    "term": "short",
+                    "currency": "RUB",
+                },
+            ],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "Original question",
+            "Fort Knox",
+            "product_card",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == (
+        "Choose product\n"
+        "8958 Bundle Fort Knox 3+12 months\n"
+        "8793 Fort Knox 6 months - short, RUB"
+    )
+    assert "_bot_action" not in ctx.session.state
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_handle_product_selection_sets_bot_action_for_product_kit() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
@@ -452,7 +528,11 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
             "mode": "product_kit",
             "message": " Kit answer ",
             "used_tables": ["products"],
-            "resolved_product": {"id": "2832", "name": "Fort Knox"},
+            "resolved_product": {
+                "code": "2832",
+                "name": "Fort Knox",
+                "folder_kit": "Fort Knox (2832)",
+            },
             "clarification_options": [],
         }
         if False:
@@ -474,8 +554,9 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
     assert ctx.session.state["_root_final_text"] == "Kit answer"
     assert ctx.session.state["_bot_action"] == {
         "type": "send_product_kit",
-        "product_id": "2832",
+        "product_code": "2832",
         "product_name": "Fort Knox",
+        "folder_kit": "Fort Knox (2832)",
     }
 
 
@@ -529,6 +610,150 @@ async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher
     assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
     assert kb_called is False
     assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_uses_product_selection_message_fallback_on_validation_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="show fort knox")], session_state={})
+    debug_messages = []
+    original_logger = rootagent_module.logger
+    rootagent_module.logger = types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        debug=lambda *a, **k: debug_messages.append(a[0] if a else ""),
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": "product_card",
+                "reason": "product_card",
+                "search_query": "fort knox",
+            }
+            if False:
+                yield None
+            return
+
+        raise rootagent_module.AgentValidationFailure(
+            log_label="product_selection_result_json",
+            validation_error="bad contract",
+            raw=json.dumps(
+                {
+                    "status": "ok",
+                    "mode": "needs_clarification",
+                    "message": "Choose product",
+                    "clarification_options": [
+                        "Bundle Fort Knox 3+12 months (8958)",
+                        "Fort Knox 6 months (8793)",
+                    ],
+                }
+            ),
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    try:
+        events = [event async for event in agent._run_async_impl(ctx)]
+    finally:
+        rootagent_module.logger = original_logger
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == (
+        "Choose product\n"
+        "Bundle Fort Knox 3+12 months (8958)\n"
+        "Fort Knox 6 months (8793)"
+    )
+    assert any(
+        "product_selection fallback diagnostics" in message
+        for message in debug_messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="show product")], session_state={})
+    debug_messages = []
+    original_logger = rootagent_module.logger
+    rootagent_module.logger = types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        debug=lambda *a, **k: debug_messages.append(a[0] if a else ""),
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": "product_card",
+                "reason": "product_card",
+                "search_query": "product",
+            }
+            if False:
+                yield None
+            return
+
+        raise rootagent_module.AgentValidationFailure(
+            log_label="product_selection_result_json",
+            validation_error="product_selection_agent validation failed at tool_usage",
+            raw=json.dumps(
+                {
+                    "status": "ok",
+                    "mode": "product_card",
+                    "message": "Unsafe generated card",
+                    "resolved_product": {"code": "123", "name": "Generated product"},
+                    "clarification_options": [],
+                }
+            ),
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    try:
+        events = [event async for event in agent._run_async_impl(ctx)]
+    finally:
+        rootagent_module.logger = original_logger
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert any(
+        "product_selection fallback diagnostics" in message
+        for message in debug_messages
+    )
 
 
 @pytest.mark.unit

@@ -30,7 +30,9 @@ PRODUCT_SELECTION_MODES = {
     "no_data",
 }
 
-PRODUCT_FIELD_KEYS = ("id", "name", "term", "currency")
+PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
+CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
+PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
 def _normalize_used_tables(value: Any) -> list[str]:
@@ -44,14 +46,17 @@ def _normalize_used_tables(value: Any) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
-def _normalize_product(value: Any) -> dict[str, str] | None:
+def _normalize_product(
+    value: Any,
+    field_keys: tuple[str, ...] = PRODUCT_FIELD_KEYS,
+) -> dict[str, str] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise TypeError(f"expected dict, got {type(value).__name__}")
 
     normalized = {}
-    for key in PRODUCT_FIELD_KEYS:
+    for key in field_keys:
         item = str(value.get(key, "")).strip()
         if item:
             normalized[key] = item
@@ -67,7 +72,7 @@ def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
 
     options: list[dict[str, str]] = []
     for item in value:
-        normalized = _normalize_product(item)
+        normalized = _normalize_product(item, CLARIFICATION_OPTION_FIELD_KEYS)
         if normalized is None:
             raise ValueError("clarification option must not be empty")
         options.append(normalized)
@@ -75,9 +80,20 @@ def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
     return options
 
 
+def _normalize_tool_calls(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        item = value.strip()
+        return {item} if item else set()
+    if isinstance(value, list):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return {str(value).strip()} if str(value).strip() else set()
+
+
 def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     agent_name = "product_selection_agent"
-    _ = context
+    tool_calls = _normalize_tool_calls(context.get("_adk_tool_calls"))
 
     if not isinstance(data, dict):
         raise build_validation_error(
@@ -132,6 +148,17 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "message"),
         )
 
+    logger.debug(
+        "product_selection validation context: mode=%s resolved_product=%s "
+        "clarification_options_count=%s used_tables=%s tool_calls=%s tool_events=%s",
+        mode,
+        resolved_product,
+        len(clarification_options),
+        used_tables,
+        sorted(tool_calls),
+        context.get("_adk_tool_event_summaries") or [],
+    )
+
     if mode in {"product_card", "product_kit"} and not resolved_product:
         raise build_validation_error(
             agent=agent_name,
@@ -141,11 +168,11 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "resolved_product"),
         )
 
-    if mode == "product_kit" and not resolved_product.get("id"):
+    if mode == "product_kit" and not resolved_product.get("code"):
         raise build_validation_error(
             agent=agent_name,
             stage="semantics",
-            problem="mode='product_kit' requires resolved_product.id",
+            problem="mode='product_kit' requires resolved_product.code",
             data=data,
             fields=("mode", "resolved_product"),
         )
@@ -157,6 +184,15 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             problem="mode='needs_clarification' requires clarification_options",
             data=data,
             fields=("mode", "clarification_options"),
+        )
+
+    if mode != "no_data" and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="tool_usage",
+            problem=f"required tool {PRODUCT_SELECTION_REQUIRED_TOOL!r} was not called",
+            data=data,
+            fields=("mode", "used_tables"),
         )
 
     return {
@@ -217,6 +253,9 @@ Rules:
 - Do not use SELECT * for final user-facing answers.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
+- If mode="needs_clarification", clarification_options must be a non-empty array of objects.
+- Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
+- For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
 - Do not include source in JSON.
 

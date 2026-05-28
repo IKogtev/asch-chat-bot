@@ -153,109 +153,45 @@ async def test_server_availability() -> Dict[str, Any]:
     return result
 
 # ============================================================================
-# 2. ИНДЕКСАЦИЯ БЗ: ЗАГРУЗКА И ИНДЕКСИРОВАНИЕ ДОКУМЕНТОВ
+# 2. СТАТУС KB (индексация через kb-manager)
 # ============================================================================
 
 async def test_kb_indexing() -> Dict[str, Any]:
-    """
-    Загрузить и проиндексировать базу знаний из S3.
-    
-    Returns:
-        Dict с результатами индексации
-    """
+    """Проверка готовности индекса через /kb/status (индексация — kb-manager)."""
     logger.info("\n" + "=" * 70)
-    logger.info("2. ИНДЕКСАЦИЯ БЗ: ЗАГРУЗКА И ИНДЕКСИРОВАНИЕ ДОКУМЕНТОВ (S3)")
+    logger.info("2. СТАТУС KB (индексация через kb-manager, не MCP)")
     logger.info("=" * 70)
-    
+
     result = {
-        "name": "KB Indexing from S3",
+        "name": "KB index status",
         "status": "FAILED",
         "details": {},
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
-    
+
     try:
-        # Проверяем наличие S3 credentials
-        if not S3_ACCESS_KEY or not S3_SECRET_KEY:
-            logger.error("✗ S3 credentials не найдены в .env (S3_ACCESS_KEY, S3_SECRET_KEY)")
-            result["details"]["error"] = "Missing S3 credentials in .env"
+        response = requests.get(f"{MCP_SERVER_URL}/kb/status", timeout=30)
+        result["details"]["http_status"] = response.status_code
+        if response.status_code != 200:
+            result["details"]["error"] = response.text[:500]
             test_results["tests"]["kb_indexing"] = result
             return result
-        
-        logger.info(f"S3 конфигурация:")
-        logger.info(f"  Endpoint: {S3_ENDPOINT}")
-        logger.info(f"  Bucket: {S3_BUCKET}")
-        logger.info(f"  Prefix: {S3_PREFIX}")
-        
-        # Отправляем запрос на обновление KB из S3
-        logger.info("Отправляем запрос на загрузку и индексацию из S3...")
-        
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            # Добавляем токен если требуется
-            headers = {}
-            if MCP_TOKEN:
-                headers["Authorization"] = f"Bearer {MCP_TOKEN}"
-            
-            params = {
-                "source_type": "s3",
-                "mode": "replace",
-                "s3_endpoint": S3_ENDPOINT,
-                "s3_bucket": S3_BUCKET,
-                "s3_prefix": S3_PREFIX,
-                "s3_access_key": S3_ACCESS_KEY,
-                "s3_secret_key": S3_SECRET_KEY,
-            }
-            
-            start_time = time.time()
-            try:
-                response = await client.get(
-                    f"{MCP_SERVER_URL}/kb/update",
-                    params=params,
-                    headers=headers,
-                    timeout=600.0
-                )
-            except httpx.TimeoutException as e:
-                logger.error(f"✗ Timeout при индексации (может быть нормально для больших БЗ): {e}")
-                result["status"] = "TIMEOUT"
-                result["details"]["error"] = "Timeout - indexing may still be in progress"
-                test_results["tests"]["kb_indexing"] = result
-                return result
-            
-            elapsed_time = time.time() - start_time
-            logger.info(f"Ответ сервера: {response.status_code} (время: {elapsed_time:.2f}s)")
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                
-                if response_data.get("success"):
-                    logger.info("✓ Индексация из S3 успешно завершена")
-                    result["status"] = "PASSED"
-                    result["details"]["response"] = response_data
-                    result["details"]["elapsed_time"] = elapsed_time
-                    result["details"]["source"] = "S3"
-                    
-                    # Получаем статус KB
-                    status = response_data.get("status", {})
-                    result["details"]["kb_status"] = status
-                    metadata = status.get('metadata', {})
-                    logger.info(f"  Статус KB: {str(metadata.get('index_status'))}")
-                    logger.info(f"  Документов в индексе: {status.get('document_count')}")
-                else:
-                    logger.error(f"✗ Ошибка индексации: {response_data.get('error')}")
-                    result["details"]["error"] = response_data.get("error")
-            else:
-                logger.error(f"✗ Ошибка HTTP: {response.status_code}")
-                result["details"]["error"] = response.text[:500]
-                
-    except (asyncio.TimeoutError, httpx.TimeoutException):
-        logger.error("✗ Timeout при индексации из S3 (может быть нормально для больших БЗ)")
-        result["details"]["error"] = "Timeout - indexing may still be in progress"
-        result["status"] = "TIMEOUT"
-        
+
+        payload = response.json()
+        status = payload.get("status", {})
+        result["details"]["kb_status"] = status
+        if status.get("initialized"):
+            result["status"] = "PASSED"
+            logger.info("✓ KB MCP загрузил индекс из Qdrant")
+            logger.info(f"  Документов в индексе: {status.get('document_count')}")
+        else:
+            result["status"] = "SKIPPED"
+            result["details"]["note"] = "KB MCP ожидает данные в Qdrant (kb-manager)"
+            logger.warning("⚠ KB MCP ещё не инициализирован — проверьте kb-manager/Qdrant")
     except Exception as e:
-        logger.error(f"✗ Ошибка при индексации из S3: {e}")
         result["details"]["error"] = str(e)
-    
+        logger.error(f"✗ Ошибка проверки статуса KB: {e}")
+
     test_results["tests"]["kb_indexing"] = result
     return result
 

@@ -9,7 +9,7 @@ from google.adk.events import Event, EventActions
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
 from .config import DEBUG_EXCEPTIONS, FAQ_DOCUMENTS_COLLECTION, KB_DOCUMENTS_COLLECTION
-from .helpers import truncate_for_log, format_text_answer, format_reject_answer
+from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
@@ -129,6 +129,15 @@ class RootAgent(BaseAgent):
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
         """Финальное событие root-агента."""
+        state_delta: Dict[str, Any] = {}
+        session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
+        bot_action = session_state.get("_bot_action")
+        if isinstance(bot_action, dict) and bot_action.get("type"):
+            state_delta["_bot_action"] = bot_action
+
+        actions = EventActions(end_of_agent=True)
+        actions.state_delta = state_delta
+
         return Event(
             author="root_agent",
             invocation_id=ctx.invocation_id,
@@ -136,7 +145,7 @@ class RootAgent(BaseAgent):
                 role="model",
                 parts=[genai_types.Part(text=text)],
             ),
-            actions=EventActions(end_of_agent=True),
+            actions=actions,
         )
 
     def _build_final_event_with_history(
@@ -242,6 +251,59 @@ class RootAgent(BaseAgent):
         if not isinstance(value, str):
             raise ValueError(f"State key '{key}' must be str, got {type(value)}")
         return value
+
+    @staticmethod
+    def _format_clarification_option(option: Any) -> str:
+        if isinstance(option, dict):
+            name = str(option.get("name") or "").strip()
+            option_code = str(option.get("code") or "").strip()
+            term = str(option.get("term") or "").strip()
+            currency = str(option.get("currency") or "").strip()
+            details = [item for item in (term, currency) if item]
+            if option_code and name:
+                label = f"{option_code} {name}"
+            else:
+                label = option_code or name
+            if details:
+                label = f"{label} - {', '.join(details)}"
+            return label.strip()
+
+        return str(option or "").strip()
+
+    @classmethod
+    def _format_product_selection_answer(cls, product_selection: Dict[str, Any]) -> str:
+        message = format_text_answer(product_selection["message"])
+        if product_selection.get("mode") != "needs_clarification":
+            return message
+
+        options = [
+            cls._format_clarification_option(option)
+            for option in product_selection.get("clarification_options") or []
+        ]
+        options = [option for option in options if option]
+        if not options:
+            return message
+
+        return "\n".join([message, *options])
+
+    @classmethod
+    def _fallback_product_selection_message(cls, raw: str) -> str | None:
+        try:
+            payload = extract_json(raw)
+        except Exception:
+            return None
+
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            return None
+
+        return cls._format_product_selection_answer(
+            {
+                "mode": payload.get("mode"),
+                "message": message,
+                "clarification_options": payload.get("clarification_options") or [],
+            }
+        )
 
     async def _run_json_leaf_agent(
         self,
@@ -443,7 +505,39 @@ class RootAgent(BaseAgent):
                 exc.validation_error,
                 truncate_for_log(exc.raw, 500),
             )
-            yield self._build_final_event_with_history(ctx, user_text, exc.user_message)
+            product_selection_tool_usage_failure = (
+                exc.log_label == "product_selection_result_json"
+                and "tool_usage" in exc.validation_error
+            )
+            fallback_message = (
+                self._fallback_product_selection_message(exc.raw)
+                if (
+                    exc.log_label == "product_selection_result_json"
+                    and not product_selection_tool_usage_failure
+                )
+                else None
+            )
+            if exc.log_label == "product_selection_result_json":
+                try:
+                    payload = extract_json(exc.raw)
+                except Exception:
+                    payload = {}
+                logger.debug(
+                    "product_selection fallback diagnostics: fallback_used=%s "
+                    "blocked_by_tool_usage=%s mode=%s resolved_product=%s "
+                    "clarification_options_count=%s message_preview=%s",
+                    bool(fallback_message),
+                    product_selection_tool_usage_failure,
+                    payload.get("mode"),
+                    payload.get("resolved_product"),
+                    len(payload.get("clarification_options") or []),
+                    truncate_for_log(payload.get("message"), 300),
+                )
+            yield self._build_final_event_with_history(
+                ctx,
+                user_text,
+                fallback_message or exc.user_message,
+            )
 
         except Exception as exc:
             logger.error("RootAgent failure: %s", exc, exc_info=True)
@@ -533,17 +627,32 @@ class RootAgent(BaseAgent):
             yield event
 
         product_selection = self._get_required_state_dict(ctx, "_product_selection_result_parsed")
-        ctx.session.state["_root_final_text"] = format_text_answer(product_selection["message"])
+        logger.debug(
+            "product_selection parsed summary: user_query=%s search_query=%s intent=%s "
+            "mode=%s resolved_product=%s clarification_options_count=%s used_tables=%s",
+            truncate_for_log(user_message, 300),
+            truncate_for_log(effective_search_query, 300),
+            intent,
+            product_selection.get("mode"),
+            product_selection.get("resolved_product"),
+            len(product_selection.get("clarification_options") or []),
+            product_selection.get("used_tables"),
+        )
+        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
+            product_selection
+        )
 
         if product_selection["mode"] == "product_kit":
             resolved_product = product_selection.get("resolved_product") or {}
-            product_id = str(resolved_product.get("id") or "").strip()
+            product_code = str(resolved_product.get("code") or "").strip()
             product_name = str(resolved_product.get("name") or "").strip()
-            if product_id:
+            folder_kit = str(resolved_product.get("folder_kit") or "").strip()
+            if product_code:
                 ctx.session.state["_bot_action"] = {
                     "type": "send_product_kit",
-                    "product_id": product_id,
+                    "product_code": product_code,
                     "product_name": product_name,
+                    "folder_kit": folder_kit,
                 }
                 return
 
