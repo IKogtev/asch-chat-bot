@@ -74,7 +74,7 @@ async def main():
     # logger событий
     eventlogger = EventLogger()
     await eventlogger.init()
-    max_token = os.getenv("MAX_BOT_TOKEN", "REDACTED_EXAMPLE").strip()
+    max_token = os.getenv("MAX_BOT_TOKEN", "enter_your_token").strip()
     if not max_token:
         logger.error("MAX_BOT_TOKEN отсутствует в .env")
         raise RuntimeError("MAX_BOT_TOKEN is missing in .env")
