@@ -185,7 +185,7 @@ def get_phone_keyboard(platform: str="telegram"):
 ######################################
 # обработчики сообщений и команд бота
 ######################################
-def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, platform="telegram") -> None:
+def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, get_help_message, platform="telegram") -> None:
     """Регистрация всех обработчиков сообщений универсальная для разных платформ"""
     is_tg = (platform == "telegram")
     # 1. Адаптация декораторов и фильтров под платформу
@@ -460,15 +460,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /help от user_id={global_user_id}")
         await eventlogger.log_event(event_type="command_help", user_id=str(global_user_id), channel=platform)
-        
-        help_text = (
-            "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
-            "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
-            "Команды:\n"
-            "/start — начать работу\n"
-            "/reset — сбросить историю\n"
-            "/help — эта справка"
-        )
+        help_text = get_help_message()
         await bot_res.send(help_text)
 
     # обработчик открытия папки в меню бота

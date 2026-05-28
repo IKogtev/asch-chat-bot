@@ -37,6 +37,14 @@ TITLE_START = """
 
 📁 Выбери интересующий тебя раздел или напиши что тебя интересует сообщением.
 """
+TITLE_HELP = """
+ℹ️ Я помогу найти информацию в базе знаний.\n\n
+Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n
+Команды:\n
+/start — начать работу\n
+/reset — сбросить историю\n
+/help — эта справка
+"""
 
 #  создаем класс для того чтобы держать запросы бота
 class BotHolder:
@@ -57,12 +65,30 @@ def load_bot_start_message():
             logger.warning(f"Start file not found using standard")
     except Exception as e:
         logger.error(f"Error loading starting message: {e}")
+
+def load_bot_help_message():
+    """Load help message from file"""
+    global TITLE_HELP
+    try:
+        if Settings.BOT_HELP_MESSAGE_FILE.exists():
+            TITLE_HELP = Settings.BOT_HELP_MESSAGE_FILE.read_text(encoding="utf-8")
+            logger.info(f"Help message loaded from file: {len(TITLE_HELP)} symbols")
+        else:
+            logger.warning(f"Help file not found using standard")
+    except Exception as e:
+        logger.error(f"Error loading help message: {e}")
+
 # загрузка стартового сообщения
 load_bot_start_message()
+load_bot_help_message()
 
 def get_start_message():
     """Получение стартового сообщения"""
     return TITLE_START
+
+def get_help_message():
+    """Получение справочного сообщения"""
+    return TITLE_HELP
 
 #####################################
 # Главная функция и обработчики бота
@@ -125,6 +151,7 @@ async def main() -> None:
         adk=adk,
         doc_handler=doc_handler,
         get_start_message=get_start_message,
+        get_help_message=get_help_message,
         platform="telegram"
     )
     logger.info("Все компоненты инициализированы")
@@ -134,8 +161,10 @@ async def main() -> None:
         subscriber_store=subscriber_store,
         load_bot_start_message=load_bot_start_message,
         get_start_message=get_start_message,
+        load_bot_help_message=load_bot_help_message,
+        get_help_message=get_help_message, 
         bot_holder=bot_holder,
-        source="telegram",  
+        source="telegram", 
     )
     http_task = asyncio.create_task(run_http_server(broadcast_app, 8001))
     scheduler_task = asyncio.create_task(news_scheduler(news_store, subscriber_store, bot_holder, source="telegram"))
