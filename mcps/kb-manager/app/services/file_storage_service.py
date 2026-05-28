@@ -4,7 +4,7 @@ from datetime import datetime
 
 from app.utils.utillites import hash_file
 from app.utils.preprocessors.document_loader import DocumentLoader
-from app.utils.logger import setup_logger
+from utils.logger import setup_logger
 import time
 
 

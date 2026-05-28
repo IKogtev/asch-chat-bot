@@ -54,6 +54,7 @@ services:
     env_file:
       - .env
     environment:
+      - LOG_LEVEL=${AGENT_LOG_LEVEL:-DEBUG}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
@@ -87,10 +88,10 @@ services:
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
 
       # Context compaction
-      - AGENT_CONTEXT_COMPACTION_INTERVAL=8
-      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=2
+      - AGENT_CONTEXT_COMPACTION_INTERVAL=60
+      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=3
       - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
-      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=12
+      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:
@@ -142,16 +143,17 @@ services:
       - ./kb_storage/bot/:/app/data
       - ./kb_storage/kb:/app/kb_storage/kb:ro
     environment:
+      - LOG_LEVEL=${BOT_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.0
+      - PLATFORM_VERSION=0.7.1
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/Комплекты документов по продуктам
+      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
@@ -180,16 +182,17 @@ services:
       - ./kb_storage/bot/:/app/data
       - ./kb_storage/kb:/app/kb_storage/kb:ro
     environment:
+      - LOG_LEVEL=${BOT_MAX_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - MAX_BOT_TOKEN=${MAX_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.0
+      - PLATFORM_VERSION=0.7.1
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/Комплекты документов по продуктам
+      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
@@ -208,8 +211,8 @@ services:
 
   kb-manager:
     build:
-      context: ./mcps/kb-manager
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcps/kb-manager/Dockerfile
     image: kb-manager:latest
     container_name: kb-manager                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
     restart: unless-stopped
@@ -220,13 +223,14 @@ services:
       - ./kb_storage/prompts:/app/data/prompts
       - ./kb_storage/bot:/app/data/bot
     environment:
+      - LOG_LEVEL=${KB_MANAGER_LOG_LEVEL:-DEBUG}
+      - LOG_TO_FILE=false
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=kb_collection
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - LOG_TO_FILE=false
       - ACTIVE_DOCUMENTS_PATH=kb/
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
       - ARCHIVE_DOCUMENTS_PATH=archive_kb/
@@ -237,7 +241,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.7.0
+      - PLATFORM_VERSION=0.7.1
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -247,6 +251,7 @@ services:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
+      - PRODUCT_KITS_ROOT=/app/data/kb_documents/kb/1 Продукты
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
     depends_on:
@@ -267,8 +272,8 @@ services:
 
   kbsearch:
     build:
-      context: ./mcps/mcp-server-kbsearch
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcps/mcp-server-kbsearch/Dockerfile
     image: mcp-server-kbsearch:latest
     container_name: mcp-kbsearch
     restart: unless-stopped
@@ -281,7 +286,7 @@ services:
       - MCP_TOKEN=${MCP_TOKEN:-REDACTED_EXAMPLE}
       - IN_DOCKER=true
       - LOG_TO_FILE=false
-      - LOG_LEVEL=${KB_LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${KB_LOG_LEVEL:-DEBUG}
 
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-REDACTED_EXAMPLE}
@@ -289,7 +294,7 @@ services:
 
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
-      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-20}
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-18}
       - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.15}
        
       - KB_RRF_K_DOC_SEARCH=60
@@ -317,8 +322,8 @@ services:
 
   faq:
     build:
-      context: ./mcps/mcp-server-faq
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcps/mcp-server-faq/Dockerfile
     image: mcp-faq-rag:latest
     container_name: mcp-faq
     restart: unless-stopped
@@ -331,7 +336,7 @@ services:
       - MCP_TOKEN=${FAQSEARCH_MCP_TOKEN:-REDACTED_EXAMPLE}
       - IN_DOCKER=true
       - LOG_TO_FILE=false
-      - LOG_LEVEL=${FAQ_LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${FAQ_LOG_LEVEL:-DEBUG}
 
       - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB:-https://dsrv1.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${OPENROUTER_API_KEY:-REDACTED_EXAMPLE}
@@ -409,6 +414,7 @@ services:
     env_file:
       - .env
     environment:
+      - LOG_LEVEL=${ADK_WEB_LOG_LEVEL:-DEBUG}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
@@ -434,10 +440,10 @@ services:
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
 
       # Context compaction
-      - AGENT_CONTEXT_COMPACTION_INTERVAL=8
-      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=2
+      - AGENT_CONTEXT_COMPACTION_INTERVAL=60
+      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=3
       - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
-      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=12
+      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
 
       - KB_TOP_K=${KB_TOP_K:-5}
     volumes:

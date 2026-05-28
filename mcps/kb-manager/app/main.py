@@ -12,7 +12,7 @@ from app.models import (
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
 import hashlib, os, uuid, shutil, asyncio, aiofiles
 from contextlib import asynccontextmanager
-from app.utils.logger import setup_logger
+from utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
 from pathlib import Path
 import httpx, mimetypes
@@ -170,7 +170,7 @@ BOT_HELP_MESSAGE_FILE = Path("/app/data/bot/settings/bot_help_message.md")
 # папка загрузки файлов
 BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
 
-logger = setup_logger(name="Test", service_dir="App")
+logger = setup_logger("kb_manager", log_file="kb_manager.log")
 
 # Initialize services
 KB_STORAGE_ROOT= Path(os.getenv("KB_STORAGE_ROOT", "/data/kb_documents"))

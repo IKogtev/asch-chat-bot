@@ -1,10 +1,17 @@
 """Unit tests for doc_search archive exclusion in Qdrant filters."""
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from kbsearch_import_helper import load_kbsearch_module
-
-_mod = load_kbsearch_module("utils/qdrant_search_filters.py", "kbsearch_qdrant_search_filters")
+ROOT = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location(
+    "qdrant_search_filters", ROOT / "utils" / "qdrant_search_filters.py"
+)
+assert _spec is not None and _spec.loader is not None
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
 
 archive_explicitly_requested = _mod.archive_explicitly_requested
 build_hybrid_qdrant_filter = _mod.build_hybrid_qdrant_filter
