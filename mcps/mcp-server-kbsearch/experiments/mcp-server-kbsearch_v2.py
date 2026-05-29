@@ -78,6 +78,7 @@ DISTANCE_METRIC = os.getenv("DISTANCE", "COSINE")
 USE_QDRANT = os.getenv("USE_QDRANT", "false").lower() == "true"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "kb_collection_active")
 # Дополнительные параметры индексации, не обязательные 
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
@@ -119,6 +120,7 @@ idx_config = IndexerConfig(
     qdrant_port=QDRANT_PORT,
     qdrant_collection=QDRANT_COLLECTION,
     qdrant_alias=QDRANT_ALIAS,
+    qdrant_api_key=QDRANT_API_KEY,
     distance_metric=DISTANCE_METRIC,
     version=SCRIPT_VERSION
 )
