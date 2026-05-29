@@ -202,6 +202,8 @@ services:
     image: qdrant/qdrant:v1.16.3
     container_name: qdrant
     restart: always
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
     ports:
       - "6333:6333"
     volumes:
@@ -227,6 +229,7 @@ services:
       - LOG_TO_FILE=false
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_COLLECTION=kb_collection
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
@@ -303,6 +306,7 @@ services:
 
       - QDRANT_HOST=qdrant 
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
@@ -348,6 +352,7 @@ services:
       
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=faq_collection
       - USE_QDRANT=true
