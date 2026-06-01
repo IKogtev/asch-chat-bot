@@ -192,15 +192,14 @@ class DocSearchOrchestrator(BaseAgent):
 
         :param ctx: Контекст сессии пользователя, содержит все данные сессии.
         """
-        user_message = str(ctx.session.state.get("user_query") or "").strip()
+        user_query = str(ctx.session.state.get("user_query") or "").strip()
         intent = str(ctx.session.state.get("doc_search_intent") or "doc_search").strip()
-        search_query = str(ctx.session.state.get("doc_search_search_query") or "").strip()
 
         # Логирование полученного интента и запроса
         logger.info(
             "doc_search_orchestrator: intent=%s query=%s",
             intent,
-            truncate_for_log((search_query or user_message).strip(), 300),
+            truncate_for_log(user_query, 300),
         )
 
         # Обрабатываем только новый поиск, для других интентов — возвращаем обработанное сообщение
@@ -210,9 +209,6 @@ class DocSearchOrchestrator(BaseAgent):
 
         page = DOC_SEARCH_PAGE_SIZE  # Количество результатов на страницу (см. конфиг)
 
-        # Итоговый поисковый запрос для LLM/kb_search
-        effective_search_query = (search_query or user_message).strip()
-        ctx.session.state["search_query"] = effective_search_query
         ctx.session.state["doc_search_collection"] = self.doc_collection
 
         # Запуск агента поиска документов по контракту JSON -> (запись результата в state)
@@ -257,7 +253,7 @@ class DocSearchOrchestrator(BaseAgent):
         # Асинхронное сохранение результата поиска пользователя в БД
         await _persist_full_list(
             ctx,
-            query=effective_search_query,
+            query=user_query,
             items=normalized,
             shown_count=shown,
         )

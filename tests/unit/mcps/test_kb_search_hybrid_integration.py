@@ -18,7 +18,7 @@ def test_doc_search_prompt_requires_search_profile() -> None:
     assert "каждый документ из CONTEXT" in text
     assert "is_relevant" in text
     assert "must_not" in text or "исключает" in text.lower()
-    assert "5 Архив" in text
+    assert "6 Архив" in text
 
 
 @pytest.mark.unit
