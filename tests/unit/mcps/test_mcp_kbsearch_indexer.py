@@ -1,7 +1,7 @@
 import ast
 import types
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -60,6 +60,7 @@ Indexer = _load_class(
         "Dict": Dict,
         "List": List,
         "Optional": Optional,
+        "Any": Any,
         "IndexerConfig": object,
         "Filter": FakeFilter,
         "FieldCondition": FakeFieldCondition,

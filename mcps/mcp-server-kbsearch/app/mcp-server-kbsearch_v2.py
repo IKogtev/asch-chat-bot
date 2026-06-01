@@ -57,6 +57,7 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kb_collection")
 USE_QDRANT = os.getenv("USE_QDRANT", "false").lower() == "true"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 QDRANT_ALIAS = os.getenv("QDRANT_ALIAS", "kb_collection_active")
 # Повторное подключение к Qdrant при недоступности на старте
 KB_QDRANT_RETRY_INTERVAL = float(os.getenv("KB_QDRANT_RETRY_INTERVAL", "10"))
@@ -78,6 +79,7 @@ idx_config = IndexerConfig(
     qdrant_port=QDRANT_PORT,
     qdrant_collection=QDRANT_COLLECTION,
     qdrant_alias=QDRANT_ALIAS,
+    qdrant_api_key=QDRANT_API_KEY,
     logger_name="kb_indexer",
 )
 indexer = Indexer(idx_config)
