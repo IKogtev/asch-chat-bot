@@ -449,23 +449,6 @@ class RootAgent(BaseAgent):
                     dr = extract_download_ranks(
                         user_text, str(dispatch.get("search_query") or "")
                     )
-                    if dr:
-                        dispatch = validate_dispatcher_result(
-                            {
-                                "status": "ok",
-                                "route": "doc_search",
-                                "intent": "file_download",
-                                "reason": "download_ranks_override_after_dispatcher",
-                                "search_query": "",
-                            },
-                            dict(ctx.session.state),
-                        )
-                        ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                        ctx.session.state.pop("dispatcher_result_json", None)
-                        logger.info(
-                            "Dispatcher doc_search->file_download override: ranks=%s",
-                            dr,
-                        )
 
             if dispatch["route"] == "doc_search":
                 ctx.session.state["doc_search_intent"] = dispatch["intent"]
