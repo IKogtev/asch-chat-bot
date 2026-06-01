@@ -446,13 +446,10 @@ class RootAgent(BaseAgent):
                     dispatch.get("route") == "doc_search"
                     and dispatch.get("intent") == "doc_search"
                 ):
-                    dr = extract_download_ranks(
-                        user_text, str(dispatch.get("search_query") or "")
-                    )
+                    dr = extract_download_ranks(user_text)
 
             if dispatch["route"] == "doc_search":
                 ctx.session.state["doc_search_intent"] = dispatch["intent"]
-                ctx.session.state["doc_search_search_query"] = dispatch["search_query"]
                 async for event in self.doc_search_orchestrator.run_async(ctx):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
