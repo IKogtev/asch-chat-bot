@@ -314,7 +314,26 @@
                             
                             <div id="bot-start-result" class="result-message" style="display:none;"></div>
                         </div>
-                        
+                        <!-- Сообщение помощи -->
+                        <div class="setting-card">
+                            <div class="setting-header">
+                                <h3>💬 Сообщение команды помощи (/help)</h3>
+                                <div class="setting-actions">
+                                    <button onclick="loadBotHelpMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
+                                    <button onclick="saveBotHelpMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
+                                </div>
+                            </div>
+                            
+                            <div class="setting-info">
+                                <span>📄 Файл: <strong>bot_help_message.md</strong></span>
+                                <span>📦 Размер: <strong id="bot-help-size">-</strong></span>
+                                <span>📅 Изменён: <strong id="bot-help-modified">-</strong></span>
+                            </div>
+                            
+                            <textarea id="bot-help-editor" class="setting-editor" placeholder="Загрузка сообщения помощи..."></textarea>
+                            
+                            <div id="bot-help-result" class="result-message" style="display:none;"></div>
+                        </div>
                     </div>
                 </div>
                 <!-- Groups Tab -->

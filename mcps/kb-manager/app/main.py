@@ -158,10 +158,15 @@ ROLE_PERMISSIONS = {
 # Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
 MAX_BOT_API = os.getenv("BOT_MAX_API", "http://bot-max:8002")
+BOTS = {
+    "telegram": TELEGRAM_BOT_API,
+    "max": MAX_BOT_API,
+}
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
 BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
+BOT_HELP_MESSAGE_FILE = Path("/app/data/bot/settings/bot_help_message.md")
 # папка загрузки файлов
 BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
 
@@ -279,6 +284,82 @@ subscribers = []
 http_client: httpx.AsyncClient = None
 # создаем анализатора морфем
 morph = pymorphy3.MorphAnalyzer() 
+
+# функция отправки запросов в боты
+async def send_to_bots(
+    route: str,
+    *,
+    method: str = "POST",
+    json_data: dict | None = None,
+    files=None,
+    form_data=None,
+    bots: list[str] | None = None,
+    timeout: int = 10,
+):
+    """
+    Универсальная отправка запросов во все боты.
+
+    route:
+        "/api/reload-start-message"
+        "/broadcast"
+        "/api/subscribers/block"
+
+    Возвращает:
+    {
+        "telegram": {...},
+        "max": {...}
+    }
+    """
+
+    results = {}
+
+    target_bots = bots or list(BOTS.keys())
+
+    for bot_name in target_bots:
+        base_url = BOTS[bot_name]
+
+        try:
+            url = f"{base_url}{route}"
+
+            kwargs = {
+                "timeout": timeout
+            }
+
+            if json_data is not None:
+                kwargs["json"] = json_data
+
+            if files is not None:
+                kwargs["files"] = files
+
+            if form_data is not None:
+                kwargs["data"] = form_data
+
+            if method.upper() == "POST":
+                resp = await http_client.post(url, **kwargs)
+            elif method.upper() == "GET":
+                resp = await http_client.get(url, **kwargs)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+
+            resp.raise_for_status()
+
+            try:
+                results[bot_name] = resp.json()
+            except Exception:
+                results[bot_name] = {
+                    "status": "ok",
+                    "text": resp.text
+                }
+
+        except Exception as e:
+            logger.error(f"{bot_name.upper()} request error: {e}")
+
+            results[bot_name] = {
+                "status": "error",
+                "error": str(e)
+            }
+
+    return results
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
@@ -1664,8 +1745,12 @@ async def save_bot_start_message(data: dict):
         logger.info(f"Bot start message saved ({len(content)} symbols)")
         bot_reload_success = False
         try:
-            r = await http_client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
-            if r.status_code == 200:
+            results = await send_to_bots(
+                "/api/reload-start-message"
+            )
+            if results["max"]["status"] == "ok" and results["telegram"]["status"] == "ok":
+                logger.info("MAX reloaded")
+                logger.info("Telegram reloaded")
                 bot_reload_success = True
                 logger.info("Bot notified to reload start message")
         except Exception as e:
@@ -1679,6 +1764,72 @@ async def save_bot_start_message(data: dict):
         }
     except Exception as e:
         logger.error(f"Error saving bot start message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/prompts/bot-help")
+async def get_bot_help_message():
+    """Получить текущее сообщение помощи бота"""
+    try:
+        if not BOT_HELP_MESSAGE_FILE.exists():
+            # Создаём файл с дефолтным сообщением если не существует
+            default_message = "❓ Это справочное сообщение бота. Здесь вы можете указать команды и инструкции для пользователей."
+            async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(default_message)
+            return {
+                "success": True,
+                "content": default_message,
+                "exists": False,
+                "size": len(default_message),
+                "modified": datetime.now().isoformat()
+            }
+        async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "r", encoding="utf-8") as f:
+            content = await f.read()
+            stat = BOT_HELP_MESSAGE_FILE.stat()
+        
+        return {
+            "success": True,
+            "content": content,
+            "exists": True,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reading bot help message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/api/prompts/bot-help")
+async def save_bot_help_message(data: dict):
+    """Сохранить сообщение помощи бота"""
+    try:
+        content = data.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        # Сохраняем в файл
+        async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(content)
+        
+        logger.info(f"Bot help message saved ({len(content)} symbols)")
+        bot_reload_success = False
+        try:
+            results = await send_to_bots(
+                "/api/reload-help-message"
+            )
+            if results["max"]["status"] == "ok" and results["telegram"]["status"] == "ok":
+                logger.info("MAX reloaded")
+                logger.info("Telegram reloaded")
+                bot_reload_success = True
+                logger.info("Bot notified to reload help message")
+        except Exception as e:
+            logger.warning(f"Could not notify bot: {e}")
+        return {
+            "success": True,
+            "message": "Bot help message saved successfully",
+            "length": len(content),
+            "bot_notified": bot_reload_success
+        }
+    except Exception as e:
+        logger.error(f"Error saving bot help message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 ##################################
@@ -1728,29 +1879,19 @@ async def update_subscriber_group(data: dict):
 async def block_subscriber(data: dict):
     """Заблокировать или разблокировать пользователя сразу в двух ботах"""
     try:
-        async def send_to_bot(name: str, url: str):
-            try:
-                resp = await http_client.post(
-                    f"{url}/api/subscribers/block",
-                    json=data
-                )
-                resp.raise_for_status()
-                return name, resp.json()
-            except Exception as e:
-                return name, {"status": "error", "error": str(e)}
 
-        tg_name, tg_result = await send_to_bot("telegram", TELEGRAM_BOT_API)
-        max_name, max_result = await send_to_bot("max", MAX_BOT_API)
+        results = await send_to_bots(
+            "/api/subscribers/block",
+            json_data=data
+        )
 
         return {
             "status": "ok",
-            "results": {
-                tg_name: tg_result,
-                max_name: max_result
-            }
+            "results": results
         }
 
     except Exception as e:
+        logger.error(f"Block subscriber error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
 @app.get("/api/subscribers/export")
