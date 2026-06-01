@@ -31,6 +31,11 @@ def _logger():
     )
 
 
+class _EventLogger:
+    async def log_event(self, **kwargs):
+        return None
+
+
 class _BufferedInputFile:
     def __init__(self, content, filename: str):
         self.content = content
@@ -44,7 +49,9 @@ _symbols = _load_symbols(
         "List": List,
         "Optional": Optional,
         "asyncio": asyncio,
+        "eventlogger": _EventLogger(),
         "logger": _logger(),
+        "random": types.SimpleNamespace(random=lambda: 0),
         "split_message": lambda text, limit=4000: [text[i:i + limit] for i in range(0, len(text), limit)] if text else [],
         "BufferedInputFile": _BufferedInputFile,
     },
@@ -121,7 +128,14 @@ async def test_send_now_sends_text_and_files(monkeypatch: pytest.MonkeyPatch) ->
         subscriber_store=store,
     )
 
-    assert result == {"sent": 1}
+    assert result == {
+        "sent": 1,
+        "failed": 0,
+        "total": 1,
+        "success_rate": 100.0,
+        "errors": [],
+        "no_users": False,
+    }
     assert bot.messages == [(10, "hello", "HTML")]
     assert bot.photos == [(10, "pic.png")]
     assert bot.documents == [(10, "doc.pdf")]
@@ -146,4 +160,11 @@ async def test_send_now_skips_delivery_when_bot_is_unavailable(monkeypatch: pyte
         subscriber_store=store,
     )
 
-    assert result == {"sent": 0}
+    assert result == {
+        "sent": 0,
+        "failed": 1,
+        "total": 1,
+        "success_rate": 0.0,
+        "errors": ["user 10: bot reconnecting"],
+        "no_users": False,
+    }

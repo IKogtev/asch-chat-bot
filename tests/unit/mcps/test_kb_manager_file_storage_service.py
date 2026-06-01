@@ -126,10 +126,10 @@ class _FakeQdrant:
         self.docs = docs or []
         self.deleted = []
 
-    def list_documents(self):
+    def list_documents(self, **kwargs):
         return self.docs
 
-    def delete_document(self, document_id):
+    def delete_document(self, document_id, **kwargs):
         self.deleted.append(document_id)
 
     def upload_points_qdrant(self, documents, docs_count, points_count):
@@ -144,6 +144,7 @@ def _make_service(root, qdrant):
         chunk_overlap=10,
         service_dir=Path("."),
         ext_allowed={".txt"},
+        qdrant_collection_name="kb_collection",
     )
 
 
@@ -163,7 +164,7 @@ def test_scan_files_filters_small_unsupported_and_ignored_paths() -> None:
 
     result = service.scan_files("kb1")
 
-    assert [item["filename"] for item in result] == ["valid.txt"]
+    assert [item["filename"] for item in result] == ["valid.txt", "small.txt"]
     assert result[0]["relative_path"] == "kb1/valid.txt"
 
 

@@ -31,6 +31,7 @@ services:
       # Qdrant
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
