@@ -26,8 +26,10 @@ def create_broadcast_app(
     subscriber_store,
     load_bot_start_message,
     get_start_message,
+    load_bot_help_message,
+    get_help_message,
     bot_holder,
-    source="telegram"
+    source="telegram",
 ):
     app = FastAPI(title="Bot Broadcast API")
     logger.info(f"Источник для всех {source}")
@@ -153,6 +155,15 @@ def create_broadcast_app(
         try:
             load_bot_start_message()
             return {"success": True, "message": "Start message reloaded", "length": len(get_start_message())}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/reload-help-message")
+    async def reload_help_message():
+        """Перезагрузить help сообщение из файла"""
+        try:
+            load_bot_help_message()
+            return {"success": True, "message": "Help message reloaded", "length": len(get_help_message())}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 

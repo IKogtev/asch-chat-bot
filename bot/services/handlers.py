@@ -33,7 +33,10 @@ from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.types import InputMedia, RequestContactButton
 import re
 from maxapi.enums import TextFormat
+from maxapi.enums.sender_action import SenderAction
 from maxapi.types.attachments import Contact
+import contextlib
+import asyncio
 
 logger = setup_logger('handlers', 'handlers.log')
 # инициализируем логер событий
@@ -190,7 +193,7 @@ def get_phone_keyboard(platform: str="telegram"):
 ######################################
 # обработчики сообщений и команд бота
 ######################################
-def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, platform="telegram") -> None:
+def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, get_help_message, platform="telegram") -> None:
     """Регистрация всех обработчиков сообщений универсальная для разных платформ"""
     is_tg = (platform == "telegram")
     # 1. Адаптация декораторов и фильтров под платформу
@@ -465,15 +468,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /help от user_id={global_user_id}")
         await eventlogger.log_event(event_type="command_help", user_id=str(global_user_id), channel=platform)
-        
-        help_text = (
-            "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
-            "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
-            "Команды:\n"
-            "/start — начать работу\n"
-            "/reset — сбросить историю\n"
-            "/help — эта справка"
-        )
+        help_text = get_help_message()
         await bot_res.send(help_text)
 
     # обработчик открытия папки в меню бота
@@ -694,7 +689,25 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         if not global_user_id:
             logger.warning(f"Skip message — no global_user_id for user_id={user_id}")
             return
+        if platform == "max":
 
+            # пустые/service сообщения
+            if not user_text.strip():
+                logger.info("Skip MAX empty/service event")
+                return
+
+            # сообщения самого бота/system
+            sender = getattr(event.message, "sender", None)
+
+            if sender:
+
+                sender_type = getattr(sender, "type", None)
+
+                logger.info(f"MAX sender_type={sender_type}")
+
+                if sender_type in ("bot", "system"):
+                    logger.info(f"Skip MAX internal sender_type={sender_type}")
+                    return
         # Если это не контакт — проверяем авторизацию как обычно
         
         session_id = str(global_user_id)
@@ -800,7 +813,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
             meta_before = await store.get_last_search_meta(global_user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
-
+            # инициализация статуса "печатает..." для пользователя
+            await bot_res.start_typing()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
@@ -890,6 +904,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 }
             )
             await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
+        finally:
+            await bot_res.stop_typing()
 
 # --- Универсальный Адаптер Ответов ---
 class BotResponse:
@@ -898,6 +914,7 @@ class BotResponse:
         self.event = event
         self.platform = platform
         self.is_tg = platform == "telegram"
+        self._typing_task=None
 
     @property
     def payload(self):
@@ -922,6 +939,10 @@ class BotResponse:
         return getattr(self.event.message.body, 'attachments', [])
 
     async def send(self, text, menu=None, is_html=True, is_doc=None):
+        
+        # Перед отправкой ответа выключаем typing
+        # await self.stop_typing()
+        
         if is_doc:
             return await self._send_document(is_doc['path'], is_doc['name'])
         
@@ -977,3 +998,57 @@ class BotResponse:
                 # Если передан флаг alert, добавляем эмодзи для заметности
                 msg = f"⚠️ {text.upper()}" if show_alert else text
                 await self.event.answer(msg)
+
+    async def _send_typing_once(self):
+        try:
+            if self.is_tg:
+                chat = self.event.chat
+                await chat.do("typing")
+
+            else:
+                # MAX API
+                chat_id = self.event.message.recipient.chat_id
+
+                await self.event.bot.send_action(
+                    chat_id=chat_id,
+                    action=SenderAction.TYPING_ON
+                )
+                logger.info(f"MAX typing sent to chat_id={chat_id}")
+
+        except Exception as e:
+            logger.debug(f"Typing status error: {e}")
+
+    async def _typing_loop(self):
+        """Фоновый loop отправки typing status"""
+
+        while True:
+            await self._send_typing_once()
+            # Telegram typing живет ~5 секунд
+            # поэтому обновляем каждые 4
+            await asyncio.sleep(4)
+
+    async def start_typing(self):
+        """Запуск typing-индикатора"""
+        # Telegram требует постоянного обновления typing
+        if self.is_tg:
+
+            if self._typing_task is None or self._typing_task.done():
+
+                self._typing_task = asyncio.create_task(
+                    self._typing_loop()
+                )
+
+        else:
+            # MAX достаточно одного action
+            await self._send_typing_once()
+        
+    async def stop_typing(self):
+        """Остановка typing-индикатора"""
+
+        if self._typing_task:
+            self._typing_task.cancel()
+
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._typing_task
+
+            self._typing_task = None

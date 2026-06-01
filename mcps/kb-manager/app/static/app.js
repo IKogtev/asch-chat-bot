@@ -526,6 +526,7 @@ function showTab(tabName, event=null) {
         loadPromptsTab();
     } else if (tabName === 'bot_settings'){
         loadBotStartMessage();
+        loadBotHelpMessage();
     } else if (tabName === 'user_groups'){
         loadUserGroups();
     } else if (tabName === 'analytics'){
@@ -2328,6 +2329,70 @@ async function saveBotStartMessage() {
             resultDiv.className = "result-message success";
             resultDiv.innerHTML = `✅ Стартовое сообщение сохранено!<br>📝 Символов: ${data.length || 0}`;
             botStartMessageContent = newContent;
+        } else {
+            throw new Error(data.detail || "Ошибка сохранения");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message error";
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    }
+}
+// загрузка сообщения помощи бота
+async function loadBotHelpMessage() {
+    const editor = document.getElementById("bot-help-editor");
+    const metaSize = document.getElementById("bot-help-size");
+    const metaModified = document.getElementById("bot-help-modified");
+    
+    if (!editor) return;
+    
+    editor.value = "Загрузка...";
+    editor.disabled = true;
+    
+    try {
+        const res = await fetch("/api/prompts/bot-help");
+        const data = await res.json();
+        
+        botHelpMessageContent = data.content;
+        editor.value = botHelpMessageContent;
+        editor.disabled = false;
+        
+        if (metaSize) metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
+        if (metaModified) metaModified.textContent = formatDate(data.modified);
+        
+    } catch (err) {
+        editor.value = `Ошибка загрузки: ${err.message}`;
+        console.error("Error loading bot help message:", err);
+    }
+}
+// сохранение нового сообщения помощи бота
+async function saveBotHelpMessage(){
+    const editor = document.getElementById("bot-help-editor");
+    const resultDiv = document.getElementById("bot-help-result");
+    if (!editor || !resultDiv) return;
+    
+    const newContent = editor.value;
+    
+    if (!newContent.trim()) {
+        alert("Сообщение помощи не может быть пустым");
+        return;
+    }
+
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⏳ Сохранение...";
+
+    try {
+        const res = await fetch("/api/prompts/bot-help", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: newContent })
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Сообщение помощи сохранено!<br>📝 Символов: ${data.length || 0}`;
+            botHelpMessageContent = newContent;
         } else {
             throw new Error(data.detail || "Ошибка сохранения");
         }
