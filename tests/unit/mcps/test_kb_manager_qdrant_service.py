@@ -3,7 +3,7 @@ import types
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import pytest
 
@@ -29,6 +29,7 @@ QdrantService = _load_class(
         "Optional": Optional,
         "Dict": Dict,
         "Any": Any,
+        "Literal": Literal,
         "datetime": datetime,
         "CollectionType": CollectionType,
         "CollectionTypeAlias": CollectionTypeAlias,

@@ -14,6 +14,8 @@ from utils.event_logger import EventLogger
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
 from utils.doc_search_format import parse_download_ranks
+from bot.services.adk_events import extract_bot_action
+from bot.services.product_kits import get_product_kit
 
 from bot.services.utils import (
     markdown_to_safe_html,
@@ -31,7 +33,10 @@ from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.types import InputMedia, RequestContactButton
 import re
 from maxapi.enums import TextFormat
+from maxapi.enums.sender_action import SenderAction
 from maxapi.types.attachments import Contact
+import contextlib
+import asyncio
 
 logger = setup_logger('handlers', 'handlers.log')
 # инициализируем логер событий
@@ -44,6 +49,92 @@ BOT_START_TIME = time.time()
 RECENT_MESSAGES = {}
 STARTUP_GRACE_PERIOD = 5  # сек
 OLD_MESSAGE_THRESHOLD = 15  # сек
+
+
+# Отправка комплекта документов продукта по структурному действию от ADK.
+async def handle_product_kit_action(
+    bot_res,
+    bot_action: dict,
+    user_id: int | str,
+    session_id: str,
+    turn_id: str,
+    start_time: float,
+    platform: str,
+) -> bool:
+    """Находит папку продукта по ID, отправляет файлы комплекта и пишет события в лог."""
+    product_code = str(bot_action.get("product_code") or "").strip()
+    product_name = str(bot_action.get("product_name") or "").strip()
+    folder_kit = str(bot_action.get("folder_kit") or "").strip()
+    result = get_product_kit(
+        product_code=product_code,
+        product_name=product_name,
+        folder_kit=folder_kit,
+    )
+
+    if result["status"] != "ok":
+        response_time = int((time.time() - start_time) * 1000)
+        await bot_res.send(result["message"])
+        await eventlogger.log_event(
+            event_type="product_kit_status",
+            user_id=str(user_id),
+            session_id=session_id,
+            channel=platform,
+            payload={
+                "turn_id": turn_id,
+                "product_code": product_code,
+                "product_name": product_name,
+                "folder_kit": folder_kit,
+                "status": result["status"],
+                "text": result["message"],
+                "response_time_ms": response_time,
+            },
+        )
+        return False
+
+    sent = 0
+    for file_info in result["files"]:
+        await bot_res.send(
+            "",
+            is_doc={"path": file_info["path"], "name": file_info["name"]},
+        )
+        sent += 1
+        await eventlogger.log_event(
+            event_type="document_download",
+            user_id=str(user_id),
+            session_id=session_id,
+            channel=platform,
+            payload={
+                "file_path": file_info["path"],
+                "text": file_info["name"],
+                "doc_id": None,
+                "rank": None,
+                "source": "product_kit",
+                "turn_id": turn_id,
+                "product_code": product_code,
+                "product_name": product_name,
+                "folder_kit": folder_kit,
+            },
+        )
+
+    response_time = int((time.time() - start_time) * 1000)
+    await eventlogger.log_event(
+        event_type="product_kit_sent",
+        user_id=str(user_id),
+        session_id=session_id,
+        channel=platform,
+        payload={
+            "turn_id": turn_id,
+            "product_code": product_code,
+            "product_name": product_name,
+            "folder_kit": folder_kit,
+            "files_sent": sent,
+            "skipped_files": result.get("skipped_files", []),
+            "response_time_ms": response_time,
+        },
+    )
+    return sent > 0
+
+
 # синхронизация пользователей с адк 
 async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_id: str, global_user_id=None) -> None:
     """
@@ -102,7 +193,7 @@ def get_phone_keyboard(platform: str="telegram"):
 ######################################
 # обработчики сообщений и команд бота
 ######################################
-def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, platform="telegram") -> None:
+def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handler, get_start_message, get_help_message, platform="telegram") -> None:
     """Регистрация всех обработчиков сообщений универсальная для разных платформ"""
     is_tg = (platform == "telegram")
     # 1. Адаптация декораторов и фильтров под платформу
@@ -377,15 +468,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /help от user_id={global_user_id}")
         await eventlogger.log_event(event_type="command_help", user_id=str(global_user_id), channel=platform)
-        
-        help_text = (
-            "ℹ️ Я помогу найти информацию в базе знаний.\n\n"
-            "Просто напиши свой вопрос, и я постараюсь найти ответ!\n\n"
-            "Команды:\n"
-            "/start — начать работу\n"
-            "/reset — сбросить историю\n"
-            "/help — эта справка"
-        )
+        help_text = get_help_message()
         await bot_res.send(help_text)
 
     # обработчик открытия папки в меню бота
@@ -606,7 +689,25 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         if not global_user_id:
             logger.warning(f"Skip message — no global_user_id for user_id={user_id}")
             return
+        if platform == "max":
 
+            # пустые/service сообщения
+            if not user_text.strip():
+                logger.info("Skip MAX empty/service event")
+                return
+
+            # сообщения самого бота/system
+            sender = getattr(event.message, "sender", None)
+
+            if sender:
+
+                sender_type = getattr(sender, "type", None)
+
+                logger.info(f"MAX sender_type={sender_type}")
+
+                if sender_type in ("bot", "system"):
+                    logger.info(f"Skip MAX internal sender_type={sender_type}")
+                    return
         # Если это не контакт — проверяем авторизацию как обычно
         
         session_id = str(global_user_id)
@@ -712,15 +813,45 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
             meta_before = await store.get_last_search_meta(global_user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
-
+            # инициализация статуса "печатает..." для пользователя
+            await bot_res.start_typing()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-            answer, _ = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+            answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
             work = answer or ""
 
             # сохраняем историю диалога
             await store.append(user_id, "user", user_text, global_user_id)
             await store.append(user_id, "model", answer, global_user_id)
+
+            bot_action = extract_bot_action(events)
+            if isinstance(bot_action, dict) and bot_action.get("type") == "send_product_kit":
+                if work.strip():
+                    is_already_html = "<b>" in work or work.lstrip().startswith("<")
+                    final_text = work if is_already_html else markdown_to_safe_html(work)
+                    await bot_res.send(final_text)
+                    await eventlogger.log_event(
+                        event_type="response",
+                        user_id=str(global_user_id),
+                        session_id=session_id,
+                        channel=platform,
+                        payload={
+                            "turn_id": turn_id,
+                            "text": final_text,
+                            "response_time_ms": response_time,
+                        },
+                    )
+
+                await handle_product_kit_action(
+                    bot_res=bot_res,
+                    bot_action=bot_action,
+                    user_id=global_user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    start_time=start_time,
+                    platform=platform,
+                )
+                return
 
             # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
             meta_after = await store.get_last_search_meta(global_user_id, session_id)
@@ -773,6 +904,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 }
             )
             await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
+        finally:
+            await bot_res.stop_typing()
 
 # --- Универсальный Адаптер Ответов ---
 class BotResponse:
@@ -781,6 +914,7 @@ class BotResponse:
         self.event = event
         self.platform = platform
         self.is_tg = platform == "telegram"
+        self._typing_task=None
 
     @property
     def payload(self):
@@ -805,6 +939,10 @@ class BotResponse:
         return getattr(self.event.message.body, 'attachments', [])
 
     async def send(self, text, menu=None, is_html=True, is_doc=None):
+        
+        # Перед отправкой ответа выключаем typing
+        # await self.stop_typing()
+        
         if is_doc:
             return await self._send_document(is_doc['path'], is_doc['name'])
         
@@ -847,7 +985,7 @@ class BotResponse:
 
     async def _send_document(self, path, filename):
         if self.is_tg:
-            return await self.event.message.answer_document(FSInputFile(path, filename=filename))
+            return await self.event.answer_document(FSInputFile(path, filename=filename))
         else:
             return await self.event.message.answer(attachments=[InputMedia(path=path)])
 
@@ -860,3 +998,57 @@ class BotResponse:
                 # Если передан флаг alert, добавляем эмодзи для заметности
                 msg = f"⚠️ {text.upper()}" if show_alert else text
                 await self.event.answer(msg)
+
+    async def _send_typing_once(self):
+        try:
+            if self.is_tg:
+                chat = self.event.chat
+                await chat.do("typing")
+
+            else:
+                # MAX API
+                chat_id = self.event.message.recipient.chat_id
+
+                await self.event.bot.send_action(
+                    chat_id=chat_id,
+                    action=SenderAction.TYPING_ON
+                )
+                logger.info(f"MAX typing sent to chat_id={chat_id}")
+
+        except Exception as e:
+            logger.debug(f"Typing status error: {e}")
+
+    async def _typing_loop(self):
+        """Фоновый loop отправки typing status"""
+
+        while True:
+            await self._send_typing_once()
+            # Telegram typing живет ~5 секунд
+            # поэтому обновляем каждые 4
+            await asyncio.sleep(4)
+
+    async def start_typing(self):
+        """Запуск typing-индикатора"""
+        # Telegram требует постоянного обновления typing
+        if self.is_tg:
+
+            if self._typing_task is None or self._typing_task.done():
+
+                self._typing_task = asyncio.create_task(
+                    self._typing_loop()
+                )
+
+        else:
+            # MAX достаточно одного action
+            await self._send_typing_once()
+        
+    async def stop_typing(self):
+        """Остановка typing-индикатора"""
+
+        if self._typing_task:
+            self._typing_task.cancel()
+
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._typing_task
+
+            self._typing_task = None

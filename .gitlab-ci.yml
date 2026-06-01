@@ -80,7 +80,7 @@ build:image:kb-manager:
   script:
     - |
       /kaniko/executor \
-        --context "${CI_PROJECT_DIR}/mcps/kb-manager" \
+        --context "${CI_PROJECT_DIR}" \
         --dockerfile "${CI_PROJECT_DIR}/mcps/kb-manager/Dockerfile" \
         --destination "${IMAGE_KB_MANAGER}:${CI_COMMIT_TAG}-amd64" \
         --destination "${IMAGE_KB_MANAGER}:${CI_COMMIT_SHORT_SHA}" \
@@ -95,7 +95,7 @@ build:image:kbsearch:
   script:
     - |
       /kaniko/executor \
-        --context "${CI_PROJECT_DIR}/mcps/mcp-server-kbsearch" \
+        --context "${CI_PROJECT_DIR}" \
         --dockerfile "${CI_PROJECT_DIR}/mcps/mcp-server-kbsearch/Dockerfile" \
         --destination "${IMAGE_KBSEARCH}:${CI_COMMIT_TAG}-amd64" \
         --destination "${IMAGE_KBSEARCH}:${CI_COMMIT_SHORT_SHA}" \
@@ -110,7 +110,7 @@ build:image:faq:
   script:
     - |
       /kaniko/executor \
-        --context "${CI_PROJECT_DIR}/mcps/mcp-server-faq" \
+        --context "${CI_PROJECT_DIR}" \
         --dockerfile "${CI_PROJECT_DIR}/mcps/mcp-server-faq/Dockerfile" \
         --destination "${IMAGE_FAQ}:${CI_COMMIT_TAG}-amd64" \
         --destination "${IMAGE_FAQ}:${CI_COMMIT_SHORT_SHA}" \

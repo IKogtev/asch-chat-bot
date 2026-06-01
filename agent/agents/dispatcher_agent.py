@@ -30,9 +30,10 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Ожидаемый контракт:
     - `status="ok"`;
-    - `route` один из `doc_search`, `kb_answer`;
+    - `route` один из `doc_search`, `kb_answer`, `product_selection`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
-      `kb_answer`, `smalltalk`;
+      `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
+      `product_compare`;
     - `reason` обязателен всегда.
 
     Семантические правила:
@@ -40,7 +41,8 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - `kb_answer` и `smalltalk` допустимы только с `route="kb_answer"`;
     - follow-up intent (`show_more`, `show_all`, `file_download`) не должен содержать `search_query`;
     - `smalltalk` должен иметь пустой `search_query`;
-    - для `doc_search` и `kb_answer` обязателен непустой `search_query`.
+    - для `doc_search` с `intent="doc_search"` ожидается **дословный** текст последнего сообщения пользователя в `search_query` (нормализацию под поиск делает downstream `doc_search_agent`);
+    - для `kb_answer` обязателен непустой `search_query` (может быть нормализован диспетчером).
 
     Возвращает нормализованный словарь с полями:
     - `status`
@@ -58,11 +60,10 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
     kb_route_intents = {"kb_answer", "smalltalk"}
     product_route_intents = {
+        "product_card",
+        "product_kit",
         "product_filter",
         "product_compare",
-        "product_recommendation",
-        "product_explanation",
-        "product_alternatives",
     }
     allowed_intents = doc_route_intents | kb_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}
@@ -208,10 +209,12 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
 Разрешённые route:
 - doc_search
 - kb_answer
+- product_selection
 
 Разрешённые intent:
 - doc_search, show_more, show_all, file_download (только с route=doc_search)
 - kb_answer, smalltalk (только с route=kb_answer)
+- product_card, product_kit, product_filter, product_compare (только с route=product_selection)
 
 Правила:
 - smalltalk идёт в route=kb_answer

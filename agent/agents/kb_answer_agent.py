@@ -2,8 +2,7 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 from ..config import (
@@ -16,6 +15,7 @@ from ..config import (
 )
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
+from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
 from .validation_utils import build_validation_error
 
 logger = setup_logger("kb_answer_agent", "agent.log")
@@ -149,7 +149,7 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
         try:
             headers = {"Authorization": f"Bearer {MCP_TOKEN}"} if MCP_TOKEN else None
 
-            kbsearch_toolset = McpToolset(
+            kbsearch_toolset = RefreshingMcpToolset(
                 connection_params=StreamableHTTPConnectionParams(
                     url=KBSEARCH_MCP_URL,
                     headers=headers,
@@ -179,7 +179,7 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
                 else None
             )
 
-            faqsearch_toolset = McpToolset(
+            faqsearch_toolset = RefreshingMcpToolset(
                 connection_params=StreamableHTTPConnectionParams(
                     url=FAQSEARCH_MCP_URL,
                     headers=faq_headers,
@@ -235,7 +235,7 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
 
 4. Если faq_search дал частично релевантный, слабый или неполный результат:
    - вызови kb_search
-   - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true
+   - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true, search_profile="kb_answer"
    - если {{search_query}} пустой, используй {{user_query}}
    - используй kb_search только как дополнение к faq_search
    - если ответ собран по обоим источникам, верни source="faq_search+kb_search"

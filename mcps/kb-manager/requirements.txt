@@ -2,7 +2,8 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.1
 python-multipart==0.0.20
 
-qdrant-client>=1.7.0
+qdrant-client==1.16.2
+fastembed>=0.4.0
 
 llama-index-core>=0.10.0
 pypdf==5.1.0
