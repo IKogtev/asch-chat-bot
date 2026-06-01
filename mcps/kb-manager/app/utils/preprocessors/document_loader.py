@@ -5,10 +5,14 @@ from typing import List, Tuple, Dict, Optional
 from llama_index.core.node_parser import SentenceSplitter
 from datetime import datetime
 from app.utils.utillites import hash_file, compute_chunk_hash
-from app.utils.logger import setup_logger 
+from utils.logger import setup_logger 
 import pandas as pd
 # Импорт препроцессора теперь здесь, где ему и место
 from app.utils.preprocessors.preprocessors import FAQPreprocessor
+
+IMAGE_NO_OCR_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".ico",
+})
 
 class DocumentLoader:
     """
@@ -52,6 +56,8 @@ class DocumentLoader:
             if not path.is_file():
                 self.logger.info(f"{path} оказался не файлом")
                 continue
+            if "_prepared" in path.parts:
+                continue
             source_type = path.suffix.lower()
             if source_type in [".csv", ".xls", ".xlsx"]:
                 text = self.extract_raw_text_from_tabular(path)          
@@ -59,14 +65,16 @@ class DocumentLoader:
                 text = processor._extract_pdf(file_path=path)
             elif source_type==".docx":
                 text = processor._extract_docx(file_path=path)
+            elif source_type in IMAGE_NO_OCR_SUFFIXES:
+                text = "пусто"
             elif source_type not in ['.txt', '.md']:
-                self.logger.info(f"suffix {path.suffix} not in list of ")
+                self.logger.info(f"{path}: suffix {path.suffix} not in list of ")
                 continue
             else:
                 text = path.read_text(encoding='utf-8', errors="ignore")
             if not text.strip():
-                self.logger.info("not stripped???")
-                continue        
+                text = "пусто"       
+                
             document_id = f"doc_{str(uuid.uuid4())}"
             unique_documents.add(document_id)
             doc_hash = hash_file(path)

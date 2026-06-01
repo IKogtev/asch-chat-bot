@@ -15,6 +15,10 @@ class Settings():
     BOT_START_MESSAGE_FILE: Path = Path(
         os.getenv("BOT_START_MESSAGE_FILE", "/app/data/settings/bot_start_message.md")
     )
+    # help сообщение бота
+    BOT_HELP_MESSAGE_FILE: Path = Path(
+        os.getenv("BOT_HELP_MESSAGE_FILE", "/app/data/settings/bot_help_message.md")
+    )
     # Пауза между попытками подключиться а API telegram
     RECONNECT_DELAY_SEC: int = int(os.getenv("RECONNECT_DELAY_SEC", 60))
     SHOW_MAX: int = int(os.getenv("SHOW_LIST_SIZE",5))
@@ -24,6 +28,11 @@ class Settings():
     UPLOAD_NEWS: Path = Path(
         os.getenv("UPLOAD_NEWS", "/app/data/upload")
     )
+    PRODUCT_KITS_ROOT: Path = Path(
+        os.getenv("PRODUCT_KITS_ROOT", r"kb_storage\kb\1 Продукты")
+    )
+    PRODUCT_KITS_MAX_FILES: int = int(os.getenv("PRODUCT_KITS_MAX_FILES", 10))
+    PRODUCT_KITS_MAX_FILE_SIZE_MB: int = int(os.getenv("PRODUCT_KITS_MAX_FILE_SIZE_MB", 50))
     
     # Регулярные выражения для распознавания команд
     DOWNLOAD_RE = re.compile(
@@ -50,6 +59,6 @@ class Settings():
         """Создает необходимые директории при старте, если их нет"""
         self.UPLOAD_NEWS.mkdir(parents=True, exist_ok=True)
         self.BOT_START_MESSAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
+        self.BOT_HELP_MESSAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
 settings = Settings()
 settings.create_directories()

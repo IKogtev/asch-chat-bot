@@ -2,8 +2,7 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL
@@ -24,13 +23,16 @@ PRODUCT_SELECTION_TOOL_FILTER = [
 
 PRODUCT_SELECTION_MODES = {
     "product_card",
+    "product_kit",
     "product_filter",
     "product_compare",
-    "product_recommendation",
-    "product_explanation",
-    "product_alternatives",
+    "needs_clarification",
     "no_data",
 }
+
+PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
+CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
+PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
 def _normalize_used_tables(value: Any) -> list[str]:
@@ -44,9 +46,54 @@ def _normalize_used_tables(value: Any) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _normalize_product(
+    value: Any,
+    field_keys: tuple[str, ...] = PRODUCT_FIELD_KEYS,
+) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TypeError(f"expected dict, got {type(value).__name__}")
+
+    normalized = {}
+    for key in field_keys:
+        item = str(value.get(key, "")).strip()
+        if item:
+            normalized[key] = item
+
+    return normalized or None
+
+
+def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError(f"expected list, got {type(value).__name__}")
+
+    options: list[dict[str, str]] = []
+    for item in value:
+        normalized = _normalize_product(item, CLARIFICATION_OPTION_FIELD_KEYS)
+        if normalized is None:
+            raise ValueError("clarification option must not be empty")
+        options.append(normalized)
+
+    return options
+
+
+def _normalize_tool_calls(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        item = value.strip()
+        return {item} if item else set()
+    if isinstance(value, list):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return {str(value).strip()} if str(value).strip() else set()
+
+
 def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     agent_name = "product_selection_agent"
-    _ = context
+    tool_calls = _normalize_tool_calls(context.get("_adk_tool_calls"))
 
     if not isinstance(data, dict):
         raise build_validation_error(
@@ -58,8 +105,21 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
     status = str(data.get("status", "")).strip()
     mode = str(data.get("mode", "")).strip()
     message = str(data.get("message", "")).strip()
-    source = str(data.get("source", "")).strip()
     used_tables = _normalize_used_tables(data.get("used_tables"))
+
+    try:
+        resolved_product = _normalize_product(data.get("resolved_product"))
+        clarification_options = _normalize_clarification_options(
+            data.get("clarification_options")
+        )
+    except (TypeError, ValueError) as exc:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="basic_fields",
+            problem=str(exc),
+            data=data,
+            fields=("resolved_product", "clarification_options"),
+        ) from exc
 
     if status != "ok":
         raise build_validation_error(
@@ -67,7 +127,7 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             stage="basic_fields",
             problem=f"invalid status {status!r}, expected 'ok'",
             data=data,
-            fields=("status", "mode", "source"),
+            fields=("status", "mode"),
         )
 
     if mode not in PRODUCT_SELECTION_MODES:
@@ -76,7 +136,7 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             stage="basic_fields",
             problem=f"invalid mode {mode!r}, expected one of {sorted(PRODUCT_SELECTION_MODES)}",
             data=data,
-            fields=("status", "mode", "source"),
+            fields=("status", "mode"),
         )
 
     if not message:
@@ -85,42 +145,63 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             stage="basic_fields",
             problem="message is required",
             data=data,
-            fields=("mode", "message", "source"),
+            fields=("mode", "message"),
         )
 
-    if source not in {"dbhub", "none"}:
-        raise build_validation_error(
-            agent=agent_name,
-            stage="basic_fields",
-            problem="source must be 'dbhub' or 'none'",
-            data=data,
-            fields=("mode", "source"),
-        )
+    logger.debug(
+        "product_selection validation context: mode=%s resolved_product=%s "
+        "clarification_options_count=%s used_tables=%s tool_calls=%s tool_events=%s",
+        mode,
+        resolved_product,
+        len(clarification_options),
+        used_tables,
+        sorted(tool_calls),
+        context.get("_adk_tool_event_summaries") or [],
+    )
 
-    if mode == "no_data" and source != "none":
-        raise build_validation_error(
-            agent=agent_name,
-            stage="semantics",
-            problem="mode='no_data' requires source='none'",
-            data=data,
-            fields=("mode", "source"),
-        )
-
-    if mode != "no_data" and source == "none":
+    if mode in {"product_card", "product_kit"} and not resolved_product:
         raise build_validation_error(
             agent=agent_name,
             stage="semantics",
-            problem="product result with data must use source='dbhub'",
+            problem=f"mode={mode!r} requires resolved_product",
             data=data,
-            fields=("mode", "source"),
+            fields=("mode", "resolved_product"),
+        )
+
+    if mode == "product_kit" and not resolved_product.get("code"):
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem="mode='product_kit' requires resolved_product.code",
+            data=data,
+            fields=("mode", "resolved_product"),
+        )
+
+    if mode == "needs_clarification" and not clarification_options:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem="mode='needs_clarification' requires clarification_options",
+            data=data,
+            fields=("mode", "clarification_options"),
+        )
+
+    if mode != "no_data" and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="tool_usage",
+            problem=f"required tool {PRODUCT_SELECTION_REQUIRED_TOOL!r} was not called",
+            data=data,
+            fields=("mode", "used_tables"),
         )
 
     return {
         "status": status,
         "mode": mode,
         "message": message,
-        "source": source,
         "used_tables": used_tables,
+        "resolved_product": resolved_product,
+        "clarification_options": clarification_options,
     }
 
 
@@ -156,7 +237,7 @@ Return only JSON, without markdown fences.
 State variables:
 - {user_query}: original user question.
 - {product_selection_search_query}: normalized product search query.
-- {product_selection_intent}: one of product_filter, product_compare, product_recommendation, product_explanation, product_alternatives.
+- {product_selection_intent}: one of product_card, product_kit, product_filter, product_compare.
 
 Mandatory workflow:
 1. Call search_semantic_template to understand business terms and answer patterns.
@@ -170,19 +251,22 @@ Mandatory workflow:
 Rules:
 - Do not invent table names, column names, values, or product facts.
 - Do not use SELECT * for final user-facing answers.
-- Do not claim current availability unless the table has a status/version field that supports it.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
-- Do not provide an investment recommendation as a final decision; provide decision support for a manager.
-- If data is missing, return mode="no_data", source="none", used_tables=[].
+- If data is missing, return mode="no_data", used_tables=[].
+- If mode="needs_clarification", clarification_options must be a non-empty array of objects.
+- Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
+- For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
+- Do not include source in JSON.
 
 Response format:
 {
   "status": "ok",
   "mode": "product_filter",
   "message": "short answer for the user",
-  "source": "dbhub",
-  "used_tables": ["products"]
+  "used_tables": ["products"],
+  "resolved_product": null,
+  "clarification_options": []
 }
 """
     prompt_file = "product_selection_agent_prompt.md"

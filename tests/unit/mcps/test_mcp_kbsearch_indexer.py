@@ -1,7 +1,7 @@
 import ast
 import types
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -54,12 +54,13 @@ class FakeVectorStoreIndex:
 
 
 Indexer = _load_class(
-    Path(__file__).resolve().parents[3] / "mcps" / "mcp-server-kbsearch" / "app" / "utils" / "indexer.py",
-    "Indexer",
+    Path(__file__).resolve().parents[3] / "utils" / "qdrant_indexer.py",
+    "QdrantReadIndexer",
     {
         "Dict": Dict,
         "List": List,
         "Optional": Optional,
+        "Any": Any,
         "IndexerConfig": object,
         "Filter": FakeFilter,
         "FieldCondition": FakeFieldCondition,
