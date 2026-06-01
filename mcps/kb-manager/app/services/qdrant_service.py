@@ -41,14 +41,19 @@ class QdrantService:
         collection_type: CollectionType=CollectionType.DOCUMENTS,
         qdrant_port: int=6333,
         qdrant_host: str="localhost",
+        qdrant_api_key: str="",
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         collections_config: dict={}
     ):
         qdrant_timeout = 10
+        if not qdrant_api_key:
+            raise ValueError("QDRANT_API_KEY is required")
         self.qdrant_client = qdrant_client.QdrantClient(
             host=qdrant_host,
             port=qdrant_port,
+            api_key=qdrant_api_key,
+            https=False,
             timeout=qdrant_timeout,
             prefer_grpc=True
         )

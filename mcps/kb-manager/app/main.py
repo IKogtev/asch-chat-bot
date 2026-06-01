@@ -178,6 +178,7 @@ KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
 qdrant_url = f"{QDRANT_HOST}:{QDRANT_PORT}"
 # Embedding API configuration
@@ -252,6 +253,7 @@ qdrant_service = QdrantService(
     chunk_overlap=chunk_overlap,
     qdrant_host=QDRANT_HOST,
     qdrant_port=QDRANT_PORT,
+    qdrant_api_key=QDRANT_API_KEY,
     collections_config=collections_config_for_qdrant
 )
 
@@ -2992,4 +2994,3 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
-
