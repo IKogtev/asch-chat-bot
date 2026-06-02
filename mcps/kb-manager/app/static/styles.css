@@ -2000,3 +2000,61 @@ select:focus {
     margin-bottom: 30px;
     box-shadow: var(--shadow);
 }
+
+/* Контейнер списка */
+.tables-list {
+    margin-top: 15px;
+}
+
+/* Сетка карточек */
+.tables-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+/* Кнопка-карточка (таблица) */
+.table-card {
+    padding: 15px;
+    background-color: #f8f9fa; /* Светло-серый фон */
+    border: 1px solid #dee2e6; /* Рамка */
+    color: #333;             /* Темный текст */
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    text-align: center;
+}
+
+/* Эффект наведения */
+.table-card:hover {
+    background-color: #007bff; /* Синий фон при наведении */
+    color: #ffffff;            /* Белый текст при наведении */
+    border-color: #007bff;
+    transform: translateY(-2px);
+}
+
+/* Стилизация таблицы в модалке */
+.styled-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.styled-table th, .styled-table td {
+    padding: 10px;
+    border: 1px solid #ddd;
+    text-align: left;
+}
+
+.styled-table thead {
+    background-color: #f2f2f2;
+}
+#modal-loading {
+    display: none; /* Скрываем по умолчанию */
+}
+
+#modal-content {
+    display: none; /* Скрываем по умолчанию */
+}
