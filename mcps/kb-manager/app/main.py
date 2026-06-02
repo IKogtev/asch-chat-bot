@@ -20,7 +20,7 @@ from urllib.parse import unquote, quote
 from datetime import datetime, timedelta, timezone
 # Auth dependencies
 from jose import JWTError, jwt
-from fastapi import Depends
+from fastapi import Depends, BackgroundTasks
 import asyncpg
 from passlib.context import CryptContext
 import pandas as pd
@@ -30,6 +30,7 @@ import re
 import pymorphy3
 import csv
 import io
+import sys
 
 load_dotenv()
 
@@ -268,7 +269,8 @@ for name, cfg in COLLECTIONS_CFG.items():
         ext_allowed=cfg["ext"],
         qdrant_collection_name=name,
     )
-
+# хранилище задач синхронизации
+sync_tasks = {}
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
@@ -419,7 +421,7 @@ def validate_extensions(ext: str, collection_type: str):
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-async def sync_function(iter_dir, storager, collection_type):
+async def sync_function(iter_dir, storager, collection_type, log_callback=None):
     """
     syncron function which takes params:
         iter_dir - dir to itterate KB_ROOT, FAQ_ROOT
@@ -431,6 +433,7 @@ async def sync_function(iter_dir, storager, collection_type):
             continue
         # проходим по всем папкам переданного storager для построения индекса
         kb_id = folder.name
+        if log_callback: log_callback(f"Синхронизация БЗ: {kb_id}")
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -442,6 +445,34 @@ async def sync_function(iter_dir, storager, collection_type):
             )
         except Exception as e:
             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
+
+async def run_sync_task(task_id: str, collection_name: str):
+    sync_tasks[task_id] = {"status": "processing", "logs": ["🚀 Старт процесса..."]}
+    
+    def log_cb(msg): sync_tasks[task_id]["logs"].append(msg)
+    
+    try:
+        # Получаем конфиг и сторадж
+        cfg = get_collection_cfg(collection_name)
+        storager = get_or_create_storager(collection_name)
+        
+        await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
+        
+        sync_tasks[task_id]["status"] = "completed"
+        sync_tasks[task_id]["logs"].append("✅ Готово.")
+    except Exception as e:
+        sync_tasks[task_id]["status"] = "error"
+        sync_tasks[task_id]["logs"].append(f"❌ Ошибка: {str(e)}")
+
+@app.post("/api/sync/start")
+async def start_sync(data: dict, background_tasks: BackgroundTasks):
+    task_id = str(uuid.uuid4())
+    background_tasks.add_task(run_sync_task, task_id, data["collection_name"])
+    return {"task_id": task_id}
+
+@app.get("/api/sync/status/{task_id}")
+async def get_sync_status(task_id: str):
+    return sync_tasks.get(task_id, {"status": "not_found", "logs": []})
 
 async def run_sync_all_safe():
     """безопасная синхронизация, чтобы нельзя было несколько вызвать одновременно"""
@@ -567,6 +598,97 @@ async def manual_sync_all():
     """
     result = await run_sync_all_safe()
     return result
+
+def get_or_create_storager(collection_name: str):
+    # 1. Если уже есть, возвращаем
+    if collection_name in file_storages:
+        return file_storages[collection_name]
+    
+    # 2. Если нет, пытаемся понять, к какому "типу" (faq, kb) относится имя
+    # Находим базовую конфигурацию (например, если в имени есть "faq", берем конфиг faq)
+    base_cfg = None
+    for key, cfg in COLLECTIONS_CFG.items():
+        if key in collection_name:
+            base_cfg = cfg
+            break
+            
+    if not base_cfg:
+        return None
+
+    # 3. Создаем новый инстанс на лету
+    new_storager = FileStorageService(
+        root_path=KB_STORAGE_ROOT / base_cfg["dir"], 
+        qdrant_service=qdrant_service,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        service_dir=Path("app"),
+        ext_allowed=base_cfg["ext"],
+        qdrant_collection_name=collection_name, # Используем реальное имя новой коллекции
+    )
+    
+    # Сохраняем, чтобы не пересоздавать в следующий раз
+    file_storages[collection_name] = new_storager
+    return new_storager
+
+def get_collection_cfg(collection_name: str):
+    if collection_name in COLLECTIONS_CFG:
+        return COLLECTIONS_CFG[collection_name]
+    
+    for base_key in COLLECTIONS_CFG.keys():
+        if base_key in collection_name:
+            return COLLECTIONS_CFG[base_key]
+            
+    logger.warning(f"Configuration for collection '{collection_name}' not found.")
+    return None
+
+@app.post("/api/filesystem/sync_collection")
+async def sync_collection(data: dict):
+    collection_name = data.get("collection_name")
+    if not collection_name:
+        return {
+            "status": "error",
+            "message": "collection_name is required"
+        }
+    # Используем фабрику вместо прямого доступа к словарю
+    storager = get_or_create_storager(collection_name)
+    
+    if not storager:
+        return {"status": "error", "message": f"Could not initialize storage for {collection_name}"}
+
+    # Получаем конфиг для синхронизации типа
+    cfg  = get_collection_cfg(collection_name)
+    if not cfg:
+        return {
+            "status": "error",
+            "message": f"Collection '{collection_name}' not found"
+        }
+    root = storager.root
+    sync_type = cfg["sync_type"]
+    logger.info(f"[SYNC COLLECTION] {collection_name}")
+    if sync_type == "faq":
+        prepared_dir = Path(root) / "_prepared"
+
+        if prepared_dir.exists():
+            logger.info(
+                f"Cleaning FAQ cache: {prepared_dir}"
+            )
+            shutil.rmtree(prepared_dir)
+    await sync_function(
+        root,
+        storager,
+        sync_type
+    )
+
+    storage = get_current_storage()
+    storage.build_tree()
+
+    for q in subscribers:
+        await q.put("sync_completed")
+
+    return {
+        "status": "completed",
+        "collection": collection_name
+    }
 
 @app.post("/api/filesystem/sync")
 async def filesystem_sync(
@@ -814,6 +936,95 @@ async def list_documents():
         return documents
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+#  загрузка таблиц из Excel в PostgreSQL
+@app.post("/api/tables/load")
+async def load_tables():
+    """
+    Запуск загрузчика Excel таблиц в PostgreSQL
+    """
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "app.scripts.load_tables",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=stderr.decode()
+            )
+        tables = await get_loaded_tables()
+        return {
+            "success": True,
+            "stdout": stdout.decode(),
+            "stderr": stderr.decode(),
+            "tables": tables
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+NSTYA_DATA_URL = os.getenv(
+    "NSTYA_DATA_URL",
+    "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
+)
+
+async def get_loaded_tables():
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+
+        rows = await conn.fetch("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema='public'
+            ORDER BY table_name
+        """)
+
+        return [r["table_name"] for r in rows]
+    finally:
+        await conn.close()
+    
+@app.get("/api/tables/{table_name}")
+async def get_table_info(table_name: str):
+
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+        columns = await conn.fetch("""
+                SELECT
+                    column_name,
+                    data_type
+                FROM information_schema.columns
+                WHERE table_name = $1
+                ORDER BY ordinal_position
+            """, table_name)
+
+        count = await conn.fetchval(
+                f'SELECT COUNT(*) FROM "{table_name}"'
+        )
+        logger.info(f"Table {table_name} has {count} rows and {len(columns)} columns")
+        return {
+            "table": table_name,
+            "rows": count,
+            "columns": [
+                {
+                    "name": c["column_name"],
+                    "type": c["data_type"]
+                }
+                for c in columns
+            ]
+        }
+    finally:
+        await conn.close()
 
 @app.post("/api/documents/upload")
 async def upload_document(
