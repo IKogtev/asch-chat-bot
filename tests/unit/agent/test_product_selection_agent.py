@@ -35,16 +35,44 @@ def _load_product_selection_module():
     prompt_loader_stub.start_prompt_watcher = lambda *args, **kwargs: None
 
     adk_agents_stub = types.ModuleType("google.adk.agents")
-    adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
+
+    class _FakeLlmAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.name = kwargs.get("name")
+            self.model = kwargs.get("model")
+            self.instruction = kwargs.get("instruction")
+            self.tools = kwargs.get("tools")
+            self.output_key = kwargs.get("output_key")
+
+    adk_agents_stub.LlmAgent = _FakeLlmAgent
 
     lite_llm_stub = types.ModuleType("google.adk.models.lite_llm")
     lite_llm_stub.LiteLlm = type("LiteLlm", (), {})
 
     mcp_toolset_stub = types.ModuleType("google.adk.tools.mcp_tool.mcp_toolset")
+
+    class _FakeConnectionParams:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.url = kwargs.get("url")
+            self.headers = kwargs.get("headers")
+            self.timeout = kwargs.get("timeout")
+
     mcp_toolset_stub.McpToolset = type("McpToolset", (), {})
     mcp_toolset_stub.StreamableHTTPConnectionParams = type(
-        "StreamableHTTPConnectionParams", (), {}
+        "StreamableHTTPConnectionParams", (), {"__init__": _FakeConnectionParams.__init__}
     )
+
+    refreshing_toolset_stub = types.ModuleType("agent.tools.refreshing_mcp_toolset")
+
+    class _FakeRefreshingMcpToolset:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.connection_params = kwargs.get("connection_params")
+            self.tool_filter = kwargs.get("tool_filter")
+
+    refreshing_toolset_stub.RefreshingMcpToolset = _FakeRefreshingMcpToolset
 
     sys.modules["agent"] = agent_pkg
     sys.modules["agent.agents"] = agents_pkg
@@ -52,6 +80,7 @@ def _load_product_selection_module():
     sys.modules["agent.config"] = config_stub
     sys.modules["agent.helpers"] = helpers_stub
     sys.modules["agent.prompt_loader"] = prompt_loader_stub
+    sys.modules["agent.tools.refreshing_mcp_toolset"] = refreshing_toolset_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
     sys.modules["google.adk.tools.mcp_tool.mcp_toolset"] = mcp_toolset_stub
@@ -370,3 +399,29 @@ def test_validate_product_selection_result_requires_options_for_needs_clarificat
         )
 
     assert "requires clarification_options" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_create_product_selection_agent_uses_refreshing_toolset_for_dbhub() -> None:
+    original_url = product_selection_module.DBHUB_MCP_URL
+    original_token = product_selection_module.DBHUB_MCP_TOKEN
+    original_timeout = product_selection_module.DBHUB_MCP_TIMEOUT_SEC
+
+    product_selection_module.DBHUB_MCP_URL = "http://dbhub:8080/mcp"
+    product_selection_module.DBHUB_MCP_TOKEN = "token"
+    product_selection_module.DBHUB_MCP_TIMEOUT_SEC = 45.0
+
+    try:
+        agent = product_selection_module.create_product_selection_agent(model="model")
+    finally:
+        product_selection_module.DBHUB_MCP_URL = original_url
+        product_selection_module.DBHUB_MCP_TOKEN = original_token
+        product_selection_module.DBHUB_MCP_TIMEOUT_SEC = original_timeout
+
+    assert len(agent.tools) == 1
+    toolset = agent.tools[0]
+    assert type(toolset).__name__ == "_FakeRefreshingMcpToolset"
+    assert toolset.tool_filter == product_selection_module.PRODUCT_SELECTION_TOOL_FILTER
+    assert toolset.connection_params.url == "http://dbhub:8080/mcp"
+    assert toolset.connection_params.headers == {"Authorization": "Bearer token"}
+    assert toolset.connection_params.timeout == 45.0
