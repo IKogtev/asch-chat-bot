@@ -18,7 +18,7 @@ from utils.qdrant_hybrid import (
 from utils.qdrant_indexer import QdrantReadIndexer, IndexerConfig, IndexRuntime, metadata_document_count
 from utils.rrf import reciprocal_rank_fusion
 from utils.search_profile import hybrid_rrf_params_for_profile
-from utils.qdrant_search_filters import build_hybrid_qdrant_filter
+from utils.qdrant_search_filters import build_hybrid_qdrant_filter, describe_hybrid_qdrant_filter
 
 
 class Indexer(QdrantReadIndexer):
@@ -60,6 +60,22 @@ class Indexer(QdrantReadIndexer):
         name = self._resolve_search_collection_name(collection)
         return collection_hybrid_mode(client, name) == "hybrid"
 
+    def _log_hybrid_qdrant_filter(
+        self,
+        *,
+        method: str,
+        collection: Optional[str],
+        filters: Optional[Dict[str, Any]],
+        search_profile: Optional[str],
+    ) -> None:
+        summary = describe_hybrid_qdrant_filter(filters, search_profile)
+        self.logger.debug(
+            "kb_search %s: collection=%s qdrant_filter=%s",
+            method,
+            collection,
+            summary,
+        )
+
     def hybrid_search_rrf(
         self,
         query: str,
@@ -74,6 +90,12 @@ class Indexer(QdrantReadIndexer):
             raise ValueError("Collection is not hybrid-indexed")
 
         q_filter = build_hybrid_qdrant_filter(filters, search_profile)
+        self._log_hybrid_qdrant_filter(
+            method="hybrid_search_rrf",
+            collection=collection,
+            filters=filters,
+            search_profile=search_profile,
+        )
         rrf_k, candidate_mult = hybrid_rrf_params_for_profile(search_profile or "default")
         fetch = max(top_k * candidate_mult, 100)
 
@@ -148,6 +170,12 @@ class Indexer(QdrantReadIndexer):
             raise ValueError("Collection is not hybrid-indexed")
 
         q_filter = build_hybrid_qdrant_filter(filters, search_profile)
+        self._log_hybrid_qdrant_filter(
+            method="hybrid_dense_search",
+            collection=collection,
+            filters=filters,
+            search_profile=search_profile,
+        )
         query_vector = self.embed_model.get_text_embedding_batch([query])[0]
         resp = client.query_points(
             collection_name=collection_name,

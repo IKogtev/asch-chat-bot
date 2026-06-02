@@ -446,30 +446,10 @@ class RootAgent(BaseAgent):
                     dispatch.get("route") == "doc_search"
                     and dispatch.get("intent") == "doc_search"
                 ):
-                    dr = extract_download_ranks(
-                        user_text, str(dispatch.get("search_query") or "")
-                    )
-                    if dr:
-                        dispatch = validate_dispatcher_result(
-                            {
-                                "status": "ok",
-                                "route": "doc_search",
-                                "intent": "file_download",
-                                "reason": "download_ranks_override_after_dispatcher",
-                                "search_query": "",
-                            },
-                            dict(ctx.session.state),
-                        )
-                        ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                        ctx.session.state.pop("dispatcher_result_json", None)
-                        logger.info(
-                            "Dispatcher doc_search->file_download override: ranks=%s",
-                            dr,
-                        )
+                    dr = extract_download_ranks(user_text)
 
             if dispatch["route"] == "doc_search":
                 ctx.session.state["doc_search_intent"] = dispatch["intent"]
-                ctx.session.state["doc_search_search_query"] = dispatch["search_query"]
                 async for event in self.doc_search_orchestrator.run_async(ctx):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
