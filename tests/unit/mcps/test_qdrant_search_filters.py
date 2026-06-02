@@ -15,6 +15,7 @@ _spec.loader.exec_module(_mod)
 
 archive_explicitly_requested = _mod.archive_explicitly_requested
 build_hybrid_qdrant_filter = _mod.build_hybrid_qdrant_filter
+describe_hybrid_qdrant_filter = _mod.describe_hybrid_qdrant_filter
 doc_search_archive_section = _mod.doc_search_archive_section
 
 
@@ -67,3 +68,15 @@ def test_non_doc_search_profile_does_not_exclude_archive() -> None:
 def test_doc_search_archive_section_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOC_SEARCH_ARCHIVE_SECTION", "Archive Root")
     assert doc_search_archive_section() == "Archive Root"
+
+
+@pytest.mark.unit
+def test_describe_hybrid_qdrant_filter_doc_search_archive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DOC_SEARCH_ARCHIVE_SECTION", "5 Архив")
+    summary = describe_hybrid_qdrant_filter(None, "doc_search")
+
+    assert summary["search_profile"] == "doc_search"
+    assert summary["archive"]["configured_section"] == "5 Архив"
+    assert summary["archive"]["excluded_from_search"] is True
+    assert summary["archive"]["must_not_section_path"] == "5 Архив"
+    assert {"key": "section_path", "match": "5 Архив"} in summary["must_not"]

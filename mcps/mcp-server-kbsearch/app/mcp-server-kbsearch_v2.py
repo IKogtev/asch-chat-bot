@@ -80,7 +80,7 @@ idx_config = IndexerConfig(
     qdrant_collection=QDRANT_COLLECTION,
     qdrant_alias=QDRANT_ALIAS,
     qdrant_api_key=QDRANT_API_KEY,
-    logger_name="kb_indexer",
+    logger_name="kbsearch_server",
 )
 indexer = Indexer(idx_config)
 # ============================================================================

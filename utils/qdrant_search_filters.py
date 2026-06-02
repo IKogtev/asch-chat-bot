@@ -79,3 +79,52 @@ def build_hybrid_qdrant_filter(
             )
 
     return Filter(must=must, must_not=must_not)
+
+
+def _field_conditions_for_log(
+    conditions: Optional[list[FieldCondition]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for cond in conditions or []:
+        match = cond.match
+        value = getattr(match, "value", match)
+        out.append({"key": cond.key, "match": value})
+    return out
+
+
+def describe_hybrid_qdrant_filter(
+    filters: Optional[Dict[str, Any]],
+    search_profile: Optional[str] = None,
+    *,
+    archive_section: Optional[str] = None,
+) -> dict[str, Any]:
+    """Краткое описание итогового Qdrant-фильтра для debug-логов kb_search/indexer."""
+    profile = (search_profile or "default").strip().lower()
+    section = (archive_section or doc_search_archive_section()).strip()
+    archive_requested = archive_explicitly_requested(filters, section)
+    archive_excluded = profile == DOC_SEARCH_PROFILE and bool(section) and not archive_requested
+
+    q_filter = build_hybrid_qdrant_filter(
+        filters,
+        search_profile,
+        archive_section=archive_section,
+    )
+
+    archive: dict[str, Any] = {
+        "configured_section": section or None,
+        "excluded_from_search": archive_excluded,
+    }
+    if archive_excluded:
+        archive["must_not_section_path"] = section
+    elif profile == DOC_SEARCH_PROFILE and archive_requested:
+        archive["note"] = "archive requested in agent filters; must_not not applied"
+    elif profile != DOC_SEARCH_PROFILE:
+        archive["note"] = "archive exclusion applies only to doc_search profile"
+
+    return {
+        "search_profile": profile,
+        "agent_filters": dict(filters) if filters else None,
+        "archive": archive,
+        "must": _field_conditions_for_log(q_filter.must),
+        "must_not": _field_conditions_for_log(q_filter.must_not),
+    }
