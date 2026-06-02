@@ -34,6 +34,12 @@ def _load_doc_search_module():
     prompt_loader_stub = types.ModuleType("agent.prompt_loader")
     prompt_loader_stub.start_prompt_watcher = lambda *args, **kwargs: None
 
+    tools_pkg = types.ModuleType("agent.tools")
+    tools_pkg.__path__ = [str(repo_root / "agent" / "tools")]
+
+    refreshing_toolset_stub = types.ModuleType("agent.tools.refreshing_mcp_toolset")
+    refreshing_toolset_stub.RefreshingMcpToolset = type("RefreshingMcpToolset", (), {})
+
     adk_agents_stub = types.ModuleType("google.adk.agents")
     adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
 
@@ -52,6 +58,8 @@ def _load_doc_search_module():
     sys.modules["agent.config"] = config_stub
     sys.modules["agent.helpers"] = helpers_stub
     sys.modules["agent.prompt_loader"] = prompt_loader_stub
+    sys.modules["agent.tools"] = tools_pkg
+    sys.modules["agent.tools.refreshing_mcp_toolset"] = refreshing_toolset_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
     sys.modules["google.adk.tools.mcp_tool.mcp_toolset"] = mcp_toolset_stub

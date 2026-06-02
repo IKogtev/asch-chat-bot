@@ -49,6 +49,8 @@ services:
       dockerfile: Dockerfile.agent
     container_name: aszh-adk-agent
     restart: unless-stopped
+    command: >
+      sh -c "cd /app && adk api_server . --host 0.0.0.0 --port 8000 --session_service_uri \"$$ADK_SESSION_SERVICE_URI\""
     ports:
       - "8000:8000"
     env_file:
@@ -60,6 +62,7 @@ services:
       - LLM_API_MODEL=${LLM_API_MODEL}
       - PORT=8000
       - HOST=0.0.0.0
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # DocSearchOrchestrator: сохранение списка документов (те же таблицы, что у бота)
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
 
@@ -99,6 +102,8 @@ services:
     networks:
       - aszh-bot-network
     depends_on:
+      migration:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       kbsearch:
@@ -114,10 +119,11 @@ services:
     container_name: aszh-bot-migration
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "cd /app && alembic upgrade head"]
+    command: ["sh", "-c", "cd /app && python -m scripts.adk_session_db --reset-existing && alembic upgrade head"]
     networks:
       - aszh-bot-network
   bot:
@@ -149,7 +155,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.1
+      - PLATFORM_VERSION=0.7.2
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -184,11 +190,11 @@ services:
     environment:
       - LOG_LEVEL=${BOT_MAX_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
-      - MAX_BOT_TOKEN=REDACTED_EXAMPLE
+      - MAX_BOT_TOKEN=${MAX_BOT_TOKEN}
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.1
+      - PLATFORM_VERSION=0.7.2
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -199,9 +205,11 @@ services:
     
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.16.3
     container_name: qdrant
     restart: always
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
     ports:
       - "6333:6333"
     volumes:
@@ -227,6 +235,7 @@ services:
       - LOG_TO_FILE=false
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_COLLECTION=kb_collection
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
@@ -241,7 +250,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.7.1
+      - PLATFORM_VERSION=0.7.2
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -294,15 +303,16 @@ services:
 
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
-      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-18}
-      - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.15}
+      - KB_SIMILARITY_TOP_K=${KB_SIMILARITY_TOP_K:-20}
+      - KB_SIMILARITY_CUTOFF=${KB_SIMILARITY_CUTOFF:-0.1}
        
       - KB_RRF_K_DOC_SEARCH=60
       - KB_CANDIDATE_MULT_DOC_SEARCH=120
-      - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-5 Архив}
+      - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
 
       - QDRANT_HOST=qdrant 
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=kb_collection
       - USE_QDRANT=true
@@ -348,6 +358,7 @@ services:
       
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=faq_collection
       - USE_QDRANT=true
@@ -408,7 +419,7 @@ services:
       dockerfile: Dockerfile.agent
     container_name: aszh-adk-web
     command: >
-      sh -c "cd /app && adk web --host 0.0.0.0 --port 8080"
+      sh -c "cd /app && adk web --host 0.0.0.0 --port 8080 --session_service_uri \"$$ADK_SESSION_SERVICE_URI\""
     ports:
       - "8080:8080"
     env_file:
@@ -419,6 +430,7 @@ services:
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
       - DEBUG_EXCEPTIONS=true
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       
       # MCP kb_search
       - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
@@ -451,6 +463,8 @@ services:
     networks:
       - aszh-bot-network
     depends_on:
+      migration:
+        condition: service_completed_successfully
       kbsearch:
         condition: service_healthy
       faq:

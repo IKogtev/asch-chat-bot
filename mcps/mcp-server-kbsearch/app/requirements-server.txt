@@ -6,8 +6,10 @@
 # MCP Server
 starlette>=0.27.0
 uvicorn[standard]>=0.23.0
-websockets<14.0  # Явно указываем актуальную версию
-fastmcp>=0.2.0
+websockets==15.0.1  # Required by fastmcp==2.14.7
+fastmcp==2.14.7
+mcp==1.26.0
+Authlib==1.6.8
 # Environment
 python-dotenv>=1.0.0
 
@@ -34,8 +36,7 @@ botocore>=1.29.0
 # Utilities
 pydantic>=2.0.0
 # qdrant requirements
-qdrant-client>=1.7.0
-qdrant-client
+qdrant-client==1.16.2
 llama-index-vector-stores-qdrant
 fastembed>=0.4.0
 pdfplumber

@@ -44,6 +44,7 @@ class IndexerConfig:
     qdrant_port: int = 6333
     qdrant_collection: str = "kb_collection"
     qdrant_alias: Optional[str] = None
+    qdrant_api_key: Optional[str] = None
     qdrant_timeout: int = 10
     logger_name: str = "qdrant_indexer"
     documents_dir: Path = field(default_factory=lambda: Path("."))
@@ -51,6 +52,8 @@ class IndexerConfig:
     def validate(self) -> None:
         if not self.embed_api_key or not self.embed_api_url:
             raise ValueError("Embedding API configuration is missing")
+        if self.use_qdrant and not self.qdrant_api_key:
+            raise ValueError("QDRANT_API_KEY is required when Qdrant is enabled")
 
 
 class IndexRuntime:
@@ -88,6 +91,8 @@ class QdrantReadIndexer:
             self._qdrant_client_instance = qdrant_client.QdrantClient(
                 host=self.cfg.qdrant_host,
                 port=self.cfg.qdrant_port,
+                api_key=self.cfg.qdrant_api_key,
+                https=False,
                 timeout=self.cfg.qdrant_timeout,
             )
         return self._qdrant_client_instance

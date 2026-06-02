@@ -37,7 +37,8 @@
                     <option value="">Загрузка коллекций…</option>
                 </select>
                 <button onclick="openCreateCollectionModal()" class="btn btn-add btn-small">Добавить коллекцию</button>
-                <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Сменить Алиас 🔄</button>
+                <button onclick="openSwitchCollectionModal()" class="btn btn-primary btn-small">Сменить Алиас</button>
+                <button onclick="syncAll(this)" class="btn btn-secondary btn-small">🔄Синхронизация всех коллекций</button>
             </div>
             <div class="header-info">
                 <span id="collection-info"></span>
@@ -49,8 +50,8 @@
                 <div id="documents-tab" class="tab-content active">
                     <div class="section-header">
                         <h2>Документы</h2>
-                        <button type="button" onclick="syncAll(this)" class="btn btn-primary">
-                            🔄Синхронизация всех баз знаний
+                        <button type="button" onclick="syncCurrentCollection(this)" class="btn btn-primary">
+                            🔄 Синхронизация текущей коллекции
                         </button>
                         <button onclick="loadDocuments()" class="btn btn-secondary">
                             Обновить
@@ -111,52 +112,19 @@
                 <!-- Upload Tab -->
                 <div id="upload-tab" class="tab-content">
                     <div class="section-header">
-                        <h2>Загрузить Документ</h2>
+                        <h2>Загрузка таблиц</h2>
                     </div>
-                    
-                    <div class="upload-section">
-                        <div class="upload-box" id="upload-box">
-                            <div class="upload-icon"></div>
-                            <p>Перетащите файл сюда или выберите его щелчком мыши.</p>
-                            <p class="upload-hint">Поддерживаемые форматы: TXT, MD, PDF, DOCX, EXCEL</p>
-                        </div>
-                        
-                        <input 
-                            type="file" 
-                            id="file-input" 
-                            accept=".txt,.md,.pdf,.docx,.doc,.csv,.xls,.xlsx" 
-                            onchange="handleFileSelect(event)"
-                            style="display: none;"
-                        >
+                    <button onclick="loadTables()" id="load-tables-btn" class="btn btn-primary btn-large">
+                        Загрузить таблицы
+                    </button>
 
-                        <div id="file-info" class="file-info" style="display: none;">
-                            <p><strong>Выбранный файл:</strong> <span id="file-name"></span></p>
-                        </div>
-
-                        <div class="upload-options">
-                            <label>
-                                ID Базы знаний:
-                                <input type="text" id="upload-kb-id" value="default" placeholder="например, default, kb1, kb2">
-                            </label>
-                            <label>
-                                ID пользователя:
-                                <input type="text" id="upload-user-id" value="anonymous" placeholder="например, user123, anonymous">
-                            </label>
-                        </div>
-
-                        <button onclick="uploadDocument()" id="upload-btn" class="btn btn-primary btn-large" disabled>
-                            Загрузить документ
-                        </button>
-
-                        <div id="upload-progress" class="upload-progress" style="display: none;">
-                            <div class="progress-bar">
-                                <div class="progress-fill"></div>
-                            </div>
-                            <p>Обработка документа...</p>
-                        </div>
-
-                        <div id="upload-result" class="result-message"></div>
+                    <div id="tables-load-progress" style="display:none;">
+                        Загрузка...
                     </div>
+
+                    <div id="tables-load-result" class="result-message" style="display:none;"></div>
+
+                    <div id="tables-list" class="tables-list"></div>
                 </div>
                 <!-- Tree tab -->
                 <div id="tree_files-tab" class="tab-content">
@@ -314,7 +282,26 @@
                             
                             <div id="bot-start-result" class="result-message" style="display:none;"></div>
                         </div>
-                        
+                        <!-- Сообщение помощи -->
+                        <div class="setting-card">
+                            <div class="setting-header">
+                                <h3>💬 Сообщение команды помощи (/help)</h3>
+                                <div class="setting-actions">
+                                    <button onclick="loadBotHelpMessage()" class="btn btn-secondary btn-small">🔄 Обновить</button>
+                                    <button onclick="saveBotHelpMessage()" class="btn btn-primary btn-small">💾 Сохранить</button>
+                                </div>
+                            </div>
+                            
+                            <div class="setting-info">
+                                <span>📄 Файл: <strong>bot_help_message.md</strong></span>
+                                <span>📦 Размер: <strong id="bot-help-size">-</strong></span>
+                                <span>📅 Изменён: <strong id="bot-help-modified">-</strong></span>
+                            </div>
+                            
+                            <textarea id="bot-help-editor" class="setting-editor" placeholder="Загрузка сообщения помощи..."></textarea>
+                            
+                            <div id="bot-help-result" class="result-message" style="display:none;"></div>
+                        </div>
                     </div>
                 </div>
                 <!-- Groups Tab -->
@@ -557,6 +544,41 @@
                         </div>
                         <div id="dialogs-list"></div>
                         <button id="download-dialogs" class="btn btn-primary">📥 Скачать</button>
+                    </div>
+                </div>
+                <!-- Table Details Modal -->
+                <div id="table-info-modal" class="modal">
+                    <div class="file-content-modal">
+                        <div class="modal-header">
+                            <h3 id="modal-table-title">Информация о таблице</h3>
+                            <button class="modal-close" onclick="closeTableModal()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="modal-loading">
+                                Загрузка данных...
+                            </div>
+                            <div id="modal-content">
+                                <table class="styled-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Колонка</th>
+                                            <th>Тип данных</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="details-columns-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Sync Status Modal -->
+                <div id="sync-status-modal" class="modal">
+                    <div class="file-content-modal">
+                        <div class="modal-header">
+                            <h3>Статус синхронизации</h3>
+                            <button class="modal-close" onclick="closeSyncStatusModal()">&times;</button>
+                        </div>
+                        <div id="sync-status-content"></div>
                     </div>
                 </div>
             </div>

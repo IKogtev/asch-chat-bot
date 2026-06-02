@@ -1105,19 +1105,18 @@ select:focus {
 .bot-settings-container {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
+    gap: 20px;
 }
 .setting-card {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
+
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 8px;
+
     padding: 20px;
-    margin-bottom: 20px;
+
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 .setting-header {
@@ -1155,21 +1154,23 @@ select:focus {
 }
 .setting-editor {
     width: 100%;
+    min-height: 250px;
+
     font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
     font-size: 13px;
     line-height: 1.5;
+
     padding: 15px;
+
     border: 1px solid var(--border-color);
     border-radius: 8px;
-    resize: vertical;
-    min-height: 200px;
+
     box-sizing: border-box;
+
     background: #fffbea;
     color: var(--text-primary);
-    flex: 1;
-    min-height: 0;
-    width: 100%;
-    resize: none; 
+
+    resize: vertical;
     overflow: auto;
 }
 .setting-editor:focus {
@@ -1998,4 +1999,62 @@ select:focus {
     border-radius: 12px;
     margin-bottom: 30px;
     box-shadow: var(--shadow);
+}
+
+/* Контейнер списка */
+.tables-list {
+    margin-top: 15px;
+}
+
+/* Сетка карточек */
+.tables-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+/* Кнопка-карточка (таблица) */
+.table-card {
+    padding: 15px;
+    background-color: #f8f9fa; /* Светло-серый фон */
+    border: 1px solid #dee2e6; /* Рамка */
+    color: #333;             /* Темный текст */
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    text-align: center;
+}
+
+/* Эффект наведения */
+.table-card:hover {
+    background-color: #007bff; /* Синий фон при наведении */
+    color: #ffffff;            /* Белый текст при наведении */
+    border-color: #007bff;
+    transform: translateY(-2px);
+}
+
+/* Стилизация таблицы в модалке */
+.styled-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.styled-table th, .styled-table td {
+    padding: 10px;
+    border: 1px solid #ddd;
+    text-align: left;
+}
+
+.styled-table thead {
+    background-color: #f2f2f2;
+}
+#modal-loading {
+    display: none; /* Скрываем по умолчанию */
+}
+
+#modal-content {
+    display: none; /* Скрываем по умолчанию */
 }

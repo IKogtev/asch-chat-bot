@@ -55,7 +55,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadCollectionInfo(); // загрузка информации о коллекциях
     await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
     await loadDocuments(); // загрузка документов
-    setupDragAndDrop(); 
     await loadSyncSettings();
     subscribeToSync();
     await loadFilesystemTree();
@@ -526,6 +525,7 @@ function showTab(tabName, event=null) {
         loadPromptsTab();
     } else if (tabName === 'bot_settings'){
         loadBotStartMessage();
+        loadBotHelpMessage();
     } else if (tabName === 'user_groups'){
         loadUserGroups();
     } else if (tabName === 'analytics'){
@@ -1042,6 +1042,100 @@ async function syncAll(btnElement) {
         }, 2000);
     }
 }
+// синхронизация конкретной коллекции
+async function syncCurrentCollection(btnElement) {
+
+    if (!currentCollection) {
+        alert("Коллекция не выбрана");
+        return;
+    }
+
+    const originalText = btnElement.innerText;
+
+    try {
+
+        btnElement.disabled = true;
+        btnElement.innerText = "⏳ Синхронизация...";
+        btnElement.style.opacity = "0.7";
+
+        const response = await fetch(
+            "/api/filesystem/sync_collection",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    collection_name: currentCollection
+                })
+            }
+        );
+
+        const result = await response.json();
+
+        if (!response.ok) {
+            throw new Error(
+                result.message ||
+                "Ошибка синхронизации"
+            );
+        }
+
+        btnElement.innerText = "✅ Готово";
+
+        await loadDocuments();
+        await loadCollectionInfo();
+        await loadManagerCollectionInfo();
+        await loadFilesystemTree();
+
+    } catch (error) {
+
+        console.error(error);
+
+        btnElement.innerText = "❌ Ошибка";
+
+        alert(error.message);
+
+    } finally {
+
+        setTimeout(() => {
+
+            btnElement.disabled = false;
+            btnElement.innerText = originalText;
+            btnElement.style.opacity = "1";
+
+        }, 2000);
+    }
+}
+async function syncWithLogging(collectionName) {
+    // 1. Запуск
+    const response = await fetch("/api/sync/start", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({collection_name: collectionName})
+    });
+    const { task_id } = await response.json();
+
+    // 2. Открываем окно
+    const modal = document.getElementById("syncModal");
+    const logBox = document.getElementById("syncLogs");
+    modal.style.display = "block";
+
+    // 3. Поллинг (опрос статуса)
+    const interval = setInterval(async () => {
+        const res = await fetch(`/api/sync/status/${task_id}`);
+        const data = await res.json();
+        
+        // Рендер логов
+        logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join("");
+        
+        if (data.status === "completed" || data.status === "error") {
+            clearInterval(interval);
+            if (data.status === "completed") {
+                await loadDocuments(); // Обновляем данные интерфейса
+            }
+        }
+    }, 1500);
+}
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Удалить базу знаний "${kbId}"?\n\n Все документы будут немедленно удалены.`)) {
@@ -1468,6 +1562,100 @@ function cancelUpload() {
     document.getElementById('file-input').value = '';
     document.getElementById('file-info').style.display = 'none';
     document.getElementById('upload-btn').disabled = true;
+}
+
+// загрузка таблиц postgres
+async function loadTables() {
+    const btn = document.getElementById("load-tables-btn");
+    const progress = document.getElementById("tables-load-progress");
+    const result = document.getElementById("tables-load-result");
+    const tablesList = document.getElementById("tables-list");
+
+    btn.disabled = true;
+    progress.style.display = 'block';
+
+    try {
+        const response = await fetch('/api/tables/load', {
+            method: 'POST'
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.detail || 'Ошибка загрузки таблиц');
+        }
+
+        result.className = "result-message success";
+
+        result.innerHTML =
+            "✓ Таблицы успешно загружены";
+        tablesList.innerHTML = `
+            <h4>Текущие таблицы:</h4>
+            <div class="tables-grid">
+                ${data.tables.map(t => `
+                    <button class="table-card" onclick="showTableInfo('${t}')">
+                        🗂️ ${t}
+                    </button>
+                `).join("")}
+            </div>
+        `;
+
+    } catch (error) {
+        console.error(error);
+
+        result.className = "result-message error";
+        result.innerHTML = error.message;
+    } finally {
+        progress.style.display = 'none';
+        result.style.display = "block";
+        btn.disabled = false;
+    }
+}
+
+async function showTableInfo(tableName) {
+    const modal = document.getElementById("table-info-modal");
+    const modalTitle = document.getElementById("modal-table-title");
+    const columnsBody = document.getElementById("details-columns-body");
+    
+    const loadingDiv = document.getElementById("modal-loading");
+    const contentDiv = document.getElementById("modal-content");
+
+    modalTitle.innerText = `Загрузка: ${tableName}`;
+    columnsBody.innerHTML = ""; // Очищаем таблицу
+    
+    // 2. УПРАВЛЕНИЕ ВИДИМОСТЬЮ (сначала скрываем контент, показываем лоадер)
+    contentDiv.style.display = "none";
+    loadingDiv.style.display = "block";
+    
+    // 3. Открываем саму модалку
+    modal.style.display = "flex";
+
+    try {
+        // Делаем запрос к вашему API
+        const response = await fetch(`/api/tables/${encodeURIComponent(tableName)}`);
+        
+        if (!response.ok) {
+            throw new Error("Не удалось получить информацию о таблице");
+        }
+
+        const data = await response.json();
+
+        // Заполняем данные
+        modalTitle.innerText = `Таблица: ${data.table}`; // Меняем заголовок на правильный
+        columnsBody.innerHTML = data.columns
+            .map(col => `<tr><td>${col.name}</td><td>${col.type}</td></tr>`)
+            .join("");
+
+        loadingDiv.style.display = "none";
+        contentDiv.style.display = "block";
+    } catch (error) {
+        loadingDiv.style.display = "none";
+        alert("Ошибка: " + error.message);
+        closeTableModal();
+    }
+}
+function closeTableModal() {
+    document.getElementById("table-info-modal").style.display = "none";
 }
 
 // #############################
@@ -2336,6 +2524,70 @@ async function saveBotStartMessage() {
         resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
     }
 }
+// загрузка сообщения помощи бота
+async function loadBotHelpMessage() {
+    const editor = document.getElementById("bot-help-editor");
+    const metaSize = document.getElementById("bot-help-size");
+    const metaModified = document.getElementById("bot-help-modified");
+    
+    if (!editor) return;
+    
+    editor.value = "Загрузка...";
+    editor.disabled = true;
+    
+    try {
+        const res = await fetch("/api/prompts/bot-help");
+        const data = await res.json();
+        
+        botHelpMessageContent = data.content;
+        editor.value = botHelpMessageContent;
+        editor.disabled = false;
+        
+        if (metaSize) metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
+        if (metaModified) metaModified.textContent = formatDate(data.modified);
+        
+    } catch (err) {
+        editor.value = `Ошибка загрузки: ${err.message}`;
+        console.error("Error loading bot help message:", err);
+    }
+}
+// сохранение нового сообщения помощи бота
+async function saveBotHelpMessage(){
+    const editor = document.getElementById("bot-help-editor");
+    const resultDiv = document.getElementById("bot-help-result");
+    if (!editor || !resultDiv) return;
+    
+    const newContent = editor.value;
+    
+    if (!newContent.trim()) {
+        alert("Сообщение помощи не может быть пустым");
+        return;
+    }
+
+    resultDiv.className = "result-message";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⏳ Сохранение...";
+
+    try {
+        const res = await fetch("/api/prompts/bot-help", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: newContent })
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+            resultDiv.className = "result-message success";
+            resultDiv.innerHTML = `✅ Сообщение помощи сохранено!<br>📝 Символов: ${data.length || 0}`;
+            botHelpMessageContent = newContent;
+        } else {
+            throw new Error(data.detail || "Ошибка сохранения");
+        }
+    } catch (err) {
+        resultDiv.className = "result-message error";
+        resultDiv.innerHTML = `❌ Ошибка: ${err.message}`;
+    }
+}
 // #############################
 // GROUPS TAB LOGIC
 // #############################
@@ -2412,7 +2664,6 @@ async function loadUserGroups(skipFetch = false) {
         <table class="user-groups-table">
             <thead>
                 <tr>
-                    <th>User ID</th>
                     <th>Username</th>
                     <th>Имя</th>
                     <th>Фамилия</th>
@@ -2421,6 +2672,7 @@ async function loadUserGroups(skipFetch = false) {
                     <th>Аккаунты</th>
                     <th>Последний вход</th>
                     <th class="text-center">🚫 Блок</th>
+                    <th>User ID</th>
                 </tr>
             </thead>
             <tbody>
@@ -2430,7 +2682,6 @@ async function loadUserGroups(skipFetch = false) {
                     const displayLastName = u.last_name || '';    
                     return `
                     <tr class="${u.is_blocked ? 'user-blocked' : ''}">
-                        <td class="font-monospace">${u.global_user_id}</td>
                         <td>${escapeHtml(u.username || '-')}</td>
                         <td>${escapeHtml(displayName || '')}</td>
                         <td>${escapeHtml(displayLastName || '')}</td>
@@ -2464,6 +2715,7 @@ async function loadUserGroups(skipFetch = false) {
                                 ${u.is_blocked ? 'checked' : ''} 
                                 onchange="toggleUserBlock('${u.global_user_id}', this.checked)">
                         </td>
+                        <td class="font-monospace">${u.global_user_id}</td>
                     </tr>
                     `;
                 }).join('')}
@@ -3052,7 +3304,7 @@ function drawUsers() {
 
         ${page.length === 0 ? "<div>Нет пользователей</div>" : page.map(u => `
             <div class="user-card">
-                <b>${u.global_user_id} | ${u.user_name || "unknown"}</b>
+                <b>${u.user_name || "unknown"}</b>
                 <div>Всего сообщений: ${u.messages}</div>
                 <div>В среднем за неделю сообщений: ${u.avg_weekly_messages.toFixed(1)}</div>
                 <button onclick="openUserDialogs('${u.global_user_id}', '${u.user_name || "unknown"}')" class="btn btn-primary btn-small">

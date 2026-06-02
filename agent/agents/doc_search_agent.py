@@ -187,17 +187,16 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
 
 Тебе доступны переменные состояния:
 - {user_query} — исходное сообщение пользователя
-- {search_query} — текст поиска из диспетчера: для doc_search это **дословная** копия последнего сообщения пользователя; сжатие и канонизация под `kb_search` — на твоей стороне.
 - {doc_search_collection} — имя коллекции для поиска, его надо передавать в kb_search
 
 Правила:
 1. Для содержательного запроса на поиск документов обязательно вызови tool kb_search.
 2. Передавай:
-   - query={search_query}
+   - query={user_query}
    - collection={doc_search_collection}
    - include_metadata=true
    - search_profile="doc_search" (обязательно при каждом вызове kb_search)
-3. Если {search_query} пустой, используй {user_query}.
+3. Сжатие и канонизация {user_query} под `kb_search` — на твоей стороне.
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.

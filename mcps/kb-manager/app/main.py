@@ -20,7 +20,7 @@ from urllib.parse import unquote, quote
 from datetime import datetime, timedelta, timezone
 # Auth dependencies
 from jose import JWTError, jwt
-from fastapi import Depends
+from fastapi import Depends, BackgroundTasks
 import asyncpg
 from passlib.context import CryptContext
 import pandas as pd
@@ -30,6 +30,7 @@ import re
 import pymorphy3
 import csv
 import io
+import sys
 
 load_dotenv()
 
@@ -158,10 +159,15 @@ ROLE_PERMISSIONS = {
 # Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
 MAX_BOT_API = os.getenv("BOT_MAX_API", "http://bot-max:8002")
+BOTS = {
+    "telegram": TELEGRAM_BOT_API,
+    "max": MAX_BOT_API,
+}
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
 BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
+BOT_HELP_MESSAGE_FILE = Path("/app/data/bot/settings/bot_help_message.md")
 # папка загрузки файлов
 BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
 
@@ -173,6 +179,7 @@ KB_STORAGE_ROOT = KB_STORAGE_ROOT.resolve()
 KB_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
 qdrant_url = f"{QDRANT_HOST}:{QDRANT_PORT}"
 # Embedding API configuration
@@ -247,6 +254,7 @@ qdrant_service = QdrantService(
     chunk_overlap=chunk_overlap,
     qdrant_host=QDRANT_HOST,
     qdrant_port=QDRANT_PORT,
+    qdrant_api_key=QDRANT_API_KEY,
     collections_config=collections_config_for_qdrant
 )
 
@@ -261,7 +269,8 @@ for name, cfg in COLLECTIONS_CFG.items():
         ext_allowed=cfg["ext"],
         qdrant_collection_name=name,
     )
-
+# хранилище задач синхронизации
+sync_tasks = {}
 sync_lock = asyncio.Lock()
 sync_update_event = asyncio.Event()
 sync_settings = {
@@ -277,6 +286,82 @@ subscribers = []
 http_client: httpx.AsyncClient = None
 # создаем анализатора морфем
 morph = pymorphy3.MorphAnalyzer() 
+
+# функция отправки запросов в боты
+async def send_to_bots(
+    route: str,
+    *,
+    method: str = "POST",
+    json_data: dict | None = None,
+    files=None,
+    form_data=None,
+    bots: list[str] | None = None,
+    timeout: int = 10,
+):
+    """
+    Универсальная отправка запросов во все боты.
+
+    route:
+        "/api/reload-start-message"
+        "/broadcast"
+        "/api/subscribers/block"
+
+    Возвращает:
+    {
+        "telegram": {...},
+        "max": {...}
+    }
+    """
+
+    results = {}
+
+    target_bots = bots or list(BOTS.keys())
+
+    for bot_name in target_bots:
+        base_url = BOTS[bot_name]
+
+        try:
+            url = f"{base_url}{route}"
+
+            kwargs = {
+                "timeout": timeout
+            }
+
+            if json_data is not None:
+                kwargs["json"] = json_data
+
+            if files is not None:
+                kwargs["files"] = files
+
+            if form_data is not None:
+                kwargs["data"] = form_data
+
+            if method.upper() == "POST":
+                resp = await http_client.post(url, **kwargs)
+            elif method.upper() == "GET":
+                resp = await http_client.get(url, **kwargs)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+
+            resp.raise_for_status()
+
+            try:
+                results[bot_name] = resp.json()
+            except Exception:
+                results[bot_name] = {
+                    "status": "ok",
+                    "text": resp.text
+                }
+
+        except Exception as e:
+            logger.error(f"{bot_name.upper()} request error: {e}")
+
+            results[bot_name] = {
+                "status": "error",
+                "error": str(e)
+            }
+
+    return results
 
 # Mount static files
 static_path = Path(__file__).parent / "static"
@@ -336,7 +421,7 @@ def validate_extensions(ext: str, collection_type: str):
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-async def sync_function(iter_dir, storager, collection_type):
+async def sync_function(iter_dir, storager, collection_type, log_callback=None):
     """
     syncron function which takes params:
         iter_dir - dir to itterate KB_ROOT, FAQ_ROOT
@@ -348,6 +433,7 @@ async def sync_function(iter_dir, storager, collection_type):
             continue
         # проходим по всем папкам переданного storager для построения индекса
         kb_id = folder.name
+        if log_callback: log_callback(f"Синхронизация БЗ: {kb_id}")
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -359,6 +445,34 @@ async def sync_function(iter_dir, storager, collection_type):
             )
         except Exception as e:
             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
+
+async def run_sync_task(task_id: str, collection_name: str):
+    sync_tasks[task_id] = {"status": "processing", "logs": ["🚀 Старт процесса..."]}
+    
+    def log_cb(msg): sync_tasks[task_id]["logs"].append(msg)
+    
+    try:
+        # Получаем конфиг и сторадж
+        cfg = get_collection_cfg(collection_name)
+        storager = get_or_create_storager(collection_name)
+        
+        await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
+        
+        sync_tasks[task_id]["status"] = "completed"
+        sync_tasks[task_id]["logs"].append("✅ Готово.")
+    except Exception as e:
+        sync_tasks[task_id]["status"] = "error"
+        sync_tasks[task_id]["logs"].append(f"❌ Ошибка: {str(e)}")
+
+@app.post("/api/sync/start")
+async def start_sync(data: dict, background_tasks: BackgroundTasks):
+    task_id = str(uuid.uuid4())
+    background_tasks.add_task(run_sync_task, task_id, data["collection_name"])
+    return {"task_id": task_id}
+
+@app.get("/api/sync/status/{task_id}")
+async def get_sync_status(task_id: str):
+    return sync_tasks.get(task_id, {"status": "not_found", "logs": []})
 
 async def run_sync_all_safe():
     """безопасная синхронизация, чтобы нельзя было несколько вызвать одновременно"""
@@ -484,6 +598,97 @@ async def manual_sync_all():
     """
     result = await run_sync_all_safe()
     return result
+
+def get_or_create_storager(collection_name: str):
+    # 1. Если уже есть, возвращаем
+    if collection_name in file_storages:
+        return file_storages[collection_name]
+    
+    # 2. Если нет, пытаемся понять, к какому "типу" (faq, kb) относится имя
+    # Находим базовую конфигурацию (например, если в имени есть "faq", берем конфиг faq)
+    base_cfg = None
+    for key, cfg in COLLECTIONS_CFG.items():
+        if key in collection_name:
+            base_cfg = cfg
+            break
+            
+    if not base_cfg:
+        return None
+
+    # 3. Создаем новый инстанс на лету
+    new_storager = FileStorageService(
+        root_path=KB_STORAGE_ROOT / base_cfg["dir"], 
+        qdrant_service=qdrant_service,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        service_dir=Path("app"),
+        ext_allowed=base_cfg["ext"],
+        qdrant_collection_name=collection_name, # Используем реальное имя новой коллекции
+    )
+    
+    # Сохраняем, чтобы не пересоздавать в следующий раз
+    file_storages[collection_name] = new_storager
+    return new_storager
+
+def get_collection_cfg(collection_name: str):
+    if collection_name in COLLECTIONS_CFG:
+        return COLLECTIONS_CFG[collection_name]
+    
+    for base_key in COLLECTIONS_CFG.keys():
+        if base_key in collection_name:
+            return COLLECTIONS_CFG[base_key]
+            
+    logger.warning(f"Configuration for collection '{collection_name}' not found.")
+    return None
+
+@app.post("/api/filesystem/sync_collection")
+async def sync_collection(data: dict):
+    collection_name = data.get("collection_name")
+    if not collection_name:
+        return {
+            "status": "error",
+            "message": "collection_name is required"
+        }
+    # Используем фабрику вместо прямого доступа к словарю
+    storager = get_or_create_storager(collection_name)
+    
+    if not storager:
+        return {"status": "error", "message": f"Could not initialize storage for {collection_name}"}
+
+    # Получаем конфиг для синхронизации типа
+    cfg  = get_collection_cfg(collection_name)
+    if not cfg:
+        return {
+            "status": "error",
+            "message": f"Collection '{collection_name}' not found"
+        }
+    root = storager.root
+    sync_type = cfg["sync_type"]
+    logger.info(f"[SYNC COLLECTION] {collection_name}")
+    if sync_type == "faq":
+        prepared_dir = Path(root) / "_prepared"
+
+        if prepared_dir.exists():
+            logger.info(
+                f"Cleaning FAQ cache: {prepared_dir}"
+            )
+            shutil.rmtree(prepared_dir)
+    await sync_function(
+        root,
+        storager,
+        sync_type
+    )
+
+    storage = get_current_storage()
+    storage.build_tree()
+
+    for q in subscribers:
+        await q.put("sync_completed")
+
+    return {
+        "status": "completed",
+        "collection": collection_name
+    }
 
 @app.post("/api/filesystem/sync")
 async def filesystem_sync(
@@ -731,6 +936,95 @@ async def list_documents():
         return documents
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+#  загрузка таблиц из Excel в PostgreSQL
+@app.post("/api/tables/load")
+async def load_tables():
+    """
+    Запуск загрузчика Excel таблиц в PostgreSQL
+    """
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "app.scripts.load_tables",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=stderr.decode()
+            )
+        tables = await get_loaded_tables()
+        return {
+            "success": True,
+            "stdout": stdout.decode(),
+            "stderr": stderr.decode(),
+            "tables": tables
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+NSTYA_DATA_URL = os.getenv(
+    "NSTYA_DATA_URL",
+    "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
+)
+
+async def get_loaded_tables():
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+
+        rows = await conn.fetch("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema='public'
+            ORDER BY table_name
+        """)
+
+        return [r["table_name"] for r in rows]
+    finally:
+        await conn.close()
+    
+@app.get("/api/tables/{table_name}")
+async def get_table_info(table_name: str):
+
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+        columns = await conn.fetch("""
+                SELECT
+                    column_name,
+                    data_type
+                FROM information_schema.columns
+                WHERE table_name = $1
+                ORDER BY ordinal_position
+            """, table_name)
+
+        count = await conn.fetchval(
+                f'SELECT COUNT(*) FROM "{table_name}"'
+        )
+        logger.info(f"Table {table_name} has {count} rows and {len(columns)} columns")
+        return {
+            "table": table_name,
+            "rows": count,
+            "columns": [
+                {
+                    "name": c["column_name"],
+                    "type": c["data_type"]
+                }
+                for c in columns
+            ]
+        }
+    finally:
+        await conn.close()
 
 @app.post("/api/documents/upload")
 async def upload_document(
@@ -1662,8 +1956,12 @@ async def save_bot_start_message(data: dict):
         logger.info(f"Bot start message saved ({len(content)} symbols)")
         bot_reload_success = False
         try:
-            r = await http_client.post(f"{TELEGRAM_BOT_API}/api/reload-start-message", timeout=5)
-            if r.status_code == 200:
+            results = await send_to_bots(
+                "/api/reload-start-message"
+            )
+            if results["max"]["status"] == "ok" and results["telegram"]["status"] == "ok":
+                logger.info("MAX reloaded")
+                logger.info("Telegram reloaded")
                 bot_reload_success = True
                 logger.info("Bot notified to reload start message")
         except Exception as e:
@@ -1677,6 +1975,72 @@ async def save_bot_start_message(data: dict):
         }
     except Exception as e:
         logger.error(f"Error saving bot start message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/prompts/bot-help")
+async def get_bot_help_message():
+    """Получить текущее сообщение помощи бота"""
+    try:
+        if not BOT_HELP_MESSAGE_FILE.exists():
+            # Создаём файл с дефолтным сообщением если не существует
+            default_message = "❓ Это справочное сообщение бота. Здесь вы можете указать команды и инструкции для пользователей."
+            async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(default_message)
+            return {
+                "success": True,
+                "content": default_message,
+                "exists": False,
+                "size": len(default_message),
+                "modified": datetime.now().isoformat()
+            }
+        async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "r", encoding="utf-8") as f:
+            content = await f.read()
+            stat = BOT_HELP_MESSAGE_FILE.stat()
+        
+        return {
+            "success": True,
+            "content": content,
+            "exists": True,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reading bot help message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/api/prompts/bot-help")
+async def save_bot_help_message(data: dict):
+    """Сохранить сообщение помощи бота"""
+    try:
+        content = data.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        # Сохраняем в файл
+        async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                await f.write(content)
+        
+        logger.info(f"Bot help message saved ({len(content)} symbols)")
+        bot_reload_success = False
+        try:
+            results = await send_to_bots(
+                "/api/reload-help-message"
+            )
+            if results["max"]["status"] == "ok" and results["telegram"]["status"] == "ok":
+                logger.info("MAX reloaded")
+                logger.info("Telegram reloaded")
+                bot_reload_success = True
+                logger.info("Bot notified to reload help message")
+        except Exception as e:
+            logger.warning(f"Could not notify bot: {e}")
+        return {
+            "success": True,
+            "message": "Bot help message saved successfully",
+            "length": len(content),
+            "bot_notified": bot_reload_success
+        }
+    except Exception as e:
+        logger.error(f"Error saving bot help message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 ##################################
@@ -1726,29 +2090,19 @@ async def update_subscriber_group(data: dict):
 async def block_subscriber(data: dict):
     """Заблокировать или разблокировать пользователя сразу в двух ботах"""
     try:
-        async def send_to_bot(name: str, url: str):
-            try:
-                resp = await http_client.post(
-                    f"{url}/api/subscribers/block",
-                    json=data
-                )
-                resp.raise_for_status()
-                return name, resp.json()
-            except Exception as e:
-                return name, {"status": "error", "error": str(e)}
 
-        tg_name, tg_result = await send_to_bot("telegram", TELEGRAM_BOT_API)
-        max_name, max_result = await send_to_bot("max", MAX_BOT_API)
+        results = await send_to_bots(
+            "/api/subscribers/block",
+            json_data=data
+        )
 
         return {
             "status": "ok",
-            "results": {
-                tg_name: tg_result,
-                max_name: max_result
-            }
+            "results": results
         }
 
     except Exception as e:
+        logger.error(f"Block subscriber error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
 @app.get("/api/subscribers/export")
@@ -2851,4 +3205,3 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
-
