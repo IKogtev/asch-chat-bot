@@ -103,6 +103,7 @@ def _load_indexer_class():
         "meta_point_vectors": _qdrant_hybrid.meta_point_vectors,
         "sparse_embedding_to_vector": _qdrant_hybrid.sparse_embedding_to_vector,
         "build_hybrid_qdrant_filter": _qdrant_filters.build_hybrid_qdrant_filter,
+        "describe_hybrid_qdrant_filter": _qdrant_filters.describe_hybrid_qdrant_filter,
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(INDEXER_PATH), "exec"), namespace)
     return namespace["Indexer"]
