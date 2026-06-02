@@ -428,12 +428,12 @@ async def sync_function(iter_dir, storager, collection_type, log_callback=None):
         storager - prepared storager object,
         collection_type - to work with collection of 1 type
     """
-    for folder in iter_dir.iterdir():
-        if not folder.is_dir():
-            continue
+    folders = [folder for folder in iter_dir.iterdir() if folder.is_dir()]
+    total = len(folders)
+    for index, folder in enumerate(folders, start=1):
         # проходим по всем папкам переданного storager для построения индекса
         kb_id = folder.name
-        if log_callback: log_callback(f"Синхронизация БЗ: {kb_id}")
+        if log_callback: log_callback(f"📚 Синхронизация БЗ: {kb_id}")
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -445,11 +445,61 @@ async def sync_function(iter_dir, storager, collection_type, log_callback=None):
             )
         except Exception as e:
             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
+            if log_callback: log_callback(f"❌ Ошибка в {kb_id}: {e}")
+            
+        finally:
 
-async def run_sync_task(task_id: str, collection_name: str):
-    sync_tasks[task_id] = {"status": "processing", "logs": ["🚀 Старт процесса..."]}
+            if log_callback:
+                log_callback(
+                    {
+                        "type": "progress",
+                        "current_kb": kb_id,
+                        "processed": index,
+                        "total": total
+                    }
+                )
+
+def create_sync_task():
+    return {
+        "status": "processing",
+        "logs": [],
+        "progress": 0,
+        "current_kb": None,
+        "started_at": datetime.now().isoformat(),
+        "finished_at": None
+    }
+
+
+async def run_collection_task(task_id: str, collection_name: str):
+    sync_tasks[task_id] = create_sync_task()
     
-    def log_cb(msg): sync_tasks[task_id]["logs"].append(msg)
+    def log_cb(data):
+
+        if isinstance(data, str):
+
+            sync_tasks[task_id]["logs"].append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "message": data
+                }
+            )
+
+            return
+
+        if isinstance(data, dict):
+
+            if data.get("type") == "progress":
+
+                processed = data["processed"]
+                total = data["total"]
+
+                sync_tasks[task_id]["progress"] = int(
+                    processed * 100 / total
+                )
+
+                sync_tasks[task_id]["current_kb"] = (
+                    data["current_kb"]
+                )
     
     try:
         # Получаем конфиг и сторадж
@@ -459,15 +509,52 @@ async def run_sync_task(task_id: str, collection_name: str):
         await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
         
         sync_tasks[task_id]["status"] = "completed"
-        sync_tasks[task_id]["logs"].append("✅ Готово.")
+
+        sync_tasks[task_id]["progress"] = 100
+
+        sync_tasks[task_id]["finished_at"] = (
+            datetime.now().isoformat()
+        )
+
+        sync_tasks[task_id]["logs"].append(
+            {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "message": "✅ Синхронизация завершена"
+            }
+        )
     except Exception as e:
         sync_tasks[task_id]["status"] = "error"
         sync_tasks[task_id]["logs"].append(f"❌ Ошибка: {str(e)}")
 
 @app.post("/api/sync/start")
 async def start_sync(data: dict, background_tasks: BackgroundTasks):
+    """
+    Эндпоинт для запуска синхронизации по кнопке из UI. принимает три mode режима: 
+    "all" - синхронизация всех коллекций, "collection" - синхронизация одной коллекции, 
+    "kb" - синхронизация конкретной KB внутри коллекции (для kb_collection)
+    """
+    mode = data.get("mode")
     task_id = str(uuid.uuid4())
-    background_tasks.add_task(run_sync_task, task_id, data["collection_name"])
+    if mode == "all":
+        background_tasks.add_task(
+            run_sync_all_task,
+            task_id
+        )
+    elif mode == "collection":
+        background_tasks.add_task(
+            run_collection_task,
+            task_id,
+            data["collection_name"]
+        )
+    elif mode == "kb":
+        background_tasks.add_task(
+            run_kb_task,
+            task_id,
+            data["collection_name"],
+            data["kb_id"]
+        )
+    else: 
+        return {"status": "error", "message": f"Invalid mode: {mode}"}
     return {"task_id": task_id}
 
 @app.get("/api/sync/status/{task_id}")
