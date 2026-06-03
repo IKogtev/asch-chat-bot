@@ -985,7 +985,7 @@ class BotResponse:
 
     async def _send_document(self, path, filename):
         if self.is_tg:
-            return await self.event.answer_document(FSInputFile(path, filename=filename))
+            return await self.event.message.answer_document(FSInputFile(path, filename=filename))
         else:
             return await self.event.message.answer(attachments=[InputMedia(path=path)])
 
