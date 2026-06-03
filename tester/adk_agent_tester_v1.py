@@ -822,9 +822,10 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
                 ),
                 "x": 0.5,
                 "xanchor": "center",
-                "pad": {"b": 20},
+                "pad": {"b": 40},
             },
-            margin={"t": 140, "r": 60, "b": 60, "l": 60},
+            margin={"t": 160, "r": 60, "b": 60, "l": 60},
+            polar={"domain": {"y": [0, 0.80]}}, # use 80% of the plot area for the chart
         )
 
         image_path = output_dir / f"REPORT_{base_filename}_{timestamp}.png"
