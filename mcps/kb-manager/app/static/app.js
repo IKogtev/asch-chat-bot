@@ -916,51 +916,60 @@ document.addEventListener("click", function (e) {
 // функция для синхронизации рялом с kb конкретным
 document.addEventListener("click", async function (e) {
 
-    if (e.target.classList.contains("sync-kb-btn")) {
+    if (
+            !e.target.classList.contains(
+                "sync-kb-btn"
+            )
+        ) {
+            return;
+        }
 
-        e.stopPropagation(); // чтобы не сработал toggleKB
+        e.stopPropagation();
 
-        const button = e.target;
-        const kbId = button.dataset.kbId;
+        const button =
+            e.target;
 
-        button.disabled = true;
-        button.innerText = "⏳ Синхронизация...";
+        const kbId =
+            button.dataset.kbId;
 
-        const formData = new FormData();
-        formData.append("kb_id", kbId);
-        formData.append("collection_name", currentCollection);
+        const originalText =
+            button.innerText;
 
         try {
-            const response = await fetch("/api/filesystem/sync", {
-                method: "POST",
-                body: formData
+
+            button.disabled = true;
+
+            button.innerText =
+                "⏳ Запуск...";
+
+            await startSyncTask({
+
+                mode: "kb",
+
+                collection_name:
+                    currentCollection,
+
+                kb_id: kbId
+
             });
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error("Синхронизация не удалась");
-            }
-            alert(`✅ БЗ "${kbId}" синхронизирована`);
-            button.innerText = "✅ Синхронизирована";
 
-            setTimeout(() => {
-                button.innerText = "🔄 Синронизация БЗ";
-                button.disabled = false;
-            }, 1500);
+        } catch (error) {
 
-            if (button.innerText==="✅ Синхронизация"){
-                await loadDocuments();
-                await loadCollectionInfo();
-                await loadManagerCollectionInfo();
-            }
+            console.error(error);
 
-        } catch (err) {
-            console.error(err);
-            button.innerText = "❌ Ошибка";
+            alert(
+                `Ошибка: ${error.message}`
+            );
+
+        } finally {
+
             button.disabled = false;
+
+            button.innerText =
+                originalText;
         }
     }
-    
-});
+);
 // подписка на очередь событий для отслеживания автоматического обновления 
 // при синхронизации атомарной
 function subscribeToSync() {
@@ -979,6 +988,199 @@ function subscribeToSync() {
         eventSource.close();
     };
 }
+// функция для запуска задачи синхронизации с логами
+async function startSyncTask(payload) {
+
+    try {
+        const response = await fetch(
+            "/api/sync/start",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+                body: JSON.stringify(
+                    payload
+                )
+            }
+        );
+        const data =
+            await response.json();
+        if (!response.ok) {
+            throw new Error(
+                data.message ||
+                "Ошибка запуска"
+            );
+        }
+        await watchSyncTask(
+            data.task_id
+        );
+        return data.task_id;
+    } catch (error) {
+        console.error(error);
+        alert(
+            `Ошибка запуска синхронизации: ${error.message}`
+        );
+        throw error;
+    }
+}
+
+function openSyncStatusModal() {
+
+    document
+        .getElementById(
+            "sync-status-modal"
+        )
+        .style.display = "block";
+}
+
+function closeSyncStatusModal() {
+
+    document
+        .getElementById(
+            "sync-status-modal"
+        )
+        .style.display = "none";
+}
+
+async function watchSyncTask(taskId) {
+    openSyncStatusModal();
+    const statusBox =
+        document.getElementById(
+            "sync-status-text"
+        );
+    const progressBox =
+        document.getElementById(
+            "sync-progress"
+        );
+    const progressBar =
+        document.getElementById(
+            "sync-progress-bar"
+        );
+    const kbBox =
+        document.getElementById(
+            "sync-current-kb"
+        );
+    const logBox =
+        document.getElementById(
+            "sync-log-box"
+        );
+    statusBox.innerText =
+    "Подготовка...";
+
+    progressBox.innerText =
+        "-";
+
+    progressBar.style.width =
+        "0%";
+
+    kbBox.innerText =
+        "-";
+
+    logBox.innerHTML =
+        `<div class="sync-log-line">
+            Ожидание запуска...
+        </div>`;
+
+    let firstResponseReceived =
+        false;
+
+    let pollErrors = 0;
+    const interval = setInterval(
+        async () => {
+            try {
+                const response =
+                    await fetch(
+                        `/api/sync/status/${taskId}`
+                    );
+                const data =
+                    await response.json();
+                statusBox.innerText =
+                    data.status || "-";
+                progressBox.innerText =
+                    `${data.progress || 0}%`;
+                progressBar.style.width =
+                    `${data.progress || 0}%`;
+                kbBox.innerText =
+                    data.current_kb || "-";
+                if (
+                    currentUser?.role ===
+                    "manager"
+                ) {
+                    let managerMessage =
+                        "Синхронизация выполняется...";
+                    if (
+                        data.status === "completed"
+                    ) {
+                        managerMessage =
+                            "✅ Синхронизация выполнена";
+                    } else if (
+                        data.status === "error"
+                    ) {
+                        managerMessage =
+                            "❌ Ошибка синхронизации";
+                    }
+                    logBox.innerHTML =
+                        `
+                        <div class="sync-log-line">
+                            ${managerMessage}
+                        </div>
+                        `;
+
+                } else {
+                    logBox.innerHTML =
+                        (data.logs || [])
+                        .map(
+                            log =>
+                                `
+                                <div class="sync-log-line">
+                                    [${log.time}]
+                                    ${log.message}
+                                </div>
+                                `
+                        )
+                        .join("");
+                }
+                logBox.scrollTop =
+                    logBox.scrollHeight;
+                if (
+                    data.status === "completed"
+                ) {
+                    clearInterval(
+                        interval
+                    );
+                    await loadDocuments();
+                    await loadCollectionInfo();
+                    await loadManagerCollectionInfo();
+                    await loadFilesystemTree();
+                    statusBox.innerText =
+                        "Завершено";
+                    return;
+                }
+                if (
+                    data.status === "error"
+                ) {
+                    clearInterval(
+                        interval
+                    );
+                    statusBox.innerText =
+                        "Ошибка";
+                    return;
+                }
+            } catch (error) {
+                console.error(error);
+                pollErrors++;
+                if (pollErrors >= 5) {
+                    clearInterval(interval);
+                    statusBox.innerText =
+                        "Соединение потеряно";
+                }
+            }
+        },
+        1500
+    );
+}
 // функция для синхронизации по всем данным
 async function syncAll(btnElement) {
     // 1. Защита: если кнопка не передана, выходим
@@ -988,58 +1190,30 @@ async function syncAll(btnElement) {
     }
 
     // Сохраняем оригинальный текст и состояние
-    const originalText = btnElement.innerText;
-    
+    const originalText =
+        btnElement.innerText;
+
     try {
-        // 2. Блокируем кнопку визуально и функционально
+
         btnElement.disabled = true;
-        btnElement.innerText = "⏳ Синхронизация...";
-        btnElement.style.opacity = "0.7"; // Визуальный эффект
 
-        console.log("Отправка запроса на /api/filesystem/sync_all...");
+        btnElement.innerText =
+            "⏳ Запуск...";
 
-        // 3. Делаем запрос
-        const response = await fetch("/api/filesystem/sync_all", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            }
+        await startSyncTask({
+            mode: "all"
         });
 
-        // 4. Проверяем статус ответа
-        if (!response.ok) {
-            // Пытаемся получить текст ошибки от сервера
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || `Ошибка сервера: ${response.status}`);
-        }
-
-        const result = await response.json();
-        console.log("Успех!", result);
-
-        // 5. Показываем успех
-        btnElement.innerText = "✅ Готово";
-        btnElement.style.backgroundColor = "#28a745"; 
-
-        // 6. Обновляем список документов (если функция существует)
-        if (typeof loadDocuments === 'function') {
-            await loadDocuments();
-        } else {
-            console.warn("Функция loadDocuments не найдена, список не обновлен.");
-        }
-
     } catch (error) {
-        console.error("Ошибка синхронизации:", error);
-        btnElement.innerText = "❌ Ошибка";
-        btnElement.style.backgroundColor = "#dc3545"; // Красный цвет
-        alert("Не удалось синхронизировать: " + error.message);
+
+        console.error(error);
+
     } finally {
-        // 7. Возвращаем кнопку в исходное состояние через 2 секунды
-        setTimeout(() => {
-            btnElement.disabled = false;
-            btnElement.innerText = originalText;
-            btnElement.style.opacity = "1";
-            btnElement.style.backgroundColor = ""; // Сброс цвета
-        }, 2000);
+
+        btnElement.disabled = false;
+
+        btnElement.innerText =
+            originalText;
     }
 }
 // синхронизация конкретной коллекции
@@ -1056,54 +1230,24 @@ async function syncCurrentCollection(btnElement) {
 
         btnElement.disabled = true;
         btnElement.innerText = "⏳ Синхронизация...";
-        btnElement.style.opacity = "0.7";
-
-        const response = await fetch(
-            "/api/filesystem/sync_collection",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    collection_name: currentCollection
-                })
-            }
-        );
-
-        const result = await response.json();
-
-        if (!response.ok) {
-            throw new Error(
-                result.message ||
-                "Ошибка синхронизации"
-            );
-        }
-
-        btnElement.innerText = "✅ Готово";
-
-        await loadDocuments();
-        await loadCollectionInfo();
-        await loadManagerCollectionInfo();
-        await loadFilesystemTree();
+        await startSyncTask({
+            mode: "collection",
+            collection_name:
+                currentCollection
+        });
 
     } catch (error) {
 
         console.error(error);
 
-        btnElement.innerText = "❌ Ошибка";
-
         alert(error.message);
 
     } finally {
 
-        setTimeout(() => {
+        btnElement.disabled = false;
 
-            btnElement.disabled = false;
-            btnElement.innerText = originalText;
-            btnElement.style.opacity = "1";
-
-        }, 2000);
+        btnElement.innerText =
+            originalText;
     }
 }
 async function syncWithLogging(collectionName) {
@@ -3358,6 +3502,16 @@ function prevUsers() {
         drawUsers();
     }
 }
+// лейбл источника загрузки документа
+function sourceLabel(src) {
+    const map = {
+        'search': '🔍 Поиск',
+        'menu': '📂 Меню',
+        'chat': '💬 Чат',
+        'unknown': '❓ Неизвестно'
+    };
+    return map[src] || `📁 ${src}`;
+}
 // отрисовка топа документов в запросах
 function drawDocs() {
     const el = document.getElementById("top-docs");
@@ -3380,7 +3534,7 @@ function drawDocs() {
 
             ${statSources.map(s => `
                 <div>
-                    ${s.source === "search" ? "🔍 Поиск" : "📂 Меню"}:
+                    ${sourceLabel(s.source)}:
                     ${s.downloads}
                 </div>
             `).join("")}
@@ -3533,30 +3687,75 @@ function renderActivity(activity, words, phrases) {
 // функция отрисовки облака
 function renderCloud(id, data) {
     const el = document.getElementById(id);
+    if (!el) return;
 
-    const list = data.map(w => [w.text, w.value]);
+    // Ждём реальных размеров элемента (размеры заданы через CSS-класс)
+    if (el.offsetWidth === 0) {
+        setTimeout(() => renderCloud(id, data), 150);
+        return;
+    }
 
     el.innerHTML = "";
 
-    if (list.length === 0) {
-        el.innerHTML = "<div>Нет данных</div>";
+    if (!data || data.length === 0) {
+        el.innerHTML = "<div class='cloud-empty'>Нет данных</div>";
         return;
     }
-    if (el.offsetWidth === 0) {
-        setTimeout(() => renderCloud(id, data), 100);
-        return;
-    }
-    // отрисовываем облако с задержкой, так требует фреймворк
+
+    // Читаем размеры из CSS — ничего не устанавливаем напрямую
+    const width = el.offsetWidth;
+    const height = el.offsetHeight;
+
+    const list = data.map(w => [w.text, w.value]);
+
+    // Диапазон значений
+    const values = list.map(item => item[1]);
+    const maxVal = Math.max(...values);
+    const minVal = Math.min(...values);
+
+    // Адаптивные размеры шрифтов под контейнер
+    const maxFontSize = Math.min(width / 8, height / 3, 72);
+    const minFontSize = Math.max(12, maxFontSize / 6);
+
+    // КЛЮЧЕВОЕ: нормализуем значения к реальным размерам шрифтов
+    const normalizedList = list.map(item => {
+        const ratio = maxVal === minVal ? 0.5 : (item[1] - minVal) / (maxVal - minVal);
+        const fontSize = minFontSize + ratio * (maxFontSize - minFontSize);
+        return [item[0], fontSize];
+    });
+
+    // Адаптивный gridSize — чем меньше контейнер, тем плотнее сетка
+    const gridSize = Math.max(4, Math.round(8 * (800 / Math.max(width, 400))));
+
     setTimeout(() => {
-        WordCloud(el, {
-            list: list,
-            gridSize: 8,
-            weightFactor: 10,
-            fontFamily: "Arial",
-            color: "random-dark",
-            backgroundColor: "#fff"
-        });
-    }, 50);
+        try {
+            WordCloud(el, {
+                list: normalizedList,
+                gridSize: gridSize,
+                weightFactor: 1,              // значения уже в пикселях
+                fontFamily: "Arial, sans-serif",
+                fontWeight: "normal",
+                color: function() {
+                    const colors = [
+                        '#1f77b4', '#2ca02c', '#d62728', '#9467bd',
+                        '#ff7f0e', '#8c564b', '#e377c2', '#17becf',
+                        '#bcbd22', '#3366cc', '#dc3912', '#ff9900'
+                    ];
+                    return colors[Math.floor(Math.random() * colors.length)];
+                },
+                backgroundColor: "#fff",
+                rotateRatio: 0.3,             // только 30% повёрнуты — читаемость
+                rotationSteps: 2,             // только 0° и 90°
+                minRotation: -Math.PI / 2,
+                maxRotation: Math.PI / 2,
+                drawOutOfBound: false,        // не рисовать за пределами
+                shrinkToFit: true,            // сжимать длинные слова
+                clearCanvas: true
+            });
+        } catch (e) {
+            console.error('WordCloud error:', e);
+        }
+    }, 100);
 }
 // загрузка всей аналитики
 async function loadAnalytics() {
