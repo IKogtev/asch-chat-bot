@@ -89,6 +89,7 @@ services:
       - KB_DOCUMENTS_PATH=knowledge_base/
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - GLOSSARY_CACHE_TTL_SEC=600
 
       # Context compaction
       - AGENT_CONTEXT_COMPACTION_INTERVAL=60
@@ -450,6 +451,7 @@ services:
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - GLOSSARY_CACHE_TTL_SEC=600
 
       # Context compaction
       - AGENT_CONTEXT_COMPACTION_INTERVAL=60

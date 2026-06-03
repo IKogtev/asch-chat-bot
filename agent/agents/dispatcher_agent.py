@@ -194,6 +194,10 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
     Создаёт агента для маршрутизации запросов.
     """
     fallback = """
+Use state variable {from_glossary} as a dictionary of terms already found by code.
+Do not call tools and do not invent additional expansions.
+If a user term is present in {from_glossary}, use its definition when choosing route, intent, and search_query.
+
 Ты dispatcher_agent.
 Верни только JSON без markdown и без пояснений.
 
