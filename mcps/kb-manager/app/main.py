@@ -421,7 +421,7 @@ def validate_extensions(ext: str, collection_type: str):
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-async def sync_function(iter_dir, storager, collection_type, log_callback=None):
+async def sync_function(iter_dir, storager, collection_type, log_callback=None, global_progress=None):
     """
     syncron function which takes params:
         iter_dir - dir to itterate KB_ROOT, FAQ_ROOT
@@ -448,8 +448,21 @@ async def sync_function(iter_dir, storager, collection_type, log_callback=None):
             if log_callback: log_callback(f"❌ Ошибка в {kb_id}: {e}")
             
         finally:
-
-            if log_callback:
+            if not log_callback:
+                continue
+            if global_progress:
+                global_progress["processed"] += 1
+                log_callback(
+                    {
+                        "type": "progress",
+                        "current_kb": kb_id,
+                        "processed":
+                            global_progress["processed"],
+                        "total":
+                            global_progress["total"]
+                    }
+                )
+            else:
                 log_callback(
                     {
                         "type": "progress",
@@ -468,6 +481,26 @@ def create_sync_task():
         "started_at": datetime.now().isoformat(),
         "finished_at": None
     }
+
+def calculate_total_kbs():
+
+    total = 0
+
+    for collection_name in _sync_collections_in_order():
+
+        cfg = COLLECTIONS_CFG[collection_name]
+
+        root = cfg["root_path"]
+
+        total += len(
+            [
+                folder
+                for folder in root.iterdir()
+                if folder.is_dir()
+            ]
+        )
+
+    return total
 
 def create_log_callback(task_id: str):
 
@@ -504,13 +537,19 @@ def create_log_callback(task_id: str):
 async def run_sync_all_task(task_id: str):
 
     log_cb = create_log_callback(task_id)
+    total_kbs = calculate_total_kbs()
+    global_progress = {
+        "processed": 0,
+        "total": total_kbs
+    }
 
     try:
 
         log_cb("🚀 Запущена синхронизация всех коллекций")
 
         await run_sync_all_once(
-            log_callback=log_cb
+            log_callback=log_cb,
+            global_progress=global_progress
         )
 
         sync_tasks[task_id]["status"] = "completed"
@@ -696,7 +735,7 @@ def _sync_collections_in_order() -> list[str]:
     return faq_first + rest
 
 
-async def run_sync_all_once(log_callback=None):
+async def run_sync_all_once(log_callback=None, global_progress=None):
     """
     функция для правильного вызова синхронизации от типа, 
     в дальнейшем можно добавить другие типы коллекций если надо
@@ -736,7 +775,7 @@ async def run_sync_all_once(log_callback=None):
             except Exception as e:
                 logger.error(f"[SYNC] delete error {kb_id}: {e}")
 
-        await sync_function(root, storager, cfg["sync_type"], log_callback=log_callback)
+        await sync_function(root, storager, cfg["sync_type"], log_callback=log_callback, global_progress=global_progress)
 
     return {"status": "success", "message": "SYNC completed"}          
 
@@ -831,6 +870,21 @@ def get_collection_cfg(collection_name: str):
             
     logger.warning(f"Configuration for collection '{collection_name}' not found.")
     return None
+
+def get_collection_root(collection_name: str):
+    """
+    Возвращает root_path даже для динамических коллекций:
+        faq_collection_2
+        faq_collection_test
+        kb_collection_new
+    """
+
+    cfg = get_collection_cfg(collection_name)
+
+    if not cfg:
+        return None
+
+    return cfg["root_path"]
 
 @app.post("/api/filesystem/sync_collection")
 async def sync_collection(data: dict):
@@ -1643,17 +1697,25 @@ async def get_folders():
 @app.get("/api/filesystem/node")
 async def get_node(path: str = "", collection_name: str="kb_collection"):
     """строим узлы дерева чтобы ускорить отработку"""
-    # проверяем, есть ли такая коллекция в конфиге
-    if collection_name not in COLLECTIONS_CFG:
-        return {"error": f"Collection '{collection_name}' not found"}
-        
-    # Достаем сохраненный при инициализации root_path
-    base = COLLECTIONS_CFG[collection_name]["root_path"]
-    target = (base / path).resolve()
+    base = get_collection_root(
+        collection_name
+    )
+    if not base:
+        return {
+            "error":
+            f"Collection '{collection_name}' not found"
+        }
+    target = (
+        Path(base) / path
+    ).resolve()
 
-    # защита
-    if not str(target).startswith(str(base.resolve())):
-        return {"error": "invalid path"}
+    # защита от выхода за root
+    if not str(target).startswith(
+        str(Path(base).resolve())
+    ):
+        return {
+            "error": "invalid path"
+        }
 
     result = {
         "folders": [],
@@ -2515,63 +2577,39 @@ async def document_users(filename: str, from_ts: str, to_ts: str, request: Reque
     to_ts = datetime.fromisoformat(to_ts)
     query = """
     WITH users AS (
-
         SELECT DISTINCT ON (user_id)
-
             user_id::text as global_user_id,
-
             COALESCE(
                 NULLIF(TRIM(CONCAT(first_name, ' ', last_name)), ''),
                 username,
                 'unknown'
             ) as user_name
-
         FROM user_accounts
-
-        ORDER BY
-            user_id,
-            last_seen DESC
+        ORDER BY user_id, last_seen DESC
     )
-
     SELECT
-
         e.user_id::text as global_user_id,
-
+        COALESCE(u.user_name, 'unknown') as user_name,
+        -- Нормализуем источник
         COALESCE(
-            u.user_name,
-            'unknown'
-        ) as user_name,
-
-        COALESCE(
-            e.payload->>'source',
+            CASE
+                WHEN e.event_type = 'document_download_menu' THEN 'menu'
+                ELSE LOWER(TRIM(e.payload->>'source'))
+            END,
             'unknown'
         ) as source,
-
         COUNT(*) as downloads
-
     FROM events e
-
     LEFT JOIN users u
         ON u.global_user_id = e.user_id::text
-
-    WHERE e.event_type IN (
-        'document_download',
-        'document_download_menu'
-    )
-
+    WHERE e.event_type IN ('document_download', 'document_download_menu')
       AND e.created_at BETWEEN $2 AND $3
-
       AND (
           e.payload->>'filename' = $1
           OR e.payload->>'text' = $1
           OR e.payload->>'file_path' ILIKE '%' || $1 || '%'
       )
-
-    GROUP BY
-        e.user_id,
-        u.user_name,
-        source
-
+    GROUP BY e.user_id, u.user_name, source
     ORDER BY downloads DESC
     """
 
@@ -2632,11 +2670,12 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
                  "это", "файл", "документ", "скачать"}
     clean_words = []
     for w in words:
-        if len(w) < 3 or w in stopwords:
+        if len(w) < 3 or len(w)>20 or w in stopwords:
             continue
         # производим лематизацию
         lemma = morph.parse(w)[0].normal_form
-        clean_words.append(lemma)
+        if 3 <= len(lemma) <= 20:
+            clean_words.append(lemma)
     # считаем слова
     counter = Counter(clean_words)
 
@@ -2677,7 +2716,7 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
         # чистка + лемматизация
         clean = []
         for w in words:
-            if len(w) < 3 or w in stopwords:
+            if len(w) < 3 or len(w) > 20 or w in stopwords:
                 continue
             lemma = morph.parse(w)[0].normal_form
             clean.append(lemma)
@@ -2685,12 +2724,14 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
         # ===== биграммы =====
         for i in range(len(clean) - 1):
             phrase = f"{clean[i]} {clean[i+1]}"
-            all_phrases.append(phrase)
+            if len(phrase) <= 30:
+                all_phrases.append(phrase)
 
         # ===== триграммы =====
         for i in range(len(clean) - 2):
             phrase = f"{clean[i]} {clean[i+1]} {clean[i+2]}"
-            all_phrases.append(phrase)
+            if len(phrase) <= 40:
+                all_phrases.append(phrase)
     # считаем число повторений
     counter = Counter(all_phrases)
 
@@ -2859,7 +2900,11 @@ async def top_documents(from_ts: str, to_ts: str, request: Request):
                 reverse(split_part(reverse(payload->>'file_path'), '/', 1))
             ) as file_name,
             payload->>'file_path' as file_path,
-            payload->>'source' as source
+            -- КЛЮЧЕВОЕ: нормализуем источник
+            CASE
+                WHEN event_type = 'document_download_menu' THEN 'menu'
+                ELSE COALESCE(LOWER(TRIM(payload->>'source')), 'unknown')
+            END as source
         FROM events
         WHERE event_type IN ('document_download', 'document_download_menu')
           AND created_at BETWEEN $1 AND $2
@@ -2892,12 +2937,16 @@ async def document_sources(from_ts: str, to_ts: str, request: Request):
 
     query = """
     SELECT
-        payload->>'source' as source,
+        CASE
+            WHEN event_type = 'document_download_menu' THEN 'menu'
+            ELSE COALESCE(LOWER(TRIM(payload->>'source')), 'unknown')
+        END as source,
         COUNT(*) as downloads
     FROM events
     WHERE event_type IN ('document_download', 'document_download_menu')
       AND created_at BETWEEN $1 AND $2
     GROUP BY source
+    ORDER BY downloads DESC
     """
 
     async with pool.acquire() as conn:
@@ -3381,8 +3430,8 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
     # экспорт диалогов делаем просто в виде текста для одного диалога
     lines = []
     for r in rows:
-        lines.append(f"[{r['created_at']}] USER: {r['message']}")
-        lines.append(f"[{r['created_at']}] BOT: {r['response']}")
+        lines.append(f"[{r['message_time']}] USER: {r['message']}")
+        lines.append(f"[{r['message_time']}] BOT: {r['response']}")
         lines.append("")
 
     content = "\n".join(lines)

@@ -1066,7 +1066,27 @@ async function watchSyncTask(taskId) {
         document.getElementById(
             "sync-log-box"
         );
-    logBox.innerHTML = "";
+    statusBox.innerText =
+    "Подготовка...";
+
+    progressBox.innerText =
+        "-";
+
+    progressBar.style.width =
+        "0%";
+
+    kbBox.innerText =
+        "-";
+
+    logBox.innerHTML =
+        `<div class="sync-log-line">
+            Ожидание запуска...
+        </div>`;
+
+    let firstResponseReceived =
+        false;
+
+    let pollErrors = 0;
     const interval = setInterval(
         async () => {
             try {
@@ -1084,18 +1104,44 @@ async function watchSyncTask(taskId) {
                     `${data.progress || 0}%`;
                 kbBox.innerText =
                     data.current_kb || "-";
-                logBox.innerHTML =
-                    (data.logs || [])
-                    .map(
-                        log =>
-                            `
-                            <div class="sync-log-line">
-                                [${log.time}]
-                                ${log.message}
-                            </div>
-                            `
-                    )
-                    .join("");
+                if (
+                    currentUser?.role ===
+                    "manager"
+                ) {
+                    let managerMessage =
+                        "Синхронизация выполняется...";
+                    if (
+                        data.status === "completed"
+                    ) {
+                        managerMessage =
+                            "✅ Синхронизация выполнена";
+                    } else if (
+                        data.status === "error"
+                    ) {
+                        managerMessage =
+                            "❌ Ошибка синхронизации";
+                    }
+                    logBox.innerHTML =
+                        `
+                        <div class="sync-log-line">
+                            ${managerMessage}
+                        </div>
+                        `;
+
+                } else {
+                    logBox.innerHTML =
+                        (data.logs || [])
+                        .map(
+                            log =>
+                                `
+                                <div class="sync-log-line">
+                                    [${log.time}]
+                                    ${log.message}
+                                </div>
+                                `
+                        )
+                        .join("");
+                }
                 logBox.scrollTop =
                     logBox.scrollHeight;
                 if (
@@ -1124,9 +1170,12 @@ async function watchSyncTask(taskId) {
                 }
             } catch (error) {
                 console.error(error);
-                clearInterval(interval);
-                statusBox.innerText =
-                    "Ошибка соединения";
+                pollErrors++;
+                if (pollErrors >= 5) {
+                    clearInterval(interval);
+                    statusBox.innerText =
+                        "Соединение потеряно";
+                }
             }
         },
         1500
@@ -3453,6 +3502,16 @@ function prevUsers() {
         drawUsers();
     }
 }
+// лейбл источника загрузки документа
+function sourceLabel(src) {
+    const map = {
+        'search': '🔍 Поиск',
+        'menu': '📂 Меню',
+        'chat': '💬 Чат',
+        'unknown': '❓ Неизвестно'
+    };
+    return map[src] || `📁 ${src}`;
+}
 // отрисовка топа документов в запросах
 function drawDocs() {
     const el = document.getElementById("top-docs");
@@ -3475,7 +3534,7 @@ function drawDocs() {
 
             ${statSources.map(s => `
                 <div>
-                    ${s.source === "search" ? "🔍 Поиск" : "📂 Меню"}:
+                    ${sourceLabel(s.source)}:
                     ${s.downloads}
                 </div>
             `).join("")}
@@ -3628,30 +3687,75 @@ function renderActivity(activity, words, phrases) {
 // функция отрисовки облака
 function renderCloud(id, data) {
     const el = document.getElementById(id);
+    if (!el) return;
 
-    const list = data.map(w => [w.text, w.value]);
+    // Ждём реальных размеров элемента (размеры заданы через CSS-класс)
+    if (el.offsetWidth === 0) {
+        setTimeout(() => renderCloud(id, data), 150);
+        return;
+    }
 
     el.innerHTML = "";
 
-    if (list.length === 0) {
-        el.innerHTML = "<div>Нет данных</div>";
+    if (!data || data.length === 0) {
+        el.innerHTML = "<div class='cloud-empty'>Нет данных</div>";
         return;
     }
-    if (el.offsetWidth === 0) {
-        setTimeout(() => renderCloud(id, data), 100);
-        return;
-    }
-    // отрисовываем облако с задержкой, так требует фреймворк
+
+    // Читаем размеры из CSS — ничего не устанавливаем напрямую
+    const width = el.offsetWidth;
+    const height = el.offsetHeight;
+
+    const list = data.map(w => [w.text, w.value]);
+
+    // Диапазон значений
+    const values = list.map(item => item[1]);
+    const maxVal = Math.max(...values);
+    const minVal = Math.min(...values);
+
+    // Адаптивные размеры шрифтов под контейнер
+    const maxFontSize = Math.min(width / 8, height / 3, 72);
+    const minFontSize = Math.max(12, maxFontSize / 6);
+
+    // КЛЮЧЕВОЕ: нормализуем значения к реальным размерам шрифтов
+    const normalizedList = list.map(item => {
+        const ratio = maxVal === minVal ? 0.5 : (item[1] - minVal) / (maxVal - minVal);
+        const fontSize = minFontSize + ratio * (maxFontSize - minFontSize);
+        return [item[0], fontSize];
+    });
+
+    // Адаптивный gridSize — чем меньше контейнер, тем плотнее сетка
+    const gridSize = Math.max(4, Math.round(8 * (800 / Math.max(width, 400))));
+
     setTimeout(() => {
-        WordCloud(el, {
-            list: list,
-            gridSize: 8,
-            weightFactor: 10,
-            fontFamily: "Arial",
-            color: "random-dark",
-            backgroundColor: "#fff"
-        });
-    }, 50);
+        try {
+            WordCloud(el, {
+                list: normalizedList,
+                gridSize: gridSize,
+                weightFactor: 1,              // значения уже в пикселях
+                fontFamily: "Arial, sans-serif",
+                fontWeight: "normal",
+                color: function() {
+                    const colors = [
+                        '#1f77b4', '#2ca02c', '#d62728', '#9467bd',
+                        '#ff7f0e', '#8c564b', '#e377c2', '#17becf',
+                        '#bcbd22', '#3366cc', '#dc3912', '#ff9900'
+                    ];
+                    return colors[Math.floor(Math.random() * colors.length)];
+                },
+                backgroundColor: "#fff",
+                rotateRatio: 0.3,             // только 30% повёрнуты — читаемость
+                rotationSteps: 2,             // только 0° и 90°
+                minRotation: -Math.PI / 2,
+                maxRotation: Math.PI / 2,
+                drawOutOfBound: false,        // не рисовать за пределами
+                shrinkToFit: true,            // сжимать длинные слова
+                clearCanvas: true
+            });
+        } catch (e) {
+            console.error('WordCloud error:', e);
+        }
+    }, 100);
 }
 // загрузка всей аналитики
 async function loadAnalytics() {

@@ -2093,3 +2093,20 @@ select:focus {
 .sync-log-line{
     margin-bottom:4px;
 }
+
+.cloud-container {
+    width: 100%;
+    min-height: 350px;
+    height: 450px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.cloud-empty {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+}
