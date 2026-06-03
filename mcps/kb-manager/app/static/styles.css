@@ -2058,3 +2058,55 @@ select:focus {
 #modal-content {
     display: none; /* Скрываем по умолчанию */
 }
+
+.sync-info-row{
+    margin-bottom:10px;
+}
+
+.sync-progress-wrapper{
+    width:100%;
+    height:18px;
+    background:#ddd;
+    border-radius:8px;
+    overflow:hidden;
+    margin-bottom:15px;
+}
+
+.sync-progress-bar{
+    height:100%;
+    width:0%;
+    background:#4caf50;
+    transition:width .3s ease;
+}
+
+.sync-log-box{
+    height:400px;
+    overflow-y:auto;
+    background:#111;
+    color:#ddd;
+    padding:10px;
+    border-radius:6px;
+    font-family:monospace;
+    font-size:13px;
+}
+
+.sync-log-line{
+    margin-bottom:4px;
+}
+
+.cloud-container {
+    width: 100%;
+    min-height: 350px;
+    height: 450px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.cloud-empty {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+}
