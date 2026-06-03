@@ -469,20 +469,18 @@ def create_sync_task():
         "finished_at": None
     }
 
+def create_log_callback(task_id: str):
 
-async def run_collection_task(task_id: str, collection_name: str):
-    sync_tasks[task_id] = create_sync_task()
-    
     def log_cb(data):
+
+        task = sync_tasks[task_id]
 
         if isinstance(data, str):
 
-            sync_tasks[task_id]["logs"].append(
-                {
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "message": data
-                }
-            )
+            task["logs"].append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "message": data
+            })
 
             return
 
@@ -493,14 +491,53 @@ async def run_collection_task(task_id: str, collection_name: str):
                 processed = data["processed"]
                 total = data["total"]
 
-                sync_tasks[task_id]["progress"] = int(
+                task["progress"] = int(
                     processed * 100 / total
                 )
 
-                sync_tasks[task_id]["current_kb"] = (
+                task["current_kb"] = (
                     data["current_kb"]
                 )
-    
+
+    return log_cb
+
+async def run_sync_all_task(task_id: str):
+
+    log_cb = create_log_callback(task_id)
+
+    try:
+
+        log_cb("🚀 Запущена синхронизация всех коллекций")
+
+        await run_sync_all_once(
+            log_callback=log_cb
+        )
+
+        sync_tasks[task_id]["status"] = "completed"
+        sync_tasks[task_id]["progress"] = 100
+
+        sync_tasks[task_id]["logs"].append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "message": "✅ Синхронизация завершена"
+        })
+
+    except Exception as e:
+
+        sync_tasks[task_id]["status"] = "error"
+
+        sync_tasks[task_id]["logs"].append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "message": f"❌ {e}"
+        })
+
+    finally:
+
+        sync_tasks[task_id]["finished_at"] = (
+            datetime.now().isoformat()
+        )
+
+async def run_collection_task(task_id: str, collection_name: str):
+    log_cb = create_log_callback(task_id)
     try:
         # Получаем конфиг и сторадж
         cfg = get_collection_cfg(collection_name)
@@ -524,7 +561,69 @@ async def run_collection_task(task_id: str, collection_name: str):
         )
     except Exception as e:
         sync_tasks[task_id]["status"] = "error"
-        sync_tasks[task_id]["logs"].append(f"❌ Ошибка: {str(e)}")
+        sync_tasks[task_id]["logs"].append(
+            {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "message": f"❌ Ошибка: {str(e)}"
+            }
+        )
+
+async def run_kb_task(
+    task_id: str,
+    collection_name: str,
+    kb_id: str
+):
+
+    log_cb = create_log_callback(task_id)
+    try:
+        # Получаем конфиг и сторадж
+        storager = get_or_create_storager(
+            collection_name
+        )
+        
+        cfg = get_collection_cfg(
+            collection_name
+        )
+
+        log_cb(
+            f"📚 Синхронизация БЗ {kb_id}"
+        )
+
+        loop = asyncio.get_running_loop()
+
+        await loop.run_in_executor(
+            None,
+            lambda: storager.sync(
+                kb_id=kb_id,
+                collection_type=cfg["sync_type"]
+            )
+        )
+        sync_tasks[task_id]["progress"] = 100
+
+        sync_tasks[task_id]["current_kb"] = kb_id
+
+        sync_tasks[task_id]["status"] = "completed"
+        sync_tasks[task_id]["finished_at"] = (
+            datetime.now().isoformat()
+        )
+
+        sync_tasks[task_id]["logs"].append(
+            {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "message": "✅ Синхронизация завершена"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"[SYNC KB] Error: {e}")
+        sync_tasks[task_id]["status"] = "error"
+        sync_tasks[task_id]["logs"].append(
+            {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "message": f"❌ Ошибка: {str(e)}"
+            }
+        )
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/sync/start")
 async def start_sync(data: dict, background_tasks: BackgroundTasks):
@@ -535,6 +634,7 @@ async def start_sync(data: dict, background_tasks: BackgroundTasks):
     """
     mode = data.get("mode")
     task_id = str(uuid.uuid4())
+    sync_tasks[task_id] = create_sync_task()
     if mode == "all":
         background_tasks.add_task(
             run_sync_all_task,
@@ -596,7 +696,7 @@ def _sync_collections_in_order() -> list[str]:
     return faq_first + rest
 
 
-async def run_sync_all_once():
+async def run_sync_all_once(log_callback=None):
     """
     функция для правильного вызова синхронизации от типа, 
     в дальнейшем можно добавить другие типы коллекций если надо
@@ -605,6 +705,10 @@ async def run_sync_all_once():
     for collection_name in _sync_collections_in_order():
         cfg = COLLECTIONS_CFG[collection_name]
         logger.info(f"[SYNC] Processing {collection_name}")
+        if log_callback:
+            log_callback(
+                f"📂 Коллекция: {collection_name}"
+            )
         root = cfg["root_path"]
         storager = file_storages[collection_name]
 
@@ -632,7 +736,7 @@ async def run_sync_all_once():
             except Exception as e:
                 logger.error(f"[SYNC] delete error {kb_id}: {e}")
 
-        await sync_function(root, storager, cfg["sync_type"])
+        await sync_function(root, storager, cfg["sync_type"], log_callback=log_callback)
 
     return {"status": "success", "message": "SYNC completed"}          
 
