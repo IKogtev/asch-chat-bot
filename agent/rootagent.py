@@ -16,6 +16,7 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
+from .glossary import GlossaryLookup
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -46,6 +47,7 @@ class RootAgent(BaseAgent):
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
     product_selection_agent: LlmAgent
+    glossary_lookup: GlossaryLookup
     faq_collection: str
     kb_collection: str
 
@@ -59,6 +61,7 @@ class RootAgent(BaseAgent):
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
         product_selection_agent: LlmAgent,
+        glossary_lookup: GlossaryLookup | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
     ):
@@ -69,6 +72,7 @@ class RootAgent(BaseAgent):
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
             product_selection_agent=product_selection_agent,
+            glossary_lookup=glossary_lookup or GlossaryLookup(),
             faq_collection=faq_collection,
             kb_collection=kb_collection,
             sub_agents=[
@@ -359,6 +363,7 @@ class RootAgent(BaseAgent):
                     "_product_selection_result_parsed",
                     "_root_final_text",
                     "_bot_action",
+                    "from_glossary",
                 ],
             )
 
@@ -383,6 +388,12 @@ class RootAgent(BaseAgent):
                     format_reject_answer(owasp["user_message"]),
                 )
                 return
+
+            ctx.session.state["from_glossary"] = await self.glossary_lookup.find(user_text)
+            logger.info(
+                "Glossary terms found: %s",
+                len(ctx.session.state["from_glossary"]),
+            )
 
             ranks = extract_download_ranks(user_text)
             if ranks:
