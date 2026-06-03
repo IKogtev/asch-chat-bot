@@ -183,6 +183,11 @@ def create_doc_search_agent(model: LiteLlm) -> LlmAgent:
         logger.warning("KBSEARCH_MCP_URL не задан — MCP kbsearch не подключён к doc_search_agent")
 
     fallback = """
+Use state variable {from_glossary} as a dictionary of terms already found by code.
+Do not invent additional expansions.
+If a user term is present in {from_glossary}, use its definition as extra context.
+For document search, glossary context must not erase document type, product name, codes, or user wording.
+
 Ты — doc_search_agent.
 
 Тебе доступны переменные состояния:
