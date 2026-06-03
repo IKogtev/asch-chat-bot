@@ -804,12 +804,13 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
             title={
                 "text": (
                     f"ADK Agent Test Report: {base_filename}<br>"
-                    f"<sup>Generated: {report_datetime_display}</sup>"
+                    f"<span style='font-size:16px'>Generated: {report_datetime_display}</span>"
                 ),
                 "x": 0.5,
                 "xanchor": "center",
+                "pad": {"b": 20},
             },
-            margin={"t": 100, "r": 60, "b": 60, "l": 60},
+            margin={"t": 120, "r": 60, "b": 60, "l": 60},
         )
 
         image_path = output_dir / f"REPORT_{base_filename}_{timestamp}.png"
