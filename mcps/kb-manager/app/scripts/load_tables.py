@@ -9,10 +9,11 @@ try:
 except ImportError:
     load_dotenv = None
 
-from app.services.tables_loader_service import TablesLoaderService
+from app.services.tables_loader_service import GLOSSARY_TABLE_NAME, TablesLoaderService
 
 
 DEFAULT_TABLES_DIR = "/app/data/kb_documents/tables"
+DEFAULT_GLOSSARY_DIR = "/app/data/kb_documents/glossary"
 DEFAULT_DATABASE_URL = "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 
 
@@ -29,6 +30,11 @@ def parse_args() -> argparse.Namespace:
         help="PostgreSQL DSN for tables database.",
     )
     parser.add_argument(
+        "--glossary-dir",
+        default=os.getenv("GLOSSARY_SOURCE_DIR", DEFAULT_GLOSSARY_DIR),
+        help="Directory with glossary Excel files.",
+    )
+    parser.add_argument(
         "--strict-validation",
         action="store_true",
         help="Return non-zero exit code when data catalog validation has warnings.",
@@ -43,6 +49,7 @@ def main() -> int:
     service = TablesLoaderService(
         database_url=args.database_url,
         tables_dir=Path(args.tables_dir),
+        glossary_dir=Path(args.glossary_dir),
     )
 
     result = service.load_all()
@@ -51,6 +58,8 @@ def main() -> int:
             f"{table.table_name}: {table.rows} rows, {table.columns} columns "
             f"from {table.source_file}/{table.source_sheet}"
         )
+        if table.table_name == GLOSSARY_TABLE_NAME:
+            print(f"Glossary terms loaded: {table.rows}")
 
     if result.product_kit_products_total is not None:
         print(
