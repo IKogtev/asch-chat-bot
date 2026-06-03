@@ -45,6 +45,18 @@ TC_TASK_FILE_NAME = os.getenv("TC_TASK_FILE_NAME", "")
 TC_TASK_ABS_PATH = SCRIPT_DIR / TC_TASK_FILE_NAME
 
 
+def format_adk_environment_label(adk_api_base: str) -> str:
+    s = (adk_api_base or "").strip()
+    if not s:
+        return "unknown"
+    match = re.search(r"adk-agent[.-]([A-Za-z0-9-]+)", s)
+    if match:
+        return match.group(1)
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    return s.split("/", 1)[0].split(":", 1)[0] or "unknown"
+
+
 def strip_adk_leaf_json_stack(text: str) -> str:
     """
     Fallback when /run events do not include a final root_agent turn: legacy concat of all parts
@@ -740,6 +752,7 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
     report_datetime = datetime.now()
     timestamp = report_datetime.strftime("%Y-%m-%d_%H-%M")
     report_datetime_display = report_datetime.strftime("%Y-%m-%d %H:%M")
+    adk_environment_display = format_adk_environment_label(ADK_API_BASE)
     report_path = output_dir / f"REPORT_{base_filename}_{timestamp}.xlsx"
 
     if "answer_raw" not in tc_df.columns:
@@ -804,13 +817,14 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
             title={
                 "text": (
                     f"ADK Agent Test Report: {base_filename}<br>"
+                    f"<span style='font-size:16px'>Environment: {adk_environment_display}</span><br>"
                     f"<span style='font-size:16px'>Generated: {report_datetime_display}</span>"
                 ),
                 "x": 0.5,
                 "xanchor": "center",
                 "pad": {"b": 20},
             },
-            margin={"t": 120, "r": 60, "b": 60, "l": 60},
+            margin={"t": 140, "r": 60, "b": 60, "l": 60},
         )
 
         image_path = output_dir / f"REPORT_{base_filename}_{timestamp}.png"
