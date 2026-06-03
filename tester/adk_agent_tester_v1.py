@@ -737,7 +737,9 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
         "Общая оценка (сред)",
     ]
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    report_datetime = datetime.now()
+    timestamp = report_datetime.strftime("%Y-%m-%d_%H-%M")
+    report_datetime_display = report_datetime.strftime("%Y-%m-%d %H:%M")
     report_path = output_dir / f"REPORT_{base_filename}_{timestamp}.xlsx"
 
     if "answer_raw" not in tc_df.columns:
@@ -798,6 +800,17 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
                     name="Общая оценка",
                 )
             )
+        fig.update_layout(
+            title={
+                "text": (
+                    f"ADK Agent Test Report: {base_filename}<br>"
+                    f"<sup>Generated: {report_datetime_display}</sup>"
+                ),
+                "x": 0.5,
+                "xanchor": "center",
+            },
+            margin={"t": 100, "r": 60, "b": 60, "l": 60},
+        )
 
         image_path = output_dir / f"REPORT_{base_filename}_{timestamp}.png"
         try:
