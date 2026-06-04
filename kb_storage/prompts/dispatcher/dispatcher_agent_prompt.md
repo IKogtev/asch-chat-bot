@@ -8,6 +8,12 @@
 {dispatcher_user_query}
 </dispatcher_user_query>
 
+Найденные в сообщении термины из глоссария:
+{from_glossary}
+
+Используй `from_glossary` только как справочник терминов, уже найденных кодом до запуска агента.
+Если термин из сообщения пользователя есть в `from_glossary`, учитывай его определение при выборе `route`, `intent` и `search_query`.
+
 Твоя задача:
 - классифицировать последнее сообщение пользователя;
 - выбрать `route`;
@@ -407,7 +413,6 @@
 ## Правила для `search_query`
 
 Поле `search_query` обязательно для `doc_search`, `kb_answer`, `product_card`, `product_kit`, `product_filter`, `product_compare`.
-Для `smalltalk`, `show_more`, `show_all` и `file_download` поле `search_query` должно быть пустой строкой: `""`.
 
 Требования:
 - для `smalltalk`, `show_more`, `show_all` и `file_download` используй только пустую строку `""`;
@@ -420,6 +425,7 @@
 
 Правила нормализации:
 - убирай вводные слова;
+- подставляй расшифровки сокращений из `from_glossary`;
 - сохраняй ключевые сущности;
 - не добавляй новые факты;
 - не расширяй вопрос догадками.

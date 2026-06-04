@@ -22,6 +22,8 @@ from app.services.product_kit_folder_resolver import (
 DATA_CATALOG_FILE = "business layer_active.xlsx"
 ACTIVE_TABLES_SUFFIX = "_active.xlsx"
 PRODUCTS_TABLE_NAME = "products"
+GLOSSARY_FILE_NAME = "glossary_active.xlsx"
+GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
 PRODUCT_KIT_STATUS_COLUMN = "folder_kit_status"
 PRODUCT_KITS_ROOT_ENV = "PRODUCT_KITS_ROOT"
@@ -37,6 +39,13 @@ DATA_CATALOG_INDEXES = {
     "dc_entities": ["source_table"],
     "dc_columns": ["source_table", "business_name"],
     "dc_analytics": ["source_table", "column", "value"],
+}
+
+GLOSSARY_COLUMN_CANDIDATES = {
+    "term": ("term", "сокращение"),
+    "definition": ("definition", "определение"),
+    "aliases": ("aliases", "синонимы"),
+    "category": ("category", "категория"),
 }
 
 
@@ -77,7 +86,12 @@ class TablesLoadResult:
 class TablesLoaderService:
     """Загружает Excel-таблицы из директории в PostgreSQL."""
 
-    def __init__(self, database_url: str, tables_dir: str | Path) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        tables_dir: str | Path,
+        glossary_dir: str | Path | None = None,
+    ) -> None:
         """Инициализирует сервис загрузки таблиц.
 
         Аргументы:
@@ -86,6 +100,11 @@ class TablesLoaderService:
         """
         self.database_url = database_url
         self.tables_dir = Path(tables_dir)
+        self.glossary_dir = (
+            Path(glossary_dir)
+            if glossary_dir is not None
+            else Path(os.getenv("GLOSSARY_SOURCE_DIR", self.tables_dir.parent / "glossary"))
+        )
         self.product_kit_folders_found: int | None = None
         self.product_kit_products_total: int | None = None
 
@@ -118,6 +137,7 @@ class TablesLoaderService:
             await self._drop_public_tables(conn)
             loaded_tables.extend(await self._load_regular_tables(conn))
             loaded_tables.extend(await self._load_data_catalog(conn))
+            loaded_tables.extend(await self._load_glossary(conn))
             validation_errors = await self._validate_data_catalog(conn)
         finally:
             await conn.close()
@@ -207,6 +227,232 @@ class TablesLoaderService:
                 )
 
         return loaded_tables
+
+    async def _load_glossary(self, conn: asyncpg.Connection) -> list[LoadedTable]:
+        """Загружает клиентский глоссарий в таблицу PostgreSQL.
+
+        Аргументы:
+            conn: Активное подключение к PostgreSQL, в котором нужно создать
+                или заменить таблицу глоссария.
+
+        Возвращает:
+            Список с одним описанием загруженной таблицы `glossary`. Если файл
+            `glossary_active.xlsx` отсутствует, таблица всё равно создаётся
+            пустой со стабильным набором колонок.
+        """
+        df = self._read_glossary_files()
+        await self._replace_table(conn, GLOSSARY_TABLE_NAME, df)
+        await self._create_indexes(
+            conn,
+            GLOSSARY_TABLE_NAME,
+            ["term_normalized", "aliases_normalized"],
+        )
+
+        return [
+            LoadedTable(
+                table_name=GLOSSARY_TABLE_NAME,
+                source_file=str(self.glossary_dir),
+                source_sheet="*",
+                rows=len(df),
+                columns=len(df.columns),
+            )
+        ]
+
+    def _read_glossary_files(self) -> pd.DataFrame:
+        """Читает активный Excel-файл глоссария из директории `self.glossary_dir`.
+
+        Аргументы:
+            Нет явных аргументов. Метод использует `self.glossary_dir` как
+            директорию-источник и читает один файл `glossary_active.xlsx`.
+            Вторая строка файла считается русским пояснением к колонкам и
+            игнорируется.
+
+        Возвращает:
+            DataFrame с колонками `term`, `definition`, `aliases`, `category`,
+            `term_normalized`, `aliases_normalized`. При отсутствии директории
+            или файла возвращается пустой DataFrame с теми же колонками.
+        """
+        rows: list[dict[str, str]] = []
+        columns = [
+            "term",
+            "definition",
+            "aliases",
+            "category",
+            "term_normalized",
+            "aliases_normalized",
+        ]
+
+        file_path = self.glossary_dir / GLOSSARY_FILE_NAME
+        if not file_path.exists():
+            return pd.DataFrame(columns=columns)
+
+        workbook = pd.ExcelFile(file_path, engine="openpyxl")
+        for sheet_name in workbook.sheet_names:
+            raw = self._read_glossary_sheet(file_path, sheet_name)
+            rows.extend(self._glossary_rows_from_dataframe(raw))
+
+        rows = self._deduplicate_glossary_rows(rows)
+        return pd.DataFrame(rows, columns=columns)
+
+    def _read_glossary_sheet(self, file_path: Path, sheet_name: str) -> pd.DataFrame:
+        """Читает лист файла глоссария и удаляет строку с русскими пояснениями.
+
+        Аргументы:
+            file_path: Путь к файлу `glossary_active.xlsx`.
+            sheet_name: Имя листа Excel, который нужно прочитать.
+
+        Возвращает:
+            DataFrame с техническими именами колонок из первой строки файла.
+            Вторая строка Excel удаляется, потому что содержит пояснения для
+            заказчика, а не данные глоссария.
+        """
+        df = self._read_sheet(file_path, sheet_name)
+        if not df.empty:
+            df = df.iloc[1:].reset_index(drop=True)
+        return df
+
+    @staticmethod
+    def _deduplicate_glossary_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Удаляет полные дубли строк глоссария.
+
+        Аргументы:
+            rows: Список нормализованных строк глоссария. Каждая строка должна
+                содержать ключи `term_normalized` и `definition`.
+
+        Возвращает:
+            Список строк без дублей по паре `term_normalized` + `definition`.
+            Разные определения одного термина сохраняются как неоднозначность.
+        """
+        result: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["term_normalized"], row["definition"])
+            if key in seen:
+                continue
+            result.append(row)
+            seen.add(key)
+        return result
+
+    def _glossary_rows_from_dataframe(self, df: pd.DataFrame) -> list[dict[str, str]]:
+        """Преобразует лист Excel с глоссарием в нормализованные строки.
+
+        Аргументы:
+            df: DataFrame одного листа Excel. Метод ищет обязательные колонки
+                `term`/`сокращение` и `definition`/`определение`, а также
+                необязательные `aliases`/`синонимы` и `category`/`категория`.
+
+        Возвращает:
+            Список словарей для записи в таблицу `glossary`. Пустые строки,
+            строки без термина или определения, а также дубли внутри листа
+            пропускаются. Если обязательные колонки не найдены, возвращается
+            пустой список.
+        """
+        term_column = self._first_existing_column(
+            df,
+            list(GLOSSARY_COLUMN_CANDIDATES["term"]),
+        )
+        definition_column = self._first_existing_column(
+            df,
+            list(GLOSSARY_COLUMN_CANDIDATES["definition"]),
+        )
+        aliases_column = self._first_existing_column(
+            df,
+            list(GLOSSARY_COLUMN_CANDIDATES["aliases"]),
+        )
+        category_column = self._first_existing_column(
+            df,
+            list(GLOSSARY_COLUMN_CANDIDATES["category"]),
+        )
+
+        if term_column is None or definition_column is None:
+            return []
+
+        rows: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for _, row in df.iterrows():
+            term = self._cell_to_text(row.get(term_column))
+            definition = self._cell_to_text(row.get(definition_column))
+            if not term or not definition:
+                continue
+
+            aliases = self._cell_to_text(row.get(aliases_column)) if aliases_column else ""
+            category = self._cell_to_text(row.get(category_column)) if category_column else ""
+            dedupe_key = (self.normalize_glossary_text(term), definition)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            alias_items = self._split_aliases(aliases)
+            rows.append(
+                {
+                    "term": term,
+                    "definition": definition,
+                    "aliases": "; ".join(alias_items),
+                    "category": category,
+                    "term_normalized": self.normalize_glossary_text(term),
+                    "aliases_normalized": ";".join(
+                        self.normalize_glossary_text(alias) for alias in alias_items
+                    ),
+                }
+            )
+
+        return rows
+
+    @staticmethod
+    def normalize_glossary_text(value: str) -> str:
+        """Нормализует термин или синоним для точного поиска.
+
+        Аргументы:
+            value: Исходный термин, синоним или другой текст из Excel.
+
+        Возвращает:
+            Строку в нижнем регистре, с заменой `ё` на `е`, схлопнутыми
+            пробелами и удалённой внешней пунктуацией.
+        """
+        value = str(value or "").strip().lower().replace("ё", "е")
+        value = re.sub(r"\s+", " ", value)
+        value = re.sub(r"^[^\wа-яА-ЯёЁ]+|[^\wа-яА-ЯёЁ]+$", "", value)
+        return value.strip()
+
+    @classmethod
+    def _split_aliases(cls, value: str) -> list[str]:
+        """Разбивает строку синонимов на уникальные элементы.
+
+        Аргументы:
+            value: Строка из колонки `aliases`/`синонимы`. В качестве
+                разделителей поддерживаются запятая и точка с запятой.
+
+        Возвращает:
+            Список непустых синонимов в исходном написании без пробелов по
+            краям. Повторы удаляются по нормализованному представлению.
+        """
+        items = re.split(r"[;,]", value or "")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = item.strip()
+            key = cls.normalize_glossary_text(text)
+            if text and key and key not in seen:
+                normalized.append(text)
+                seen.add(key)
+        return normalized
+
+    @staticmethod
+    def _cell_to_text(value: Any) -> str:
+        """Преобразует значение ячейки Excel в безопасную текстовую строку.
+
+        Аргументы:
+            value: Значение ячейки, полученное из pandas DataFrame.
+
+        Возвращает:
+            Обрезанную строку. Для `None` и pandas-значений `NaN` возвращается
+            пустая строка.
+        """
+        if value is None:
+            return ""
+        if pd.isna(value):
+            return ""
+        return str(value).strip()
 
     async def _load_data_catalog(self, conn: asyncpg.Connection) -> list[LoadedTable]:
         """Загружает листы каталога данных и создает индексы для них.

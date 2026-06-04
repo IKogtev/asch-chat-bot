@@ -983,11 +983,28 @@ class BotResponse:
             # Если редактирование не прошло (сообщение старое или удалено), просто шлем новое
             return await self.send(text, menu=menu, is_html=is_html)
 
-    async def _send_document(self, path, filename):
+    def _get_message(self):
         if self.is_tg:
-            return await self.event.message.answer_document(FSInputFile(path, filename=filename))
-        else:
-            return await self.event.message.answer(attachments=[InputMedia(path=path)])
+            if hasattr(self.event, "message"):
+                return self.event.message
+            return self.event
+        return self.event.message
+
+    async def _send_document(self, path, filename):
+        msg = self._get_message()
+
+        if self.is_tg:
+            return await msg.answer_document(
+                FSInputFile(path, filename=filename)
+            )
+
+        return await msg.answer(
+            attachments=[InputMedia(path=path)]
+        )
+        # if self.is_tg:
+        #     return await self.event.message.answer_document(FSInputFile(path, filename=filename))
+        # else:
+        #     return await self.event.message.answer(attachments=[InputMedia(path=path)])
 
     async def answer_callback(self, text=None, show_alert=False):
         """Для всплывающих окон в TG или уведомлений в Max"""
