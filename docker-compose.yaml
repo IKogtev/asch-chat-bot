@@ -62,7 +62,7 @@ services:
       - LLM_API_MODEL=${LLM_API_MODEL}
       - PORT=8000
       - HOST=0.0.0.0
-      - ADK_SESSION_SERVICE_URI=postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # DocSearchOrchestrator: сохранение списка документов (те же таблицы, что у бота)
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
 
@@ -89,6 +89,7 @@ services:
       - KB_DOCUMENTS_PATH=knowledge_base/
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - GLOSSARY_CACHE_TTL_SEC=600
 
       # Context compaction
       - AGENT_CONTEXT_COMPACTION_INTERVAL=60
@@ -119,7 +120,7 @@ services:
     container_name: aszh-bot-migration
     environment:
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
-      - ADK_SESSION_SERVICE_URI=postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
     depends_on:
       postgres:
         condition: service_healthy
@@ -261,7 +262,7 @@ services:
       - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
       - PRODUCT_KITS_ROOT=/app/data/kb_documents/kb/1 Продукты
-      - ADK_SESSION_SERVICE_URI=postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
     depends_on:
@@ -431,7 +432,7 @@ services:
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
       - DEBUG_EXCEPTIONS=true
-      - ADK_SESSION_SERVICE_URI=postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       
       # MCP kb_search
       - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
@@ -451,6 +452,7 @@ services:
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - GLOSSARY_CACHE_TTL_SEC=600
 
       # Context compaction
       - AGENT_CONTEXT_COMPACTION_INTERVAL=60
