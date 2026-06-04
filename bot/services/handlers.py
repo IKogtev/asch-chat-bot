@@ -49,8 +49,26 @@ BOT_START_TIME = time.time()
 RECENT_MESSAGES = {}
 STARTUP_GRACE_PERIOD = 5  # сек
 OLD_MESSAGE_THRESHOLD = 15  # сек
+# список текущих задач
+ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
 
+# отменяем активный запрос пользователя 
+async def cancel_user_request(user_id: str):
+    """
+    Отмена активного запроса пользователя.
+    """
+    task = ACTIVE_REQUESTS.get(user_id)
+    if not task:
+        return False
+    if task.done():
+        ACTIVE_REQUESTS.pop(user_id, None)
+        return False
+    logger.info(f"Отмена запроса user={user_id}")
+    task.cancel()
+    ACTIVE_REQUESTS.pop(user_id, None)
 
+    return True
+    
 # Отправка комплекта документов продукта по структурному действию от ADK.
 async def handle_product_kit_action(
     bot_res,
@@ -432,6 +450,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             channel=platform
         )
         try:
+            # отменяем текущий запрос пользователя
+            canceled = await cancel_user_request(str(global_user_id))
+            # останавливаем typing прямо сейчас
+            await bot_res.stop_typing()
             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
             await adk.delete_session(user_id=str(global_user_id), session_id=session_id)
             # Очищаем историю в БД
@@ -713,6 +735,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         session_id = str(global_user_id)
         turn_id = str(uuid.uuid4())
         start_time = time.time()
+        user_key = str(global_user_id)
+        ACTIVE_REQUESTS[user_key] = asyncio.current_task()
 
         # логируем скорость ответа
         logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
@@ -815,6 +839,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             search_id_before = meta_before["search_id"] if meta_before else None
             # инициализация статуса "печатает..." для пользователя
             await bot_res.start_typing()
+            ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
             response_time = int((time.time() - start_time) * 1000)
@@ -892,6 +917,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     session_id=session_id, channel=platform,
                     payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                 )
+        except asyncio.CancelledError:
+            logger.info(
+                f"🛑 Запрос cancelled user={global_user_id}"
+            )
+
+            return
         except Exception as e:
             logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
             await eventlogger.log_event(
@@ -905,6 +936,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             )
             await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
         finally:
+            ACTIVE_REQUESTS.pop(
+                str(global_user_id),
+                None
+            )
             await bot_res.stop_typing()
 
 # --- Универсальный Адаптер Ответов ---
