@@ -144,7 +144,21 @@ NSTYA_DATA_URL = os.getenv(
     "NSTYA_DATA_URL",
     "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 )
-ADK_SESSION_DATABASE_URL = os.getenv("ADK_SESSION_SERVICE_URI", "postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions")
+# если мы делаем логирование у нас умирает adk_session и бот соответственно
+ADK_SESSION_SERVICE_URI  = os.getenv("ADK_SESSION_SERVICE_URI", "postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions")
+ADK_SESSION_SERVICE_URI  = os.getenv("fail", "s")
+def normalize_adk_dsn(uri: str) -> str:
+    """
+    postgresql+asyncpg://
+        ->
+    postgresql://
+    """
+    return uri.replace(
+        "postgresql+asyncpg://",
+        "postgresql://",
+        1
+    )
+ADK_SESSION_DATABASE_URL = normalize_adk_dsn(ADK_SESSION_SERVICE_URI)
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_HOURS = 5
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
