@@ -9,6 +9,8 @@ import asyncpg
 
 
 DEFAULT_ENV_NAME = "ADK_SESSION_SERVICE_URI"
+DEFAULT_APP_NAME_ENV_NAME = "ADK_APP_NAME"
+DEFAULT_APP_NAME = "agent"
 MAINTENANCE_DATABASE = "postgres"
 
 
@@ -80,12 +82,27 @@ async def prepare_database(database_url: str, *, reset_existing: bool) -> None:
         await clear_public_schema(database_url)
 
 
+async def ensure_adk_tables(database_url: str, *, app_name: str) -> None:
+    from google.adk.sessions.database_session_service import DatabaseSessionService
+
+    service = DatabaseSessionService(db_url=database_url)
+    try:
+        await service.list_sessions(app_name=app_name)
+    finally:
+        await service.db_engine.dispose()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare PostgreSQL database for Google ADK sessions.")
     parser.add_argument(
         "--database-url",
         default=os.getenv(DEFAULT_ENV_NAME),
         help=f"ADK session PostgreSQL URI. Defaults to ${DEFAULT_ENV_NAME}.",
+    )
+    parser.add_argument(
+        "--app-name",
+        default=os.getenv(DEFAULT_APP_NAME_ENV_NAME, DEFAULT_APP_NAME),
+        help=f"ADK app name used for schema initialization. Defaults to ${DEFAULT_APP_NAME_ENV_NAME} or {DEFAULT_APP_NAME!r}.",
     )
     parser.add_argument(
         "--reset-existing",
@@ -100,6 +117,7 @@ async def _main_async() -> None:
     if not args.database_url:
         raise SystemExit(f"--database-url or ${DEFAULT_ENV_NAME} must be set.")
     await prepare_database(args.database_url, reset_existing=args.reset_existing)
+    await ensure_adk_tables(args.database_url, app_name=args.app_name)
 
 
 def main() -> None:
