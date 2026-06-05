@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
     await loadDocuments(); // загрузка документов
     await loadSyncSettings();
+    refreshTablesList();
     subscribeToSync();
     await loadFilesystemTree();
     startLogsAutoRefresh();
@@ -915,7 +916,6 @@ document.addEventListener("click", function (e) {
 });
 // функция для синхронизации рялом с kb конкретным
 document.addEventListener("click", async function (e) {
-
     if (
             !e.target.classList.contains(
                 "sync-kb-btn"
@@ -923,48 +923,31 @@ document.addEventListener("click", async function (e) {
         ) {
             return;
         }
-
         e.stopPropagation();
-
         const button =
             e.target;
-
         const kbId =
             button.dataset.kbId;
-
         const originalText =
             button.innerText;
-
         try {
-
             button.disabled = true;
-
             button.innerText =
                 "⏳ Запуск...";
-
             await startSyncTask({
-
                 mode: "kb",
-
                 collection_name:
                     currentCollection,
-
                 kb_id: kbId
-
             });
-
         } catch (error) {
-
             console.error(error);
-
             alert(
                 `Ошибка: ${error.message}`
             );
 
         } finally {
-
             button.disabled = false;
-
             button.innerText =
                 originalText;
         }
@@ -982,7 +965,6 @@ function subscribeToSync() {
             loadFilesystemTree();
         }
     };
-
     eventSource.onerror = function () {
         console.error("SSE error");
         eventSource.close();
@@ -990,7 +972,6 @@ function subscribeToSync() {
 }
 // функция для запуска задачи синхронизации с логами
 async function startSyncTask(payload) {
-
     try {
         const response = await fetch(
             "/api/sync/start",
@@ -1025,25 +1006,23 @@ async function startSyncTask(payload) {
         throw error;
     }
 }
-
+// открытие модального окна статуса синхронизации
 function openSyncStatusModal() {
-
     document
         .getElementById(
             "sync-status-modal"
         )
         .style.display = "block";
 }
-
+// закрытие модального окна статуса синхронизации
 function closeSyncStatusModal() {
-
     document
         .getElementById(
             "sync-status-modal"
         )
         .style.display = "none";
 }
-
+// функция для отслеживания статуса задачи синхронизации и обновления UI в реальном времени
 async function watchSyncTask(taskId) {
     openSyncStatusModal();
     const statusBox =
@@ -1068,24 +1047,18 @@ async function watchSyncTask(taskId) {
         );
     statusBox.innerText =
     "Подготовка...";
-
     progressBox.innerText =
         "-";
-
     progressBar.style.width =
         "0%";
-
     kbBox.innerText =
         "-";
-
     logBox.innerHTML =
         `<div class="sync-log-line">
             Ожидание запуска...
         </div>`;
-
     let firstResponseReceived =
         false;
-
     let pollErrors = 0;
     const interval = setInterval(
         async () => {
@@ -1104,10 +1077,8 @@ async function watchSyncTask(taskId) {
                     `${data.progress || 0}%`;
                 kbBox.innerText =
                     data.current_kb || "-";
-                if (
-                    currentUser?.role ===
-                    "manager"
-                ) {
+                // от менеджера скрываем подробные логи, показывая только статус синхронизации
+                if ( currentUser?.role ==="manager") {
                     let managerMessage =
                         "Синхронизация выполняется...";
                     if (
@@ -1127,7 +1098,6 @@ async function watchSyncTask(taskId) {
                             ${managerMessage}
                         </div>
                         `;
-
                 } else {
                     logBox.innerHTML =
                         (data.logs || [])
@@ -1169,6 +1139,7 @@ async function watchSyncTask(taskId) {
                     return;
                 }
             } catch (error) {
+                // retry logic для kuber: если 5 раз подряд не удается получить статус, показываем ошибку и останавливаем поллинг
                 console.error(error);
                 pollErrors++;
                 if (pollErrors >= 5) {
@@ -1188,46 +1159,33 @@ async function syncAll(btnElement) {
         console.error("Кнопка не передана в функцию syncAll!");
         return;
     }
-
     // Сохраняем оригинальный текст и состояние
     const originalText =
         btnElement.innerText;
-
     try {
-
         btnElement.disabled = true;
-
         btnElement.innerText =
             "⏳ Запуск...";
-
         await startSyncTask({
             mode: "all"
         });
 
     } catch (error) {
-
         console.error(error);
-
     } finally {
-
         btnElement.disabled = false;
-
         btnElement.innerText =
             originalText;
     }
 }
 // синхронизация конкретной коллекции
 async function syncCurrentCollection(btnElement) {
-
     if (!currentCollection) {
         alert("Коллекция не выбрана");
         return;
     }
-
     const originalText = btnElement.innerText;
-
     try {
-
         btnElement.disabled = true;
         btnElement.innerText = "⏳ Синхронизация...";
         await startSyncTask({
@@ -1235,57 +1193,20 @@ async function syncCurrentCollection(btnElement) {
             collection_name:
                 currentCollection
         });
-
     } catch (error) {
-
         console.error(error);
-
         alert(error.message);
-
     } finally {
-
         btnElement.disabled = false;
-
         btnElement.innerText =
             originalText;
     }
-}
-async function syncWithLogging(collectionName) {
-    // 1. Запуск
-    const response = await fetch("/api/sync/start", {
-        method: "POST",
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({collection_name: collectionName})
-    });
-    const { task_id } = await response.json();
-
-    // 2. Открываем окно
-    const modal = document.getElementById("syncModal");
-    const logBox = document.getElementById("syncLogs");
-    modal.style.display = "block";
-
-    // 3. Поллинг (опрос статуса)
-    const interval = setInterval(async () => {
-        const res = await fetch(`/api/sync/status/${task_id}`);
-        const data = await res.json();
-        
-        // Рендер логов
-        logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join("");
-        
-        if (data.status === "completed" || data.status === "error") {
-            clearInterval(interval);
-            if (data.status === "completed") {
-                await loadDocuments(); // Обновляем данные интерфейса
-            }
-        }
-    }, 1500);
 }
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Удалить базу знаний "${kbId}"?\n\n Все документы будут немедленно удалены.`)) {
         return;
     }
-
     try {
         const res = await fetch(`${API_BASE}/api/knowledge-bases/delete`, {
             method: "POST",
@@ -1295,9 +1216,7 @@ async function deleteKnowledgeBase(kbId) {
                 collection_name: currentCollection
             })
         });
-
         const data = await res.json();
-
         if (!res.ok) {
             throw new Error(data.detail || "Не удалось удалить базу знаний");
         }
@@ -1305,7 +1224,6 @@ async function deleteKnowledgeBase(kbId) {
             showNotification('База знаний успешно удалена', 'success');
             loadDocuments();
         }
-       
     } catch (err) {
         alert(`Ошибка удаления базы знаний: ${err.message}`);
     }
@@ -1315,11 +1233,9 @@ async function viewDocument(documentId, filename) {
     const modal = document.getElementById('chunks-modal');
     const modalTitle = document.getElementById('modal-title');
     const modalBody = document.getElementById('modal-body');
-    
     modalTitle.textContent = `Чанки: ${filename}`;
     modalBody.innerHTML = '<div class="loading">Загрузка чанков...</div>';
     modal.classList.add('active');
-    
     try {
         const response = await fetch(`${API_BASE}/api/documents/${documentId}`);
         const chunks = await response.json();
@@ -1365,14 +1281,12 @@ async function deleteDocument(documentId, filename) {
     if (!confirm(`Вы уверены, что хотите удалить "${filename}"?`)) {
         return;
     }
-    
     try {
         const response = await fetch(`${API_BASE}/api/documents/${documentId}`, {
             method: 'DELETE'
         });
-        
         if (response.ok) {
-            showNotification('Доумент успешно удален', 'success');
+            showNotification('Документ успешно удален', 'success');
             loadDocuments();
         } else {
             throw new Error('Не удалось удалить документ');
@@ -1395,20 +1309,17 @@ document.getElementById('chunks-modal').addEventListener('click', (e) => {
 // #############################
 // SEARCH TAB LOGIC
 // #############################
-
 // Load knowledge bases for search filter
 async function loadKnowledgeBasesForSearch() {
     try {
         const response = await fetch(`${API_BASE}/api/knowledge-bases`);
         const knowledgeBases = await response.json();
-        
         const kbSelect = document.getElementById('search-kb');
         const currentValue = kbSelect.value;
         kbSelect.innerHTML = '<option value="">Все базы знаний</option>' + 
             knowledgeBases.map(kb => 
                 `<option value="${escapeHtml(kb.kb_id)}">${escapeHtml(kb.kb_id)} (${kb.document_count} документы)</option>`
             ).join('');
-        
         // Restore previous selection if it still exists
         if (currentValue) {
             kbSelect.value = currentValue;
@@ -1439,16 +1350,13 @@ async function performSearch() {
         `;
         return;
     }
-    
     resultsContainer.innerHTML = '<div class="loading">Поиск...</div>';
-    
     try {
         // Build request body with optional filters
         const requestBody = { query, limit };
         if (kbId) {
             requestBody.filters = { kb_id: kbId };
         }
-        
         const response = await fetch(`${API_BASE}/api/search`, {
             method: 'POST',
             headers: {
@@ -1456,14 +1364,11 @@ async function performSearch() {
             },
             body: JSON.stringify(requestBody)
         });
-       
         if (!response.ok) {
             const err = await response.text();
             throw new Error(err);
         }
-        
         const results = await response.json();
-        
         if (results.length === 0) {
             resultsContainer.innerHTML = `
                 <div class="empty-state">
@@ -1500,18 +1405,15 @@ async function performSearch() {
                         </strong>
                         <span class="chunk-score">Точность: ${score}</span>
                     </div>
-
                     <div class="result-text">
                         ${escapeHtml(text)}
                     </div>
-
                     <div class="chunk-metadata-json">
                         <pre>${escapeHtml(JSON.stringify(cleanMeta, null, 2))}</pre>
                     </div>
                 </div>
             `;
         }).join('');
-
     } catch (error) {
         resultsContainer.innerHTML = `
             <div class="result-message error">
@@ -1525,271 +1427,79 @@ async function performSearch() {
 // UPLOAD TAB LOGIC
 // #############################
 
-// Настройка возможности drag and drop
-function setupDragAndDrop() {
-    const uploadBox = document.getElementById('upload-box');
-    
-    uploadBox.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        uploadBox.classList.add('dragover');
-    });
-    
-    uploadBox.addEventListener('dragleave', () => {
-        uploadBox.classList.remove('dragover');
-    });
-    
-    uploadBox.addEventListener('drop', (e) => {
-        e.preventDefault();
-        uploadBox.classList.remove('dragover');
-        
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleFile(files[0]);
-        }
-    });
-    
-    uploadBox.addEventListener('click', (e) => {
-        // Only trigger file input if not clicking on the input itself
-        if (e.target.id !== 'file-input') {
-            document.getElementById('file-input').click();
-        }
-    });
-}
-// отображение выбранного файла
-function handleFileSelect(event) {
-    const file = event.target.files[0];
-    if (file) {
-        handleFile(file);
-    }
-}
-// передача файла
-function handleFile(file) {
-    selectedFile = file;
-    
-    document.getElementById('file-name').textContent = file.name;
-    document.getElementById('file-info').style.display = 'block';
-    document.getElementById('upload-btn').disabled = false;
-    document.getElementById('upload-result').className = 'result-message';
-    document.getElementById('upload-result').style.display = 'none';
-}
-// загрузка документа
-async function uploadDocument(uploadMode = 'check') {
-    if (!selectedFile) {
-        return;
-    }
-    
-    const uploadBtn = document.getElementById('upload-btn');
-    const progressDiv = document.getElementById('upload-progress');
-    const resultDiv = document.getElementById('upload-result');
-    const kb_id = document.getElementById('upload-kb-id').value;
-    const user_id = document.getElementById('upload-user-id').value;
-    
-    uploadBtn.disabled = true;
-    progressDiv.style.display = 'block';
-    resultDiv.style.display = 'none';
-    
-    try {
-        const formData = new FormData();
-        formData.append('file', selectedFile);
-        formData.append('kb_id', kb_id);
-        formData.append('user_id', user_id);
-        formData.append('upload_mode', uploadMode);
-        formData.append('collection_type', currentCollectionType);
-        formData.append('collection_name', currentCollection);
-        
-        console.log('Uploading file:', selectedFile.name, 'Mode:', uploadMode);
-        
-        const response = await fetch(`${API_BASE}/api/documents/upload`, {
-            method: 'POST',
-            body: formData
-        }).catch(err => {
-            console.error('Fetch error:', err);
-            throw new Error(`Network error: ${err.message}. The file may be too large or the server may be unreachable.`);
-        });
-        
-        console.log('Response status:', response.status);
-        
-        let result;
-        try {
-            result = await response.json();
-        } catch (e) {
-            console.error('JSON parse error:', e);
-            throw new Error(`Server returned invalid response. Status: ${response.status}`);
-        }
-        
-        if (response.ok) {
-            resultDiv.className = 'result-message success';
-            const versionInfo = result.version > 1 ? ` (Версия ${result.version})` : '';
-            const replacedInfo = result.replaced ? '<br><strong>Замена старой версии</strong>' : '';
-            resultDiv.innerHTML = `
-                <strong>✓ Успешно!</strong>${replacedInfo}<br>
-                Документ загружен: ${escapeHtml(result.source_name)}${versionInfo}<br>
-                Тип: ${escapeHtml(result.source_type)}<br>
-                Чанков создано: ${result.points_count}<br>
-                ID документа: ${result.document_id}
-            `;
-            
-            // Reset form
-            selectedFile = null;
-            document.getElementById('file-input').value = '';
-            document.getElementById('file-info').style.display = 'none';
-            document.getElementById('upload-btn').disabled = true;
-            
-            // Reload documents
-            loadDocuments();
-        } else if (response.status === 409 && result.conflict_type) {
-            // Handle conflicts
-            handleUploadConflict(result);
-        } else {
-            throw new Error(result.detail || result.message || 'Ошибка загрузки');
-        }
-    } catch (error) {
-        console.error('Upload error:', error);
-        resultDiv.className = 'result-message error';
-        resultDiv.innerHTML = `<strong>✗ Error:</strong> ${escapeHtml(error.message)}`;
-    } finally {
-        progressDiv.style.display = 'none';
-        resultDiv.style.display = 'block';
-        uploadBtn.disabled = false;
-    }
-}
-// разрешение конфликта файлов
-function handleUploadConflict(conflictData) {
-    const resultDiv = document.getElementById('upload-result');
-    
-    if (conflictData.conflict_type === 'exact_duplicate') {
-        // Exact duplicate - just show message, no action needed
-        resultDiv.className = 'result-message warning';
-        resultDiv.innerHTML = `
-            <strong>⚠️ Дубликат файла</strong><br>
-            ${escapeHtml(conflictData.message)}<br>
-            <small>Загруженный: ${formatDate(conflictData.existing_document.created_at)}</small><br>
-            <small>ID Документа: ${conflictData.existing_document.document_id}</small>
-        `;
-    } else if (conflictData.conflict_type === 'content_duplicate') {
-        // Same content, different filename
-        resultDiv.className = 'result-message warning';
-        resultDiv.innerHTML = `
-            <strong>⚠️ Контент уже существует</strong><br>
-            ${escapeHtml(conflictData.message)}<br>
-            <small>${escapeHtml(conflictData.suggestion)}</small>
-        `;
-    } else if (conflictData.conflict_type === 'version_conflict') {
-        // Same filename, different content - offer options
-        resultDiv.className = 'result-message warning';
-        resultDiv.innerHTML = `
-            <strong>⚠️ Конфликт версий файлов</strong><br>
-            ${escapeHtml(conflictData.message)}<br>
-            <small>Существующая версия загружена: ${formatDate(conflictData.existing_document.created_at)}</small><br>
-            <small>Текущая версия: ${conflictData.existing_document.version}</small><br>
-            <br>
-            <strong>Что вы хотите сделать?</strong><br>
-            <button onclick="uploadDocument('replace')" class="btn btn-warning btn-small" style="margin: 5px;">
-                🔄 Заменить старую версию
-            </button>
-            <button onclick="uploadDocument('keep-both')" class="btn btn-primary btn-small" style="margin: 5px;">
-                📑 Сохранить обе версии
-            </button>
-            <button onclick="cancelUpload()" class="btn btn-secondary btn-small" style="margin: 5px;">
-                ❌ Отменить
-            </button>
-        `;
-    }
-}
-// отмена загрузки
-function cancelUpload() {
-    const resultDiv = document.getElementById('upload-result');
-    resultDiv.style.display = 'none';
-    
-    // Reset form
-    selectedFile = null;
-    document.getElementById('file-input').value = '';
-    document.getElementById('file-info').style.display = 'none';
-    document.getElementById('upload-btn').disabled = true;
-}
-
 // загрузка таблиц postgres
 async function loadTables() {
     const btn = document.getElementById("load-tables-btn");
     const progress = document.getElementById("tables-load-progress");
     const result = document.getElementById("tables-load-result");
-    const tablesList = document.getElementById("tables-list");
-
     btn.disabled = true;
     progress.style.display = 'block';
-
     try {
         const response = await fetch('/api/tables/load', {
             method: 'POST'
         });
-
         const data = await response.json();
-
         if (!response.ok) {
             throw new Error(data.detail || 'Ошибка загрузки таблиц');
         }
-
         result.className = "result-message success";
-
         result.innerHTML =
-            "✓ Таблицы успешно загружены";
-        tablesList.innerHTML = `
-            <h4>Текущие таблицы:</h4>
-            <div class="tables-grid">
-                ${data.tables.map(t => `
-                    <button class="table-card" onclick="showTableInfo('${t}')">
-                        🗂️ ${t}
-                    </button>
-                `).join("")}
-            </div>
-        `;
-
+            "✓ Таблицы успешно обновлены";
+        renderTables(data.tables);
     } catch (error) {
-        console.error(error);
-
-        result.className = "result-message error";
-        result.innerHTML = error.message;
+        result.className =
+            "result-message error";
+        result.innerHTML =
+            error.message;
     } finally {
-        progress.style.display = 'none';
+        progress.style.display = "none";
         result.style.display = "block";
         btn.disabled = false;
     }
 }
-
+// отображение информации о таблице в модальном окне
 async function showTableInfo(tableName) {
     const modal = document.getElementById("table-info-modal");
     const modalTitle = document.getElementById("modal-table-title");
-    const columnsBody = document.getElementById("details-columns-body");
-    
     const loadingDiv = document.getElementById("modal-loading");
     const contentDiv = document.getElementById("modal-content");
-
+    const tableHead = document.getElementById("table-data-head");
+    const tableBody = document.getElementById("table-data-body");
     modalTitle.innerText = `Загрузка: ${tableName}`;
-    columnsBody.innerHTML = ""; // Очищаем таблицу
-    
+    tableHead.innerHTML = "";
+    tableBody.innerHTML = "";
     // 2. УПРАВЛЕНИЕ ВИДИМОСТЬЮ (сначала скрываем контент, показываем лоадер)
     contentDiv.style.display = "none";
     loadingDiv.style.display = "block";
-    
     // 3. Открываем саму модалку
     modal.style.display = "flex";
-
     try {
-        // Делаем запрос к вашему API
+        // Делаем запрос к API
         const response = await fetch(`/api/tables/${encodeURIComponent(tableName)}`);
-        
         if (!response.ok) {
             throw new Error("Не удалось получить информацию о таблице");
         }
-
         const data = await response.json();
-
         // Заполняем данные
         modalTitle.innerText = `Таблица: ${data.table}`; // Меняем заголовок на правильный
-        columnsBody.innerHTML = data.columns
-            .map(col => `<tr><td>${col.name}</td><td>${col.type}</td></tr>`)
+        // заголовок таблицы
+        tableHead.innerHTML = `
+            <tr>
+                ${data.columns.map(
+                    c => `<th>${c}</th>`
+                ).join("")}
+            </tr>
+        `;
+        // строки таблицы
+        tableBody.innerHTML = data.data
+            .map(row => `
+                <tr>
+                    ${data.columns.map(
+                        c => `<td>${row[c] ?? ""}</td>`
+                    ).join("")}
+                </tr>
+            `)
             .join("");
-
         loadingDiv.style.display = "none";
         contentDiv.style.display = "block";
     } catch (error) {
@@ -1798,6 +1508,42 @@ async function showTableInfo(tableName) {
         closeTableModal();
     }
 }
+// обновление списка таблиц (вызывается после загрузки новых таблиц)
+async function refreshTablesList() {
+    const tablesList = document.getElementById("tables-list");
+    try {
+        const response = await fetch("/api/tables");
+        if (!response.ok) {
+            throw new Error("Не удалось получить список таблиц");
+        }
+        const data = await response.json();
+        renderTables(data.tables);
+    } catch (error) {
+        tablesList.innerHTML = `
+            <div class="result-message error">
+                ${error.message}
+            </div>
+        `;
+    }
+}
+// рендер таблиц 
+function renderTables(tables) {
+    const tablesList = document.getElementById("tables-list");
+    tablesList.innerHTML = `
+        <h4>Текущие таблицы:</h4>
+        <div class="tables-grid">
+            ${tables.map(t => `
+                <button
+                    class="table-card"
+                    onclick="showTableInfo('${t}')"
+                >
+                    🗂️ ${t}
+                </button>
+            `).join("")}
+        </div>
+    `;
+}
+// закрытие модального окна с информацией о таблице
 function closeTableModal() {
     document.getElementById("table-info-modal").style.display = "none";
 }
@@ -1809,15 +1555,12 @@ function closeTableModal() {
 // построение дерева файлов
 async function loadFilesystemTree() {
     const container = document.getElementById("filesystem-tree");
-
     container.innerHTML = "⏳ Загрузка...";
-
     try {
         // MANAGER -> полное дерево kb_collection
         if (currentUser?.role === "manager") {
             const res = await fetch("/api/filesystem/folders");
             const data = await res.json();
-
             container.innerHTML = renderManagerTree(data);
             return;
         }
@@ -1826,9 +1569,7 @@ async function loadFilesystemTree() {
             `/api/filesystem/node?path=&collection_name=${encodeURIComponent(currentCollection)}`
         );
         const data = await res.json();
-
         container.innerHTML = renderNode("", data);
-
     } catch (err) {
         container.innerHTML = "❌ Ошибка загрузки дерева";
     }
@@ -1836,10 +1577,8 @@ async function loadFilesystemTree() {
 // рендеринг дерева
 function renderNode(path, data) {
     let html = "<ul class='tree'>";
-
     data.folders.forEach(folder => {
         const newPath = path ? `${path}/${folder}` : folder;
-
         html += `
             <li class="folder">
                 <span class="folder-toggle" data-path="${newPath}" data-loaded="false">
@@ -1849,21 +1588,17 @@ function renderNode(path, data) {
             </li>
         `;
     });
-
     data.files.forEach(file => {
         html += `<li class="file">📄 ${escapeHtml(file)}</li>`;
     });
-
     html += "</ul>";
     return html;
 }
 
-// реденринг полного дерева для менеджера
+// рендеринг полного дерева для менеджера
 function renderManagerTree(tree, currentPath = "") {
     let html = "<ul class='tree'>";
-
     for (const [key, value] of Object.entries(tree)) {
-
         // files
         if (key === "files" && Array.isArray(value)) {
             value.forEach(file => {
@@ -1873,57 +1608,45 @@ function renderManagerTree(tree, currentPath = "") {
                     </li>
                 `;
             });
-
             continue;
         }
-
         // folders
         const newPath = currentPath
             ? `${currentPath}/${key}`
             : key;
-
         html += `
             <li class="folder">
                 <details>
                     <summary>
                         📁 ${escapeHtml(key)}
                     </summary>
-
                     ${renderManagerTree(value, newPath)}
                 </details>
             </li>
         `;
     }
-
     html += "</ul>";
-
     return html;
 }
 // открытие папок внутри дерева
 document.addEventListener("click", async function (e) {
     if (!e.target.classList.contains("folder-toggle")) return;
-
     const toggle = e.target;
     const content = toggle.nextElementSibling;
     const path = toggle.dataset.path;
-
     if (toggle.dataset.loaded === "false") {
         try {
             content.innerHTML = "⏳ Загрузка...";
-
             const res = await fetch(
                 `/api/filesystem/node?path=${encodeURIComponent(path)}&collection_name=${encodeURIComponent(currentCollection)}`
             );
             const data = await res.json();
-
             content.innerHTML = renderNode(path, data);
             toggle.dataset.loaded = "true";
-
         } catch (err) {
             content.innerHTML = "❌ Ошибка";
         }
     }
-
     content.classList.toggle("open");
 });
 
@@ -1933,9 +1656,7 @@ document.addEventListener("click", async function (e) {
 
 // отправка новостей
 async function sendNews() {
-
     const html = newsEditor.root.innerHTML.trim();
-
     // Проверка что не пусто
     if (!html || html === "<p><br></p>") {
         alert("Введите текст новости");
@@ -1955,18 +1676,15 @@ async function sendNews() {
         // пользователь выбрал новый файл → ПЕРЕЗАТИРАЕМ reuse
         formData.append("files", fileInput.files[0]);
         console.log("Using NEW file");
-
     } else if (reusePath && reusePath.trim() !== "") {
         // если новый не выбран → используем старый
         formData.append("reuse_file_path", reusePath);
         console.log("Reusing OLD file");
-
     } else {
         console.log("No file attached");
     }
     formData.append("html", html);
     formData.append("target_group", targetGroup);
-
     if (scheduleTime) {
         const utcTime = new Date(scheduleTime).toISOString();
         const now = new Date().toISOString();
@@ -1985,7 +1703,6 @@ async function sendNews() {
             method: "POST",
             body: formData
         });
-        
         const data = await res.json();
         const recipients = data.count ?? data.sent ?? 0;
         if (res.ok) {
@@ -2018,31 +1735,23 @@ async function sendNews() {
 // удаление файла прикрепленного к новости
 document.getElementById("news-file-remove").onclick = () => {
     const fileInput = document.getElementById("news-files");
-
     // удаляем reuse
     delete fileInput.dataset.reusePath;
-
     // чистим input
     fileInput.value = "";
-
     // скрываем UI
     document.getElementById("news-file-info").style.display = "none";
-
     console.log("File removed (reuse cleared)");
 };
 // добавление файла прикрепленного к новости
 document.getElementById("news-files").addEventListener("change", (e) => {
     const fileInput = e.target;
-
     if (fileInput.files.length > 0) {
         // пользователь выбрал новый файл → убираем reuse
         delete fileInput.dataset.reusePath;
-
         const file = fileInput.files[0];
-
         document.getElementById("news-file-name").textContent = file.name;
         document.getElementById("news-file-info").style.display = "flex";
-
         console.log("New file selected, reuse cleared");
     }
 });
@@ -2053,15 +1762,12 @@ async function loadNewsHistory() {
     if (isFirstLoad) {
         container.innerHTML = '<div class="loading">Загрузка...</div>';
     }
-
     try {
         const res = await fetch("/api/news");
         if (!res.ok) {
             throw new Error("Ошибка загрузки новости");
         }
-
         const data = await res.json();
-
         if (!data || data.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
@@ -2072,7 +1778,6 @@ async function loadNewsHistory() {
             stopNewsPolling(); // Останавливаем опрос, если новостей нет
             return;
         }
-
         container.innerHTML = data.map(n =>{
             const files = n.files || [];
             const targetGroup = n.target_group || "all";
@@ -2121,11 +1826,9 @@ async function loadNewsHistory() {
                 </div>
             `; 
         }).join("");
-
         // --- ЛОГИКА АВТО-ОБНОВЛЕНИЯ ---
         // Проверяем, есть ли хотя бы одна новость в статусе "pending"
         const hasPending = data.some(n => n.status === "pending" || n.status === "processing");
-
         if (hasPending) {
             console.log("Есть ожидающие новости, запускаю поллинг...");
             startNewsPolling();
@@ -2133,7 +1836,6 @@ async function loadNewsHistory() {
             console.log("Все новости отправлены, останавливаю поллинг.");
             stopNewsPolling();
         }
-
     } catch (e) {
         console.error(e);
         if (isFirstLoad) container.innerHTML = `<div class="result-message error">Ошибка: ${e.message}</div>`;
@@ -2150,7 +1852,6 @@ function startNewsPolling() {
         }
     }, 10000); // 10 секунд — оптимально для новостей
 }
-
 // Функция остановки опроса
 function stopNewsPolling() {
     if (newsHistoryTimer) {
@@ -2162,22 +1863,17 @@ function stopNewsPolling() {
 async function deleteNews(id) {
     const confirmDelete = confirm("Удалить новость из истории?");
     if (!confirmDelete) return;
-
     try {
         const res = await fetch(`/api/news/${id}`, {
             method: "DELETE"
         });
-
         if (!res.ok) {
             const data = await res.json();
             throw new Error(data.detail || "Ошибка удаления");
         }
-
         showNotification("Новость удалена", "success");
-
         // перезагрузка списка
         loadNewsHistory();
-
     } catch (e) {
         alert("Ошибка: " + e.message);
     }
@@ -2186,21 +1882,16 @@ async function deleteNews(id) {
 async function viewNewsFile(name) {
     try {
         const res = await fetch(`/api/local-file-news?name=${encodeURIComponent(name)}`);
-
         if (!res.ok) {
             throw new Error("Ошибка загрузки файла");
         }
-
         const contentType = res.headers.get("content-type") || "";
-
         const fileExt = name.split('.').pop().toLowerCase();
         const textExtensions = ['md', 'txt', 'json', 'csv', 'xml', 'html', 'htm'];
         const isTextFile = textExtensions.includes(fileExt);
-
         // текст / markdown / json - показываем в модалке
         if (isTextFile || contentType.includes("text")) {
             const text = await res.text();
-
             // Сохраняем форматирование с помощью white-space: pre-wrap
             document.getElementById("file-content").innerHTML = `
                 <div class="file-content-text">
@@ -2213,7 +1904,6 @@ async function viewNewsFile(name) {
         else if (contentType.includes("pdf") || contentType.includes("image")) {
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
-
             document.getElementById("file-content").innerHTML = `
                 <iframe src="${url}" class="file-content-iframe"></iframe>
             `;
@@ -2223,7 +1913,6 @@ async function viewNewsFile(name) {
             // Остальные файлы - скачиваем
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
-            
             const a = document.createElement('a');
             a.href = url;
             a.download = name;
@@ -2232,7 +1921,6 @@ async function viewNewsFile(name) {
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
-
     } catch (e) {
         alert("Ошибка: " + e.message);
     }
@@ -2256,20 +1944,16 @@ function reuseNews(news) {
     if (groupRadio) {
         groupRadio.checked = true;
     }
-
     // 2. файл
     const fileInput = document.getElementById("news-files");
     const fileInfo = document.getElementById("news-file-info");
     const fileName = document.getElementById("news-file-name");
-
     if (news.files && Array.isArray(news.files) && news.files.length > 0) {
         const f = news.files[0];
         fileName.textContent = f.name + " (reuse)";
         fileInfo.style.display = "flex";
-
         // сохраняем путь
         fileInput.dataset.reusePath = f.path || "";
-
         // очищаем input (на всякий)
         fileInput.value = "";
     } else {
@@ -2277,18 +1961,15 @@ function reuseNews(news) {
         fileInfo.style.display = "none";
         delete fileInput.dataset.reusePath;
     }
-
     showNotification("Новость загружена как шаблон", "success");
 }
 // закрытие модальности просмотра новости
 function closeFileModal() {
     const modal = document.getElementById("file-modal");
     modal.style.display = "none";
-
     // чистим контент
     document.getElementById("file-content").innerHTML = "";
 }
-
 // #############################
 // PROMPTS TAB LOGIC
 // #############################
@@ -2296,11 +1977,9 @@ function closeFileModal() {
 async function loadPromptsTab() {
     const container = document.getElementById("agents-list");
     container.innerHTML = '<div class="loading">Загрузка агентов...</div>';
-
     try {
         const res = await fetch("/api/prompts/agents");
         const agents = await res.json();
-
         if (!agents.length) {
             container.innerHTML = `
                 <div class="empty-state">
@@ -2310,7 +1989,6 @@ async function loadPromptsTab() {
             `;
             return;
         }
-
         container.innerHTML = agents.map(agent => `
             <div class="document-card">
                 <div class="document-header">
@@ -2325,7 +2003,6 @@ async function loadPromptsTab() {
                 </div>
             </div>
         `).join("");
-
     } catch (err) {
         container.innerHTML = `<div class="result-message error">Ошибка загрузки агентов</div>`;
         console.error(err);
@@ -2347,23 +2024,19 @@ async function openAgent(agent) {
     if (modal) {
         modal.classList.add("active");
     }
-
     // заголовок модалки
     const title = document.getElementById("agent-modal-title");
     if (title) {
         title.textContent = `🤖 ${agent}`;
     }
-
     // сбрасываем UI внутри
     const filesList = document.getElementById("prompt-files-list");
     if (filesList) {
         filesList.innerHTML = '<div class="loading">Загрузка...</div>';
     }
-
     if (promptEditorMDE) {
         promptEditorMDE.value("");
     }
-    
     // загружаем файлы агента
     await loadPromptFiles();
     // грузим текущий промпт 
@@ -2375,24 +2048,20 @@ function closeAgentModal() {
     if (modal) {
         modal.classList.remove("active");
     }
-
     currentAgent = null;
 }
 // Загрузка списка файлов промптов
 async function loadPromptFiles() {
     const filesList = document.getElementById("prompt-files-list");
     filesList.innerHTML = '<div class="loading">Загрузка...</div>';
-    
     try {
         const res = await fetch(`/api/prompts/list?agent=${currentAgent}`);
         const data = await res.json();
         promptFiles = data.files || [];
-        
         if (promptFiles.length === 0) {
             filesList.innerHTML = '<div class="empty-state">Нет файлов промптов</div>';
             return;
         }
-        
         filesList.innerHTML = promptFiles.map(file => `
             <div class="prompt-file-item ${file.is_current ? 'current-prompt' : ''} ${file.is_backup ? 'backup-file' : ''}" 
                  onclick="loadPromptFile('${escapeHtml(file.name)}')">
@@ -2414,7 +2083,6 @@ async function loadPromptFiles() {
                 ` : ''}
             </div>
         `).join('');
-        
     } catch (err) {
         filesList.innerHTML = `<div class="result-message error">Ошибка: ${err.message}</div>`;
         console.error("Error loading prompt files:", err);
@@ -2426,22 +2094,17 @@ async function loadCurrentPrompt() {
     const metaFilename = document.getElementById("prompt-filename");
     const metaSize = document.getElementById("prompt-size");
     const metaModified = document.getElementById("prompt-modified");
-    
     promptEditorMDE.value("Загрузка...");
     promptEditorMDE.codemirror.setOption("readOnly", true);
-    
     try {
         const res = await fetch(`/api/prompts/current?agent=${currentAgent}`);
         const data = await res.json();
-        
         currentPromptContent = data.content;
         promptEditorMDE.value(currentPromptContent);
         promptEditorMDE.codemirror.setOption("readOnly", false);
-        
         metaFilename.textContent = data.name;
         metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
         metaModified.textContent = formatDate(data.modified);
-        
         // Подсветка текущего файла в списке
         document.querySelectorAll(".prompt-file-item").forEach(item => {
             item.classList.remove("active");
@@ -2450,27 +2113,22 @@ async function loadCurrentPrompt() {
                 item.classList.add("active");
             }
         });
-        
     } catch (err) {
-        editor.value = `Ошибка загрузки: ${err.message}`;
+        promptEditorMDE.value(`Ошибка загрузки: ${err.message}`);
         console.error("Error loading current prompt:", err);
     }
 }
 // Загрузка конкретного файла промпта
 async function loadPromptFile(filename) {
-    
     try {
         const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`);
         const data = await res.json();
-        
         promptEditorMDE.value(data.content);
         currentPromptContent = data.content;
-        
         // Обновление мета-информации
         document.getElementById("prompt-filename").textContent = data.name;
         document.getElementById("prompt-size").textContent = `${(data.size / 1024).toFixed(1)} KB`;
         document.getElementById("prompt-modified").textContent = formatDate(data.modified);
-        
         // Подсветка активного элемента
         document.querySelectorAll(".prompt-file-item").forEach(item => {
             item.classList.remove("active");
@@ -2490,11 +2148,9 @@ async function createBackup() {
     resultDiv.className = "result-message";
     resultDiv.style.display = "block";
     resultDiv.innerHTML = "⏳ Создание бэкапа...";
-    
     try {
         const res = await fetch(`/api/prompts/backup?agent=${currentAgent}`, { method: "POST" });
         const data = await res.json();
-        
         if (res.ok) {
             resultDiv.className = "result-message success";
             resultDiv.innerHTML = `✅ Бэкап создан: ${data.backup_name}`;
@@ -2510,22 +2166,17 @@ async function createBackup() {
 // Сохранение промпта
 async function savePrompt() {
     const resultDiv = document.getElementById("prompt-result");
-    
     const newContent = promptEditorMDE.value();
-
     if (!newContent.trim()) {
         alert("Промпт не может быть пустым");
         return;
     }
-    
     if (!confirm("Сохранить изменения? Будет создан автоматический бэкап.")) {
         return;
     }
-    
     resultDiv.className = "result-message";
     resultDiv.style.display = "block";
     resultDiv.innerHTML = "⏳ Сохранение...";
-    
     try {
         const res = await fetch("/api/prompts/save", {
             method: "POST",
@@ -2535,9 +2186,7 @@ async function savePrompt() {
                  agent: currentAgent 
             })
         });
-        
         const data = await res.json();
-        
         if (res.ok) {
             resultDiv.className = "result-message success";
             resultDiv.innerHTML = `✅ Промпт сохранён!<br>📦 Бэкап создан автоматически`;
@@ -2556,14 +2205,11 @@ async function restorePrompt(filename) {
     if (!confirm(`Восстановить промпт из ${filename}?\n\nТекущий промпт будет заменён.`)) {
         return;
     }
-    
     try {
         const res = await fetch(`/api/prompts/restore/${encodeURIComponent(filename)}?agent=${currentAgent}`, {
             method: "POST"
-        });
-        
+        });   
         const data = await res.json();
-        
         if (res.ok) {
             alert(`✅ Восстановлено из ${filename}`);
             await loadCurrentPrompt();
@@ -2581,14 +2227,11 @@ async function deletePromptFile(filename) {
     if (!confirm(`Удалить файл ${filename}?`)) {
         return;
     }
-    
     try {
         const res = await fetch(`/api/prompts/file/${encodeURIComponent(filename)}?agent=${currentAgent}`, {
             method: "DELETE"
-        });
-        
+        });   
         const data = await res.json();
-        
         if (res.ok) {
             await loadPromptFiles();
         } else {
@@ -2607,23 +2250,17 @@ async function loadBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
     const metaSize = document.getElementById("bot-start-size");
     const metaModified = document.getElementById("bot-start-modified");
-    
     if (!editor) return;
-    
     editor.value = "Загрузка...";
     editor.disabled = true;
-    
     try {
         const res = await fetch("/api/prompts/bot-start");
         const data = await res.json();
-        
         botStartMessageContent = data.content;
         editor.value = botStartMessageContent;
         editor.disabled = false;
-        
         if (metaSize) metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
         if (metaModified) metaModified.textContent = formatDate(data.modified);
-        
     } catch (err) {
         editor.value = `Ошибка загрузки: ${err.message}`;
         console.error("Error loading bot start message:", err);
@@ -2633,29 +2270,22 @@ async function loadBotStartMessage() {
 async function saveBotStartMessage() {
     const editor = document.getElementById("bot-start-editor");
     const resultDiv = document.getElementById("bot-start-result");
-    
     if (!editor || !resultDiv) return;
-    
     const newContent = editor.value;
-    
     if (!newContent.trim()) {
         alert("Стартовое сообщение не может быть пустым");
         return;
     }
-    
     resultDiv.className = "result-message";
     resultDiv.style.display = "block";
     resultDiv.innerHTML = "⏳ Сохранение...";
-    
     try {
         const res = await fetch("/api/prompts/bot-start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: newContent })
         });
-        
         const data = await res.json();
-        
         if (res.ok) {
             resultDiv.className = "result-message success";
             resultDiv.innerHTML = `✅ Стартовое сообщение сохранено!<br>📝 Символов: ${data.length || 0}`;
@@ -2673,23 +2303,17 @@ async function loadBotHelpMessage() {
     const editor = document.getElementById("bot-help-editor");
     const metaSize = document.getElementById("bot-help-size");
     const metaModified = document.getElementById("bot-help-modified");
-    
     if (!editor) return;
-    
     editor.value = "Загрузка...";
     editor.disabled = true;
-    
     try {
         const res = await fetch("/api/prompts/bot-help");
         const data = await res.json();
-        
         botHelpMessageContent = data.content;
         editor.value = botHelpMessageContent;
         editor.disabled = false;
-        
         if (metaSize) metaSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
         if (metaModified) metaModified.textContent = formatDate(data.modified);
-        
     } catch (err) {
         editor.value = `Ошибка загрузки: ${err.message}`;
         console.error("Error loading bot help message:", err);
@@ -2700,18 +2324,14 @@ async function saveBotHelpMessage(){
     const editor = document.getElementById("bot-help-editor");
     const resultDiv = document.getElementById("bot-help-result");
     if (!editor || !resultDiv) return;
-    
     const newContent = editor.value;
-    
     if (!newContent.trim()) {
         alert("Сообщение помощи не может быть пустым");
         return;
     }
-
     resultDiv.className = "result-message";
     resultDiv.style.display = "block";
     resultDiv.innerHTML = "⏳ Сохранение...";
-
     try {
         const res = await fetch("/api/prompts/bot-help", {
             method: "POST",
@@ -2719,7 +2339,6 @@ async function saveBotHelpMessage(){
             body: JSON.stringify({ content: newContent })
         });
         const data = await res.json();
-        
         if (res.ok) {
             resultDiv.className = "result-message success";
             resultDiv.innerHTML = `✅ Сообщение помощи сохранено!<br>📝 Символов: ${data.length || 0}`;
@@ -2735,7 +2354,6 @@ async function saveBotHelpMessage(){
 // #############################
 // GROUPS TAB LOGIC
 // #############################
-
 // Загрузка списка пользователей с группами
 async function loadUserGroups(skipFetch = false) {
     const container = document.getElementById("user-groups-list");
@@ -2788,7 +2406,6 @@ async function loadUserGroups(skipFetch = false) {
     // пагинация расчеты
     const totalPages = Math.max(1, Math.ceil(filteredUsersCache.length / pageSize));
     if (currentPage > totalPages) currentPage = totalPages;
-
     const start = (currentPage - 1) * pageSize;
     const end = start + pageSize;
     const paginated = filteredUsersCache.slice(start, end);
@@ -2803,7 +2420,6 @@ async function loadUserGroups(skipFetch = false) {
         `;
         return;
     }
-        
     container.innerHTML = `
         <table class="user-groups-table">
             <thead>
@@ -2886,7 +2502,7 @@ async function loadUserGroups(skipFetch = false) {
         </div>
     `;
 }
-
+// Блокировка/разблокировка пользователя
 async function toggleUserBlock(globalUserId, value) {
     try {
         const res = await fetch("/api/subscribers/block", {
@@ -2897,20 +2513,15 @@ async function toggleUserBlock(globalUserId, value) {
                 value: value
             })
         });
-
         if (!res.ok) {
             throw new Error(`Ошибка ${res.status}`);
         }
-
         const action = value ? "заблокирован" : "разблокирован";
-
         showNotification(
             `Пользователь ${globalUserId} ${action}`,
             "success"
         );
-
         await loadUserGroups();
-
     } catch (e) {
         alert(`Ошибка блокировки: ${e.message}`);
         await loadUserGroups();
@@ -2923,7 +2534,7 @@ function toggleAccountsRow(userId) {
         el.style.display = el.style.display === 'none' ? 'block' : 'none';
     }
 }
-
+// пагинация - листание страниц
 function nextPage() {
     const totalPages = Math.ceil(filteredUsersCache.length / pageSize);
     if (currentPage < totalPages) {
@@ -2950,13 +2561,11 @@ function changePageSize() {
 function updateGroupStats(users) {
     const statsDiv = document.getElementById("user-groups-stats");
     if (!statsDiv) return;
-    
     const total = users.length;
     const managers = users.filter(u => u.manager_group).length;
     const couchs = users.filter(u => u.coach_group).length;
     const both = users.filter(u => u.manager_group && u.coach_group).length;
     const noGroups = users.filter(u => !u.manager_group && !u.coach_group).length;
-    
     statsDiv.innerHTML = `
         <h3>📊 Статистика пользователей</h3>
         <div class="groups-stats-grid">
@@ -3006,19 +2615,15 @@ async function toggleUserGroup(globalUserId, group, value) {
                 value: value
             })
         });
-        
         if (!res.ok) {
             const errorData = await res.json().catch(() => ({}));
             throw new Error(errorData.detail || `Ошибка ${res.status}`);
         }
         const groupName = group === "manager_group" ? "👔 Менеджер" : "🎓 Коуч";
         const action = value ? "добавлен в" : "удалён из";
-        
         showNotification(`Пользователь ${globalUserId} ${action} группы "${groupName}"`, "success");
-        
         // Перезагружаем список для обновления статистики
         await loadUserGroups();
-        
     } catch (e) {
         alert(`Ошибка обновления группы: ${e.message}`);
         // Возвращаем чекбокс в исходное состояние
@@ -3028,18 +2633,13 @@ async function toggleUserGroup(globalUserId, group, value) {
 // Экспорт пользователей в CSV
 function exportUsers() {
     const search = document.getElementById("user-search")?.value || "";
-
     const params = new URLSearchParams();
-
     if (search) params.set("search", search);
-
     if (activeStatsFilter && activeStatsFilter !== "all") {
         params.set("group", activeStatsFilter);
     }
-
     window.open(`/api/subscribers/export?${params.toString()}`);
 }
-
 /// #############################
 // AUTH ACCESS LOGIC
 // #############################
@@ -3049,7 +2649,6 @@ async function checkAuth() {
         const res = await fetch("/api/me", {
             credentials: "include"
         });
-
         if (!res.ok) throw new Error();
         const user = await res.json();
         currentUser = user;
@@ -3065,16 +2664,13 @@ async function checkAuth() {
 async function login() {
     const username = document.getElementById("login-username").value;
     const password = document.getElementById("login-password").value;
-
     const formData = new FormData();
     formData.append("username", username);
     formData.append("password", password);
-
     const res = await fetch("/api/login", {
         method: "POST",
         body: formData
     });
-
     if (res.ok) {
         checkAuth();
     } else {
@@ -3089,9 +2685,7 @@ async function logout() {
 // ролевые правила
 function applyRoleAccess() {
     if (!currentUser) return;
-
     const role = currentUser.role;
-
     // Все вкладки
     const tabNames = [
         "documents",
@@ -3109,17 +2703,14 @@ function applyRoleAccess() {
     tabNames.forEach(name => {
         const tab = document.getElementById(`${name}-tab`);
         if (tab) tab.classList.remove("active");
-
         hideTabButton(name);
     });
-
     if (role === "admin") {
         // admin видит всё
         tabNames.forEach(name => {
             showTabButton(name);
         });
     }
-
     if (role === "manager") {
         // manager ограничен
         const allowed = [
@@ -3129,7 +2720,6 @@ function applyRoleAccess() {
             "analytics",
             "dialogs"
         ];
-
         allowed.forEach(name => {
             showTabButton(name);
         });
@@ -3149,7 +2739,6 @@ function showTabButton(tabName) {
 // открытие после авторизации первой вкладки
 function openFirstAvailableTab() {
     const buttons = document.querySelectorAll(".tab-button");
-
     for (let btn of buttons) {
         if (btn.style.display !== "none") {
             const tabName = btn.dataset.tab;
@@ -3167,7 +2756,6 @@ function formatJSON(payload) {
         if (typeof payload === "string") {
             payload = JSON.parse(payload);
         }
-
         return JSON.stringify(payload, null, 2);
     } catch {
         return String(payload);
@@ -3176,13 +2764,10 @@ function formatJSON(payload) {
 // отрисовка переключения между страницами
 function renderPagination(dataLength) {
     const el = document.getElementById("logs-pagination");
-
     el.innerHTML = `
         <div class="pagination">
             <button onclick="prevLogs()" ${logsPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
-
             <span>Страница ${logsPage + 1}</span>
-
             <button onclick="nextLogs()" ${dataLength < LOGS_PAGE_SIZE ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
         </div>
     `;
@@ -3195,10 +2780,8 @@ function renderPayload(payload) {
 // функция загрузки логов
 async function loadLogs() {
     const params = new URLSearchParams();
-
     params.set("limit", LOGS_PAGE_SIZE);
     params.set("offset", logsPage * LOGS_PAGE_SIZE);
-
     Object.entries(logFilters).forEach(([k, v]) => {
         if (!v) return;
         if (k === "created_at") {
@@ -3206,7 +2789,6 @@ async function loadLogs() {
         } else {
             params.set(k, v);
         }
-        
     });
     const res = await fetch(`/api/events?${params}`);
     const data = await res.json();
@@ -3240,7 +2822,6 @@ function setupLogFilters() {
             timeout = setTimeout(() => {
                 const column = e.target.dataset.column;
                 const value = e.target.value.trim();
-
                 if (!value) {
                     delete logFilters[column];
                 } else {
@@ -3256,12 +2837,9 @@ function setupLogFilters() {
 function renderLogs() {
     const tbody = document.getElementById("logs-body");
     if (!tbody) return;
-
     tbody.innerHTML = '';
-
     logsCache.forEach(row => {
         const tr = document.createElement("tr");
-
         tr.innerHTML = `
             <td>${escapeHtml(row.user_id || "-")}</td>
             <td>${escapeHtml(row.user_name || "-")}</td>
@@ -3272,10 +2850,8 @@ function renderLogs() {
                 ${renderPayload(row.payload)}
             </td>
         `;
-
         tbody.appendChild(tr);
     });
-
     if (logsCache.length === 0) {
         tbody.innerHTML = `
             <tr>
@@ -3328,7 +2904,6 @@ function initAnalytics() {
     // 7 дней назад
     const from = new Date(now);
     from.setDate(from.getDate() - 7);
-
     document.getElementById("from").value = formatMSK(from);
     document.getElementById("to").value = formatMSK(to);
 }
@@ -3379,7 +2954,6 @@ async function openUsersModal(filename) {
             </div>
         `;
     }
-    
 }
 // функция закрытия модалки с пользователями
 function closeUsersModal() {
@@ -3390,28 +2964,21 @@ function closeUsersModal() {
 // функция трансформации времени в корректное для визуализации
 function formatTime(ms) {
     if (ms === null || ms === undefined) return "0 мс";
-
     if (ms < 1000) return `${ms} мс`;
     return `${(ms / 1000).toFixed(2)} сек`;
 }
 // функция рендерит статистику
 function renderStats(stats, channels) {
     const el = document.getElementById("stats");
-
     el.innerHTML = `
         <h3>📈 Статистика</h3>
-
         <p><b>Уникальные пользователи:</b> ${stats.unique_users}</p>
         <p><b>Сообщений всего:</b> ${stats.total_messages}</p>
-
         <p> Среднее количество сообщений на пользователя: ${Math.round(stats.avg_messages_per_user || 0)}</p>
         <p>🔝 Максимальное количество сообщений на пользователя: ${stats.max_messages_per_user}</p>
-
         <p>⚡ Среднее время ответа: ${formatTime(stats.avg_response_time || 0)}</p>
         <p>⚡ Медианное время ответа: ${formatTime(stats.median_response_time || 0)}</p>
-
         <hr>
-
         <h4>📡 Каналы</h4>
         ${channels.map(c => `
             <div>${c.channel || "unknown"}: ${c.messages}</div>
@@ -3438,14 +3005,11 @@ function drawUsers() {
     if (userPage < 0) userPage = 0;
     const start = userPage * PAGE_SIZE;
     const page = filteredUsers.slice(start, start + PAGE_SIZE);
-
     el.innerHTML = `
         <h3>👤 Топ пользователей</h3>
-
         <input placeholder="Поиск..." value="${userSearch}"
             oninput="searchUsers(this.value)"
         />
-
         ${page.length === 0 ? "<div>Нет пользователей</div>" : page.map(u => `
             <div class="user-card">
                 <b>${u.user_name || "unknown"}</b>
@@ -3456,12 +3020,9 @@ function drawUsers() {
                 </button>
             </div>
         `).join("")}
-
         <div class="pagination">
             <button onclick="prevUsers()" ${userPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
-
             <span>Страница ${userPage + 1} / ${totalPages}</span>
-
             <button onclick="nextUsers()" ${userPage >= totalPages - 1 ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
         </div>
     `;
@@ -3518,10 +3079,8 @@ function drawDocs() {
     // вычисляем страницы
     const total = allDocs.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
     if (docPage >= totalPages) docPage = totalPages - 1;
     if (docPage < 0) docPage = 0;
-    
     const start = docPage * PAGE_SIZE;
     const page = allDocs.slice(start, start + PAGE_SIZE);
     // вычисляем общее число скачиваний
@@ -3529,9 +3088,7 @@ function drawDocs() {
     const sourcesHtml = `
         <div class="sources-block">
             <h4>📊 Источники загрузок</h4>
-
             <div><b>Всего:</b> ${totalDownloads}</div>
-
             ${statSources.map(s => `
                 <div>
                     ${sourceLabel(s.source)}:
