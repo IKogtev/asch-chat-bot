@@ -2,12 +2,13 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
+from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
 from .validation_utils import build_validation_error
 
 logger = setup_logger("product_selection_agent", "agent.log")
@@ -211,7 +212,7 @@ def create_product_selection_agent(model: LiteLlm) -> LlmAgent:
     if DBHUB_MCP_URL:
         try:
             headers = {"Authorization": f"Bearer {DBHUB_MCP_TOKEN}"} if DBHUB_MCP_TOKEN else None
-            dbhub_toolset = McpToolset(
+            dbhub_toolset = RefreshingMcpToolset(
                 connection_params=StreamableHTTPConnectionParams(
                     url=DBHUB_MCP_URL,
                     headers=headers,
@@ -231,6 +232,11 @@ def create_product_selection_agent(model: LiteLlm) -> LlmAgent:
         logger.warning("DBHUB_MCP_URL is empty; dbhub MCP is not connected to product_selection_agent")
 
     fallback = """
+Use state variable {from_glossary} as a dictionary of terms already found by code.
+Do not invent additional expansions.
+If a user term is present in {from_glossary}, use its definition when choosing catalog queries, filters, and answer wording.
+If multiple definitions are present and the product context does not disambiguate them, return mode="no_data" instead of guessing.
+
 You are product_selection_agent.
 Return only JSON, without markdown fences.
 
