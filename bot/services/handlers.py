@@ -51,6 +51,8 @@ STARTUP_GRACE_PERIOD = 5  # сек
 OLD_MESSAGE_THRESHOLD = 15  # сек
 # список текущих задач
 ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
+# флаг для сброса пользователей при команде /reset
+RESET_USERS: set[str] = set()
 
 # отменяем активный запрос пользователя 
 async def cancel_user_request(user_id: str):
@@ -65,6 +67,16 @@ async def cancel_user_request(user_id: str):
         return False
     logger.info(f"Отмена запроса user={user_id}")
     task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        logger.info(
+            f"Запрос пользователя {user_id} успешно отменён"
+        )
+    except Exception as e:
+        logger.warning(
+            f"Ошибка при отмене задачи: {e}"
+        )
     ACTIVE_REQUESTS.pop(user_id, None)
 
     return True
@@ -423,6 +435,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         msg_text = f"Текущая версия бота: {Settings.PLATFORM_VERSION}"
         await bot_res.send(msg_text)
     
+    async def clear_reset_flag(user_id: str):
+        await asyncio.sleep(2)
+        RESET_USERS.discard(user_id)
+
     # домашняя страница
     @callback_decorator(home_filter)
     @universal_handler
@@ -451,7 +467,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         )
         try:
             # отменяем текущий запрос пользователя
-            canceled = await cancel_user_request(str(global_user_id))
+            RESET_USERS.add(str(global_user_id))
+            await cancel_user_request(
+                str(global_user_id)
+            )
+            # через небольшой delay очищаем reset-флаг
+            asyncio.create_task(clear_reset_flag(global_user_id))
             # останавливаем typing прямо сейчас
             await bot_res.stop_typing()
             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
@@ -766,6 +787,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     response_time = int((time.time() - start_time) * 1000)
                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
                     # await send_answer(event, answer)
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(answer)
                     await eventlogger.log_event(
                         event_type="response",
@@ -796,6 +822,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if not ok:
                     response_time = int((time.time() - start_time) * 1000)
                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(answer)
                     await eventlogger.log_event(
                         event_type="response",
@@ -842,6 +873,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+            if str(global_user_id) in RESET_USERS:
+                logger.info(
+                    f"Пропускаем ответ после reset user={global_user_id}"
+                )
+                return
+            if asyncio.current_task().cancelled():
+                raise asyncio.CancelledError()
             response_time = int((time.time() - start_time) * 1000)
             work = answer or ""
 
@@ -854,6 +892,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if work.strip():
                     is_already_html = "<b>" in work or work.lstrip().startswith("<")
                     final_text = work if is_already_html else markdown_to_safe_html(work)
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(final_text)
                     await eventlogger.log_event(
                         event_type="response",
@@ -887,7 +930,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if items:
                     shown = min(max(int(meta_after.get("shown_count", 5)), 0), len(items))
                     text_list = render_results(items[:shown], total=len(items), offset=0)
-                    
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(text_list) # Используем наш хелпер!
                     response_time = int((time.time() - start_time) * 1000)
                     await eventlogger.log_event(
@@ -910,6 +957,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 final_text = work if is_already_html else markdown_to_safe_html(work)
                 response_time = int((time.time() - start_time) * 1000)
                 # Отправляем одной командой для любой платформы!
+                if str(global_user_id) in RESET_USERS:
+                    logger.info(
+                        f"Пропускаем ответ после reset user={global_user_id}"
+                    )
+                    return
                 await bot_res.send(final_text)
                 
                 await eventlogger.log_event(
@@ -934,6 +986,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     "error": str(e)
                 }
             )
+            if str(global_user_id) in RESET_USERS:
+                logger.info(
+                    f"Пропускаем ответ после reset user={global_user_id}"
+                )
+                return
             await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
         finally:
             ACTIVE_REQUESTS.pop(
