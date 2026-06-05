@@ -183,7 +183,7 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 collection_name = os.getenv("QDRANT_COLLECTION", "kb_collection")
 qdrant_url = f"{QDRANT_HOST}:{QDRANT_PORT}"
 # Embedding API configuration
-embedding_api_base = os.getenv("EMBEDDING_API_BASE", "https://dsrv1.llm.nstcloud.ru/v1/embeddings")
+embedding_api_base = os.getenv("EMBEDDING_API_BASE", "https://api.llm.nstcloud.ru/v1/embeddings")
 embedding_api_key = os.getenv("EMBEDDING_API_KEY", "REDACTED_EXAMPLE")
 embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))

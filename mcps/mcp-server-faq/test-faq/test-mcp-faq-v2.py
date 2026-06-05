@@ -46,7 +46,7 @@ FAQ_SOURCE_PATH = Path("")
 
 # OpenAI/OpenRouter конфиг
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "REDACTED_EXAMPLE")
-OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://dsrv1.llm.nstcloud.ru/v1")
+OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://api.llm.nstcloud.ru/v1")
 MODEL_NAME = os.getenv("OPENROUTER_API_MODEL", "Qwen/Qwen3-30B-A3B")
 INDEX_ANSWERS = os.getenv("INDEX_ANSWERS", "false").lower() == "true"
 

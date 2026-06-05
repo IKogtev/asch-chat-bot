@@ -53,7 +53,7 @@ MCP_PORT = int(os.getenv("MCP_PORT", 7000))
 
 # Конфигурация индексирования
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "REDACTED_EXAMPLE")
-OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL_EMB", "https://dsrv1.llm.nstcloud.ru/v1/embeddings")
+OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL_EMB", "https://api.llm.nstcloud.ru/v1/embeddings")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", 5))
 SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", 0.0))
