@@ -1,5 +1,4 @@
 import asyncio
-import aiohttp
 from dotenv import load_dotenv
 from typing import Optional
 # Загружаем переменные окружения ДО импорта setup_logger

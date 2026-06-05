@@ -10,7 +10,7 @@ from app.models import (
     DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
     )
 from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
-import hashlib, os, uuid, shutil, asyncio, aiofiles
+import os, uuid, shutil, asyncio, aiofiles
 from contextlib import asynccontextmanager
 from utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
@@ -31,7 +31,7 @@ import pymorphy3
 import csv
 import io
 import sys
-
+from app.services.adk_db_stats_service import AdkDbStatsService
 load_dotenv()
 
 # Используем современный Lifespan вместо @app.on_event("startup")
@@ -135,11 +135,30 @@ async def auth_middleware(request: Request, call_next):
                 return response
         
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-
 # AUTH config
 SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
 ALGORITHM = "HS256"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
+# база для загрузки таблиц postgres 
+NSTYA_DATA_URL = os.getenv(
+    "NSTYA_DATA_URL",
+    "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
+)
+# если мы делаем логирование у нас умирает adk_session и бот соответственно
+ADK_SESSION_SERVICE_URI  = os.getenv("ADK_SESSION_SERVICE_URI", "postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions")
+ADK_SESSION_SERVICE_URI  = os.getenv("fail", "s")
+def normalize_adk_dsn(uri: str) -> str:
+    """
+    postgresql+asyncpg://
+        ->
+    postgresql://
+    """
+    return uri.replace(
+        "postgresql+asyncpg://",
+        "postgresql://",
+        1
+    )
+ADK_SESSION_DATABASE_URL = normalize_adk_dsn(ADK_SESSION_SERVICE_URI)
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_HOURS = 5
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -300,7 +319,6 @@ async def send_to_bots(
 ):
     """
     Универсальная отправка запросов во все боты.
-
     route:
         "/api/reload-start-message"
         "/broadcast"
@@ -312,39 +330,28 @@ async def send_to_bots(
         "max": {...}
     }
     """
-
     results = {}
-
     target_bots = bots or list(BOTS.keys())
-
     for bot_name in target_bots:
         base_url = BOTS[bot_name]
-
         try:
             url = f"{base_url}{route}"
-
             kwargs = {
                 "timeout": timeout
             }
-
             if json_data is not None:
                 kwargs["json"] = json_data
-
             if files is not None:
                 kwargs["files"] = files
-
             if form_data is not None:
                 kwargs["data"] = form_data
-
             if method.upper() == "POST":
                 resp = await http_client.post(url, **kwargs)
             elif method.upper() == "GET":
                 resp = await http_client.get(url, **kwargs)
             else:
                 raise ValueError(f"Unsupported method: {method}")
-
             resp.raise_for_status()
-
             try:
                 results[bot_name] = resp.json()
             except Exception:
@@ -352,15 +359,12 @@ async def send_to_bots(
                     "status": "ok",
                     "text": resp.text
                 }
-
         except Exception as e:
             logger.error(f"{bot_name.upper()} request error: {e}")
-
             results[bot_name] = {
                 "status": "error",
                 "error": str(e)
             }
-
     return results
 
 # Mount static files
@@ -393,27 +397,6 @@ async def event_generator():
     finally:
         subscribers.remove(queue)
 
-async def save_upload_to_tmp(file: UploadFile) -> Path:
-    """Сохранение во временные файлы"""
-    upload_id = uuid.uuid4().hex
-    tmp_dir = Path("/tmp/uploads") / upload_id 
-    tmp_dir.mkdir(parents=True, exist_ok=True)    
-    tmp_file = tmp_dir / (file.filename or "unknown")
-    # Читаем и пишем асинхронно, не блокируя основной поток
-    async with aiofiles.open(tmp_file, 'wb') as out_file:
-        while content := await file.read(1024 * 1024): # Читаем чанками по 1МБ
-            await out_file.write(content)
-    return tmp_file
-
-def validate_extensions(ext: str, collection_type: str):
-    """Проверка поддерживания расширения для индексации"""
-    allowed = SUPPORTED_FAQ_EXTENSIONS if collection_type=="faq" else SUPPORTED_KB_EXTENSIONS
-    if ext not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported {collection_type.upper()} format: {ext}"
-            f"\n Supported formats are: {', '.join(allowed)}"
-        )
 ##################################
 # Работа с синхронихацией
 ##################################
@@ -483,15 +466,10 @@ def create_sync_task():
     }
 
 def calculate_total_kbs():
-
     total = 0
-
     for collection_name in _sync_collections_in_order():
-
         cfg = COLLECTIONS_CFG[collection_name]
-
         root = cfg["root_path"]
-
         total += len(
             [
                 folder
@@ -499,7 +477,6 @@ def calculate_total_kbs():
                 if folder.is_dir()
             ]
         )
-
     return total
 
 def create_log_callback(task_id: str):
@@ -778,7 +755,7 @@ async def run_sync_all_once(log_callback=None, global_progress=None):
         await sync_function(root, storager, cfg["sync_type"], log_callback=log_callback, global_progress=global_progress)
 
     return {"status": "success", "message": "SYNC completed"}          
-
+# синхронизация по расписанию
 async def start_scheduler():
     # запускаем расписание автоматической синхроонизации
     await asyncio.sleep(10)
@@ -820,15 +797,7 @@ async def set_sync_settings(data: SyncInterval):
     sync_update_event.set()
     return {"status": "updated", "interval": data.hours, "next_sync": sync_settings["next_sync"]}
 
-@app.post("/api/filesystem/sync_all")
-async def manual_sync_all():
-    """
-    Эндпоинт для ручной синхронизации по кнопке.
-    Вызывает ту же логику, но один раз и сразу возвращает ответ.
-    """
-    result = await run_sync_all_safe()
-    return result
-
+# создание и получение сервиса хранения для коллекции на лету, чтобы не создавать все стораджи сразу, а только по мере необходимости
 def get_or_create_storager(collection_name: str):
     # 1. Если уже есть, возвращаем
     if collection_name in file_storages:
@@ -860,6 +829,7 @@ def get_or_create_storager(collection_name: str):
     file_storages[collection_name] = new_storager
     return new_storager
 
+# получение конфигурации коллекции по имени, с поддержкой частичного совпадения
 def get_collection_cfg(collection_name: str):
     if collection_name in COLLECTIONS_CFG:
         return COLLECTIONS_CFG[collection_name]
@@ -871,98 +841,6 @@ def get_collection_cfg(collection_name: str):
     logger.warning(f"Configuration for collection '{collection_name}' not found.")
     return None
 
-def get_collection_root(collection_name: str):
-    """
-    Возвращает root_path даже для динамических коллекций:
-        faq_collection_2
-        faq_collection_test
-        kb_collection_new
-    """
-
-    cfg = get_collection_cfg(collection_name)
-
-    if not cfg:
-        return None
-
-    return cfg["root_path"]
-
-@app.post("/api/filesystem/sync_collection")
-async def sync_collection(data: dict):
-    collection_name = data.get("collection_name")
-    if not collection_name:
-        return {
-            "status": "error",
-            "message": "collection_name is required"
-        }
-    # Используем фабрику вместо прямого доступа к словарю
-    storager = get_or_create_storager(collection_name)
-    
-    if not storager:
-        return {"status": "error", "message": f"Could not initialize storage for {collection_name}"}
-
-    # Получаем конфиг для синхронизации типа
-    cfg  = get_collection_cfg(collection_name)
-    if not cfg:
-        return {
-            "status": "error",
-            "message": f"Collection '{collection_name}' not found"
-        }
-    root = storager.root
-    sync_type = cfg["sync_type"]
-    logger.info(f"[SYNC COLLECTION] {collection_name}")
-    if sync_type == "faq":
-        prepared_dir = Path(root) / "_prepared"
-
-        if prepared_dir.exists():
-            logger.info(
-                f"Cleaning FAQ cache: {prepared_dir}"
-            )
-            shutil.rmtree(prepared_dir)
-    await sync_function(
-        root,
-        storager,
-        sync_type
-    )
-
-    storage = get_current_storage()
-    storage.build_tree()
-
-    for q in subscribers:
-        await q.put("sync_completed")
-
-    return {
-        "status": "completed",
-        "collection": collection_name
-    }
-
-@app.post("/api/filesystem/sync")
-async def filesystem_sync(
-    kb_id: str = Form("01_Маркетинговые материалы"),
-    collection_name: str = Form("kb_collection")
-):
-    """синхронизация для kb отдельно, чтобы не делать для всех"""
-    logger.info(f"[SYNC ONE] kb_id={kb_id}, collection={collection_name}")
-    if collection_name not in COLLECTIONS_CFG:
-        return {"status": "error", "message": f"Collection '{collection_name}' not found"}
-    cfg = COLLECTIONS_CFG[collection_name]
-    storager = file_storages.get(collection_name)
-    if not storager:
-        return {"status": "error", "message": f"Storage for {collection_name} is not initialized"}
-    try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: storager.sync(
-                kb_id=kb_id,
-                collection_type=cfg["sync_type"],
-            ),
-        )
-
-    except Exception as e:
-        logger.error(f"[SYNC KB] Error: {e}")
-        return {"status": "error", "message": str(e)}
-
-    return {"status": "sync_completed"}
 ##################################
 # DATABASE & AUTH utils
 ##################################
@@ -1075,6 +953,20 @@ def is_allowed(path: str, role: str) -> bool:
     # проверяем prefix match
     return any(path.startswith(p) for p in allowed_paths)
 
+@app.get("/api/admin/adk-sessions/stats")
+async def get_adk_session_stats():
+
+    if not ADK_SESSION_DATABASE_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="ADK_SESSION_DATABASE_URL not configured"
+        )
+
+    service = AdkDbStatsService(
+        ADK_SESSION_DATABASE_URL
+    )
+
+    return await service.get_stats()
 ##################################
 # Авторизация и главная
 ##################################
@@ -1182,203 +1074,6 @@ async def list_documents():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-#  загрузка таблиц из Excel в PostgreSQL
-@app.post("/api/tables/load")
-async def load_tables():
-    """
-    Запуск загрузчика Excel таблиц в PostgreSQL
-    """
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "app.scripts.load_tables",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=stderr.decode()
-            )
-        tables = await get_loaded_tables()
-        return {
-            "success": True,
-            "stdout": stdout.decode(),
-            "stderr": stderr.decode(),
-            "tables": tables
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-NSTYA_DATA_URL = os.getenv(
-    "NSTYA_DATA_URL",
-    "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
-)
-
-async def get_loaded_tables():
-    conn = await asyncpg.connect(NSTYA_DATA_URL)
-    try:
-
-        rows = await conn.fetch("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema='public'
-            ORDER BY table_name
-        """)
-
-        return [r["table_name"] for r in rows]
-    finally:
-        await conn.close()
-    
-@app.get("/api/tables/{table_name}")
-async def get_table_info(table_name: str):
-
-    conn = await asyncpg.connect(NSTYA_DATA_URL)
-    try:
-        columns = await conn.fetch("""
-                SELECT
-                    column_name,
-                    data_type
-                FROM information_schema.columns
-                WHERE table_name = $1
-                ORDER BY ordinal_position
-            """, table_name)
-
-        count = await conn.fetchval(
-                f'SELECT COUNT(*) FROM "{table_name}"'
-        )
-        logger.info(f"Table {table_name} has {count} rows and {len(columns)} columns")
-        return {
-            "table": table_name,
-            "rows": count,
-            "columns": [
-                {
-                    "name": c["column_name"],
-                    "type": c["data_type"]
-                }
-                for c in columns
-            ]
-        }
-    finally:
-        await conn.close()
-
-@app.post("/api/documents/upload")
-async def upload_document(
-    file: UploadFile = File(...),
-    kb_id: str = Form("default"),
-    user_id: str = Form("anonymous"),
-    upload_mode: str = Form("check"),  # check, replace, keep-both, force
-    collection_type: str = Form("faq"),  # faq or kb
-    collection_name: str = Form("kb_collection")
-):
-    """Upload and process a document
-    
-    upload_mode:
-    - check: Check for duplicates and conflicts (default)
-    - replace: Replace existing file with same name
-    - keep-both: Keep both versions with incremented version number
-    - force: Skip all checks and upload anyway
-    """
-    # Валидация коллекции
-    if collection_name not in COLLECTIONS_CFG:
-        raise HTTPException(400, f"Collection '{collection_name}' not found")
-    
-    # get type of collection:
-    cfg = COLLECTIONS_CFG[collection_name]
-    filename = file.filename or "unknown"
-    ext = Path(filename).suffix.lower()
-    validate_extensions(ext, collection_type)    
-    tmp_file = None
-    # Переключаем Qdrant на нужную коллекцию (КРИТИЧЕСКИ ВАЖНО)
-    # Делаем это в самом начале, чтобы все последующие запросы к Qdrant шли в правильный индекс
-    qdrant_service.switch_collection(collection_name, cfg["type"])
-    try:
-        tmp_file = await save_upload_to_tmp(file)
-        logger.info(f"collection_type : {collection_type}")
-        kb_dir = cfg["root_path"] / kb_id
-        kb_dir.mkdir(parents=True, exist_ok=True)
-        final_file_path = kb_dir/filename
-        shutil.copy(tmp_file, final_file_path)
-        # Read file content
-        # Compute SHA256 hash of the file content
-        source_hash = hashlib.sha256(tmp_file.read_bytes()).hexdigest()
-        loader = DocumentLoaderFAQ(
-            documents_dir=kb_dir, 
-            service_dir=Path("app"),
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
-        )
-        documents, _, docs_count, points_count = loader.prepare_docs_texts(
-            map_true=(collection_type=="faq"),
-            index_answers=False,
-            user_id=user_id,
-            kb_id=kb_id,
-            filepath=str(final_file_path.resolve())
-        )
-
-        if not documents:
-            raise HTTPException(400, "FAQ preprocessing failed No files")
-                
-        hashes = [d["meta"].get("doc_hash") for d in documents if d.get("meta", {}).get("doc_hash")]
-
-        if upload_mode == "check":
-            duplicates = qdrant_service.check_duplicates(kb_id, hashes)
-            if duplicates:
-                return JSONResponse(
-                    status_code=409,
-                    content={
-                        "conflict_type": "duplicate",
-                        "duplicates": duplicates[:10],
-                        "message": "Duplicate content detected"
-                    }
-                )
-
-        # 4. replace / keep-both логика (для KB)
-        if collection_type == "kb":
-            existing = qdrant_service.check_filename_exists(kb_id, filename)
-
-            if existing and upload_mode == "replace":
-                qdrant_service.delete_document(existing["document_id"])
-
-            elif existing and upload_mode == "keep-both":
-                max_version = qdrant_service.get_max_version(kb_id, filename)
-                for d in documents:
-                    d["meta"]["version"] = max_version + 1
-
-        # 5. загрузка в Qdrant 
-        qdrant_service.upload_points_qdrant(
-            documents,
-            docs_count,
-            points_count,
-            collection_name=collection_name,
-        )    
-
-        return JSONResponse({
-            "success": True,
-            "collection_type": collection_type,
-            "kb_id": kb_id,
-            "source_name": filename,
-            "source_type": ext.lstrip("."),
-            "document_count": docs_count,
-            "points_count": points_count,
-            "source_hash": source_hash,
-            "message": "Document uploaded successfully",
-            "document_id": documents[0]["meta"].get("document_id") if documents else None   
-        })
-
-    finally:
-        if tmp_file:
-            shutil.rmtree(tmp_file.parent, ignore_errors=True)
-
 @app.get("/api/documents/{document_id}")
 async def get_document(document_id: str):
     """Get all chunks for a specific document"""
@@ -1478,6 +1173,102 @@ async def download_document(document_id: str):
         filename=file_path.name,
         media_type="application/octet-stream"
     )
+
+
+##################################
+# Работа с таблицами
+##################################
+
+# загрузка таблиц из Excel в PostgreSQL
+@app.post("/api/tables/load")
+async def load_tables():
+    """
+    Запуск загрузчика Excel таблиц в PostgreSQL
+    """
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "app.scripts.load_tables",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=stderr.decode()
+            )
+        tables = await get_loaded_tables()
+        return {
+            "success": True,
+            "stdout": stdout.decode(),
+            "stderr": stderr.decode(),
+            "tables": tables
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+async def get_loaded_tables():
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+
+        rows = await conn.fetch("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema='public'
+                AND table_name NOT LIKE 'dc_%'
+            ORDER BY table_name
+        """)
+
+        return [r["table_name"] for r in rows]
+    finally:
+        await conn.close()
+
+# эндпоинт для получения списка загруженных таблиц и их структуры 
+@app.get("/api/tables")
+async def get_tables():
+    tables = await get_loaded_tables()
+    return {
+        "tables": tables
+    }
+
+@app.get("/api/tables/{table_name}")
+async def get_table_info(table_name: str):
+
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+        columns = await conn.fetch("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = $1
+                ORDER BY ordinal_position
+            """, table_name)
+        column_names = [
+            c["column_name"]
+            for c in columns
+        ]
+        rows = await conn.fetch(
+            f'SELECT * FROM "{table_name}" LIMIT 100'
+        )
+        return {
+            "table": table_name,
+            "columns": column_names,
+            "data": [
+                dict(row)
+                for row in rows
+            ]
+        }
+    finally:
+        await conn.close()
+
 
 ##################################
 # Работа с коллекциями
@@ -1686,6 +1477,20 @@ def get_collections_by_type():
 ##################################
 # Работа с файловой системой
 ##################################
+def get_collection_root(collection_name: str):
+    """
+    Возвращает root_path даже для динамических коллекций:
+        faq_collection_2
+        faq_collection_test
+        kb_collection_new
+    """
+
+    cfg = get_collection_cfg(collection_name)
+
+    if not cfg:
+        return None
+
+    return cfg["root_path"]
 
 @app.get("/api/filesystem/folders")
 async def get_folders():

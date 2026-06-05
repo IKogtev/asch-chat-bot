@@ -262,6 +262,7 @@ services:
       - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
       - PRODUCT_KITS_ROOT=/app/data/kb_documents/kb/1 Продукты
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
     depends_on:
