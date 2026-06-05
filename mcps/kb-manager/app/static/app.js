@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
     await loadDocuments(); // загрузка документов
     await loadSyncSettings();
+    refreshTablesList();
     subscribeToSync();
     await loadFilesystemTree();
     startLogsAutoRefresh();
@@ -1431,7 +1432,6 @@ async function loadTables() {
     const btn = document.getElementById("load-tables-btn");
     const progress = document.getElementById("tables-load-progress");
     const result = document.getElementById("tables-load-result");
-    const tablesList = document.getElementById("tables-list");
     btn.disabled = true;
     progress.style.display = 'block';
     try {
@@ -1444,23 +1444,15 @@ async function loadTables() {
         }
         result.className = "result-message success";
         result.innerHTML =
-            "✓ Таблицы успешно загружены";
-        tablesList.innerHTML = `
-            <h4>Текущие таблицы:</h4>
-            <div class="tables-grid">
-                ${data.tables.map(t => `
-                    <button class="table-card" onclick="showTableInfo('${t}')">
-                        🗂️ ${t}
-                    </button>
-                `).join("")}
-            </div>
-        `;
+            "✓ Таблицы успешно обновлены";
+        renderTables(data.tables);
     } catch (error) {
-        console.error(error);
-        result.className = "result-message error";
-        result.innerHTML = error.message;
+        result.className =
+            "result-message error";
+        result.innerHTML =
+            error.message;
     } finally {
-        progress.style.display = 'none';
+        progress.style.display = "none";
         result.style.display = "block";
         btn.disabled = false;
     }
@@ -1469,11 +1461,13 @@ async function loadTables() {
 async function showTableInfo(tableName) {
     const modal = document.getElementById("table-info-modal");
     const modalTitle = document.getElementById("modal-table-title");
-    const columnsBody = document.getElementById("details-columns-body");
     const loadingDiv = document.getElementById("modal-loading");
     const contentDiv = document.getElementById("modal-content");
+    const tableHead = document.getElementById("table-data-head");
+    const tableBody = document.getElementById("table-data-body");
     modalTitle.innerText = `Загрузка: ${tableName}`;
-    columnsBody.innerHTML = ""; // Очищаем таблицу
+    tableHead.innerHTML = "";
+    tableBody.innerHTML = "";
     // 2. УПРАВЛЕНИЕ ВИДИМОСТЬЮ (сначала скрываем контент, показываем лоадер)
     contentDiv.style.display = "none";
     loadingDiv.style.display = "block";
@@ -1488,8 +1482,23 @@ async function showTableInfo(tableName) {
         const data = await response.json();
         // Заполняем данные
         modalTitle.innerText = `Таблица: ${data.table}`; // Меняем заголовок на правильный
-        columnsBody.innerHTML = data.columns
-            .map(col => `<tr><td>${col.name}</td><td>${col.type}</td></tr>`)
+        // заголовок таблицы
+        tableHead.innerHTML = `
+            <tr>
+                ${data.columns.map(
+                    c => `<th>${c}</th>`
+                ).join("")}
+            </tr>
+        `;
+        // строки таблицы
+        tableBody.innerHTML = data.data
+            .map(row => `
+                <tr>
+                    ${data.columns.map(
+                        c => `<td>${row[c] ?? ""}</td>`
+                    ).join("")}
+                </tr>
+            `)
             .join("");
         loadingDiv.style.display = "none";
         contentDiv.style.display = "block";
@@ -1498,6 +1507,41 @@ async function showTableInfo(tableName) {
         alert("Ошибка: " + error.message);
         closeTableModal();
     }
+}
+// обновление списка таблиц (вызывается после загрузки новых таблиц)
+async function refreshTablesList() {
+    const tablesList = document.getElementById("tables-list");
+    try {
+        const response = await fetch("/api/tables");
+        if (!response.ok) {
+            throw new Error("Не удалось получить список таблиц");
+        }
+        const data = await response.json();
+        renderTables(data.tables);
+    } catch (error) {
+        tablesList.innerHTML = `
+            <div class="result-message error">
+                ${error.message}
+            </div>
+        `;
+    }
+}
+// рендер таблиц 
+function renderTables(tables) {
+    const tablesList = document.getElementById("tables-list");
+    tablesList.innerHTML = `
+        <h4>Текущие таблицы:</h4>
+        <div class="tables-grid">
+            ${tables.map(t => `
+                <button
+                    class="table-card"
+                    onclick="showTableInfo('${t}')"
+                >
+                    🗂️ ${t}
+                </button>
+            `).join("")}
+        </div>
+    `;
 }
 // закрытие модального окна с информацией о таблице
 function closeTableModal() {

@@ -1074,90 +1074,6 @@ async def list_documents():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-#  загрузка таблиц из Excel в PostgreSQL
-@app.post("/api/tables/load")
-async def load_tables():
-    """
-    Запуск загрузчика Excel таблиц в PostgreSQL
-    """
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "app.scripts.load_tables",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=stderr.decode()
-            )
-        tables = await get_loaded_tables()
-        return {
-            "success": True,
-            "stdout": stdout.decode(),
-            "stderr": stderr.decode(),
-            "tables": tables
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-async def get_loaded_tables():
-    conn = await asyncpg.connect(NSTYA_DATA_URL)
-    try:
-
-        rows = await conn.fetch("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema='public'
-            ORDER BY table_name
-        """)
-
-        return [r["table_name"] for r in rows]
-    finally:
-        await conn.close()
-    
-@app.get("/api/tables/{table_name}")
-async def get_table_info(table_name: str):
-
-    conn = await asyncpg.connect(NSTYA_DATA_URL)
-    try:
-        columns = await conn.fetch("""
-                SELECT
-                    column_name,
-                    data_type
-                FROM information_schema.columns
-                WHERE table_name = $1
-                ORDER BY ordinal_position
-            """, table_name)
-
-        count = await conn.fetchval(
-                f'SELECT COUNT(*) FROM "{table_name}"'
-        )
-        logger.info(f"Table {table_name} has {count} rows and {len(columns)} columns")
-        return {
-            "table": table_name,
-            "rows": count,
-            "columns": [
-                {
-                    "name": c["column_name"],
-                    "type": c["data_type"]
-                }
-                for c in columns
-            ]
-        }
-    finally:
-        await conn.close()
-
 @app.get("/api/documents/{document_id}")
 async def get_document(document_id: str):
     """Get all chunks for a specific document"""
@@ -1257,6 +1173,102 @@ async def download_document(document_id: str):
         filename=file_path.name,
         media_type="application/octet-stream"
     )
+
+
+##################################
+# Работа с таблицами
+##################################
+
+# загрузка таблиц из Excel в PostgreSQL
+@app.post("/api/tables/load")
+async def load_tables():
+    """
+    Запуск загрузчика Excel таблиц в PostgreSQL
+    """
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "app.scripts.load_tables",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=stderr.decode()
+            )
+        tables = await get_loaded_tables()
+        return {
+            "success": True,
+            "stdout": stdout.decode(),
+            "stderr": stderr.decode(),
+            "tables": tables
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+async def get_loaded_tables():
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+
+        rows = await conn.fetch("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema='public'
+                AND table_name NOT LIKE 'dc_%'
+            ORDER BY table_name
+        """)
+
+        return [r["table_name"] for r in rows]
+    finally:
+        await conn.close()
+
+# эндпоинт для получения списка загруженных таблиц и их структуры 
+@app.get("/api/tables")
+async def get_tables():
+    tables = await get_loaded_tables()
+    return {
+        "tables": tables
+    }
+
+@app.get("/api/tables/{table_name}")
+async def get_table_info(table_name: str):
+
+    conn = await asyncpg.connect(NSTYA_DATA_URL)
+    try:
+        columns = await conn.fetch("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = $1
+                ORDER BY ordinal_position
+            """, table_name)
+        column_names = [
+            c["column_name"]
+            for c in columns
+        ]
+        rows = await conn.fetch(
+            f'SELECT * FROM "{table_name}" LIMIT 100'
+        )
+        return {
+            "table": table_name,
+            "columns": column_names,
+            "data": [
+                dict(row)
+                for row in rows
+            ]
+        }
+    finally:
+        await conn.close()
+
 
 ##################################
 # Работа с коллекциями
