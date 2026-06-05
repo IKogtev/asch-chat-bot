@@ -148,7 +148,7 @@ POST /kb/update?source_type=local_folder&mode=replace&source_path=/path/to/docs
 | `MCP_HOST` | Хост сервера | 0.0.0.0 |
 | `MCP_PORT` | Порт сервера | 7001 |
 | `MCP_KBSEARCH` | Базовый путь MCP | /kbsearch |
-| `EMBEDDING_API_URL` | URL API для эмбеддингов | -https://dsrv1.llm.nstcloud.ru/v1/embeddings |
+| `EMBEDDING_API_URL` | URL API для эмбеддингов | -https://api.llm.nstcloud.ru/v1/embeddings |
 | `EMBEDDING_API_KEY` | Ключ API для эмбеддингов | default-key |
 | `EMBEDDING_MODEL` | Модель эмбеддингов | Qwen/Qwen3-Embedding-0.6B |
 | `KB_CHUNK_SIZE` | Размер чанка | 512 |
