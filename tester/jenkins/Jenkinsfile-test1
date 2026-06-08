@@ -8,7 +8,7 @@ pipeline {
     )
     hidden(
       name: 'LLM_API_URL',
-      defaultValue: 'https://dsrv1.llm.nstcloud.ru/v1',
+      defaultValue: 'https://api.llm.nstcloud.ru/v1',
       description: 'LLM API URL'
     )
     choice(
