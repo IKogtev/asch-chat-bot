@@ -46,9 +46,12 @@ def _load_doc_search_module():
     lite_llm_stub = types.ModuleType("google.adk.models.lite_llm")
     lite_llm_stub.LiteLlm = type("LiteLlm", (), {})
 
+    mcp_session_manager_stub = types.ModuleType(
+        "google.adk.tools.mcp_tool.mcp_session_manager"
+    )
     mcp_toolset_stub = types.ModuleType("google.adk.tools.mcp_tool.mcp_toolset")
     mcp_toolset_stub.McpToolset = type("McpToolset", (), {})
-    mcp_toolset_stub.StreamableHTTPConnectionParams = type(
+    mcp_session_manager_stub.StreamableHTTPConnectionParams = type(
         "StreamableHTTPConnectionParams", (), {}
     )
 
@@ -62,6 +65,9 @@ def _load_doc_search_module():
     sys.modules["agent.tools.refreshing_mcp_toolset"] = refreshing_toolset_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
+    sys.modules[
+        "google.adk.tools.mcp_tool.mcp_session_manager"
+    ] = mcp_session_manager_stub
     sys.modules["google.adk.tools.mcp_tool.mcp_toolset"] = mcp_toolset_stub
 
     spec = importlib.util.spec_from_file_location("agent.agents.doc_search_agent", module_path)

@@ -50,6 +50,9 @@ def _load_product_selection_module():
     lite_llm_stub = types.ModuleType("google.adk.models.lite_llm")
     lite_llm_stub.LiteLlm = type("LiteLlm", (), {})
 
+    mcp_session_manager_stub = types.ModuleType(
+        "google.adk.tools.mcp_tool.mcp_session_manager"
+    )
     mcp_toolset_stub = types.ModuleType("google.adk.tools.mcp_tool.mcp_toolset")
 
     class _FakeConnectionParams:
@@ -60,7 +63,7 @@ def _load_product_selection_module():
             self.timeout = kwargs.get("timeout")
 
     mcp_toolset_stub.McpToolset = type("McpToolset", (), {})
-    mcp_toolset_stub.StreamableHTTPConnectionParams = type(
+    mcp_session_manager_stub.StreamableHTTPConnectionParams = type(
         "StreamableHTTPConnectionParams", (), {"__init__": _FakeConnectionParams.__init__}
     )
 
@@ -83,6 +86,9 @@ def _load_product_selection_module():
     sys.modules["agent.tools.refreshing_mcp_toolset"] = refreshing_toolset_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
+    sys.modules[
+        "google.adk.tools.mcp_tool.mcp_session_manager"
+    ] = mcp_session_manager_stub
     sys.modules["google.adk.tools.mcp_tool.mcp_toolset"] = mcp_toolset_stub
 
     spec = importlib.util.spec_from_file_location("agent.agents.product_selection_agent", module_path)
@@ -118,7 +124,38 @@ def test_validate_product_selection_result_accepts_filter_answer() -> None:
         "used_tables": ["products"],
         "resolved_product": None,
         "clarification_options": [],
+        "products": [],
     }
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_products_for_filter_answer() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "product_filter",
+            "message": "Products found",
+            "used_tables": ["products"],
+            "products": [
+                {
+                    "code": 2867,
+                    "name": " Bundle Fort Knox 3+36 месяцев ",
+                    "folder_kit": "Fort Knox (2867)",
+                    "ignored": "x",
+                }
+            ],
+            "clarification_options": [],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert result["products"] == [
+        {
+            "code": "2867",
+            "name": "Bundle Fort Knox 3+36 месяцев",
+            "folder_kit": "Fort Knox (2867)",
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -214,6 +251,7 @@ def test_validate_product_selection_result_accepts_no_data() -> None:
     assert result["used_tables"] == []
     assert result["resolved_product"] is None
     assert result["clarification_options"] == []
+    assert result["products"] == []
 
 
 @pytest.mark.unit
