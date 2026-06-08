@@ -1,5 +1,8 @@
+"""
+adk_db_stats_service
+сервис для получения статистики по базе данных ADK, используемой ботом
+"""
 import asyncpg
-
 
 class AdkDbStatsService:
 
@@ -7,15 +10,11 @@ class AdkDbStatsService:
         self.dsn = dsn
 
     async def get_stats(self):
-
         conn = await asyncpg.connect(self.dsn)
-
         try:
-
             db_size = await conn.fetchval("""
                 SELECT pg_database_size(current_database())
             """)
-
             connections = await conn.fetchval("""
                 SELECT count(*)
                 FROM pg_stat_activity

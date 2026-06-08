@@ -1,37 +1,34 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
+from fastapi import (FastAPI, UploadFile, File, HTTPException, Form,
+                      Request, Depends, BackgroundTasks)
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse, StreamingResponse, Response
+from fastapi.responses import (
+    HTMLResponse, JSONResponse, FileResponse,
+    PlainTextResponse, StreamingResponse, Response)
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from dotenv import load_dotenv
-from app.services.qdrant_service import QdrantService, CollectionType
-from app.models import (
-    DocumentInfo, SearchRequest, SearchResult, SwitchCollectionRequest, 
-    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
-    )
-from app.utils.preprocessors.document_loader import DocumentLoader as DocumentLoaderFAQ
-import os, uuid, shutil, asyncio, aiofiles
-from contextlib import asynccontextmanager
-from utils.logger import setup_logger
-from app.services.file_storage_service import FileStorageService
+import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, sys
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
 from datetime import datetime, timedelta, timezone
 # Auth dependencies
 from jose import JWTError, jwt
-from fastapi import Depends, BackgroundTasks
 import asyncpg
 from passlib.context import CryptContext
 import pandas as pd
 # простая токенизация
 from collections import Counter
-import re
-import pymorphy3
-import csv
-import io
-import sys
+# сервис для просмотра статистики adk бд
 from app.services.adk_db_stats_service import AdkDbStatsService
+from app.services.qdrant_service import QdrantService, CollectionType
+from app.models import (
+    DocumentInfo, SearchRequest, SearchResult, SwitchCollectionRequest, 
+    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
+    )
+from contextlib import asynccontextmanager
+from utils.logger import setup_logger
+from app.services.file_storage_service import FileStorageService
 load_dotenv()
 
 # Используем современный Lifespan вместо @app.on_event("startup")
@@ -89,41 +86,32 @@ async def auth_middleware(request: Request, call_next):
         "/static",
         "/"
     ]
-
     path = request.url.path
-
     # публичные
     if any(path.startswith(p) for p in public_paths):
         return await call_next(request)
-
     access_token = request.cookies.get("access_token")
     payload = decode_token(access_token) if access_token else None
     # 1. если access_token валиден
     if payload and payload.get("type") == "access":
         role = payload.get("role")
-
         if not is_allowed(path, role):
             return JSONResponse(status_code=403, content={"detail": "Forbidden"})
-
         return await call_next(request)
     # 2. если access умер → пробуем refresh
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
         refresh_payload = decode_token(refresh_token)
-
         if refresh_payload and refresh_payload.get("type") == "refresh":
             username = refresh_payload.get("sub")
-
             # берём роль из БД
             user = await get_user_from_db(username, request.app.state.db_pool)
-
             if user:
                 new_access = create_access_token({
                     "sub": username,
                     "role": user["role"]
                 })
                 response = await call_next(request)
-
                 # обновляем access_token
                 response.set_cookie(
                     key="access_token",
@@ -131,9 +119,7 @@ async def auth_middleware(request: Request, call_next):
                     httponly=True,
                     samesite="lax"
                 )
-
                 return response
-        
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
 # AUTH config
 SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
@@ -144,7 +130,7 @@ NSTYA_DATA_URL = os.getenv(
     "NSTYA_DATA_URL",
     "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 )
-# если мы делаем логирование у нас умирает adk_session и бот соответственно
+# adk session db
 ADK_SESSION_SERVICE_URI  = os.getenv("ADK_SESSION_SERVICE_URI", "postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions")
 def normalize_adk_dsn(uri: str) -> str:
     """
@@ -164,7 +150,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # доступные эндпоинты для ролей
 ROLE_PERMISSIONS = {
     "admin": ["*"],
-
     "manager": [
         "/api/documents",
         "/api/search",
@@ -188,7 +173,6 @@ BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
 BOT_HELP_MESSAGE_FILE = Path("/app/data/bot/settings/bot_help_message.md")
 # папка загрузки файлов
 BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
-
 logger = setup_logger("kb_manager", log_file="kb_manager.log")
 
 # Initialize services
@@ -374,7 +358,6 @@ def get_current_storage() -> FileStorageService:
     """Возвращает сервис хранилища для текущей активной коллекции Qdrant"""
     # current_name = qdrant_service.collection_name
     current_name = collection_name
-    
     if current_name not in file_storages:
         raise ValueError(f"Storage for collection '{current_name}' not initialized!")
         
@@ -402,7 +385,7 @@ async def event_generator():
 @app.get("/api/filesystem/sync_events")
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
+# функция для синхронизации
 async def sync_function(iter_dir, storager, collection_type, log_callback=None, global_progress=None):
     """
     syncron function which takes params:
@@ -428,7 +411,6 @@ async def sync_function(iter_dir, storager, collection_type, log_callback=None, 
         except Exception as e:
             logger.info(f"[SYNC SERVICE] Error syncing {kb_id}: {e}")
             if log_callback: log_callback(f"❌ Ошибка в {kb_id}: {e}")
-            
         finally:
             if not log_callback:
                 continue
@@ -453,7 +435,7 @@ async def sync_function(iter_dir, storager, collection_type, log_callback=None, 
                         "total": total
                     }
                 )
-
+# создание задачи синхронизации
 def create_sync_task():
     return {
         "status": "processing",
@@ -463,7 +445,7 @@ def create_sync_task():
         "started_at": datetime.now().isoformat(),
         "finished_at": None
     }
-
+# счетчик общего количества kb
 def calculate_total_kbs():
     total = 0
     for collection_name in _sync_collections_in_order():
@@ -477,97 +459,70 @@ def calculate_total_kbs():
             ]
         )
     return total
-
+# создание колбека для записи логов и прогресса задачи синхронизации
 def create_log_callback(task_id: str):
-
     def log_cb(data):
-
         task = sync_tasks[task_id]
-
         if isinstance(data, str):
-
             task["logs"].append({
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "message": data
             })
-
             return
-
         if isinstance(data, dict):
-
             if data.get("type") == "progress":
-
                 processed = data["processed"]
                 total = data["total"]
-
                 task["progress"] = int(
                     processed * 100 / total
                 )
-
                 task["current_kb"] = (
                     data["current_kb"]
                 )
-
     return log_cb
-
+# синхронизация всех коллекций 
 async def run_sync_all_task(task_id: str):
-
     log_cb = create_log_callback(task_id)
     total_kbs = calculate_total_kbs()
     global_progress = {
         "processed": 0,
         "total": total_kbs
     }
-
     try:
-
         log_cb("🚀 Запущена синхронизация всех коллекций")
-
-        await run_sync_all_once(
+        await run_sync_all_safe(
             log_callback=log_cb,
             global_progress=global_progress
         )
-
         sync_tasks[task_id]["status"] = "completed"
         sync_tasks[task_id]["progress"] = 100
-
         sync_tasks[task_id]["logs"].append({
             "time": datetime.now().strftime("%H:%M:%S"),
             "message": "✅ Синхронизация завершена"
         })
-
     except Exception as e:
-
         sync_tasks[task_id]["status"] = "error"
-
         sync_tasks[task_id]["logs"].append({
             "time": datetime.now().strftime("%H:%M:%S"),
             "message": f"❌ {e}"
         })
-
     finally:
-
         sync_tasks[task_id]["finished_at"] = (
             datetime.now().isoformat()
         )
-
+# синхронизация одной коллекции
 async def run_collection_task(task_id: str, collection_name: str):
     log_cb = create_log_callback(task_id)
     try:
         # Получаем конфиг и сторадж
         cfg = get_collection_cfg(collection_name)
         storager = get_or_create_storager(collection_name)
-        
         await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
-        
         sync_tasks[task_id]["status"] = "completed"
-
         sync_tasks[task_id]["progress"] = 100
-
         sync_tasks[task_id]["finished_at"] = (
             datetime.now().isoformat()
         )
-
         sync_tasks[task_id]["logs"].append(
             {
                 "time": datetime.now().strftime("%H:%M:%S"),
@@ -582,30 +537,25 @@ async def run_collection_task(task_id: str, collection_name: str):
                 "message": f"❌ Ошибка: {str(e)}"
             }
         )
-
+# синхронизация одной базы знаний
 async def run_kb_task(
     task_id: str,
     collection_name: str,
     kb_id: str
 ):
-
     log_cb = create_log_callback(task_id)
     try:
         # Получаем конфиг и сторадж
         storager = get_or_create_storager(
             collection_name
-        )
-        
+        )      
         cfg = get_collection_cfg(
             collection_name
         )
-
         log_cb(
             f"📚 Синхронизация БЗ {kb_id}"
         )
-
         loop = asyncio.get_running_loop()
-
         await loop.run_in_executor(
             None,
             lambda: storager.sync(
@@ -614,21 +564,17 @@ async def run_kb_task(
             )
         )
         sync_tasks[task_id]["progress"] = 100
-
         sync_tasks[task_id]["current_kb"] = kb_id
-
         sync_tasks[task_id]["status"] = "completed"
         sync_tasks[task_id]["finished_at"] = (
             datetime.now().isoformat()
         )
-
         sync_tasks[task_id]["logs"].append(
             {
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "message": "✅ Синхронизация завершена"
             }
         )
-
     except Exception as e:
         logger.error(f"[SYNC KB] Error: {e}")
         sync_tasks[task_id]["status"] = "error"
@@ -676,17 +622,17 @@ async def start_sync(data: dict, background_tasks: BackgroundTasks):
 async def get_sync_status(task_id: str):
     return sync_tasks.get(task_id, {"status": "not_found", "logs": []})
 
-async def run_sync_all_safe():
+async def run_sync_all_safe(log_callback=None, global_progress=None):
     """безопасная синхронизация, чтобы нельзя было несколько вызвать одновременно"""
     if sync_lock.locked():
-        logger.info("SYNC alrady_running")
+        logger.info("SYNC already_running")
         return {"status": "already_running"}
 
     async with sync_lock:
         logger.info("[SYNC] started")
         sync_settings["running"] = True
         try:
-            await run_sync_all_once()
+            await run_sync_all_once(log_callback, global_progress)
             sync_settings["last_sync"] = datetime.now().isoformat()
             sync_settings["next_sync"] = (datetime.now()+get_interval_delta()).isoformat()
         finally:
@@ -699,7 +645,6 @@ async def run_sync_all_safe():
 
     return {"status": "completed"}
 
-
 def _sync_collections_in_order() -> list[str]:
     """FAQ-коллекции первыми (обычно небольшие), затем остальные в порядке конфига."""
     faq_first = [
@@ -709,7 +654,6 @@ def _sync_collections_in_order() -> list[str]:
     ]
     rest = [name for name in COLLECTIONS_CFG if name not in faq_first]
     return faq_first + rest
-
 
 async def run_sync_all_once(log_callback=None, global_progress=None):
     """
@@ -733,14 +677,11 @@ async def run_sync_all_once(log_callback=None, global_progress=None):
         disk_kb_ids = {
             folder.name for folder in root.iterdir() if folder.is_dir()
         }
-
         qdrant_kbs = qdrant_service.list_knowledge_bases(
             collection_name=collection_name
         )
         qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
-
         deleted_kbs = qdrant_kb_ids - disk_kb_ids
-
         for kb_id in deleted_kbs:
             logger.info(f"[SYNC] KB DELETED: {kb_id}")
             try:
@@ -795,7 +736,6 @@ async def set_sync_settings(data: SyncInterval):
     sync_settings["next_sync"] = (now+get_interval_delta()).isoformat()
     sync_update_event.set()
     return {"status": "updated", "interval": data.hours, "next_sync": sync_settings["next_sync"]}
-
 # создание и получение сервиса хранения для коллекции на лету, чтобы не создавать все стораджи сразу, а только по мере необходимости
 def get_or_create_storager(collection_name: str):
     # 1. Если уже есть, возвращаем
@@ -827,7 +767,6 @@ def get_or_create_storager(collection_name: str):
     # Сохраняем, чтобы не пересоздавать в следующий раз
     file_storages[collection_name] = new_storager
     return new_storager
-
 # получение конфигурации коллекции по имени, с поддержкой частичного совпадения
 def get_collection_cfg(collection_name: str):
     if collection_name in COLLECTIONS_CFG:
@@ -849,21 +788,17 @@ def get_users_from_env() -> list[tuple[str, str, str]]:
     Возвращает список кортежей (username, password, role).
     """
     raw_data = os.getenv("UI_USERS_DATA", "")
-    
     if not raw_data:
         logger.warning("UI_USERS_DATA is empty. Using default admin.")
         return [('admin', 'admin123', 'admin')]
-
     users = []
     # Разбиваем строку по запятой на отдельных юзеров
     for entry in raw_data.split(","):
         parts = entry.strip().split(":")
-        
         if len(parts) == 3:
             users.append(tuple(parts))
         else:
             logger.error(f"Invalid user format in ENV: {entry}. Expected user:pass:role")
-            
     return users
 
 def hash_password(password: str) -> str:
@@ -893,12 +828,10 @@ async def init_db(pool: asyncpg.Pool):
 async def get_user_from_db(username: str, pool: asyncpg.Pool):
     """Получение пользователя из базы данных по имени"""
     async with pool.acquire() as conn:
-
         user = await conn.fetchrow(
             "SELECT username, password, role FROM ui_users WHERE username=$1",
             username
         )
-
     return dict(user) if user else None
 
 def _generate_jwt(data: dict, expires_delta: timedelta, token_type: str) -> str:
@@ -927,15 +860,11 @@ def decode_token(token: str):
 def get_current_user(request: Request):
     """Получение текущего пользователя из access токена в cookies"""
     token = request.cookies.get("access_token")
-
     if not token:
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     payload = decode_token(token)
-
     if not payload or payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     return {
         "username": payload.get("sub"),
         "role": payload.get("role")
@@ -944,27 +873,22 @@ def get_current_user(request: Request):
 def is_allowed(path: str, role: str) -> bool:
     """Проверка разрешений по роли для доступа к пути"""
     allowed_paths = ROLE_PERMISSIONS.get(role, [])
-
     # admin — всё можно
     if "*" in allowed_paths:
         return True
-
     # проверяем prefix match
     return any(path.startswith(p) for p in allowed_paths)
 
 @app.get("/api/admin/adk-sessions/stats")
 async def get_adk_session_stats():
-
     if not ADK_SESSION_DATABASE_URL:
         raise HTTPException(
             status_code=500,
             detail="ADK_SESSION_DATABASE_URL not configured"
         )
-
     service = AdkDbStatsService(
         ADK_SESSION_DATABASE_URL
     )
-
     return await service.get_stats()
 ##################################
 # Авторизация и главная
@@ -973,23 +897,18 @@ async def get_adk_session_stats():
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     """Эндпоинт для логина. Принимает username и password, проверяет их и возвращает JWT токены в cookies"""
     user = await get_user_from_db(username, request.app.state.db_pool)
-
     if not user or not verify_password(password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-
     access_token = create_access_token({
         "sub": username,
         "role": user["role"]
     })
-
     refresh_token = create_refresh_token({
         "sub": username
     })
-
     response = JSONResponse({"success": True})
     for k, v in [("access_token", access_token), ("refresh_token", refresh_token)]:
         response.set_cookie(key=k, value=v, httponly=True, samesite="lax")
-
     return response
 
 @app.post("/api/refresh")

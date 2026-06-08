@@ -9,6 +9,11 @@
     <link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
     <!-- EasyMDE editor для markdown -->
     <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
+    <!-- icons -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+    <link rel="manifest" href="/static/site.webmanifest">
 </head>
 <body>
     <!-- Login Screen page -->
@@ -120,6 +125,20 @@
 
                     <div id="tables-load-progress" style="display:none;">
                         Загрузка...
+                    </div>
+                    <div id="load-log-container" class="load-log-hidden">
+                        <div class="load-log-header">
+                            Протокол загрузки таблиц
+                        </div>
+
+                        <pre id="load-log-content"></pre>
+
+                        <button
+                            type="button"
+                            onclick="hideLoadLog()"
+                            class="btn btn-secondary">
+                            Закрыть
+                        </button>
                     </div>
 
                     <div id="tables-load-result" class="result-message" style="display:none;"></div>
