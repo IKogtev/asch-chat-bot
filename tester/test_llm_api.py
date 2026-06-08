@@ -15,6 +15,6 @@ payload = {
     "model": model,
     "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
 }
-r = requests.post(url, headers=headers, json=payload, timeout=60)
+r = requests.post(url, headers=headers, json=payload, timeout=10)
 r.raise_for_status()
 print(r.json()["choices"][0]["message"]["content"])
