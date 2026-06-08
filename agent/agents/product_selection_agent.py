@@ -2,7 +2,7 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool.mcp_toolset import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL
@@ -33,6 +33,7 @@ PRODUCT_SELECTION_MODES = {
 
 PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
 CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
+PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
 PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
@@ -81,6 +82,22 @@ def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
     return options
 
 
+def _normalize_products(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError(f"expected list, got {type(value).__name__}")
+
+    products: list[dict[str, str]] = []
+    for item in value:
+        normalized = _normalize_product(item, PRODUCT_LIST_FIELD_KEYS)
+        if normalized is None:
+            raise ValueError("product item must not be empty")
+        products.append(normalized)
+
+    return products
+
+
 def _normalize_tool_calls(value: Any) -> set[str]:
     if value is None:
         return set()
@@ -113,13 +130,14 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
         clarification_options = _normalize_clarification_options(
             data.get("clarification_options")
         )
+        products = _normalize_products(data.get("products"))
     except (TypeError, ValueError) as exc:
         raise build_validation_error(
             agent=agent_name,
             stage="basic_fields",
             problem=str(exc),
             data=data,
-            fields=("resolved_product", "clarification_options"),
+            fields=("resolved_product", "clarification_options", "products"),
         ) from exc
 
     if status != "ok":
@@ -203,6 +221,7 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
         "used_tables": used_tables,
         "resolved_product": resolved_product,
         "clarification_options": clarification_options,
+        "products": products,
     }
 
 
@@ -259,6 +278,7 @@ Rules:
 - Do not use SELECT * for final user-facing answers.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
+- For product_filter, end message with a clarification question about showing product parameters or sending the document kit, and fill products with shown rows.
 - If mode="needs_clarification", clarification_options must be a non-empty array of objects.
 - Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
 - For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
@@ -272,7 +292,8 @@ Response format:
   "message": "short answer for the user",
   "used_tables": ["products"],
   "resolved_product": null,
-  "clarification_options": []
+  "clarification_options": [],
+  "products": []
 }
 """
     prompt_file = "product_selection_agent_prompt.md"

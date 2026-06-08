@@ -196,11 +196,14 @@ JSON-контракт описан в конце prompt; не начинай о�
 - выводи строки списка по `display_columns`;
 - не используй порядковые номера в начале строк;
 - если среди `display_columns` есть `code`, каждая строка списка должна начинаться с кода продукта.
+- в конце `message` задай уточняющий вопрос: `Показать параметры какого-то продукта или скачать комплект документов? Напишите, например: "параметры 2867" или "скачать комплект 2867".`;
+- заполни `products` строками показанного списка, минимум `code` и `name`, если эти поля есть в SQL.
 
 Пример формата для `product_filter`:
 `Найдено продуктов: TOTAL_COUNT.`
 `CODE - NAME (PRODUCT_TYPE)`
 `CODE - NAME (PRODUCT_TYPE)`
+`Показать параметры какого-то продукта или скачать комплект документов? Напишите, например: "параметры 2867" или "скачать комплект 2867".`
 
 `product_compare`:
 - сравни только найденные продукты;
@@ -302,7 +305,8 @@ SQL должен быть:
     "name": "<название продукта из успешного SQL>",
     "folder_kit": "<папка комплекта из успешного SQL>"
   },
-  "clarification_options": []
+  "clarification_options": [],
+  "products": []
 }
 
 Допустимые `mode`:
@@ -321,5 +325,7 @@ SQL должен быть:
 - Для `product_kit` обязателен `resolved_product.code` и `resolved_product.folder_kit`.
 - Для `needs_clarification` обязателен непустой `clarification_options`: массив объектов, а не строк.
 - Объект варианта в `clarification_options` может содержать только поля `code`, `name`, `term`, `currency`.
+- Для `product_filter` заполняй `products` объектами из показанного списка; объект продукта может содержать только поля `code`, `name`, `term`, `currency`, `folder_kit`.
+- Для режимов кроме `product_filter` используй `products=[]`.
 - Для `no_data` используй `used_tables=[]`, `resolved_product=null`, `clarification_options=[]`.
 - Поле `source` запрещено.
