@@ -59,11 +59,8 @@ def main() -> int:
             f"{table.table_name}: {table.rows} rows, {table.columns} columns "
             f"from {table.source_file}/{table.source_sheet}"
         )
-        logger.info(f"{table.table_name}: {table.rows} rows, {table.columns} columns "
-                    f"from {table.source_file}/{table.source_sheet}")
         if table.table_name == GLOSSARY_TABLE_NAME:
             print(f"Glossary terms loaded: {table.rows}")
-            logger.info(f"Glossary terms loaded: {table.rows}")
         
 
     if result.product_kit_products_total is not None:
@@ -72,18 +69,14 @@ def main() -> int:
             f"{result.product_kit_folders_found} of "
             f"{result.product_kit_products_total} products."
         )
-        logger.info(f"Product kit folders found: {result.product_kit_folders_found} of {result.product_kit_products_total} products.")
     if result.validation_errors:
         print("Validation warnings:")
-        logger.warning("Validation warnings:")
         for error in result.validation_errors:
             print(f"- {error}")
-            logger.error(f"- {error}")
         if args.strict_validation:
             return 1
 
     print("Tables load completed successfully.")
-    logger.info("Tables load completed successfully.")
     return 0
 
 
