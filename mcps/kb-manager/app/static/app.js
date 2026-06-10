@@ -767,7 +767,6 @@ async function startSyncTask(payload) {
             );
         }
         await watchSyncTask(data.task_id);
-
         return data.task_id;
     } catch (error) {
         console.error(error);
@@ -1236,7 +1235,6 @@ async function performSearch() {
     const limit = parseInt(document.getElementById('search-limit').value);
     const kbId = document.getElementById('search-kb').value;
     const resultsContainer = document.getElementById('search-results');
-    
     if (!query) {
         resultsContainer.innerHTML = `
             <div class="empty-state">
@@ -1356,32 +1354,27 @@ async function loadTables() {
         btn.disabled = false;
     }
 }
+// Отображение протокола загрузки таблицы
 function showLoadLog(logText) {
-
     const container =
         document.getElementById(
             "load-log-container"
         );
-
     const content =
         document.getElementById(
             "load-log-content"
         );
-
     const filteredLog = logText
         .split("\n")
         .filter(line => !line.startsWith("dc_"))
         .join("\n");
-
     content.textContent = filteredLog;
-
     container.classList.remove(
         "load-log-hidden"
     );
 }
 
 function hideLoadLog() {
-
     document
         .getElementById(
             "load-log-container"
@@ -2424,12 +2417,9 @@ async function loadUserGroups(skipFetch = false) {
                     <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
                 </select>
             </div>
-
             <div class="pagination">
                 <button onclick="prevPage()" ${currentPage === 1 ? "disabled" : ""} class="btn btn-primary btn-small">⬅ Назад</button>
-                
                 <span class="page-info">Страница <strong>${currentPage}</strong> из <strong>${totalPages}</strong></span>
-
                 <button onclick="nextPage()" ${currentPage >= totalPages ? "disabled" : ""} class="btn btn-primary btn-small">Вперед ➡</button>
             </div>
         </div>
@@ -2821,9 +2811,6 @@ function startLogsAutoRefresh() {
 // функция экспорта логов для аналитики
 function exportAnalytics() {
     // Временно убрал промежуток за который делать выгрузку
-    // const from = document.getElementById("from").value;
-    // const to = document.getElementById("to").value;
-    // window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
     window.open("/api/analytics/export");
 }
 // #############################
@@ -3001,9 +2988,7 @@ function sourceLabel(src) {
     const map = {
         'search': '🔍 Поиск',
         'menu': '📂 Меню',
-        'chat': '💬 Чат',
-        'product_kit':'🛒 Комплект продуктов',
-        'unknown': '❓ Неизвестно'
+        'product_kit':'🛒 Комплект продуктов'
     };
     return map[src] || `📁 ${src}`;
 }
@@ -3049,12 +3034,9 @@ function drawDocs() {
                 </button>
             </div>
         `).join("")}
-
         <div class="pagination">
             <button onclick="prevDocs()" ${docPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
-
             <span>Страница ${docPage + 1} / ${totalPages}</span>
-
             <button onclick="nextDocs()" ${docPage >= totalPages - 1 ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
         </div>
     `;
@@ -3190,7 +3172,7 @@ function renderCloud(id, data) {
     // Адаптивные размеры шрифтов под контейнер
     const maxFontSize = Math.min(width / 8, height / 3, 72);
     const minFontSize = Math.max(12, maxFontSize / 6);
-    // КЛЮЧЕВОЕ: нормализуем значения к реальным размерам шрифтов
+    // нормализуем значения к реальным размерам шрифтов
     const normalizedList = list.map(item => {
         const ratio = maxVal === minVal ? 0.5 : (item[1] - minVal) / (maxVal - minVal);
         const fontSize = minFontSize + ratio * (maxFontSize - minFontSize);

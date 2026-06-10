@@ -65,6 +65,8 @@ class DocumentLoader:
                 text = processor._extract_pdf(file_path=path)
             elif source_type==".docx":
                 text = processor._extract_docx(file_path=path)
+            elif source_type==".pptx":
+                text = processor._extract_pptx(file_path=path)
             elif source_type in IMAGE_NO_OCR_SUFFIXES:
                 text = "пусто"
             elif source_type not in ['.txt', '.md']:

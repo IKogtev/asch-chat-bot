@@ -7,6 +7,7 @@ import pandas as pd
 from typing import List, Optional, Set
 import pdfplumber
 from docx import Document
+from pptx import Presentation
 from dataclasses import dataclass, asdict
 from utils.logger import setup_logger
 # ------------------------------
@@ -313,6 +314,8 @@ class FAQPreprocessor:
             return self._extract_pdf(file_path)
         if suffix == ".docx":
             return self._extract_docx(file_path)
+        if suffix == ".pptx":
+            return self._extract_pptx(file_path)
         raise ValueError(f"Unsupported text format: {suffix}")   
 
     def _parse_faq_text(
@@ -354,6 +357,20 @@ class FAQPreprocessor:
         flush()
         return results
 
+    # обработчик pptx 
+    def _extract_pptx(self, file_path: Path) -> str:
+        prs = Presentation(str(file_path))
+
+        text_parts = []
+
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text = shape.text.strip()
+                    if text:
+                        text_parts.append(text)
+
+        return "\n".join(text_parts)
 
     # --- Orchestration ---
     def process_directory(self, input_dir: Path):
@@ -374,7 +391,7 @@ class FAQPreprocessor:
             elif suffix in ['.xlsx', '.xls', '.csv']:
                 self.logger.info(f"Processing Table: {file.name}")
                 raw_items.extend(self._parse_table(file))
-            elif suffix in ['.txt', '.pdf', '.docx']:
+            elif suffix in ['.txt', '.pdf', '.docx', '.pptx']:
                 self.logger.info(f"Processing Text FAQ: {file.name}")
                 text = self._extract_text(file)
                 raw_items.extend(self._parse_faq_text(text, file))
