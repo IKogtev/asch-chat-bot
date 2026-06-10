@@ -49,8 +49,38 @@ BOT_START_TIME = time.time()
 RECENT_MESSAGES = {}
 STARTUP_GRACE_PERIOD = 5  # сек
 OLD_MESSAGE_THRESHOLD = 15  # сек
+# список текущих задач
+ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
+# флаг для сброса пользователей при команде /reset
+RESET_USERS: set[str] = set()
 
+# отменяем активный запрос пользователя 
+async def cancel_user_request(user_id: str):
+    """
+    Отмена активного запроса пользователя.
+    """
+    task = ACTIVE_REQUESTS.get(user_id)
+    if not task:
+        return False
+    if task.done():
+        ACTIVE_REQUESTS.pop(user_id, None)
+        return False
+    logger.info(f"Отмена запроса user={user_id}")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        logger.info(
+            f"Запрос пользователя {user_id} успешно отменён"
+        )
+    except Exception as e:
+        logger.warning(
+            f"Ошибка при отмене задачи: {e}"
+        )
+    ACTIVE_REQUESTS.pop(user_id, None)
 
+    return True
+    
 # Отправка комплекта документов продукта по структурному действию от ADK.
 async def handle_product_kit_action(
     bot_res,
@@ -200,6 +230,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     if is_tg:
         from aiogram.filters import Command
         from aiogram import F
+        bot_started = None
         message_decorator = dp.message
         callback_decorator = dp.callback_query
         home_filter = (F.data == "home")
@@ -207,7 +238,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         file_filter = F.data.startswith("f:")
     else:
         from maxapi import F
-        from maxapi.types import Command
+        from maxapi.types import Command, BotStarted
         message_decorator = dp.message_created
         callback_decorator = dp.message_callback
         home_filter = (F.callback.payload == "home")
@@ -275,21 +306,34 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     async def unified_auth(event):
         """Проверка регистрации и получение данных"""
         bot_res = BotResponse(event, platform)
-        user_obj = event.from_user if is_tg else (event.callback.user if hasattr(event, 'callback') else event.from_user)
+         # Определяем, является ли событие стартовым (у него нет message)
+        is_bot_started_event = (platform == "max" and type(event).__name__ == "BotStarted") or \
+                               (platform == "telegram" and type(event).__name__ == "ChatMemberUpdated")
+
+        #  Безопасно получаем пользователя (для BotStarted в maxapi это может быть event.user)
+        if is_tg:
+            user_obj = getattr(event, 'from_user', None)
+        else:
+            if hasattr(event, 'callback') and event.callback:
+                user_obj = getattr(event.callback, 'user', None)
+            else:
+                user_obj = getattr(event, 'from_user', None) or getattr(event, 'user', None)
+
         user_id = int(getattr(user_obj, 'id' if is_tg else 'user_id'))
         # Проверка, не является ли текущее сообщение контактом
         is_incoming_contact = False
         contact_obj = None
-        if platform == "telegram" and hasattr(event, 'contact') and event.contact:
-            is_incoming_contact = True
-            contact_obj = event.contact
-        elif platform == "max":
-            # Проверяем вложения в BotResponse (мы его уже создали выше)
-            for att in bot_res.attachments:
-                if getattr(att, 'type', None) == 'contact':
-                    is_incoming_contact = True
-                    contact_obj = att
-                    break
+        if not is_bot_started_event:
+            if platform == "telegram" and hasattr(event, 'contact') and event.contact:
+                is_incoming_contact = True
+                contact_obj = event.contact
+            elif platform == "max":
+                # Проверяем вложения в BotResponse (мы его уже создали выше)
+                for att in bot_res.attachments:
+                    if getattr(att, 'type', None) == 'contact':
+                        is_incoming_contact = True
+                        contact_obj = att
+                        break
 
         username = user_obj.username or "unknown"
         first_name = user_obj.first_name or "Гость"
@@ -363,6 +407,27 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             return None, None
         
         return user_data, bot_res
+    # обработчик стартовой логики
+    async def handle_start_logic(
+        bot_res,
+        global_user_id,
+        username,
+        platform,
+    ):
+        await eventlogger.log_event(
+            event_type="command_start",
+            user_id=str(global_user_id),
+            user_name=username,
+            session_id=str(global_user_id),
+            channel=platform,
+        )
+        # На /start не вызываем ADK.
+        # Только обновляем пользователя в БД 
+        # и показываем стартовое меню.
+        tree = await get_tree_cached()
+        menu = build_universal_menu(tree, [], platform)
+        text = get_start_message()
+        await bot_res.send(text, menu=menu)
 
     # Обработчик команды /start
     @message_decorator(Command("start"))
@@ -372,20 +437,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /start [{platform}] от user_id={global_user_id} (@{ud['username']})")
         
-        await eventlogger.log_event(
-            event_type="command_start",
-            user_id=str(global_user_id),
-            user_name=ud.get("username"),
-            session_id=str(global_user_id),
-            channel=platform
+        await handle_start_logic(
+            bot_res=bot_res,
+            global_user_id=global_user_id,
+            username=ud.get("username"),
+            platform=platform,
         )
-        # На /start не вызываем ADK.
-        # Только обновляем пользователя в БД 
-        # и показываем стартовое меню.
-        tree = await get_tree_cached()
-        menu = build_universal_menu(tree, [], platform)
-        text = get_start_message()
-        await bot_res.send(text, menu=menu)
 
     # обработчик команды /version для получения версии
     @message_decorator(Command("version"))
@@ -405,6 +462,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         msg_text = f"Текущая версия бота: {Settings.PLATFORM_VERSION}"
         await bot_res.send(msg_text)
     
+    async def clear_reset_flag(user_id: str):
+        await asyncio.sleep(2)
+        RESET_USERS.discard(user_id)
+
     # домашняя страница
     @callback_decorator(home_filter)
     @universal_handler
@@ -432,6 +493,15 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             channel=platform
         )
         try:
+            # отменяем текущий запрос пользователя
+            RESET_USERS.add(str(global_user_id))
+            await cancel_user_request(
+                str(global_user_id)
+            )
+            # через небольшой delay очищаем reset-флаг
+            asyncio.create_task(clear_reset_flag(global_user_id))
+            # останавливаем typing прямо сейчас
+            await bot_res.stop_typing()
             # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
             await adk.delete_session(user_id=str(global_user_id), session_id=session_id)
             # Очищаем историю в БД
@@ -615,6 +685,28 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 last_name=m.from_user.last_name or ""
             )
     else: 
+        # обработчик события старта бота первого для макса
+        @dp.bot_started()
+        @universal_handler
+        async def max_bot_started(
+            event: BotStarted,
+            ud,
+            bot_res,
+            **kwargs
+        ):
+            global_user_id = ud.get("global_user_id")
+
+            logger.info(
+                f"MAX bot_started "
+                f"user_id={global_user_id}"
+            )
+
+            await handle_start_logic(
+                bot_res=bot_res,
+                global_user_id=global_user_id,
+                username=ud.get("username"),
+                platform=platform,
+            )
         # обработчик получения контакта (номера телефона)
         async def handle_contact_max(bot_res: BotResponse, ud, contact: Contact):
             """Обработчик полученного контакта — извлекает телефон из vCard"""
@@ -713,6 +805,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         session_id = str(global_user_id)
         turn_id = str(uuid.uuid4())
         start_time = time.time()
+        user_key = str(global_user_id)
+        ACTIVE_REQUESTS[user_key] = asyncio.current_task()
 
         # логируем скорость ответа
         logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
@@ -742,6 +836,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     response_time = int((time.time() - start_time) * 1000)
                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
                     # await send_answer(event, answer)
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(answer)
                     await eventlogger.log_event(
                         event_type="response",
@@ -772,6 +871,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if not ok:
                     response_time = int((time.time() - start_time) * 1000)
                     answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(answer)
                     await eventlogger.log_event(
                         event_type="response",
@@ -815,8 +919,16 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             search_id_before = meta_before["search_id"] if meta_before else None
             # инициализация статуса "печатает..." для пользователя
             await bot_res.start_typing()
+            ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+            if str(global_user_id) in RESET_USERS:
+                logger.info(
+                    f"Пропускаем ответ после reset user={global_user_id}"
+                )
+                return
+            if asyncio.current_task().cancelled():
+                raise asyncio.CancelledError()
             response_time = int((time.time() - start_time) * 1000)
             work = answer or ""
 
@@ -829,6 +941,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if work.strip():
                     is_already_html = "<b>" in work or work.lstrip().startswith("<")
                     final_text = work if is_already_html else markdown_to_safe_html(work)
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(final_text)
                     await eventlogger.log_event(
                         event_type="response",
@@ -862,7 +979,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if items:
                     shown = min(max(int(meta_after.get("shown_count", 5)), 0), len(items))
                     text_list = render_results(items[:shown], total=len(items), offset=0)
-                    
+                    if str(global_user_id) in RESET_USERS:
+                        logger.info(
+                            f"Пропускаем ответ после reset user={global_user_id}"
+                        )
+                        return
                     await bot_res.send(text_list) # Используем наш хелпер!
                     response_time = int((time.time() - start_time) * 1000)
                     await eventlogger.log_event(
@@ -885,6 +1006,11 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 final_text = work if is_already_html else markdown_to_safe_html(work)
                 response_time = int((time.time() - start_time) * 1000)
                 # Отправляем одной командой для любой платформы!
+                if str(global_user_id) in RESET_USERS:
+                    logger.info(
+                        f"Пропускаем ответ после reset user={global_user_id}"
+                    )
+                    return
                 await bot_res.send(final_text)
                 
                 await eventlogger.log_event(
@@ -892,6 +1018,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     session_id=session_id, channel=platform,
                     payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                 )
+        except asyncio.CancelledError:
+            logger.info(
+                f"🛑 Запрос cancelled user={global_user_id}"
+            )
+
+            return
         except Exception as e:
             logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
             await eventlogger.log_event(
@@ -903,8 +1035,17 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     "error": str(e)
                 }
             )
+            if str(global_user_id) in RESET_USERS:
+                logger.info(
+                    f"Пропускаем ответ после reset user={global_user_id}"
+                )
+                return
             await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
         finally:
+            ACTIVE_REQUESTS.pop(
+                str(global_user_id),
+                None
+            )
             await bot_res.stop_typing()
 
 # --- Универсальный Адаптер Ответов ---
@@ -940,9 +1081,6 @@ class BotResponse:
 
     async def send(self, text, menu=None, is_html=True, is_doc=None):
         
-        # Перед отправкой ответа выключаем typing
-        # await self.stop_typing()
-        
         if is_doc:
             return await self._send_document(is_doc['path'], is_doc['name'])
         
@@ -958,11 +1096,22 @@ class BotResponse:
                 parse_mode="HTML" if is_html else None
             )
         else:
-            return await self.event.message.answer(
-                text=text,
-                attachments=[menu] if menu else [],
-                format=TextFormat.HTML if is_html else None
-            )
+            if hasattr(self.event, 'message') and self.event.message:
+                # Это обычное сообщение или колбэк
+                return await self.event.message.answer(
+                    text=text,
+                    attachments=[menu] if menu else [],
+                    format=TextFormat.HTML if is_html else None
+                )
+            else:
+                # Это BotStarted (у него нет message, но есть bot и chat_id)
+                attachments = [menu] if menu else []
+                await self.event.bot.send_message(
+                    chat_id=self.event.chat_id, 
+                    text=text, 
+                    attachments=attachments,
+                    format=TextFormat.HTML if is_html else None
+                )
 
     async def edit(self, text, menu=None, is_html=True):
         """Редактирует сообщение и подтверждает callback (для TG)"""
@@ -983,11 +1132,24 @@ class BotResponse:
             # Если редактирование не прошло (сообщение старое или удалено), просто шлем новое
             return await self.send(text, menu=menu, is_html=is_html)
 
-    async def _send_document(self, path, filename):
+    def _get_message(self):
         if self.is_tg:
-            return await self.event.answer_document(FSInputFile(path, filename=filename))
-        else:
-            return await self.event.message.answer(attachments=[InputMedia(path=path)])
+            if hasattr(self.event, "message"):
+                return self.event.message
+            return self.event
+        return self.event.message
+
+    async def _send_document(self, path, filename):
+        msg = self._get_message()
+
+        if self.is_tg:
+            return await msg.answer_document(
+                FSInputFile(path, filename=filename)
+            )
+
+        return await msg.answer(
+            attachments=[InputMedia(path=path)]
+        )
 
     async def answer_callback(self, text=None, show_alert=False):
         """Для всплывающих окон в TG или уведомлений в Max"""

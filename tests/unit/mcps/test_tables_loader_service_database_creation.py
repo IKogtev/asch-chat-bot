@@ -181,3 +181,149 @@ def test_enrich_products_with_kit_folders_rebuilds_columns(monkeypatch, tmp_path
     assert "Fort Knox (2832)" in result.rows[0]["folder_kit_status"]
     assert service.product_kit_folders_found == 1
     assert service.product_kit_products_total == 1
+
+
+@pytest.mark.unit
+def test_glossary_rows_accept_russian_and_english_columns(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    class FakeDataFrame:
+        columns = ["сокращение", "определение", "синонимы", "category"]
+
+        def iterrows(self):
+            yield 0, {
+                "сокращение": "НСЖ",
+                "определение": "накопительное страхование жизни",
+                "синонимы": "накопительное страхование; life",
+                "category": "products",
+            }
+            yield 1, {
+                "сокращение": "",
+                "определение": "empty term",
+                "синонимы": "",
+                "category": "",
+            }
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+
+    rows = service._glossary_rows_from_dataframe(FakeDataFrame())
+
+    assert rows == [
+        {
+            "term": "НСЖ",
+            "definition": "накопительное страхование жизни",
+            "aliases": "накопительное страхование; life",
+            "category": "products",
+            "term_normalized": "нсж",
+            "aliases_normalized": "накопительное страхование;life",
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_glossary_rows_skip_when_required_columns_missing(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    class FakeDataFrame:
+        columns = ["term", "comment"]
+
+        def iterrows(self):
+            yield 0, {"term": "НСЖ", "comment": "missing definition"}
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+
+    assert service._glossary_rows_from_dataframe(FakeDataFrame()) == []
+
+
+@pytest.mark.unit
+def test_deduplicate_glossary_rows_keeps_distinct_definitions(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    rows = [
+        {"term_normalized": "нсж", "definition": "one", "term": "НСЖ"},
+        {"term_normalized": "нсж", "definition": "one", "term": "НСЖ"},
+        {"term_normalized": "нсж", "definition": "two", "term": "НСЖ"},
+    ]
+
+    assert module.TablesLoaderService._deduplicate_glossary_rows(rows) == [
+        {"term_normalized": "нсж", "definition": "one", "term": "НСЖ"},
+        {"term_normalized": "нсж", "definition": "two", "term": "НСЖ"},
+    ]
+
+
+@pytest.mark.unit
+def test_read_glossary_files_uses_only_active_file(monkeypatch, tmp_path) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    glossary_dir = tmp_path / "glossary"
+    glossary_dir.mkdir()
+    active_file = glossary_dir / "glossary_active.xlsx"
+    active_file.write_bytes(b"stub")
+    (glossary_dir / "ignored.xlsx").write_bytes(b"stub")
+    excel_files = []
+
+    class FakeWorkbook:
+        sheet_names = ["Лист1"]
+
+        def __init__(self, path, engine=None):
+            excel_files.append((path.name, engine))
+
+    module.pd.ExcelFile = FakeWorkbook
+    module.pd.DataFrame = lambda rows, columns: {"rows": rows, "columns": columns}
+
+    service = module.TablesLoaderService(
+        "postgresql://u:p@host:5432/db",
+        ".",
+        glossary_dir=glossary_dir,
+    )
+    service._read_glossary_sheet = lambda file_path, sheet_name: "fake_df"
+    service._glossary_rows_from_dataframe = lambda df: [
+        {
+            "term": "НСЖ",
+            "definition": "накопительное страхование жизни",
+            "aliases": "",
+            "category": "сокращение",
+            "term_normalized": "нсж",
+            "aliases_normalized": "",
+        }
+    ]
+
+    result = service._read_glossary_files()
+
+    assert excel_files == [("glossary_active.xlsx", "openpyxl")]
+    assert result["rows"][0]["term"] == "НСЖ"
+
+
+@pytest.mark.unit
+def test_read_glossary_sheet_skips_second_description_row(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    class FakeIloc:
+        def __init__(self, frame):
+            self.frame = frame
+
+        def __getitem__(self, item):
+            assert item == slice(1, None, None)
+            return FakeDataFrame(self.frame.rows[1:])
+
+    class FakeDataFrame:
+        def __init__(self, rows):
+            self.rows = rows
+            self.empty = not rows
+            self.iloc = FakeIloc(self)
+
+        def reset_index(self, drop=False):
+            assert drop is True
+            return self
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    service._read_sheet = lambda file_path, sheet_name: FakeDataFrame(
+        [
+            {"term": "Аббревиатура", "definition": "Расшифровка или значение"},
+            {"term": "НСЖ", "definition": "Накопительное страхование жизни"},
+        ]
+    )
+
+    result = service._read_glossary_sheet(Path("glossary_active.xlsx"), "Лист1")
+
+    assert result.rows == [
+        {"term": "НСЖ", "definition": "Накопительное страхование жизни"}
+    ]

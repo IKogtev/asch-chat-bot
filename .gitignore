@@ -17,6 +17,7 @@ kb_storage/bot/upload
 kb_storage/archive_kb
 kb_storage/knowledge_base
 kb_storage/tables
+kb_storage/glossary
 kb_storage/kb
 data/
 venv*/
@@ -67,3 +68,5 @@ web/copilot-web/node_modules/
 web/copilot-web/*
 setup-assistant-env.ps1
 AGENTS.md
+
+deployment/kubernetes/overlays/local
