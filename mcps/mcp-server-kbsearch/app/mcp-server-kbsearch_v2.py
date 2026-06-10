@@ -47,7 +47,7 @@ MCP_PORT = int(os.getenv("MCP_PORT", 7001))
 
 # Конфигурация индексирования
 EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "REDACTED_EXAMPLE")
-EMBEDDING_API_URL = os.getenv("EMBEDDING_API_URL", "https://dsrv1.llm.nstcloud.ru/v1/embeddings")
+EMBEDDING_API_URL = os.getenv("EMBEDDING_API_URL", "https://api.llm.nstcloud.ru/v1/embeddings")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 CHUNK_SIZE = int(os.getenv("KB_CHUNK_SIZE", 512))
 CHUNK_OVERLAP = int(os.getenv("KB_CHUNK_OVERLAP", 50))
