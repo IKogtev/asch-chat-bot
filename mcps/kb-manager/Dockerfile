@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-
+# установка поддержки для формата .doc чтобы могли с ним работать
+RUN apt-get update && \
+    apt-get install -y libreoffice && \
+    rm -rf /var/lib/apt/lists/*
 # Копируем pip.conf для ускорения установки
 COPY mcps/kb-manager/pip.conf /etc/pip.conf
 

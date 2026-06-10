@@ -23,6 +23,12 @@ from utils.qdrant_hybrid import (
     sparse_embedding_to_vector,
 )
 from app.models import CollectionType as CollectionTypeAlias
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="Api key is used with an insecure connection."
+)
 
 class CollectionType(str, Enum):
     DOCUMENTS = "documents"

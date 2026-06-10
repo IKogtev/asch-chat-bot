@@ -199,7 +199,7 @@ SUPPORTED_IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".ico",
 }
 SUPPORTED_FAQ_EXTENSIONS = {".md", ".csv", ".xls", ".xlsx", ".txt", ".pdf", ".docx"}
-SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx", ".csv", ".xls", ".xlsx"} | SUPPORTED_IMAGE_EXTENSIONS
+SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx", ".csv", ".xls", ".xlsx", ".pptx"} | SUPPORTED_IMAGE_EXTENSIONS
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
@@ -871,6 +871,8 @@ def get_or_create_storager(collection_name: str):
     return new_storager
 # получение конфигурации коллекции по имени, с поддержкой частичного совпадения
 def get_collection_cfg(collection_name: str):
+    if not collection_name or collection_name == "null":
+        return None
     if collection_name in COLLECTIONS_CFG:
         return COLLECTIONS_CFG[collection_name]
     
@@ -3234,4 +3236,4 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    uvicorn.run(app, host="0.0.0.0", port=5000, access_log=False)
