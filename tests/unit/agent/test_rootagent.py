@@ -154,7 +154,12 @@ RootAgent = rootagent_module.RootAgent
 is_bot_user_profile_injection_message = rootagent_module.is_bot_user_profile_injection_message
 
 
-def _make_agent() -> RootAgent:
+def _make_agent(**kwargs) -> RootAgent:
+    class EmptyGlossaryLookup:
+        async def find(self, text):
+            return []
+
+    kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
     fake_subagent = object()
     fake_doc_orchestrator = type("DocSearchOrchestratorFake", (), {"run_async": lambda self, ctx: ()})()
     return RootAgent(
@@ -163,6 +168,7 @@ def _make_agent() -> RootAgent:
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
         product_selection_agent=fake_subagent,
+        **kwargs,
     )
 
 
@@ -825,6 +831,67 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
     assert product_called is True
     assert kb_called is False
     assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            assert text == "Что такое НСЖ?"
+            return [["НСЖ", "накопительное страхование жизни"]]
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="Что такое НСЖ?")], session_state={})
+    kb_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            assert ctx.session.state["from_glossary"] == [
+                ["НСЖ", "накопительное страхование жизни"]
+            ]
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "kb_answer",
+                "reason": "glossary_context",
+                "search_query": "Что такое НСЖ?",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(ctx, user_message, search_query, intent):
+        nonlocal kb_called
+        kb_called = True
+        assert ctx.session.state["from_glossary"] == [
+            ["НСЖ", "накопительное страхование жизни"]
+        ]
+        ctx.session.state["_root_final_text"] = "answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "answer"
+    assert kb_called is True
 
 
 @pytest.mark.unit

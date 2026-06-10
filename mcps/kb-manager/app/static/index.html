@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UI Manager for Anastasia</title>
+    <title>UI Manager for NaSTya</title>
     <link rel="stylesheet" href="/static/styles.css">
     <!-- Quill editor редактор для html -->
     <link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
@@ -367,9 +367,9 @@
                             <h3>📅 Активность по дням недели</h3>
                             <canvas id="dayChart"></canvas>
                             <h3>🔤 Облако слов</h3>
-                            <div id="word-cloud"></div>
+                            <div id="word-cloud" class="cloud-container"></div>
                             <h3>💬 Облако фраз</h3>
-                            <div id="phrase-cloud"></div>
+                            <div id="phrase-cloud" class="cloud-container"></div>
                         </div>
                     </div>
                 </div>
@@ -559,13 +559,8 @@
                             </div>
                             <div id="modal-content">
                                 <table class="styled-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Колонка</th>
-                                            <th>Тип данных</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="details-columns-body"></tbody>
+                                    <thead id="table-data-head"></thead>
+                                    <tbody id="table-data-body"></tbody>
                                 </table>
                             </div>
                         </div>
@@ -576,9 +571,44 @@
                     <div class="file-content-modal">
                         <div class="modal-header">
                             <h3>Статус синхронизации</h3>
-                            <button class="modal-close" onclick="closeSyncStatusModal()">&times;</button>
+                            <button
+                                class="modal-close"
+                                onclick="closeSyncStatusModal()"
+                            >
+                                &times;
+                            </button>
                         </div>
-                        <div id="sync-status-content"></div>
+                        <div id="sync-status-content">
+                            <div class="sync-info-row">
+                                <strong>Статус:</strong>
+                                <span id="sync-status-text">
+                                    Ожидание
+                                </span>
+                            </div>
+                            <div class="sync-info-row">
+                                <strong>Прогресс:</strong>
+                                <span id="sync-progress">
+                                    0%
+                                </span>
+                            </div>
+                            <div class="sync-info-row">
+                                <strong>Последняя БЗ:</strong>
+                                <span id="sync-current-kb">
+                                    -
+                                </span>
+                            </div>
+                            <div class="sync-progress-wrapper">
+                                <div
+                                    id="sync-progress-bar"
+                                    class="sync-progress-bar"
+                                ></div>
+                            </div>
+                            <div
+                                id="sync-log-box"
+                                class="sync-log-box"
+                            >
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
