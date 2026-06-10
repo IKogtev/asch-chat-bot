@@ -17,4 +17,4 @@ payload = {
 }
 r = requests.post(url, headers=headers, json=payload, timeout=10)
 r.raise_for_status()
-print(r.json()["choices"][0]["message"]["content"])
+print(r.json()["choices"][0]["message"]["content"].strip())
