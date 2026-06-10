@@ -60,6 +60,8 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
+      # путь к бд Насти
+      - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - PORT=8000
       - HOST=0.0.0.0
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions

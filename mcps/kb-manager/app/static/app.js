@@ -188,7 +188,7 @@ async function loadCollectionInfo() {
                 | Версия платформы
                 <strong>${data.platform_version || 0}</strong>
                 | Последняя Синхронизация
-                <strong>${data.last_sync? formatDate(data.last_sync): "В процессе"}</strong>
+                <strong>${data.sync_running? "В процессе": (data.last_sync? formatDate(data.last_sync):"-")}</strong>
                 | Следующая Синхронизация
                 <strong>${data.next_sync? formatDate(data.next_sync): "Пока не установлена"}</strong>
             `;
@@ -207,11 +207,7 @@ async function loadManagerCollectionInfo() {
             | Версия платформы
             <strong>${data.platform_version || 0}</strong>
             | Последняя Синхронизация
-            <strong>
-                ${data.last_sync
-                    ? formatDate(data.last_sync)
-                    : "В процессе"}
-            </strong>
+            <strong>${data.sync_running? "В процессе": (data.last_sync? formatDate(data.last_sync):"-")}</strong>
             | Следующая Синхронизация
             <strong>
                 ${data.next_sync
@@ -692,126 +688,8 @@ function getStatusName(status) {
     return statuses[status] || status;
 }
 // #############################
-// DOCUMENTS TAB LOGIC
+// SYNC LOGIC
 // #############################
-
-// Documents Management
-async function loadDocuments() {
-    const container = document.getElementById('documents-list');
-    container.innerHTML = '<div class="loading">Загрузка баз знаний...</div>';
-    // Обновляем document_count в метаданных (для MCP kb-status)
-    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
-    try {
-        await fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' });
-    } catch (e) {
-        console.warn("Metadata refresh failed, continuing...", e);
-    }
-    try {
-        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
-        const knowledgeBases = await response.json();
-        if (knowledgeBases.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>Документы не найдены. Загрузите свой первый документ, чтобы начать!</p>
-                </div>
-            `;
-            loadCollectionInfo();
-            loadManagerCollectionInfo();
-            return;
-        }
-        container.innerHTML = knowledgeBases.map(kb => `
-            <div class="kb-section">
-                <div class="kb-header" onclick="toggleKB('${escapeHtml(kb.kb_id)}')">
-                    <div class="kb-title">
-                        <span class="kb-icon" id="icon-${escapeHtml(kb.kb_id)}">▼</span>
-                        <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
-                    </div>
-                    <div class="kb-stats">
-                        <button
-                            class="sync-kb-btn btn btn-primary btn-small"
-                            data-kb-id="${escapeHtml(kb.kb_id)}">
-                            🔄 Синхронизация БЗ
-                        </button>
-                        <span class="badge badge-primary">${kb.document_count} Документы</span>
-                        <span class="badge badge-secondary">${kb.total_chunks} Чанки</span>
-                        <button
-                            class="btn btn-danger btn-small"
-                            title="Delete knowledge base"
-                            onclick="event.stopPropagation(); deleteKnowledgeBase('${escapeHtml(kb.kb_id)}')"
-                        >
-                            🗑️ Удалить
-                        </button>
-                    </div>
-                </div>
-                <div class="kb-documents" id="kb-${escapeHtml(kb.kb_id)}" style="display: block;">
-                    ${kb.documents.map(doc => `
-                        <div class="document-card">
-                            <div class="document-header">
-                                <div class="document-title">📄 ${getDocumentTitle(doc)}</div>
-                                <div class="document-actions">
-                                    <button 
-                                        class="view-doc-btn btn btn-secondary btn-small"
-                                        data-doc-id="${doc.document_id}"
-                                        data-doc-name="${doc.source_name || doc.source}">
-                                        👁️ Посмотреть
-                                    </button>
-                                    <button 
-                                        class="delete-doc-btn btn btn-danger btn-small"
-                                        data-doc-id="${doc.document_id}"
-                                        data-doc-name="${doc.source_name || doc.source}">
-                                        🗑️ Удалить
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="document-meta">
-                                <div class="meta-item">
-                                    <span class="badge badge-primary">${doc.chunks_count ?? doc.total_chunks ?? '?'} чанки</span>
-                                </div>
-                                <div class="meta-item">
-                                    <span class="badge badge-success">${doc.source_type || 'chunk'}</span>
-                                </div>
-                                <div class="meta-item">
-                                    👤 ${escapeHtml(doc.user_id || 'robot')}
-                                </div>
-                                <div class="meta-item">
-                                    v${doc.version || 1}
-                                </div>
-                                <div class="meta-item">
-                                    🕒 ${formatDate(doc.created_at || null)}
-                                </div>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-        `).join('');
-        loadCollectionInfo();
-        loadManagerCollectionInfo();
-        loadFilesystemTree();
-    } catch (error) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки документов: ${error.message}
-            </div>
-        `;
-    }
-}
-// вызовы функций, чтобы не ломались на плохих названиях 
-document.addEventListener("click", function (e) {
-    // function to view Document 
-    if (e.target.classList.contains("view-doc-btn")) {
-        const docId = e.target.dataset.docId;
-        const docName = e.target.dataset.docName;
-        viewDocument(docId, docName);
-    }
-    if (e.target.classList.contains("delete-doc-btn")) {
-        // to delete document
-        const docId = e.target.dataset.docId;
-        const docName = e.target.dataset.docName;
-        deleteDocument(docId, docName);
-    }
-});
 // функция для синхронизации рялом с kb конкретным
 document.addEventListener("click", async function (e) {
     if (
@@ -881,17 +759,15 @@ async function startSyncTask(payload) {
                 )
             }
         );
-        const data =
-            await response.json();
+        const data = await response.json();
         if (!response.ok) {
             throw new Error(
                 data.message ||
                 "Ошибка запуска"
             );
         }
-        await watchSyncTask(
-            data.task_id
-        );
+        await watchSyncTask(data.task_id);
+
         return data.task_id;
     } catch (error) {
         console.error(error);
@@ -962,6 +838,8 @@ async function watchSyncTask(taskId) {
                     await fetch(
                         `/api/sync/status/${taskId}`
                     );
+                    
+                await loadCollectionInfo();
                 const data =
                     await response.json();
                 statusBox.innerText =
@@ -974,6 +852,7 @@ async function watchSyncTask(taskId) {
                     data.current_kb || "-";
                 // от менеджера скрываем подробные логи, показывая только статус синхронизации
                 if ( currentUser?.role ==="manager") {
+                    await loadManagerCollectionInfo();
                     let managerMessage =
                         "Синхронизация выполняется...";
                     if (
@@ -1097,6 +976,128 @@ async function syncCurrentCollection(btnElement) {
             originalText;
     }
 }
+// #############################
+// DOCUMENTS TAB LOGIC
+// #############################
+
+// Documents Management
+async function loadDocuments() {
+    const container = document.getElementById('documents-list');
+    container.innerHTML = '<div class="loading">Загрузка баз знаний...</div>';
+    // Обновляем document_count в метаданных (для MCP kb-status)
+    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
+    try {
+        await fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' });
+    } catch (e) {
+        console.warn("Metadata refresh failed, continuing...", e);
+    }
+    try {
+        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
+        const knowledgeBases = await response.json();
+        if (knowledgeBases.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Документы не найдены. Загрузите свой первый документ, чтобы начать!</p>
+                </div>
+            `;
+            loadCollectionInfo();
+            loadManagerCollectionInfo();
+            return;
+        }
+        container.innerHTML = knowledgeBases.map(kb => `
+            <div class="kb-section">
+                <div class="kb-header" onclick="toggleKB('${escapeHtml(kb.kb_id)}')">
+                    <div class="kb-title">
+                        <span class="kb-icon" id="icon-${escapeHtml(kb.kb_id)}">▼</span>
+                        <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
+                    </div>
+                    <div class="kb-stats">
+                        <button
+                            class="sync-kb-btn btn btn-primary btn-small"
+                            data-kb-id="${escapeHtml(kb.kb_id)}">
+                            🔄 Синхронизация БЗ
+                        </button>
+                        <span class="badge badge-primary">${kb.document_count} Документы</span>
+                        <span class="badge badge-secondary">${kb.total_chunks} Чанки</span>
+                        <button
+                            class="btn btn-danger btn-small"
+                            title="Delete knowledge base"
+                            onclick="event.stopPropagation(); deleteKnowledgeBase('${escapeHtml(kb.kb_id)}')"
+                        >
+                            🗑️ Удалить
+                        </button>
+                    </div>
+                </div>
+                <div class="kb-documents" id="kb-${escapeHtml(kb.kb_id)}" style="display: block;">
+                    ${kb.documents.map(doc => `
+                        <div class="document-card">
+                            <div class="document-header">
+                                <div class="document-title">📄 ${getDocumentTitle(doc)}</div>
+                                <div class="document-actions">
+                                    <button 
+                                        class="view-doc-btn btn btn-secondary btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
+                                        👁️ Посмотреть
+                                    </button>
+                                    <button 
+                                        class="delete-doc-btn btn btn-danger btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
+                                        🗑️ Удалить
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="document-meta">
+                                <div class="meta-item">
+                                    <span class="badge badge-primary">${doc.chunks_count ?? doc.total_chunks ?? '?'} чанки</span>
+                                </div>
+                                <div class="meta-item">
+                                    <span class="badge badge-success">${doc.source_type || 'chunk'}</span>
+                                </div>
+                                <div class="meta-item">
+                                    👤 ${escapeHtml(doc.user_id || 'robot')}
+                                </div>
+                                <div class="meta-item">
+                                    v${doc.version || 1}
+                                </div>
+                                <div class="meta-item">
+                                    🕒 ${formatDate(doc.created_at || null)}
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `).join('');
+        loadCollectionInfo();
+        loadManagerCollectionInfo();
+        loadFilesystemTree();
+    } catch (error) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки документов: ${error.message}
+            </div>
+        `;
+    }
+}
+// вызовы функций, чтобы не ломались на плохих названиях 
+document.addEventListener("click", function (e) {
+    // function to view Document 
+    if (e.target.classList.contains("view-doc-btn")) {
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        viewDocument(docId, docName);
+    }
+    if (e.target.classList.contains("delete-doc-btn")) {
+        // to delete document
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        deleteDocument(docId, docName);
+    }
+});
+
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Удалить базу знаний "${kbId}"?\n\n Все документы будут немедленно удалены.`)) {
@@ -1337,13 +1338,9 @@ async function loadTables() {
         if (!response.ok) {
             throw new Error(data.detail || 'Ошибка загрузки таблиц');
         }
-        const filteredLog = data.stdout
-            .split("\n")
-            .filter(line => !line.startsWith("dc_"))
-            .join("\n");
         showLoadLog(data.stdout);
         document.getElementById("load-log-content").textContent =
-            filteredLog;
+            data.stdout;
         result.className = "result-message success";
         result.innerHTML =
             "✓ Таблицы успешно обновлены";
@@ -3035,12 +3032,8 @@ function drawDocs() {
     `;
     el.innerHTML = `
         ${sourcesHtml}
-
         <hr>
-
         <h3>📄 Топ документов</h3>
-
-
         ${page.length === 0 ? "<div>Нет документов</div>" : page.map(d => `
             <div class="doc-item">
                 <b>${d.file_name}</b>
@@ -3098,26 +3091,20 @@ async function loadActivity(from, to) {
 }
 // отрисовка графиков активности
 function renderActivity(activity, words, phrases) {
-
     // ===== ЧАСЫ =====
     const hours = Array.from({ length: 24 }, (_, i) => i);
-
     const hourMap = {};
     hours.forEach(h => hourMap[h] = 0);
-
     activity.forEach(a => {
         const hour = Number(a.hour);
         hourMap[hour] += Number(a.messages);
     });
-
     const hourLabels = hours.map(h => `${h}:00`);
     const hourData = hours.map(h => hourMap[h]);
-
     // уничтожаем старый график
     if (hourChart) {
         hourChart.destroy();
     }
-
     const ctx = document.getElementById("activityChart").getContext("2d");
     // строим график по сообщениям в час
     hourChart = new Chart(ctx, {
@@ -3136,7 +3123,6 @@ function renderActivity(activity, words, phrases) {
             }
         }
     });
-
     // ===== ДНИ =====
     const days = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
     const dayMap = {};
@@ -3181,45 +3167,35 @@ function renderActivity(activity, words, phrases) {
 function renderCloud(id, data) {
     const el = document.getElementById(id);
     if (!el) return;
-
     // Ждём реальных размеров элемента (размеры заданы через CSS-класс)
     if (el.offsetWidth === 0) {
         setTimeout(() => renderCloud(id, data), 150);
         return;
     }
-
     el.innerHTML = "";
-
     if (!data || data.length === 0) {
         el.innerHTML = "<div class='cloud-empty'>Нет данных</div>";
         return;
     }
-
     // Читаем размеры из CSS — ничего не устанавливаем напрямую
     const width = el.offsetWidth;
     const height = el.offsetHeight;
-
     const list = data.map(w => [w.text, w.value]);
-
     // Диапазон значений
     const values = list.map(item => item[1]);
     const maxVal = Math.max(...values);
     const minVal = Math.min(...values);
-
     // Адаптивные размеры шрифтов под контейнер
     const maxFontSize = Math.min(width / 8, height / 3, 72);
     const minFontSize = Math.max(12, maxFontSize / 6);
-
     // КЛЮЧЕВОЕ: нормализуем значения к реальным размерам шрифтов
     const normalizedList = list.map(item => {
         const ratio = maxVal === minVal ? 0.5 : (item[1] - minVal) / (maxVal - minVal);
         const fontSize = minFontSize + ratio * (maxFontSize - minFontSize);
         return [item[0], fontSize];
     });
-
     // Адаптивный gridSize — чем меньше контейнер, тем плотнее сетка
     const gridSize = Math.max(4, Math.round(8 * (800 / Math.max(width, 400))));
-
     setTimeout(() => {
         try {
             WordCloud(el, {
@@ -3254,10 +3230,8 @@ function renderCloud(id, data) {
 async function loadAnalytics() {
     const fromRaw = document.getElementById("from").value;
     const toRaw = document.getElementById("to").value;
-
     const from = shiftToUTC(fromRaw);
     const to = shiftToUTC(toRaw);
-    
     const [stats, channels, users, docs, sources] = await Promise.all([
         fetch(`/api/analytics/stats?from_ts=${from}&to_ts=${to}`).then(r=>r.json()),
         fetch(`/api/analytics/channels?from_ts=${from}&to_ts=${to}`).then(r=>r.json()),
@@ -3265,7 +3239,6 @@ async function loadAnalytics() {
         fetch(`/api/analytics/top-documents?from_ts=${from}&to_ts=${to}`).then(r=>r.json()),
         fetch(`/api/analytics/documents-sources?from_ts=${from}&to_ts=${to}`).then(r=>r.json())
     ]);
-
     renderStats(stats, channels);
     renderTopUsers(users);
     renderTopDocs(docs, sources)
@@ -3296,7 +3269,6 @@ async function openUserDialogs(userId, userName) {
 // отрисовка диалога пользователя 
 function renderUserDialogs(dialogs) {
     const el = document.getElementById("dialogs-list");
-
     el.innerHTML =
         dialogs.length === 0
             ? "<div>Нет диалогов</div>"
@@ -3325,7 +3297,6 @@ function renderUserDialogs(dialogs) {
                     answer = "—";
                 }
                 answer += ` <small style="color:#999;">(${formatTime(d.response_time || 0)})</small>`;
-
                 return `
                     <div class="dialog-item">
                         <div class="dialog-header">
@@ -3335,7 +3306,6 @@ function renderUserDialogs(dialogs) {
                             </span>
                             ${channelBadge}
                         </div>
-
                         <div class="dialog-q">🧑 ${d.message || "-"}</div>
                         <div class="dialog-a">🤖 ${answer}</div>
                     </div>
@@ -3367,7 +3337,6 @@ function initDialogs() {
 function ensureDialogsDates() {
     const fromEl = document.getElementById("dialogs-from");
     const toEl = document.getElementById("dialogs-to");
-
     if (!fromEl.value || !toEl.value) {
         initDialogs();
     }
@@ -3384,18 +3353,14 @@ async function loadDialogs() {
     const toRaw = document.getElementById("dialogs-to").value;
     const from = shiftToUTC(fromRaw);
     const to = shiftToUTC(toRaw);
-
     const user = document.getElementById("dialogs-user").value;
     const text = document.getElementById("dialogs-text").value;
-
     const params = new URLSearchParams({
         from_ts: from,
         to_ts: to
     });
-
     if (user) params.set("user", user);
     if (text) params.set("text", text);
-
     const res = await fetch(`/api/analytics/dialogs?${params}`);
     if (!res.ok) {
         const text = await res.text();
@@ -3404,18 +3369,15 @@ async function loadDialogs() {
         return;
     }
     const data = await res.json();
-
     renderDialogs(data);
 }
 // рендер таблицы диалогов
 function renderDialogs(data) {
     const container = document.getElementById("dialogs-table");
-
     if (!data || data.length === 0) {
         container.innerHTML = "<p class='empty-state'>За этот период диалогов не найдено</p>";
         return;
     }
-
     container.innerHTML = `
         <table class="modern-table">
             <thead>
@@ -3430,8 +3392,7 @@ function renderDialogs(data) {
             </thead>
             <tbody>
                 ${data.map(row => {
-
-                    // ✅ нормальное имя
+                    // Нормализация имени fallback
                     let userName = (row.user_name || '').trim();
                     if (!userName || userName === "None None") {
                         userName = "Аноним";
@@ -3472,6 +3433,5 @@ function renderDialogs(data) {
 function exportDialogs() {
     const from = shiftToUTC(document.getElementById("dialogs-from").value);
     const to = shiftToUTC(document.getElementById("dialogs-to").value);
-
     window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }

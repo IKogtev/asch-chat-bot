@@ -54,7 +54,10 @@ async def lifespan(app: FastAPI):
     storage.build_tree()
     # создаем фоновые задачи
     # делаем синхронизацию при старте
-    sync_task = asyncio.create_task(run_sync_all_safe())
+    startup_task_id = create_auto_sync_task(
+        mode="startup"
+    )
+    sync_task = asyncio.create_task(run_sync_all_task(startup_task_id))
     # запускаем расписание переиндексации
     scheduler_task = asyncio.create_task(start_scheduler())
     yield
@@ -282,6 +285,7 @@ sync_settings = {
     "next_sync":None,
     "running": False
 }
+current_sync_task_id: str | None = None
 # очередь событий
 subscribers = []
 # глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
@@ -363,6 +367,9 @@ def get_current_storage() -> FileStorageService:
         
     return file_storages[current_name]
 
+##################################
+# Работа с синхронихацией
+##################################
 def get_interval_delta():
     """функция вычисления интервала между синхронизациями"""
     if sync_settings.get("interval_seconds"):
@@ -379,9 +386,17 @@ async def event_generator():
     finally:
         subscribers.remove(queue)
 
-##################################
-# Работа с синхронихацией
-##################################
+def get_running_sync_task():
+    global current_sync_task_id
+    if not current_sync_task_id:
+        return None
+    task = sync_tasks.get(current_sync_task_id)
+    if not task:
+        return None
+    if task["status"] == "processing":
+        return current_sync_task_id
+    return None
+
 @app.get("/api/filesystem/sync_events")
 async def sync_events():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -436,15 +451,29 @@ async def sync_function(iter_dir, storager, collection_type, log_callback=None, 
                     }
                 )
 # создание задачи синхронизации
-def create_sync_task():
+def create_sync_task(
+    mode: str,
+    collection_name: str | None = None,
+    kb_id: str | None = None
+):
     return {
         "status": "processing",
         "logs": [],
         "progress": 0,
         "current_kb": None,
         "started_at": datetime.now().isoformat(),
-        "finished_at": None
+        "finished_at": None,
+        "mode": mode,
+        "collection_name": collection_name,
+        "kb_id": kb_id
     }
+# создание задачи автосинхронизации
+def create_auto_sync_task(mode="startup"):
+    task_id = f"{mode}_{uuid.uuid4()}"
+    sync_tasks[task_id] = create_sync_task(
+        mode=mode
+    )
+    return task_id
 # счетчик общего количества kb
 def calculate_total_kbs():
     total = 0
@@ -492,7 +521,8 @@ async def run_sync_all_task(task_id: str):
         log_cb("🚀 Запущена синхронизация всех коллекций")
         await run_sync_all_safe(
             log_callback=log_cb,
-            global_progress=global_progress
+            global_progress=global_progress,
+            task_id=task_id
         )
         sync_tasks[task_id]["status"] = "completed"
         sync_tasks[task_id]["progress"] = 100
@@ -507,36 +537,52 @@ async def run_sync_all_task(task_id: str):
             "message": f"❌ {e}"
         })
     finally:
+        global current_sync_task_id
+
         sync_tasks[task_id]["finished_at"] = (
             datetime.now().isoformat()
         )
+        if current_sync_task_id == task_id:
+            current_sync_task_id = None
 # синхронизация одной коллекции
 async def run_collection_task(task_id: str, collection_name: str):
     log_cb = create_log_callback(task_id)
-    try:
-        # Получаем конфиг и сторадж
-        cfg = get_collection_cfg(collection_name)
-        storager = get_or_create_storager(collection_name)
-        await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
-        sync_tasks[task_id]["status"] = "completed"
-        sync_tasks[task_id]["progress"] = 100
-        sync_tasks[task_id]["finished_at"] = (
-            datetime.now().isoformat()
-        )
-        sync_tasks[task_id]["logs"].append(
-            {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "message": "✅ Синхронизация завершена"
-            }
-        )
-    except Exception as e:
-        sync_tasks[task_id]["status"] = "error"
-        sync_tasks[task_id]["logs"].append(
-            {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "message": f"❌ Ошибка: {str(e)}"
-            }
-        )
+    async with sync_lock:
+        global current_sync_task_id
+
+        current_sync_task_id = task_id
+        try:
+            # Получаем конфиг и сторадж
+            cfg = get_collection_cfg(collection_name)
+            storager = get_or_create_storager(collection_name)
+            await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
+            sync_tasks[task_id]["status"] = "completed"
+            sync_tasks[task_id]["progress"] = 100
+            sync_tasks[task_id]["finished_at"] = (
+                datetime.now().isoformat()
+            )
+            sync_tasks[task_id]["logs"].append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "message": "✅ Синхронизация завершена"
+                }
+            )
+        except Exception as e:
+            sync_tasks[task_id]["status"] = "error"
+            sync_tasks[task_id]["logs"].append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "message": f"❌ Ошибка: {str(e)}"
+                }
+            )
+        finally:
+
+            sync_tasks[task_id]["finished_at"] = (
+                datetime.now().isoformat()
+            )
+
+            if current_sync_task_id == task_id:
+                current_sync_task_id = None
 # синхронизация одной базы знаний
 async def run_kb_task(
     task_id: str,
@@ -544,47 +590,57 @@ async def run_kb_task(
     kb_id: str
 ):
     log_cb = create_log_callback(task_id)
-    try:
-        # Получаем конфиг и сторадж
-        storager = get_or_create_storager(
-            collection_name
-        )      
-        cfg = get_collection_cfg(
-            collection_name
-        )
-        log_cb(
-            f"📚 Синхронизация БЗ {kb_id}"
-        )
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: storager.sync(
-                kb_id=kb_id,
-                collection_type=cfg["sync_type"]
+    async with sync_lock:
+        global current_sync_task_id
+        current_sync_task_id = task_id
+        try:
+            # Получаем конфиг и сторадж
+            storager = get_or_create_storager(
+                collection_name
+            )      
+            cfg = get_collection_cfg(
+                collection_name
             )
-        )
-        sync_tasks[task_id]["progress"] = 100
-        sync_tasks[task_id]["current_kb"] = kb_id
-        sync_tasks[task_id]["status"] = "completed"
-        sync_tasks[task_id]["finished_at"] = (
-            datetime.now().isoformat()
-        )
-        sync_tasks[task_id]["logs"].append(
-            {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "message": "✅ Синхронизация завершена"
-            }
-        )
-    except Exception as e:
-        logger.error(f"[SYNC KB] Error: {e}")
-        sync_tasks[task_id]["status"] = "error"
-        sync_tasks[task_id]["logs"].append(
-            {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "message": f"❌ Ошибка: {str(e)}"
-            }
-        )
-        return {"status": "error", "message": str(e)}
+            log_cb(
+                f"📚 Синхронизация БЗ {kb_id}"
+            )
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: storager.sync(
+                    kb_id=kb_id,
+                    collection_type=cfg["sync_type"]
+                )
+            )
+            sync_tasks[task_id]["progress"] = 100
+            sync_tasks[task_id]["current_kb"] = kb_id
+            sync_tasks[task_id]["status"] = "completed"
+            sync_tasks[task_id]["finished_at"] = (
+                datetime.now().isoformat()
+            )
+            sync_tasks[task_id]["logs"].append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "message": "✅ Синхронизация завершена"
+                }
+            )
+        except Exception as e:
+            logger.error(f"[SYNC KB] Error: {e}")
+            sync_tasks[task_id]["status"] = "error"
+            sync_tasks[task_id]["logs"].append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "message": f"❌ Ошибка: {str(e)}"
+                }
+            )
+            return {"status": "error", "message": str(e)}
+        finally:
+            sync_tasks[task_id]["finished_at"] = (
+                datetime.now().isoformat()
+            )
+
+            if current_sync_task_id == task_id:
+                current_sync_task_id = None
 
 @app.post("/api/sync/start")
 async def start_sync(data: dict, background_tasks: BackgroundTasks):
@@ -593,9 +649,25 @@ async def start_sync(data: dict, background_tasks: BackgroundTasks):
     "all" - синхронизация всех коллекций, "collection" - синхронизация одной коллекции, 
     "kb" - синхронизация конкретной KB внутри коллекции (для kb_collection)
     """
+    global current_sync_task_id
+    if sync_lock.locked():
+        running_task_id = get_running_sync_task()
+        if running_task_id:
+            return {
+                "status": "already_running",
+                "task_id": running_task_id
+            }
+        return {
+            "status": "already_running"
+        }
     mode = data.get("mode")
     task_id = str(uuid.uuid4())
-    sync_tasks[task_id] = create_sync_task()
+    sync_tasks[task_id] = create_sync_task(
+        mode=mode,
+        collection_name=data.get("collection_name"),
+        kb_id=data.get("kb_id")
+    )
+    current_sync_task_id = task_id
     if mode == "all":
         background_tasks.add_task(
             run_sync_all_task,
@@ -616,14 +688,15 @@ async def start_sync(data: dict, background_tasks: BackgroundTasks):
         )
     else: 
         return {"status": "error", "message": f"Invalid mode: {mode}"}
-    return {"task_id": task_id}
+    return {"status": "started", "task_id": task_id}
 
 @app.get("/api/sync/status/{task_id}")
 async def get_sync_status(task_id: str):
     return sync_tasks.get(task_id, {"status": "not_found", "logs": []})
 
-async def run_sync_all_safe(log_callback=None, global_progress=None):
+async def run_sync_all_safe(log_callback=None, global_progress=None, task_id: str | None=None):
     """безопасная синхронизация, чтобы нельзя было несколько вызвать одновременно"""
+    global current_sync_task_id
     if sync_lock.locked():
         logger.info("SYNC already_running")
         return {"status": "already_running"}
@@ -631,6 +704,8 @@ async def run_sync_all_safe(log_callback=None, global_progress=None):
     async with sync_lock:
         logger.info("[SYNC] started")
         sync_settings["running"] = True
+        if task_id:
+            current_sync_task_id = task_id
         try:
             await run_sync_all_once(log_callback, global_progress)
             sync_settings["last_sync"] = datetime.now().isoformat()
@@ -642,6 +717,8 @@ async def run_sync_all_safe(log_callback=None, global_progress=None):
             storage.build_tree()
             for q in subscribers:
                 await q.put("sync_completed")
+            if current_sync_task_id == task_id:
+                current_sync_task_id = None
 
     return {"status": "completed"}
 
@@ -721,12 +798,37 @@ async def auto_sync():
         except asyncio.TimeoutError:
             pass
         if not sync_lock.locked():
-            await run_sync_all_safe()
+            task_id = create_auto_sync_task(mode="scheduler")
+            try:
+                await run_sync_all_task(
+                    task_id=task_id
+                )
+                sync_tasks[task_id]["status"] = "completed"
+            except Exception as e:
+                sync_tasks[task_id]["status"] = "error"
+                sync_tasks[task_id]["logs"].append(
+                    {
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "message": f"❌ {e}"
+                    }
+                )
+            finally:
+                sync_tasks[task_id]["finished_at"] = (
+                    datetime.now().isoformat()
+                )
 
 @app.get("/api/sync/settings")
 async def get_sync_settings():
     """получить текущие настройки синхронизации"""
-    return sync_settings
+    return {**sync_settings, "running": sync_lock.locked(), "current_task_id": current_sync_task_id}
+
+@app.get("/api/sync/current")
+async def get_current_sync():
+    """выведение текущей задачи"""
+    return {
+        "running": sync_lock.locked(),
+        "task_id": current_sync_task_id
+    }
 
 @app.post("/api/sync/settings")
 async def set_sync_settings(data: SyncInterval):
@@ -746,7 +848,7 @@ def get_or_create_storager(collection_name: str):
     # Находим базовую конфигурацию (например, если в имени есть "faq", берем конфиг faq)
     base_cfg = None
     for key, cfg in COLLECTIONS_CFG.items():
-        if key in collection_name:
+        if collection_name.startswith(key):
             base_cfg = cfg
             break
             
@@ -773,7 +875,7 @@ def get_collection_cfg(collection_name: str):
         return COLLECTIONS_CFG[collection_name]
     
     for base_key in COLLECTIONS_CFG.keys():
-        if base_key in collection_name:
+        if collection_name.startswith(base_key):
             return COLLECTIONS_CFG[base_key]
             
     logger.warning(f"Configuration for collection '{collection_name}' not found.")
@@ -915,29 +1017,20 @@ async def login(request: Request, username: str = Form(...), password: str = For
 async def refresh(request: Request):
     """Эндпоинт для обновления access токена с помощью refresh токена"""
     refresh_token = request.cookies.get("refresh_token")
-
     if not refresh_token:
         raise HTTPException(status_code=401)
-
     payload = decode_token(refresh_token)
-
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(status_code=401)
-
     username = payload.get("sub")
-
     user = await get_user_from_db(username, request.app.state.db_pool)
-
     if not user:
         raise HTTPException(status_code=401)
-
     new_access = create_access_token({
         "sub": username,
         "role": user["role"]
     })
-
     response = JSONResponse({"success": True})
-
     response.set_cookie(
         key="access_token",
         value=new_access, 
@@ -952,7 +1045,6 @@ async def logout():
     response = JSONResponse({"success": True})
     response.delete_cookie("access_token")
     response.delete_cookie("refresh_token")
-
     return response
 @app.get("/api/me")
 async def me(user=Depends(get_current_user)):
@@ -999,7 +1091,6 @@ async def get_document(document_id: str):
         chunks = qdrant_service.get_document_chunks(document_id)
         if not chunks:
             raise HTTPException(status_code=404, detail="Document not found")
-        
         # Format response to match expected structure
         formatted_chunks = []
         for chunk in chunks:
@@ -1010,7 +1101,6 @@ async def get_document(document_id: str):
                 "answer": chunk["answer"],
                 "payload": chunk["metadata"]
             })
-        
         return formatted_chunks
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1062,7 +1152,6 @@ def delete_knowledge_base(req: DeleteKBRequest):
             "status": "ok",
             "kb_id": req.kb_id
         }
-
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1073,25 +1162,20 @@ async def download_document(document_id: str):
     chunks = qdrant_service.get_document_chunks(document_id)
     if not chunks:
         raise HTTPException(404, "Document not found")
-
     raw_path = chunks[0]["metadata"].get("file_path")
-
     if not raw_path:
         raise HTTPException(404, "No file_path in metadata")
-
     file_path = Path(raw_path.strip())
     if not file_path.exists():
         raise HTTPException(
             404,
             f"File not found on disk: {file_path}"
         )
-
     return FileResponse(
         path=str(file_path),
         filename=file_path.name,
         media_type="application/octet-stream"
     )
-
 
 ##################################
 # Работа с таблицами
@@ -1103,7 +1187,6 @@ async def load_tables():
     """
     Запуск загрузчика Excel таблиц в PostgreSQL
     """
-
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -1112,9 +1195,7 @@ async def load_tables():
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-
         stdout, stderr = await process.communicate()
-
         if process.returncode != 0:
             raise HTTPException(
                 status_code=500,
@@ -1127,17 +1208,15 @@ async def load_tables():
             "stderr": stderr.decode(),
             "tables": tables
         }
-
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=str(e)
         )
-
+# получаем загруженные таблицы все кроме начинающихся с dc_
 async def get_loaded_tables():
     conn = await asyncpg.connect(NSTYA_DATA_URL)
     try:
-
         rows = await conn.fetch("""
             SELECT table_name
             FROM information_schema.tables
@@ -1145,11 +1224,9 @@ async def get_loaded_tables():
                 AND table_name NOT LIKE 'dc_%'
             ORDER BY table_name
         """)
-
         return [r["table_name"] for r in rows]
     finally:
         await conn.close()
-
 # эндпоинт для получения списка загруженных таблиц и их структуры 
 @app.get("/api/tables")
 async def get_tables():
@@ -1157,10 +1234,9 @@ async def get_tables():
     return {
         "tables": tables
     }
-
+# просмотр содержимого каждой таблицы
 @app.get("/api/tables/{table_name}")
 async def get_table_info(table_name: str):
-
     conn = await asyncpg.connect(NSTYA_DATA_URL)
     try:
         columns = await conn.fetch("""
@@ -1187,7 +1263,6 @@ async def get_table_info(table_name: str):
     finally:
         await conn.close()
 
-
 ##################################
 # Работа с коллекциями
 ##################################
@@ -1196,12 +1271,10 @@ async def get_table_info(table_name: str):
 async def collection_info(collection: Optional[str] = None):
     """Get collection information"""
     try:
-
         # Старое поведение
         target_collection = (
             collection or qdrant_service.collection_name
         )
-
         # Проверка существования
         collections = (
             qdrant_service
@@ -1209,22 +1282,18 @@ async def collection_info(collection: Optional[str] = None):
             .get_collections()
             .collections
         )
-
         existing_collections = {
             c.name for c in collections
         }
-
         if target_collection not in existing_collections:
             raise HTTPException(
                 status_code=404,
                 detail=f"Collection '{target_collection}' not found"
             )
-
         # Получаем info БЕЗ переключения глобального состояния
         info_obj = qdrant_service.qdrant_client.get_collection(
             collection_name=target_collection
         )
-
         info = {
             "name": target_collection,
             "points_count": info_obj.points_count,
@@ -1240,20 +1309,17 @@ async def collection_info(collection: Optional[str] = None):
             ),
             "platform_version": PLATFORM_VERSION,
             "last_sync": sync_settings["last_sync"],
+            "sync_running": sync_settings["running"],
             "next_sync": sync_settings["next_sync"]
         }
-
         return info
-
     except HTTPException:
         raise
-
     except Exception as e:
         logger.error(
             f"[COLLECTION INFO ERROR] {e}",
             exc_info=True
         )
-
         raise HTTPException(
             status_code=500,
             detail=str(e)
