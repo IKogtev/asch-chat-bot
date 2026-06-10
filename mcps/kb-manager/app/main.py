@@ -2703,7 +2703,8 @@ async def top_documents(from_ts: str, to_ts: str, request: Request):
         MAX(file_path) as file_path,
         COUNT(*) as total_downloads,
         COUNT(*) FILTER (WHERE source = 'search') as search_downloads,
-        COUNT(*) FILTER (WHERE source = 'menu') as menu_downloads
+        COUNT(*) FILTER (WHERE source = 'menu') as menu_downloads,
+        COUNT(*) FILTER (WHERE source = 'product_kit') as product_kit_downloads
     FROM cleaned_events
     WHERE file_name IS NOT NULL AND file_name != ''
     GROUP BY file_name

@@ -2874,7 +2874,7 @@ async function openUsersModal(filename) {
                                 </td>
                                 <td>
                                     <span class="source-badge">
-                                        ${u.source === "search" ? "🔍 Поиск" : "📂 Меню"}
+                                        ${sourceLabel(u.source)}
                                     </span>
                                 </td>
                                 <td class="text-center">
@@ -3002,6 +3002,7 @@ function sourceLabel(src) {
         'search': '🔍 Поиск',
         'menu': '📂 Меню',
         'chat': '💬 Чат',
+        'product_kit':'🛒 Комплект продуктов',
         'unknown': '❓ Неизвестно'
     };
     return map[src] || `📁 ${src}`;
@@ -3041,6 +3042,7 @@ function drawDocs() {
                 <div class="doc-sources">
                     🔍 ${d.search_downloads || 0}
                     📂 ${d.menu_downloads || 0}
+                    🛒 ${d.product_kit_downloads || 0}
                 </div>
                 <button onclick="openUsersModal('${d.file_name}')" class="btn btn-primary btn-small">
                     👁 Кто скачивал
