@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from uuid import UUID, uuid4
 
 import requests
 from dotenv import load_dotenv
@@ -27,6 +28,23 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Same contract as bot handlers: ADK user_id / session_id are global_user_id (UUID).
+# search_meta.search_results.user_id is PostgreSQL UUID — plain strings like "tester" fail asyncpg.
+# import uuid; str(uuid.uuid4())
+DEFAULT_ADK_TEST_USER_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def parse_adk_user_id(value: str) -> str:
+    """Validate/normalize ADK user_id (must be UUID for doc_search DB persistence)."""
+    s = (value or "").strip()
+    try:
+        return str(UUID(s))
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"invalid ADK user_id {value!r}: must be a UUID (production uses global_user_id); {e}"
+        ) from e
+
 
 # === Config (similar to prompt-manager tester) ===
 ASK_QUESTIONS = os.getenv("ASK_QUESTIONS", "1").strip() in ("1", "true", "yes")
@@ -345,6 +363,7 @@ def initialize_session(client: AdkApiClient, user_id: str, session_id: str) -> s
     logger.info("🚀 Инициализация сессии с ADK агентом...")
     client.ensure_session(user_id=user_id, session_id=session_id)
     init_q = "Привет! Ты готов отвечать на вопросы ?"
+    logger.info(f"ADK warmup /run: {init_q}")
     ans, _raw, _events = client.run(user_id=user_id, session_id=session_id, text=init_q)
     logger.info(f"💬 Ответ на инициализацию: {ans[:120]}..." if len(ans) > 120 else f"💬 Ответ: {ans}")
     return session_id
@@ -878,14 +897,28 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="ADK agent tester (Excel -> ask -> evaluate -> report).")
     parser.add_argument("--excel", default=str(TC_TASK_ABS_PATH))
     parser.add_argument("--out", default=str(SCRIPT_DIR))
-    parser.add_argument("--user-id", default=os.getenv("ADK_TEST_USER_ID", "tester"))
-    parser.add_argument("--session-id", default=os.getenv("ADK_TEST_SESSION_ID", f"test_{int(time.time())}"))
+    parser.add_argument(
+        "--user-id",
+        default=os.getenv("ADK_TEST_USER_ID", DEFAULT_ADK_TEST_USER_ID),
+        type=parse_adk_user_id,
+        help="ADK user_id (UUID, same as bot global_user_id). Required for doc_search PostgreSQL writes.",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=os.getenv("ADK_TEST_SESSION_ID"),
+        help="ADK session_id (defaults to new uuid4 per run for a clean conversation).",
+    )
     parser.add_argument(
         "--fake-first-name",
         default=os.getenv("ADK_TEST_FIRST_NAME"),  # None → build_adk_profile_state_delta uses default "Jenkins"
         help="Имя для stateDelta (плейсхолдер {first_name} в промптах ADK). По умолчанию ADK_TEST_FIRST_NAME или Jenkins.",
     )
     args = parser.parse_args()
+    user_id = str(args.user_id)
+    session_id = (args.session_id or str(uuid4())).strip()
+    if not session_id:
+        raise RuntimeError("session_id is empty; set --session-id or ADK_TEST_SESSION_ID")
+    logger.info("ADK user_id=%s session_id=%s", user_id, session_id)
 
     excel_path = Path(args.excel).expanduser().resolve()
     output_dir = Path(args.out).expanduser().resolve()
@@ -905,12 +938,12 @@ def main() -> None:
         timeout_sec=ADK_TIMEOUT_SEC,
         profile_state_delta=profile,
     )
-    session_id = initialize_session(client, user_id=str(args.user_id), session_id=str(args.session_id))
+    session_id = initialize_session(client, user_id=user_id, session_id=session_id)
 
     answers_file_path = SCRIPT_DIR / ("answers_" + excel_path.stem + (".parquet" if ASK_QUESTIONS else ".parquet"))
     tc_df = interrogate_agent(
         client,
-        user_id=str(args.user_id),
+        user_id=user_id,
         session_id=session_id,
         tc_df=tc_df,
         answers_file_path=answers_file_path,

@@ -15,11 +15,11 @@ RUN apt-get update -qq && \
 WORKDIR /app
 
 # Copy tester script + requirements (build context should be repo root: `asch-chat-bot/`)
-COPY adk_agent_tester_v1.py requirements.txt ./
+COPY adk_agent_tester.py requirements.txt ./
 
 # Install Python dependencies
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir -r /app/requirements.txt && \
     plotly_get_chrome -y || true
 
-CMD ["python3", "/app/adk_agent_tester_v1.py"]
+CMD ["python3", "/app/adk_agent_tester.py"]
