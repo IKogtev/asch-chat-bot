@@ -45,7 +45,7 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.4-amd64
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.5-amd64
                   command:
                     - cat
                   tty: true
@@ -98,7 +98,7 @@ pipeline {
               fi
 
               # Run the tester (writes REPORT_* and answers_* into /app)
-              python3 /app/adk_agent_tester_v1.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out "/app"
+              python3 /app/adk_agent_tester.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out "/app"
 
               echo "Copying artifacts from /app to workspace: ${WORKSPACE}/tester"
               mkdir -p "${WORKSPACE}/tester"
