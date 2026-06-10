@@ -419,7 +419,13 @@ class QdrantService:
         """List all documents (one entry per document, not per chunk)"""
         target = collection_name or self.collection_name
         ctype = self.collections_config.get(target)
-        faq_listing = self._is_faq_collection_type(ctype)
+        if ctype is None:
+            if target.startswith("faq_collection"):
+                faq_listing = True
+            else:
+                faq_listing = False
+        else:
+            faq_listing = self._is_faq_collection_type(ctype)
         # Scroll through all points
         result = self.qdrant_client.scroll(
             collection_name=target,
