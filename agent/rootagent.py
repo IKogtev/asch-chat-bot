@@ -143,6 +143,9 @@ class RootAgent(BaseAgent):
         bot_action = session_state.get("_bot_action")
         if isinstance(bot_action, dict) and bot_action.get("type"):
             state_delta["_bot_action"] = bot_action
+        product_dialog_context = session_state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY)
+        if isinstance(product_dialog_context, dict):
+            state_delta[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = product_dialog_context
 
         actions = EventActions(end_of_agent=True)
         actions.state_delta = state_delta
