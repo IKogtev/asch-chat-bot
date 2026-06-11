@@ -19,6 +19,7 @@ kb_storage/knowledge_base
 kb_storage/tables
 kb_storage/glossary
 kb_storage/kb
+kb_storage/manager
 data/
 venv*/
 

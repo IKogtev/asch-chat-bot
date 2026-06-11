@@ -13,8 +13,8 @@ from utils.logger import setup_logger
 from app.services.tables_loader_service import GLOSSARY_TABLE_NAME, TablesLoaderService
 
 
-DEFAULT_TABLES_DIR = "/app/data/kb_documents/tables"
-DEFAULT_GLOSSARY_DIR = "/app/data/kb_documents/glossary"
+DEFAULT_TABLES_DIR = "/app/data/kb_documents/manager/tables"
+DEFAULT_GLOSSARY_DIR = "/app/data/kb_documents/manager/glossary"
 DEFAULT_DATABASE_URL = "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 logger = setup_logger("load_tables", log_file="load_tables.log")
 
