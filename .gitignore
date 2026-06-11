@@ -8,17 +8,11 @@ kb_service/
 kb_default/
 kb_data/
 logs/
-kb_storage/kb
-kb_storage/archive_kb
-kb_storage/knowledge_base
-kb_storage/faq
-kb_storage/wait
-kb_storage/bot/upload
-kb_storage/archive_kb
-kb_storage/knowledge_base
-kb_storage/tables
-kb_storage/glossary
-kb_storage/kb
+kb_storage/*
+!kb_storage/bot/
+!kb_storage/bot/**
+!kb_storage/prompts/
+!kb_storage/prompts/**
 data/
 venv*/
 
