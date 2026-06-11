@@ -268,6 +268,27 @@ def test_build_final_event_includes_bot_action_state_delta() -> None:
 
 
 @pytest.mark.unit
+def test_build_final_event_includes_product_dialog_context_state_delta() -> None:
+    product_dialog_context = {
+        "last_mode": "product_filter",
+        "products": [{"code": "8914", "name": "Fort Knox 1 год"}],
+        "selected_product": None,
+    }
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: product_dialog_context,
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta == {
+        rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: product_dialog_context,
+    }
+
+
+@pytest.mark.unit
 def test_clear_state_keys_removes_requested_keys_only() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={"a": 1, "b": 2, "c": 3})
