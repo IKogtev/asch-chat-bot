@@ -2638,6 +2638,7 @@ function applyRoleAccess() {
         // manager ограничен
         const allowed = [
             "tree_files",
+            "upload",
             "news_send",
             "user_groups",
             "analytics",

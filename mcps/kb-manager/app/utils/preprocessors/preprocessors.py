@@ -10,6 +10,8 @@ from docx import Document
 from pptx import Presentation
 from dataclasses import dataclass, asdict
 from utils.logger import setup_logger
+import subprocess
+import tempfile
 # ------------------------------
 # Регулярные паттерны для поиска
 #  -----------------------------
@@ -305,6 +307,33 @@ class FAQPreprocessor:
         doc = Document(str(file_path))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
+    def _extract_doc(self, file_path: Path) -> str:
+        """
+        Конвертирует .doc во временный .docx через LibreOffice
+        и использует существующий парсер docx.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subprocess.run(
+                [
+                    "soffice",
+                    "--headless",
+                    "--convert-to",
+                    "docx",
+                    str(file_path),
+                    "--outdir",
+                    tmp_dir,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            docx_path = Path(tmp_dir) / f"{file_path.stem}.docx"
+            if not docx_path.exists():
+                raise RuntimeError(
+                    f"Failed to convert DOC file: {file_path}"
+                )
+            return self._extract_docx(docx_path)
+
     def _extract_text(self, file_path: Path) -> str:
         """функция для извлечения текста из файлов"""
         suffix = file_path.suffix.lower()
@@ -312,6 +341,8 @@ class FAQPreprocessor:
             return file_path.read_text(encoding="utf-8", errors="ignore")
         if suffix == ".pdf":
             return self._extract_pdf(file_path)
+        if suffix == ".doc":
+            return self._extract_doc(file_path)
         if suffix == ".docx":
             return self._extract_docx(file_path)
         if suffix == ".pptx":
@@ -391,7 +422,7 @@ class FAQPreprocessor:
             elif suffix in ['.xlsx', '.xls', '.csv']:
                 self.logger.info(f"Processing Table: {file.name}")
                 raw_items.extend(self._parse_table(file))
-            elif suffix in ['.txt', '.pdf', '.docx', '.pptx']:
+            elif suffix in ['.txt', '.pdf', '.docx', '.pptx', '.doc']:
                 self.logger.info(f"Processing Text FAQ: {file.name}")
                 text = self._extract_text(file)
                 raw_items.extend(self._parse_faq_text(text, file))
