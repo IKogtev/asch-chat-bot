@@ -146,7 +146,6 @@ NSTYA_DATA_URL = os.getenv(
 )
 # если мы делаем логирование у нас умирает adk_session и бот соответственно
 ADK_SESSION_SERVICE_URI  = os.getenv("ADK_SESSION_SERVICE_URI", "postgresql://aszh-bot:aszh-bot@postgres:5432/adk_sessions")
-ADK_SESSION_SERVICE_URI  = os.getenv("fail", "s")
 def normalize_adk_dsn(uri: str) -> str:
     """
     postgresql+asyncpg://
