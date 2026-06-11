@@ -63,8 +63,6 @@ class DocumentLoader:
                 text = self.extract_raw_text_from_tabular(path)          
             elif source_type==".pdf":
                 text = processor._extract_pdf(file_path=path)
-            elif source_type==".doc":
-                text = processor._extract_doc(file_path=path)
             elif source_type==".docx":
                 text = processor._extract_docx(file_path=path)
             elif source_type==".pptx":

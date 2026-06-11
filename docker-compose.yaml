@@ -84,13 +84,14 @@ services:
       - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
 
       # Documents paths
-      - ACTIVE_DOCUMENTS_PATH=kb/
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
-      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb
       - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
-      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_PATH=knowledge_base
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - FAQ_DOCUMENTS_PATH=manager/faq
       - GLOSSARY_CACHE_TTL_SEC=600
 
       # Context compaction
@@ -150,7 +151,7 @@ services:
       - .env
     volumes:
       - ./kb_storage/bot/:/app/data
-      - ./kb_storage/kb:/app/kb_storage/kb:ro
+      - ./kb_storage/manager/kb:/app/kb_storage/manager/kb:ro
     environment:
       - LOG_LEVEL=${BOT_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
@@ -162,7 +163,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
+      - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
@@ -189,7 +190,7 @@ services:
       - .env
     volumes:
       - ./kb_storage/bot/:/app/data
-      - ./kb_storage/kb:/app/kb_storage/kb:ro
+      - ./kb_storage/manager/kb:/app/kb_storage/manager/kb:ro
     environment:
       - LOG_LEVEL=${BOT_MAX_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
@@ -201,7 +202,7 @@ services:
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
+      - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
@@ -231,8 +232,6 @@ services:
       - "5000:5000"
     volumes:
       - ./kb_storage:/app/data/kb_documents
-      - ./kb_storage/prompts:/app/data/prompts
-      - ./kb_storage/bot:/app/data/bot
     environment:
       - LOG_LEVEL=${KB_MANAGER_LOG_LEVEL:-DEBUG}
       - LOG_TO_FILE=false
@@ -243,16 +242,16 @@ services:
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - ACTIVE_DOCUMENTS_PATH=kb/
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
-      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb
       - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
-      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_PATH=knowledge_base
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
-      - FAQ_DOCUMENTS_PATH=faq/
+      - FAQ_DOCUMENTS_PATH=manager/faq
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
-      - PROMPTS_STORAGE_ROOT=/app/data/prompts
+      - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
       - PLATFORM_VERSION=0.7.4
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
@@ -262,8 +261,9 @@ services:
       # путь к базе данных
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
-      - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
-      - PRODUCT_KITS_ROOT=/app/data/kb_documents/kb/1 Продукты
+      - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/manager/tables
+      - GLOSSARY_SOURCE_DIR=/app/data/kb_documents/manager/glossary
+      - PRODUCT_KITS_ROOT=/app/data/kb_documents/manager/kb/1 Продукты
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12

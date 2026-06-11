@@ -172,10 +172,10 @@ BOTS = {
 PROMPTS_STORAGE_ROOT = Path(os.getenv("PROMPTS_STORAGE_ROOT", "/app/data/prompts"))
 PROMPTS_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 # Путь к файлу стартового сообщения бота
-BOT_START_MESSAGE_FILE = Path("/app/data/bot/settings/bot_start_message.md")
-BOT_HELP_MESSAGE_FILE = Path("/app/data/bot/settings/bot_help_message.md")
+BOT_START_MESSAGE_FILE = Path("/app/data/kb_documents/bot/settings/bot_start_message.md")
+BOT_HELP_MESSAGE_FILE = Path("/app/data/kb_documents/bot/settings/bot_help_message.md")
 # папка загрузки файлов
-BOT_UPLOAD_DIR = Path("/app/data/bot/upload")
+BOT_UPLOAD_DIR = Path("/app/data/kb_documents/bot/upload")
 logger = setup_logger("kb_manager", log_file="kb_manager.log")
 
 # Initialize services
@@ -199,7 +199,7 @@ SUPPORTED_IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".ico",
 }
 SUPPORTED_FAQ_EXTENSIONS = {".md", ".csv", ".xls", ".xlsx", ".txt", ".pdf", ".docx"}
-SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx", ".csv", ".xls", ".xlsx", ".pptx", ".doc"} | SUPPORTED_IMAGE_EXTENSIONS
+SUPPORTED_KB_EXTENSIONS = {".md", ".txt", ".pdf", ".docx", ".csv", ".xls", ".xlsx", ".pptx"} | SUPPORTED_IMAGE_EXTENSIONS
 PLATFORM_VERSION = os.getenv("PLATFORM_VERSION", "0.5.1")
 # Chunking configuration
 chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
