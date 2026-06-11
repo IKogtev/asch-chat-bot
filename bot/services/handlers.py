@@ -230,6 +230,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     if is_tg:
         from aiogram.filters import Command
         from aiogram import F
+        bot_started = None
         message_decorator = dp.message
         callback_decorator = dp.callback_query
         home_filter = (F.data == "home")
@@ -237,7 +238,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         file_filter = F.data.startswith("f:")
     else:
         from maxapi import F
-        from maxapi.types import Command
+        from maxapi.types import Command, BotStarted
         message_decorator = dp.message_created
         callback_decorator = dp.message_callback
         home_filter = (F.callback.payload == "home")
@@ -305,21 +306,34 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     async def unified_auth(event):
         """Проверка регистрации и получение данных"""
         bot_res = BotResponse(event, platform)
-        user_obj = event.from_user if is_tg else (event.callback.user if hasattr(event, 'callback') else event.from_user)
+         # Определяем, является ли событие стартовым (у него нет message)
+        is_bot_started_event = (platform == "max" and type(event).__name__ == "BotStarted") or \
+                               (platform == "telegram" and type(event).__name__ == "ChatMemberUpdated")
+
+        #  Безопасно получаем пользователя (для BotStarted в maxapi это может быть event.user)
+        if is_tg:
+            user_obj = getattr(event, 'from_user', None)
+        else:
+            if hasattr(event, 'callback') and event.callback:
+                user_obj = getattr(event.callback, 'user', None)
+            else:
+                user_obj = getattr(event, 'from_user', None) or getattr(event, 'user', None)
+
         user_id = int(getattr(user_obj, 'id' if is_tg else 'user_id'))
         # Проверка, не является ли текущее сообщение контактом
         is_incoming_contact = False
         contact_obj = None
-        if platform == "telegram" and hasattr(event, 'contact') and event.contact:
-            is_incoming_contact = True
-            contact_obj = event.contact
-        elif platform == "max":
-            # Проверяем вложения в BotResponse (мы его уже создали выше)
-            for att in bot_res.attachments:
-                if getattr(att, 'type', None) == 'contact':
-                    is_incoming_contact = True
-                    contact_obj = att
-                    break
+        if not is_bot_started_event:
+            if platform == "telegram" and hasattr(event, 'contact') and event.contact:
+                is_incoming_contact = True
+                contact_obj = event.contact
+            elif platform == "max":
+                # Проверяем вложения в BotResponse (мы его уже создали выше)
+                for att in bot_res.attachments:
+                    if getattr(att, 'type', None) == 'contact':
+                        is_incoming_contact = True
+                        contact_obj = att
+                        break
 
         username = user_obj.username or "unknown"
         first_name = user_obj.first_name or "Гость"
@@ -393,6 +407,27 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             return None, None
         
         return user_data, bot_res
+    # обработчик стартовой логики
+    async def handle_start_logic(
+        bot_res,
+        global_user_id,
+        username,
+        platform,
+    ):
+        await eventlogger.log_event(
+            event_type="command_start",
+            user_id=str(global_user_id),
+            user_name=username,
+            session_id=str(global_user_id),
+            channel=platform,
+        )
+        # На /start не вызываем ADK.
+        # Только обновляем пользователя в БД 
+        # и показываем стартовое меню.
+        tree = await get_tree_cached()
+        menu = build_universal_menu(tree, [], platform)
+        text = get_start_message()
+        await bot_res.send(text, menu=menu)
 
     # Обработчик команды /start
     @message_decorator(Command("start"))
@@ -402,20 +437,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         global_user_id = ud.get("global_user_id")
         logger.info(f"Команда /start [{platform}] от user_id={global_user_id} (@{ud['username']})")
         
-        await eventlogger.log_event(
-            event_type="command_start",
-            user_id=str(global_user_id),
-            user_name=ud.get("username"),
-            session_id=str(global_user_id),
-            channel=platform
+        await handle_start_logic(
+            bot_res=bot_res,
+            global_user_id=global_user_id,
+            username=ud.get("username"),
+            platform=platform,
         )
-        # На /start не вызываем ADK.
-        # Только обновляем пользователя в БД 
-        # и показываем стартовое меню.
-        tree = await get_tree_cached()
-        menu = build_universal_menu(tree, [], platform)
-        text = get_start_message()
-        await bot_res.send(text, menu=menu)
 
     # обработчик команды /version для получения версии
     @message_decorator(Command("version"))
@@ -658,6 +685,28 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 last_name=m.from_user.last_name or ""
             )
     else: 
+        # обработчик события старта бота первого для макса
+        @dp.bot_started()
+        @universal_handler
+        async def max_bot_started(
+            event: BotStarted,
+            ud,
+            bot_res,
+            **kwargs
+        ):
+            global_user_id = ud.get("global_user_id")
+
+            logger.info(
+                f"MAX bot_started "
+                f"user_id={global_user_id}"
+            )
+
+            await handle_start_logic(
+                bot_res=bot_res,
+                global_user_id=global_user_id,
+                username=ud.get("username"),
+                platform=platform,
+            )
         # обработчик получения контакта (номера телефона)
         async def handle_contact_max(bot_res: BotResponse, ud, contact: Contact):
             """Обработчик полученного контакта — извлекает телефон из vCard"""
@@ -1032,9 +1081,6 @@ class BotResponse:
 
     async def send(self, text, menu=None, is_html=True, is_doc=None):
         
-        # Перед отправкой ответа выключаем typing
-        # await self.stop_typing()
-        
         if is_doc:
             return await self._send_document(is_doc['path'], is_doc['name'])
         
@@ -1050,11 +1096,22 @@ class BotResponse:
                 parse_mode="HTML" if is_html else None
             )
         else:
-            return await self.event.message.answer(
-                text=text,
-                attachments=[menu] if menu else [],
-                format=TextFormat.HTML if is_html else None
-            )
+            if hasattr(self.event, 'message') and self.event.message:
+                # Это обычное сообщение или колбэк
+                return await self.event.message.answer(
+                    text=text,
+                    attachments=[menu] if menu else [],
+                    format=TextFormat.HTML if is_html else None
+                )
+            else:
+                # Это BotStarted (у него нет message, но есть bot и chat_id)
+                attachments = [menu] if menu else []
+                await self.event.bot.send_message(
+                    chat_id=self.event.chat_id, 
+                    text=text, 
+                    attachments=attachments,
+                    format=TextFormat.HTML if is_html else None
+                )
 
     async def edit(self, text, menu=None, is_html=True):
         """Редактирует сообщение и подтверждает callback (для TG)"""
@@ -1093,10 +1150,6 @@ class BotResponse:
         return await msg.answer(
             attachments=[InputMedia(path=path)]
         )
-        # if self.is_tg:
-        #     return await self.event.message.answer_document(FSInputFile(path, filename=filename))
-        # else:
-        #     return await self.event.message.answer(attachments=[InputMedia(path=path)])
 
     async def answer_callback(self, text=None, show_alert=False):
         """Для всплывающих окон в TG или уведомлений в Max"""
