@@ -55,28 +55,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadCollectionInfo(); // загрузка информации о коллекциях
     await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
     await loadDocuments(); // загрузка документов
-    await loadSyncSettings();
+    await loadSyncSettings(); // загрузка настроек синхронизации
     refreshTablesList();
     subscribeToSync();
     await loadFilesystemTree();
     startLogsAutoRefresh();
+    // блок для работы с новостями
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
     const fileInfo = document.getElementById("news-file-info");
     const fileName = document.getElementById("news-file-name");
     const removeBtn = document.getElementById("news-file-remove");
-
     if (!uploadBox || !fileInput) return;
-
     uploadBox.addEventListener("click", () => fileInput.click());
-
     fileInput.addEventListener("change", () => {
         if (fileInput.files.length > 0) {
             fileName.textContent = fileInput.files[0].name;
             fileInfo.style.display = "flex";
         }
     });
-
     removeBtn.addEventListener("click", () => {
         fileInput.value = "";
         fileInfo.style.display = "none";
@@ -108,14 +105,12 @@ async function loadCollections() {
     const selectEl = document.getElementById('collection-select');
     selectEl.innerHTML = '<option disabled selected>Загрузка коллекций...</option>';
     activeEl.textContent = 'Активная коллекция: загрузка...';
-    console.log('[loadCollections] called');
     try {
         const response = await fetch(`${API_BASE}/api/collections`);
         const data = await response.json();
-
         const { current_collection, collections} = data;
         currentCollection = current_collection;
-
+        // ативная коллекция для отображения типа
         const activeOption = collections.find(c => c.name === current_collection);
         if (activeOption) {
             currentCollectionType = activeOption.type;
@@ -141,9 +136,6 @@ async function loadCollections() {
                 selectedOption.dataset.type
             );
         };
-        console.log('activeEl', activeEl);
-        console.log('selectEl', selectEl);
-
     } catch (e) {
         activeEl.textContent = 'Активная коллекция ошибка';
         selectEl.innerHTML = '<option disabled>Ошибка загрузки коллекций</option>';
@@ -153,9 +145,6 @@ async function loadCollections() {
 // Switch collection
 async function switchCollection(collectionName, collectionType) {
     if (!collectionName) return;
-
-    console.log('[switchCollection] switching to', collectionName, collectionType);
-
     currentCollectionType = collectionType;
     currentCollection = collectionName;
 
@@ -165,14 +154,10 @@ async function switchCollection(collectionName, collectionType) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ collection_name: collectionName, collection_type: collectionType})
         });
-
         if (!response.ok) {
             throw new Error(`Переключение провалилось: ${response.status}`);
         }
-
         const data = await response.json();
-        console.log('[switchCollection] success', data);
-
         // Перезагрузка UI
         await loadAliasData();
         await loadCollections();
@@ -181,8 +166,6 @@ async function switchCollection(collectionName, collectionType) {
         await loadManagerCollectionInfo();
         await loadDocuments();
         await loadFilesystemTree();
-        
-
         // Очистка поиска
         document.getElementById('search-results').innerHTML = '';
         document.getElementById('search-query').value = '';
@@ -198,7 +181,6 @@ async function loadCollectionInfo() {
         const response = await fetch(`${API_BASE}/api/collections/info`);
         const data = await response.json();
         const isFAQ = currentCollectionType === 'faq';
-
         document.getElementById('collection-info').innerHTML = 
             `
                 ${isFAQ? "Документы": "Точки"} 
@@ -206,37 +188,26 @@ async function loadCollectionInfo() {
                 | Версия платформы
                 <strong>${data.platform_version || 0}</strong>
                 | Последняя Синхронизация
-                <strong>${data.last_sync? formatDate(data.last_sync): "В процессе"}</strong>
+                <strong>${data.sync_running? "В процессе": (data.last_sync? formatDate(data.last_sync):"-")}</strong>
                 | Следующая Синхронизация
                 <strong>${data.next_sync? formatDate(data.next_sync): "Пока не установлена"}</strong>
             `;
-         
         } catch (error) {
         console.error('Error loading collection info:', error);
     }
 }
 // collection info for manager 
 async function loadManagerCollectionInfo() {
-
     try {
-
         const response = await fetch(`${API_BASE}/api/collections/info?collection=kb_collection`);
         const data = await response.json();
-
         document.getElementById("manager-collection-info").innerHTML = `
             Документы
             <strong>${data.points_count - 1 || 0}</strong>
-
             | Версия платформы
             <strong>${data.platform_version || 0}</strong>
-
             | Последняя Синхронизация
-            <strong>
-                ${data.last_sync
-                    ? formatDate(data.last_sync)
-                    : "В процессе"}
-            </strong>
-
+            <strong>${data.sync_running? "В процессе": (data.last_sync? formatDate(data.last_sync):"-")}</strong>
             | Следующая Синхронизация
             <strong>
                 ${data.next_sync
@@ -244,9 +215,7 @@ async function loadManagerCollectionInfo() {
                     : "Пока не установлена"}
             </strong>
         `;
-
     } catch (error) {
-
         console.error(
             "Error loading manager collection info:",
             error
@@ -259,20 +228,15 @@ document
   .addEventListener("click", async () => {
     const select = document.getElementById("collection-select");
     const deletedCollection = select.value;
-
     if (!deletedCollection) {
       alert("Коллекция не выбрана");
       return;
     }
-
     const confirmed = confirm(
       `Вы уверены что хотите удалить коллекцию? "${deletedCollection}"?\n\n Это действие необратимо.`
     );
-
     if (!confirmed) return;
-
     const deletedType = getCollectionType(deletedCollection);
-
     try {
       const res = await fetch("/api/collections/delete", {
         method: "POST",
@@ -281,21 +245,16 @@ document
         },
         body: JSON.stringify({collection: deletedCollection }),
       });
-      
       const data = await res.json();
-
       if (!res.ok) {
         const err = await res.text();
         throw new Error(err);
       }
       alert(`Коллекция "${data.deleted_collection}" удалена`);
-
       // обновляем список коллекций
-      
       await loadAliasData();
       await loadCollections();
       await loadActiveCollections();
-      
       //   переключаем UI на активную alias-коллекцию
       if (deletedType && activeCollections?.[deletedType]?.collection) {
         const nextCollection = activeCollections[deletedType].collection;
@@ -306,8 +265,6 @@ document
         select.selectedIndex = 0;
         select.dispatchEvent(new Event("change"));
       }
-
-
     } catch (err) {
       alert(`Не удалось удалить коллекцию: Это активная коллекция`); 
       console.error(err);
@@ -328,7 +285,6 @@ async function createCollection() {
     const version = document.getElementById("newCollectionVersion").value.trim();
     const type = document.getElementById("newCollectionType").value;
     const errorBox = document.getElementById("create-collection-error");
-
     errorBox.classList.add("hidden");
     errorBox.textContent = "";
     if (!version || !/^\d+(\.\d+)?$/.test(version)) {
@@ -348,22 +304,17 @@ async function createCollection() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ version, type })
         });
-
         const data = await res.json();
-
         if (!res.ok) {
             throw new Error(data.error || "Не удалось создать коллекцию");
         }
-
         closeCreateCollectionModal();
         await loadAliasData();
         await loadCollections();
         await loadActiveCollections();
-
         const select = document.getElementById("collection-select");
         select.value = collectionName;
         select.dispatchEvent(new Event("change"));
-
     } catch (err) {
         errorBox.textContent = err.message;
         errorBox.classList.remove("hidden");
@@ -375,7 +326,6 @@ async function loadAliasData() {
         fetch("/api/collections/by-type"),
         fetch("/api/collections/active")
     ]);
-
     collectionsByType = await collectionsRes.json();
     activeAliases = await activeRes.json();
 }
@@ -385,29 +335,23 @@ async function openSwitchCollectionModal() {
      if (!collectionsByType.faq) {
         await loadAliasData();
     }
-
     loadAliasCollections();
 }
 // загрузка алиасов для коллекций
 function loadAliasCollections() {
     const type = document.getElementById("switchCollectionType").value;
     const targetSelect = document.getElementById("switchCollectionTarget");
-
     const activeCollection = activeAliases[type]?.collection;
     const collections = collectionsByType[type] || [];
-
     targetSelect.innerHTML = "";
-
     collections.forEach(name => {
         const option = document.createElement("option");
         option.value = name;
         option.textContent = name;
-
         if (name === activeCollection) {
             option.disabled = true;
             option.textContent += " (активная)";
         }
-
         targetSelect.appendChild(option);
     });
 }
@@ -420,17 +364,13 @@ async function switchCollectionAlias() {
     const type = document.getElementById("switchCollectionType").value;
     const collection = document.getElementById("switchCollectionTarget").value;
     const errorBox = document.getElementById("switch-collection-error");
-
     errorBox.classList.add("hidden");
     errorBox.textContent = "";
-
     if (!collection) {
         errorBox.textContent = "Выберите коллекцию";
         errorBox.classList.remove("hidden");
         return;
     }
-
-
     try {
         const res = await fetch("/api/collections/switch-alias", {
             method: "POST",
@@ -440,35 +380,25 @@ async function switchCollectionAlias() {
                 collection_type: type
             })
         });
-
         const data = await res.json();
-
         if (!res.ok) {
             throw new Error(data.detail || "Не удалось переключить алиас");
         }
-
         const current = document.getElementById("collection-select").value;
-
         if (current.startsWith(`${type}_`) && current !== collection) {
             const confirmSwitch = confirm(
                 `Алиас переключен на "${collection}".\n\n Переключить интерфейс на эту коллекцию?`
             );
-
             if (confirmSwitch) {
                 const select = document.getElementById("collection-select");
                 select.value = collection;
                 select.dispatchEvent(new Event("change"));
             }
         }
-
         closeSwitchCollectionModal();
-
-        // 🔄 обновляем UI
+        // обновляем UI
         await loadAliasData();
         await loadActiveCollections();
-
-        
-
     } catch (err) {
         errorBox.textContent = err.message;
         errorBox.classList.remove("hidden");
@@ -485,7 +415,6 @@ function showTab(tabName, event=null) {
     document.querySelectorAll('.tab-button').forEach(btn => {
         btn.classList.remove('active');
     });
-    
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
     if (event && event.currentTarget) {
@@ -495,9 +424,7 @@ function showTab(tabName, event=null) {
         const button = document.querySelector(`[data-tab="${tabName}"]`);
         if (button) button.classList.add('active');
     }
-    
     updateHeaderVisibility(tabName);
-    
     // Load data if needed
     if (tabName === 'documents') {
         loadDocuments();
@@ -508,12 +435,9 @@ function showTab(tabName, event=null) {
         const defaultHeader = document.getElementById("default-tree-header");
         //  отображаем 1 из 2 интерфейсов в зависимости от роли пользователя
         if (currentUser?.role === "manager") {
-
             managerOverlay.style.display = "block";
             defaultHeader.style.display = "none";
-
             loadManagerCollectionInfo();
-
         } else {
             managerOverlay.style.display = "none";
             defaultHeader.style.display = "flex";
@@ -545,14 +469,11 @@ function showTab(tabName, event=null) {
 // функция управления видимостью заголовка управления коллекциями
 function updateHeaderVisibility(tabName) {
     const header = document.getElementById("collections-header");
-
     const allowedTabs = [
         "documents",
         "search",
-        "upload",
         "tree_files"
     ];
-
     if (
     allowedTabs.includes(tabName) &&
         currentUser?.role !== "manager"
@@ -568,7 +489,6 @@ function toggleSidebar() {
     const icon = document.getElementById("toggle-icon");
     sidebar.classList.toggle("expanded");
     sidebar.classList.toggle("collapsed");
-
     // меняем иконку
     if (sidebar.classList.contains("expanded")) {
         icon.textContent = "✖";
@@ -582,7 +502,6 @@ function extractQuestionFromText(text){
     // search question
     const match = text.match(/Question:\s*(.+?)(?:\n|context:|$)/i);
     if (!match) return text;
-
     // Убираем возможный "**Вопрос:**"
     return match[1]
         .replace(/\*\*Вопрос:\*\*/gi, '')
@@ -600,21 +519,17 @@ function formatDate(dateString) {
     if (!dateString) return 'Неизвестно';
     try {
         let iso = dateString.trim();
-
         // если нет timezone → считаем UTC
         if (!iso.endsWith('Z') && !iso.match(/[+-]\d{2}(:\d{2})?$/)) {
             iso = iso.replace(' ', 'T') + 'Z';
         } else {
             iso = iso.replace(' ', 'T');
         }
-
         const date = new Date(iso);
-
         if (isNaN(date.getTime())) {
             console.error("Invalid date:", dateString);
             return 'Неправильная дата';
         }
-
         // ВСЕГДА приводим к Москве
         return new Intl.DateTimeFormat('ru-RU', {
             timeZone: 'Europe/Moscow',
@@ -626,7 +541,6 @@ function formatDate(dateString) {
             second: '2-digit',
             hour12: false
         }).format(date);
-
     } catch (e) {
         return 'Неправильная дата';
     }
@@ -648,7 +562,6 @@ function getDocumentTitle(doc) {
         doc.question_preview ||
         doc.question ||
         doc.payload?.question;
-
     if (question) {
         return escapeHtml(extractQuestionFromText(question));
     }
@@ -659,9 +572,7 @@ function getDocumentTitle(doc) {
         doc.source ||
         doc.filename ||
         'Документ';
-
     let sectionPath = doc.section_path || doc.payload?.section_path;
-
     if (!sectionPath) {
         return escapeHtml(baseTitle);
     }
@@ -675,30 +586,24 @@ function getDocumentTitle(doc) {
             sectionPath = [sectionPath];
         }
     }
-
     // Если это массив
     if (Array.isArray(sectionPath)) {
         const cleaned = sectionPath
             .map(s => s.trim())
-            .filter(Boolean);
-        
+            .filter(Boolean);   
         const withoutFirst = cleaned.slice(1);
-
         if (withoutFirst.length > 0) {
             return escapeHtml(
                 withoutFirst.join("/") + "/" + baseTitle
             );
         }
     }
-
     return escapeHtml(baseTitle);
 }
 // загрузка настроек синхронизации
 async function loadSyncSettings() {
-
     const res = await fetch("/api/sync/settings")
     const data = await res.json()
-
     document.getElementById("sync-interval").innerText =
         data.interval_hours
 }
@@ -707,19 +612,16 @@ async function changeSyncInterval(){
     const current = document.getElementById("sync-interval").innerText
     const hours = prompt("Введите интервал синхронизации в часах", current)
     if(!hours) return;
-
     const parsedHours = parseInt(hours, 10);
     if (isNaN(parsedHours) || parsedHours <= 0) {
         alert("Пожалуйста, введите действительное положительное число.");
         return;
     }
-
     const res = await fetch("/api/sync/settings", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({hours:parseInt(hours)})
     })
-
     if(res.ok){
         loadSyncSettings()
         loadCollectionInfo()
@@ -730,7 +632,6 @@ async function changeSyncInterval(){
 function toggleKB(kbId) {
     const kbDocs = document.getElementById(`kb-${kbId}`);
     const icon = document.getElementById(`icon-${kbId}`);
-    
     if (kbDocs.style.display === 'none') {
         kbDocs.style.display = 'block';
         icon.textContent = '▼';
@@ -742,13 +643,10 @@ function toggleKB(kbId) {
 // функция извлечения вопроса из FAQ
 function parseFaqQuestion(text) {
     if (!text) return "";
-
     // убираем "Question:"
     let q = text.replace(/^Question:\s*/i, "");
-
     // отрезаем всё после context:
     q = q.split(/\ncontext:/i)[0];
-
     return q.trim();
 }
 // отображение групп пользователей
@@ -763,9 +661,7 @@ function getTargetGroupName(group) {
 // функция сдвига времени
 function shiftToUTC(dateStr) {
     if (!dateStr) return "";
-
     const dt = new Date(dateStr);
-
     return dt.toISOString();
 }
 // формат под datetime-local
@@ -792,128 +688,8 @@ function getStatusName(status) {
     return statuses[status] || status;
 }
 // #############################
-// DOCUMENTS TAB LOGIC
+// SYNC LOGIC
 // #############################
-
-// Documents Management
-async function loadDocuments() {
-    const container = document.getElementById('documents-list');
-    container.innerHTML = '<div class="loading">Загрузка баз знаний...</div>';
-    // Обновляем document_count в метаданных (для MCP kb-status)
-    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
-    try {
-        await fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' });
-    } catch (e) {
-        console.warn("Metadata refresh failed, continuing...", e);
-    }
-    try {
-        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
-        const knowledgeBases = await response.json();
-        
-        if (knowledgeBases.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <p>Документы не найдены. Загрузите свой первый документ, чтобы начать!</p>
-                </div>
-            `;
-            loadCollectionInfo();
-            loadManagerCollectionInfo();
-            return;
-        }
-                                
-        container.innerHTML = knowledgeBases.map(kb => `
-            <div class="kb-section">
-                <div class="kb-header" onclick="toggleKB('${escapeHtml(kb.kb_id)}')">
-                    <div class="kb-title">
-                        <span class="kb-icon" id="icon-${escapeHtml(kb.kb_id)}">▼</span>
-                        <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
-                    </div>
-                    <div class="kb-stats">
-                        <button
-                            class="sync-kb-btn btn btn-primary btn-small"
-                            data-kb-id="${escapeHtml(kb.kb_id)}">
-                            🔄 Синхронизация БЗ
-                        </button>
-                        <span class="badge badge-primary">${kb.document_count} Документы</span>
-                        <span class="badge badge-secondary">${kb.total_chunks} Чанки</span>
-                        <button
-                            class="btn btn-danger btn-small"
-                            title="Delete knowledge base"
-                            onclick="event.stopPropagation(); deleteKnowledgeBase('${escapeHtml(kb.kb_id)}')"
-                        >
-                            🗑️ Удалить
-                        </button>
-                    </div>
-                </div>
-                <div class="kb-documents" id="kb-${escapeHtml(kb.kb_id)}" style="display: block;">
-                    ${kb.documents.map(doc => `
-                        <div class="document-card">
-                            <div class="document-header">
-                                <div class="document-title">📄 ${getDocumentTitle(doc)}</div>
-                                <div class="document-actions">
-                                    <button 
-                                        class="view-doc-btn btn btn-secondary btn-small"
-                                        data-doc-id="${doc.document_id}"
-                                        data-doc-name="${doc.source_name || doc.source}">
-                                        👁️ Посмотреть
-                                    </button>
-                                    <button 
-                                        class="delete-doc-btn btn btn-danger btn-small"
-                                        data-doc-id="${doc.document_id}"
-                                        data-doc-name="${doc.source_name || doc.source}">
-                                        🗑️ Удалить
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="document-meta">
-                                <div class="meta-item">
-                                    <span class="badge badge-primary">${doc.chunks_count ?? doc.total_chunks ?? '?'} чанки</span>
-                                </div>
-                                <div class="meta-item">
-                                    <span class="badge badge-success">${doc.source_type || 'chunk'}</span>
-                                </div>
-                                <div class="meta-item">
-                                    👤 ${escapeHtml(doc.user_id || 'robot')}
-                                </div>
-                                <div class="meta-item">
-                                    v${doc.version || 1}
-                                </div>
-                                <div class="meta-item">
-                                    🕒 ${formatDate(doc.created_at || null)}
-                                </div>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-        `).join('');
-        loadCollectionInfo();
-        loadManagerCollectionInfo();
-        loadFilesystemTree();
-    } catch (error) {
-        container.innerHTML = `
-            <div class="result-message error">
-                Ошибка загрузки документов: ${error.message}
-            </div>
-        `;
-    }
-}
-// вызовы функций, чтобы не ломались на плохих названиях 
-document.addEventListener("click", function (e) {
-    // function to view Document 
-    if (e.target.classList.contains("view-doc-btn")) {
-        const docId = e.target.dataset.docId;
-        const docName = e.target.dataset.docName;
-        viewDocument(docId, docName);
-    }
-    if (e.target.classList.contains("delete-doc-btn")) {
-        // to delete document
-        const docId = e.target.dataset.docId;
-        const docName = e.target.dataset.docName;
-        deleteDocument(docId, docName);
-    }
-});
 // функция для синхронизации рялом с kb конкретным
 document.addEventListener("click", async function (e) {
     if (
@@ -945,7 +721,6 @@ document.addEventListener("click", async function (e) {
             alert(
                 `Ошибка: ${error.message}`
             );
-
         } finally {
             button.disabled = false;
             button.innerText =
@@ -957,10 +732,8 @@ document.addEventListener("click", async function (e) {
 // при синхронизации атомарной
 function subscribeToSync() {
     const eventSource = new EventSource("/api/filesystem/sync_events");
-
     eventSource.onmessage = function (event) {
         if (event.data === "sync_completed") {
-            console.log("🔄 Sync completed → refreshing UI");
             loadDocuments();
             loadFilesystemTree();
         }
@@ -986,17 +759,14 @@ async function startSyncTask(payload) {
                 )
             }
         );
-        const data =
-            await response.json();
+        const data = await response.json();
         if (!response.ok) {
             throw new Error(
                 data.message ||
                 "Ошибка запуска"
             );
         }
-        await watchSyncTask(
-            data.task_id
-        );
+        await watchSyncTask(data.task_id);
         return data.task_id;
     } catch (error) {
         console.error(error);
@@ -1067,6 +837,8 @@ async function watchSyncTask(taskId) {
                     await fetch(
                         `/api/sync/status/${taskId}`
                     );
+                    
+                await loadCollectionInfo();
                 const data =
                     await response.json();
                 statusBox.innerText =
@@ -1079,6 +851,7 @@ async function watchSyncTask(taskId) {
                     data.current_kb || "-";
                 // от менеджера скрываем подробные логи, показывая только статус синхронизации
                 if ( currentUser?.role ==="manager") {
+                    await loadManagerCollectionInfo();
                     let managerMessage =
                         "Синхронизация выполняется...";
                     if (
@@ -1202,6 +975,128 @@ async function syncCurrentCollection(btnElement) {
             originalText;
     }
 }
+// #############################
+// DOCUMENTS TAB LOGIC
+// #############################
+
+// Documents Management
+async function loadDocuments() {
+    const container = document.getElementById('documents-list');
+    container.innerHTML = '<div class="loading">Загрузка баз знаний...</div>';
+    // Обновляем document_count в метаданных (для MCP kb-status)
+    fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' }).catch(() => {});
+    try {
+        await fetch(`${API_BASE}/api/collections/refresh_metadata`, { method: 'POST' });
+    } catch (e) {
+        console.warn("Metadata refresh failed, continuing...", e);
+    }
+    try {
+        const response = await fetch(`${API_BASE}/api/knowledge-bases`);
+        const knowledgeBases = await response.json();
+        if (knowledgeBases.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>Документы не найдены. Загрузите свой первый документ, чтобы начать!</p>
+                </div>
+            `;
+            loadCollectionInfo();
+            loadManagerCollectionInfo();
+            return;
+        }
+        container.innerHTML = knowledgeBases.map(kb => `
+            <div class="kb-section">
+                <div class="kb-header" onclick="toggleKB('${escapeHtml(kb.kb_id)}')">
+                    <div class="kb-title">
+                        <span class="kb-icon" id="icon-${escapeHtml(kb.kb_id)}">▼</span>
+                        <strong>📚 ${escapeHtml(kb.kb_id)}</strong>
+                    </div>
+                    <div class="kb-stats">
+                        <button
+                            class="sync-kb-btn btn btn-primary btn-small"
+                            data-kb-id="${escapeHtml(kb.kb_id)}">
+                            🔄 Синхронизация БЗ
+                        </button>
+                        <span class="badge badge-primary">${kb.document_count} Документы</span>
+                        <span class="badge badge-secondary">${kb.total_chunks} Чанки</span>
+                        <button
+                            class="btn btn-danger btn-small"
+                            title="Delete knowledge base"
+                            onclick="event.stopPropagation(); deleteKnowledgeBase('${escapeHtml(kb.kb_id)}')"
+                        >
+                            🗑️ Удалить
+                        </button>
+                    </div>
+                </div>
+                <div class="kb-documents" id="kb-${escapeHtml(kb.kb_id)}" style="display: block;">
+                    ${kb.documents.map(doc => `
+                        <div class="document-card">
+                            <div class="document-header">
+                                <div class="document-title">📄 ${getDocumentTitle(doc)}</div>
+                                <div class="document-actions">
+                                    <button 
+                                        class="view-doc-btn btn btn-secondary btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
+                                        👁️ Посмотреть
+                                    </button>
+                                    <button 
+                                        class="delete-doc-btn btn btn-danger btn-small"
+                                        data-doc-id="${doc.document_id}"
+                                        data-doc-name="${doc.source_name || doc.source}">
+                                        🗑️ Удалить
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="document-meta">
+                                <div class="meta-item">
+                                    <span class="badge badge-primary">${doc.chunks_count ?? doc.total_chunks ?? '?'} чанки</span>
+                                </div>
+                                <div class="meta-item">
+                                    <span class="badge badge-success">${doc.source_type || 'chunk'}</span>
+                                </div>
+                                <div class="meta-item">
+                                    👤 ${escapeHtml(doc.user_id || 'robot')}
+                                </div>
+                                <div class="meta-item">
+                                    v${doc.version || 1}
+                                </div>
+                                <div class="meta-item">
+                                    🕒 ${formatDate(doc.created_at || null)}
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `).join('');
+        loadCollectionInfo();
+        loadManagerCollectionInfo();
+        loadFilesystemTree();
+    } catch (error) {
+        container.innerHTML = `
+            <div class="result-message error">
+                Ошибка загрузки документов: ${error.message}
+            </div>
+        `;
+    }
+}
+// вызовы функций, чтобы не ломались на плохих названиях 
+document.addEventListener("click", function (e) {
+    // function to view Document 
+    if (e.target.classList.contains("view-doc-btn")) {
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        viewDocument(docId, docName);
+    }
+    if (e.target.classList.contains("delete-doc-btn")) {
+        // to delete document
+        const docId = e.target.dataset.docId;
+        const docName = e.target.dataset.docName;
+        deleteDocument(docId, docName);
+    }
+});
+
 // удаление баз знаний
 async function deleteKnowledgeBase(kbId) {
     if (!confirm(`Удалить базу знаний "${kbId}"?\n\n Все документы будут немедленно удалены.`)) {
@@ -1340,7 +1235,6 @@ async function performSearch() {
     const limit = parseInt(document.getElementById('search-limit').value);
     const kbId = document.getElementById('search-kb').value;
     const resultsContainer = document.getElementById('search-results');
-    
     if (!query) {
         resultsContainer.innerHTML = `
             <div class="empty-state">
@@ -1442,6 +1336,9 @@ async function loadTables() {
         if (!response.ok) {
             throw new Error(data.detail || 'Ошибка загрузки таблиц');
         }
+        showLoadLog(data.stdout);
+        document.getElementById("load-log-content").textContent =
+            data.stdout;
         result.className = "result-message success";
         result.innerHTML =
             "✓ Таблицы успешно обновлены";
@@ -1457,6 +1354,36 @@ async function loadTables() {
         btn.disabled = false;
     }
 }
+// Отображение протокола загрузки таблицы
+function showLoadLog(logText) {
+    const container =
+        document.getElementById(
+            "load-log-container"
+        );
+    const content =
+        document.getElementById(
+            "load-log-content"
+        );
+    const filteredLog = logText
+        .split("\n")
+        .filter(line => !line.startsWith("dc_"))
+        .join("\n");
+    content.textContent = filteredLog;
+    container.classList.remove(
+        "load-log-hidden"
+    );
+}
+
+function hideLoadLog() {
+    document
+        .getElementById(
+            "load-log-container"
+        )
+        .classList.add(
+            "load-log-hidden"
+        );
+}
+
 // отображение информации о таблице в модальном окне
 async function showTableInfo(tableName) {
     const modal = document.getElementById("table-info-modal");
@@ -1833,7 +1760,6 @@ async function loadNewsHistory() {
             console.log("Есть ожидающие новости, запускаю поллинг...");
             startNewsPolling();
         } else {
-            console.log("Все новости отправлены, останавливаю поллинг.");
             stopNewsPolling();
         }
     } catch (e) {
@@ -2491,12 +2417,9 @@ async function loadUserGroups(skipFetch = false) {
                     <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
                 </select>
             </div>
-
             <div class="pagination">
                 <button onclick="prevPage()" ${currentPage === 1 ? "disabled" : ""} class="btn btn-primary btn-small">⬅ Назад</button>
-                
                 <span class="page-info">Страница <strong>${currentPage}</strong> из <strong>${totalPages}</strong></span>
-
                 <button onclick="nextPage()" ${currentPage >= totalPages ? "disabled" : ""} class="btn btn-primary btn-small">Вперед ➡</button>
             </div>
         </div>
@@ -2715,6 +2638,7 @@ function applyRoleAccess() {
         // manager ограничен
         const allowed = [
             "tree_files",
+            "upload",
             "news_send",
             "user_groups",
             "analytics",
@@ -2888,9 +2812,6 @@ function startLogsAutoRefresh() {
 // функция экспорта логов для аналитики
 function exportAnalytics() {
     // Временно убрал промежуток за который делать выгрузку
-    // const from = document.getElementById("from").value;
-    // const to = document.getElementById("to").value;
-    // window.open(`/api/analytics/export?from_ts=${from}&to_ts=${to}`);
     window.open("/api/analytics/export");
 }
 // #############################
@@ -2941,7 +2862,7 @@ async function openUsersModal(filename) {
                                 </td>
                                 <td>
                                     <span class="source-badge">
-                                        ${u.source === "search" ? "🔍 Поиск" : "📂 Меню"}
+                                        ${sourceLabel(u.source)}
                                     </span>
                                 </td>
                                 <td class="text-center">
@@ -3068,8 +2989,7 @@ function sourceLabel(src) {
     const map = {
         'search': '🔍 Поиск',
         'menu': '📂 Меню',
-        'chat': '💬 Чат',
-        'unknown': '❓ Неизвестно'
+        'product_kit':'🛒 Комплект продуктов'
     };
     return map[src] || `📁 ${src}`;
 }
@@ -3099,12 +3019,8 @@ function drawDocs() {
     `;
     el.innerHTML = `
         ${sourcesHtml}
-
         <hr>
-
         <h3>📄 Топ документов</h3>
-
-
         ${page.length === 0 ? "<div>Нет документов</div>" : page.map(d => `
             <div class="doc-item">
                 <b>${d.file_name}</b>
@@ -3112,18 +3028,16 @@ function drawDocs() {
                 <div class="doc-sources">
                     🔍 ${d.search_downloads || 0}
                     📂 ${d.menu_downloads || 0}
+                    🛒 ${d.product_kit_downloads || 0}
                 </div>
                 <button onclick="openUsersModal('${d.file_name}')" class="btn btn-primary btn-small">
                     👁 Кто скачивал
                 </button>
             </div>
         `).join("")}
-
         <div class="pagination">
             <button onclick="prevDocs()" ${docPage === 0 ? "disabled" : ""} class="btn btn-primary btn-small">⬅</button>
-
             <span>Страница ${docPage + 1} / ${totalPages}</span>
-
             <button onclick="nextDocs()" ${docPage >= totalPages - 1 ? "disabled" : ""} class="btn btn-primary btn-small">➡</button>
         </div>
     `;
@@ -3162,26 +3076,20 @@ async function loadActivity(from, to) {
 }
 // отрисовка графиков активности
 function renderActivity(activity, words, phrases) {
-
     // ===== ЧАСЫ =====
     const hours = Array.from({ length: 24 }, (_, i) => i);
-
     const hourMap = {};
     hours.forEach(h => hourMap[h] = 0);
-
     activity.forEach(a => {
         const hour = Number(a.hour);
         hourMap[hour] += Number(a.messages);
     });
-
     const hourLabels = hours.map(h => `${h}:00`);
     const hourData = hours.map(h => hourMap[h]);
-
     // уничтожаем старый график
     if (hourChart) {
         hourChart.destroy();
     }
-
     const ctx = document.getElementById("activityChart").getContext("2d");
     // строим график по сообщениям в час
     hourChart = new Chart(ctx, {
@@ -3200,7 +3108,6 @@ function renderActivity(activity, words, phrases) {
             }
         }
     });
-
     // ===== ДНИ =====
     const days = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
     const dayMap = {};
@@ -3245,45 +3152,35 @@ function renderActivity(activity, words, phrases) {
 function renderCloud(id, data) {
     const el = document.getElementById(id);
     if (!el) return;
-
     // Ждём реальных размеров элемента (размеры заданы через CSS-класс)
     if (el.offsetWidth === 0) {
         setTimeout(() => renderCloud(id, data), 150);
         return;
     }
-
     el.innerHTML = "";
-
     if (!data || data.length === 0) {
         el.innerHTML = "<div class='cloud-empty'>Нет данных</div>";
         return;
     }
-
     // Читаем размеры из CSS — ничего не устанавливаем напрямую
     const width = el.offsetWidth;
     const height = el.offsetHeight;
-
     const list = data.map(w => [w.text, w.value]);
-
     // Диапазон значений
     const values = list.map(item => item[1]);
     const maxVal = Math.max(...values);
     const minVal = Math.min(...values);
-
     // Адаптивные размеры шрифтов под контейнер
     const maxFontSize = Math.min(width / 8, height / 3, 72);
     const minFontSize = Math.max(12, maxFontSize / 6);
-
-    // КЛЮЧЕВОЕ: нормализуем значения к реальным размерам шрифтов
+    // нормализуем значения к реальным размерам шрифтов
     const normalizedList = list.map(item => {
         const ratio = maxVal === minVal ? 0.5 : (item[1] - minVal) / (maxVal - minVal);
         const fontSize = minFontSize + ratio * (maxFontSize - minFontSize);
         return [item[0], fontSize];
     });
-
     // Адаптивный gridSize — чем меньше контейнер, тем плотнее сетка
     const gridSize = Math.max(4, Math.round(8 * (800 / Math.max(width, 400))));
-
     setTimeout(() => {
         try {
             WordCloud(el, {
@@ -3318,10 +3215,8 @@ function renderCloud(id, data) {
 async function loadAnalytics() {
     const fromRaw = document.getElementById("from").value;
     const toRaw = document.getElementById("to").value;
-
     const from = shiftToUTC(fromRaw);
     const to = shiftToUTC(toRaw);
-    
     const [stats, channels, users, docs, sources] = await Promise.all([
         fetch(`/api/analytics/stats?from_ts=${from}&to_ts=${to}`).then(r=>r.json()),
         fetch(`/api/analytics/channels?from_ts=${from}&to_ts=${to}`).then(r=>r.json()),
@@ -3329,7 +3224,6 @@ async function loadAnalytics() {
         fetch(`/api/analytics/top-documents?from_ts=${from}&to_ts=${to}`).then(r=>r.json()),
         fetch(`/api/analytics/documents-sources?from_ts=${from}&to_ts=${to}`).then(r=>r.json())
     ]);
-
     renderStats(stats, channels);
     renderTopUsers(users);
     renderTopDocs(docs, sources)
@@ -3360,7 +3254,6 @@ async function openUserDialogs(userId, userName) {
 // отрисовка диалога пользователя 
 function renderUserDialogs(dialogs) {
     const el = document.getElementById("dialogs-list");
-
     el.innerHTML =
         dialogs.length === 0
             ? "<div>Нет диалогов</div>"
@@ -3389,7 +3282,6 @@ function renderUserDialogs(dialogs) {
                     answer = "—";
                 }
                 answer += ` <small style="color:#999;">(${formatTime(d.response_time || 0)})</small>`;
-
                 return `
                     <div class="dialog-item">
                         <div class="dialog-header">
@@ -3399,7 +3291,6 @@ function renderUserDialogs(dialogs) {
                             </span>
                             ${channelBadge}
                         </div>
-
                         <div class="dialog-q">🧑 ${d.message || "-"}</div>
                         <div class="dialog-a">🤖 ${answer}</div>
                     </div>
@@ -3431,7 +3322,6 @@ function initDialogs() {
 function ensureDialogsDates() {
     const fromEl = document.getElementById("dialogs-from");
     const toEl = document.getElementById("dialogs-to");
-
     if (!fromEl.value || !toEl.value) {
         initDialogs();
     }
@@ -3448,18 +3338,14 @@ async function loadDialogs() {
     const toRaw = document.getElementById("dialogs-to").value;
     const from = shiftToUTC(fromRaw);
     const to = shiftToUTC(toRaw);
-
     const user = document.getElementById("dialogs-user").value;
     const text = document.getElementById("dialogs-text").value;
-
     const params = new URLSearchParams({
         from_ts: from,
         to_ts: to
     });
-
     if (user) params.set("user", user);
     if (text) params.set("text", text);
-
     const res = await fetch(`/api/analytics/dialogs?${params}`);
     if (!res.ok) {
         const text = await res.text();
@@ -3468,18 +3354,15 @@ async function loadDialogs() {
         return;
     }
     const data = await res.json();
-
     renderDialogs(data);
 }
 // рендер таблицы диалогов
 function renderDialogs(data) {
     const container = document.getElementById("dialogs-table");
-
     if (!data || data.length === 0) {
         container.innerHTML = "<p class='empty-state'>За этот период диалогов не найдено</p>";
         return;
     }
-
     container.innerHTML = `
         <table class="modern-table">
             <thead>
@@ -3494,8 +3377,7 @@ function renderDialogs(data) {
             </thead>
             <tbody>
                 ${data.map(row => {
-
-                    // ✅ нормальное имя
+                    // Нормализация имени fallback
                     let userName = (row.user_name || '').trim();
                     if (!userName || userName === "None None") {
                         userName = "Аноним";
@@ -3536,6 +3418,5 @@ function renderDialogs(data) {
 function exportDialogs() {
     const from = shiftToUTC(document.getElementById("dialogs-from").value);
     const to = shiftToUTC(document.getElementById("dialogs-to").value);
-
     window.open(`/api/analytics/export-dialogs?from_ts=${from}&to_ts=${to}`);
 }
