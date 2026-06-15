@@ -1,6 +1,7 @@
 import pytest
 
 from utils.doc_search_format import (
+    build_download_rank_patterns,
     extract_download_ranks,
     extract_loose_tail_ranks,
     parse_download_ranks,
@@ -13,8 +14,8 @@ from utils.doc_search_format import (
     ("text", "expected"),
     [
         ("скачай 1 и 3", [1, 3]),
-        ("8,13", [8, 13]),
-        ("  7  ", [7]),
+        ("8,13", []),
+        ("  4  ", [4]),
         ("документ 2", [2]),
         ("ничего похожего", []),
         ("", []),
@@ -30,7 +31,7 @@ def test_parse_download_ranks(text, expected) -> None:
     ("text", "expected"),
     [
         ("1 и 5", [1, 5]),
-        ("8, 13", [8, 13]),
+        ("8, 13", []),
         ("Fort Knox 1 и 5", [1, 5]),
         ("слишком длинная строка для loose tail 1 и 5", []),
         ("1", []),
@@ -52,6 +53,17 @@ def test_extract_download_ranks_returns_empty_when_neither_text_nor_hint_match()
     result = extract_download_ranks("покажи документы", extra_hint="подсказка без рангов")
 
     assert result == []
+
+
+@pytest.mark.unit
+def test_parse_download_ranks_respects_max_list_rank() -> None:
+    download_re, ranks_only_re, _ = build_download_rank_patterns(10)
+
+    assert download_re.match("8,3")
+    assert ranks_only_re.match("  7  ")
+    assert ranks_only_re.match("1 и 10")
+    assert not ranks_only_re.match("8,13")
+    assert not ranks_only_re.match("11")
 
 
 @pytest.mark.unit
