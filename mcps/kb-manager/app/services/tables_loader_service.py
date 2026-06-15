@@ -27,6 +27,51 @@ GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
 PRODUCT_KIT_STATUS_COLUMN = "folder_kit_status"
 PRODUCT_KITS_ROOT_ENV = "PRODUCT_KITS_ROOT"
+PRODUCT_SEARCH_TABLE = "product_search_dictionary"
+
+PRODUCT_SEARCH_COLUMNS = [
+    "product_code",
+    "canonical_name",
+    "alias",
+    "normalized_alias",
+    "match_type",
+    "priority",
+]
+CYR_TO_LAT = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "sch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
 
 DATA_CATALOG_SHEETS = {
     "business entities": "dc_entities",
@@ -171,6 +216,77 @@ class TablesLoaderService:
         finally:
             await conn.close()
 
+    def _build_product_search_dictionary(
+        self,
+        products_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Строит поисковый справочник продуктов.
+
+        Возвращает DataFrame:
+
+        product_code
+        canonical_name
+        alias
+        normalized_alias
+        match_type
+        priority
+        """
+        code_column = self._first_existing_column(
+            products_df,
+            ["code", "id", "product_id"],
+        )
+
+        name_column = self._first_existing_column(
+            products_df,
+            ["name", "product_name"],
+        )
+
+        if code_column is None or name_column is None:
+            return pd.DataFrame(columns=PRODUCT_SEARCH_COLUMNS)
+
+        rows = []
+        for _, row in products_df.iterrows():
+
+            product_code = self._cell_to_text(
+                row.get(code_column)
+            )
+            product_name = self._cell_to_text(
+                row.get(name_column)
+            )
+            if not product_code or not product_name:
+                continue
+            normalized_name = self.normalize_product_text(
+                product_name
+            )
+
+            transliterated_name = self.transliterate_ru_to_en(
+                normalized_name
+            )
+            rows.append(
+                {
+                    "product_code": product_code,
+                    "canonical_name": product_name,
+                    "alias": product_name,
+                    "normalized_alias": normalized_name,
+                    "match_type": "canonical",
+                    "priority": 100,
+                }
+            )
+            if transliterated_name != normalized_name:
+                rows.append(
+                    {
+                        "product_code": product_code,
+                        "canonical_name": product_name,
+                        "alias": transliterated_name,
+                        "normalized_alias": transliterated_name,
+                        "match_type": "translit",
+                        "priority": 90,
+                    }
+                )
+
+        return pd.DataFrame(rows, columns=PRODUCT_SEARCH_COLUMNS)
+
     async def _drop_public_tables(self, conn: asyncpg.Connection) -> None:
         """Удаляет все пользовательские таблицы из схемы public.
 
@@ -213,9 +329,14 @@ class TablesLoaderService:
             for sheet_name in workbook.sheet_names:
                 df = self._read_sheet(file_path, sheet_name, skip_second_row_comment=True)
                 table_name = self._regular_table_name(file_path, sheet_name, workbook.sheet_names)
+                product_search_df = None
                 if table_name == PRODUCTS_TABLE_NAME:
                     df = self._enrich_products_with_kit_folders(df)
+                    product_search_df = self._build_product_search_dictionary(df)
                 await self._replace_table(conn, table_name, df)
+                if product_search_df is not None:
+                    await self._replace_table(conn, PRODUCT_SEARCH_TABLE, product_search_df)
+                    await self._create_indexes(conn, PRODUCT_SEARCH_TABLE, ["product_code", "normalized_alias",])
                 loaded_tables.append(
                     LoadedTable(
                         table_name=table_name,
@@ -413,6 +534,33 @@ class TablesLoaderService:
         value = re.sub(r"\s+", " ", value)
         value = re.sub(r"^[^\wа-яА-ЯёЁ]+|[^\wа-яА-ЯёЁ]+$", "", value)
         return value.strip()
+
+    @staticmethod
+    def normalize_product_text(value: str) -> str:
+        """
+        Нормализация текста продукта для поиска.
+        """
+        value = str(value or "").strip().lower()
+        # ё -> е
+        value = value.replace("ё", "е")
+        # плюс превращаем в слово
+        value = value.replace("+", " plus ")
+        # любые разделители в пробел
+        value = re.sub(r"[-_/.,;:()]+", " ", value)
+        # удалить мусор
+        value = re.sub(r"[^a-zа-я0-9\s]", " ", value)
+        # схлопнуть пробелы
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
+
+    @classmethod
+    def transliterate_ru_to_en(cls, value: str) -> str:
+        value = str(value or "").lower()
+
+        return "".join(
+            CYR_TO_LAT.get(char, char)
+            for char in value
+        )
 
     @classmethod
     def _split_aliases(cls, value: str) -> list[str]:
