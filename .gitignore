@@ -13,6 +13,8 @@ kb_storage/*
 !kb_storage/bot/**
 !kb_storage/prompts/
 !kb_storage/prompts/**
+kb_storage/bot/upload
+
 data/
 venv*/
 

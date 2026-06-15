@@ -1,17 +1,1 @@
-{
-  "guest": {
-    "username": "guest",
-    "name": "Guest User",
-    "role": "guest",
-    "homedir": "/tmp/empty_dir_for_guest",
-    "permissions": ""
-  },
-  "admin": {
-    "username": "admin",
-    "name": "Administrator",
-    "password": "$2a$12$DRCtREKjLohB1yqD0mcvPuSM/NylTs2DP77S50j51.tIIjm03kRNW",
-    "role": "admin",
-    "homedir": "/",
-    "permissions": "read|write|upload|download|batchdownload|zip"
-  }
-}
+{"guest":{"username":"guest","name":"Guest User","role":"guest","homedir":"\/tmp\/empty_dir_for_guest","permissions":""},"admin":{"username":"admin","name":"Administrator","password":"$2a$12$DRCtREKjLohB1yqD0mcvPuSM\/NylTs2DP77S50j51.tIIjm03kRNW","role":"admin","homedir":"\/","permissions":"read|write|upload|download|batchdownload|zip"},"0":{"username":"ASLife","name":"ASLife","role":"user","homedir":"\/manager","permissions":"read|write|upload|download","password":"$2y$10$UPhz4NZ72ztx\/2TJeSIJ\/OvdJ1MsI5OFyTH0RFgtYkNpDidJr026q"}}

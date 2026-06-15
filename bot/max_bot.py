@@ -39,10 +39,9 @@ TITLE_HELP = """
 class BotHolder:
     def __init__(self):
         self.instance: Optional[Bot] = None
-# инициализация команд бота
+# инициализация команд бота только для макса
 async def setup_bot_commands(bot):
     """Регистрация команд в меню бота"""
-
     try:
         await bot.set_my_commands(
             BotCommand(name="start", description="Показать файлы"),
@@ -179,7 +178,6 @@ async def main():
         # команды инициализируем
         await setup_bot_commands(bot_instance)
         logger.info("✓ Диспетчер инициализирован")
-
         logger.info(f"🚀 Бот запущен и готов к работе (версия {Settings.PLATFORM_VERSION})")
         await dp.start_polling(bot_instance)
         
