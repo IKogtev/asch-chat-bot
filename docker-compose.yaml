@@ -60,6 +60,8 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
+      # путь к бд Насти
+      - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - PORT=8000
       - HOST=0.0.0.0
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
@@ -82,13 +84,14 @@ services:
       - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
 
       # Documents paths
-      - ACTIVE_DOCUMENTS_PATH=manager/kb/
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
-      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb
       - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
-      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_PATH=knowledge_base
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - FAQ_DOCUMENTS_PATH=manager/faq
       - GLOSSARY_CACHE_TTL_SEC=600
 
       # Context compaction
@@ -229,8 +232,6 @@ services:
       - "5000:5000"
     volumes:
       - ./kb_storage:/app/data/kb_documents
-      - ./kb_storage/prompts:/app/data/prompts
-      - ./kb_storage/bot:/app/data/bot
     environment:
       - LOG_LEVEL=${KB_MANAGER_LOG_LEVEL:-DEBUG}
       - LOG_TO_FILE=false
@@ -241,16 +242,16 @@ services:
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - ACTIVE_DOCUMENTS_PATH=manager/kb/
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
-      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb
       - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
-      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_PATH=knowledge_base
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
-      - FAQ_DOCUMENTS_PATH=manager/faq/
+      - FAQ_DOCUMENTS_PATH=manager/faq
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
-      - PROMPTS_STORAGE_ROOT=/app/data/prompts
+      - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
       - PLATFORM_VERSION=0.7.4
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
@@ -300,9 +301,9 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${KB_LOG_LEVEL:-DEBUG}
 
-      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://api.llm.nstcloud.ru/v1/embeddings}
-      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-REDACTED_EXAMPLE}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
 
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
@@ -351,9 +352,9 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${FAQ_LOG_LEVEL:-DEBUG}
 
-      - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB:-https://api.llm.nstcloud.ru/v1/embeddings}
-      - EMBEDDING_API_KEY=${OPENROUTER_API_KEY:-REDACTED_EXAMPLE}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB}
+      - EMBEDDING_API_KEY=${OPENROUTER_API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
       - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-10}
