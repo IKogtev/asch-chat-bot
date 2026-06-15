@@ -414,6 +414,10 @@ services:
       - ./filegator_init.sh:/filegator_init.sh:ro
     environment:
       - TZ=Europe/Moscow
+      # Переменные для автоматического создания пользователя:
+      - FILEGATOR_USER=ASLife
+      - FILEGATOR_PASS=YourSuperSecretPassword  
+      - FILEGATOR_HOMEDIR=/manager             # Папка внутри repository
     networks:
       - aszh-bot-network
 
