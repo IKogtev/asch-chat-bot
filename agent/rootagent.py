@@ -31,8 +31,7 @@ OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
-    "Показать параметры какого-то продукта или скачать комплект документов? "
-    "Напишите, например: \"параметры 2867\" или \"скачать комплект 2867\"."
+    "Могу показать карточку продукта или скачать комплект. Какой продукт Вас интересует ?"
 )
 
 

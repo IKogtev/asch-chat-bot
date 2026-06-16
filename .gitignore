@@ -66,3 +66,4 @@ setup-assistant-env.ps1
 AGENTS.md
 
 deployment/kubernetes/overlays/local
+filegator_data/users.json
