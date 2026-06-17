@@ -18,22 +18,8 @@ def _load_start_agent_module(monkeypatch):
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    class EventsCompactionConfig:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-
-    class LlmEventSummarizer:
-        def __init__(self, *, llm, prompt_template=None):
-            self.llm = llm
-            self.prompt_template = prompt_template
-
     app_stub = types.ModuleType("google.adk.apps.app")
     app_stub.App = App
-    app_stub.EventsCompactionConfig = EventsCompactionConfig
-
-    summarizer_stub = types.ModuleType("google.adk.apps.llm_event_summarizer")
-    summarizer_stub.LlmEventSummarizer = LlmEventSummarizer
 
     rootagent_stub = types.ModuleType("agent.rootagent")
 
@@ -47,10 +33,6 @@ def _load_start_agent_module(monkeypatch):
     config_stub = types.ModuleType("agent.config")
     config_stub.ACTIVE_DOCUMENTS_COLLECTION = "active_docs"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb_docs"
-    config_stub.AGENT_CONTEXT_COMPACTION_INTERVAL = 60
-    config_stub.AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE = 3
-    config_stub.AGENT_CONTEXT_TOKEN_THRESHOLD = 16000
-    config_stub.AGENT_CONTEXT_EVENT_RETENTION_SIZE = 60
     config_stub.build_common_model = lambda: object()
 
     def _agent_factory(name):
@@ -82,7 +64,6 @@ def _load_start_agent_module(monkeypatch):
     for name, module in {
         "agent": agent_pkg,
         "google.adk.apps.app": app_stub,
-        "google.adk.apps.llm_event_summarizer": summarizer_stub,
         "agent.rootagent": rootagent_stub,
         "agent.config": config_stub,
         "agent.agents.owasp_agent": owasp_stub,
@@ -102,14 +83,10 @@ def _load_start_agent_module(monkeypatch):
 
 
 @pytest.mark.unit
-def test_start_agent_exports_app_with_context_compaction_config(monkeypatch) -> None:
+def test_start_agent_exports_app(monkeypatch) -> None:
     module = _load_start_agent_module(monkeypatch)
 
     assert module.app.name == "agent"
     assert module.app.root_agent is module.root_agent
-    assert module.app.events_compaction_config.compaction_interval == 60
-    assert module.app.events_compaction_config.overlap_size == 3
-    assert module.app.events_compaction_config.token_threshold == 16000
-    assert module.app.events_compaction_config.event_retention_size == 60
-    assert module.app.events_compaction_config.summarizer.llm is not None
+    assert not hasattr(module.app, "events_compaction_config")
     assert module.root_agent.product_selection_agent.name == "product_selection_agent"
