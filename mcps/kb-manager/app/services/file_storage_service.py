@@ -253,32 +253,53 @@ class FileStorageService:
     # -------------------------------------------------
 
     def _index_file(self, file_info: Dict, kb_id: str, collection_type: str):
-        try:
-            single_file_path = file_info["absolute_path"]
+        filename = file_info.get("filename")
+        max_retries = 3
+        retry_delay = 15 # sec
+        for attempt in range(1, max_retries+1):
+                
+            try:
+                single_file_path = file_info["absolute_path"]
 
-            loader = DocumentLoader(
-                documents_dir=single_file_path.parent,
-                service_dir=self.service_dir,
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap
-            )
+                loader = DocumentLoader(
+                    documents_dir=single_file_path.parent,
+                    service_dir=self.service_dir,
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap
+                )
 
-            documents, _, docs_count, points_count = loader.prepare_docs_texts(
-                kb_id=kb_id,
-                map_true=(collection_type == "faq"),
-                index_answers=False,
-                user_id="filesystem",
-                filepath=str(single_file_path)
-            )
+                documents, _, docs_count, points_count = loader.prepare_docs_texts(
+                    kb_id=kb_id,
+                    map_true=(collection_type == "faq"),
+                    index_answers=False,
+                    user_id="filesystem",
+                    filepath=str(single_file_path)
+                )
 
-            if not documents:
+                if not documents:
+                    self.logger.warning(f"[SYNC SERVICE] No text extracted from file: {filename}")
+                    return
+
+                self.qdrant.upload_points_qdrant(
+                    documents,
+                    docs_count,
+                    points_count,
+                    collection_name=self.qdrant_collection_name,
+                )
+                # Если дошли сюда, всё успешно, выходим из цикла
+                self.logger.info(f"[SYNC SERVICE] Successfully indexed file: {filename}")
                 return
-
-            self.qdrant.upload_points_qdrant(
-                documents,
-                docs_count,
-                points_count,
-                collection_name=self.qdrant_collection_name,
-            )
-        except Exception as e:
-            self.logger.error(f"[SYNC SERVICE] Failed to index {file_info.get('filename')}: {e}")
+            
+            except Exception as e:
+                self.logger.warning(
+                    f"[SYNC SERVICE] Attempt {attempt}/{max_retries} failed to index {filename}. Error: {e}"
+                )
+                
+                if attempt < max_retries:
+                    self.logger.info(f"[SYNC SERVICE] Waiting {retry_delay} seconds before next retry...")
+                    time.sleep(retry_delay)
+                else:
+                    # Это был последний шанс, логируем критическую ошибку для этого файла
+                    self.logger.error(
+                        f"[SYNC SERVICE] Max retries reached ({max_retries}). SKIPPING file: {filename}. Last error: {e}"
+                    )
