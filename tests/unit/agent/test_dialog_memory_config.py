@@ -10,14 +10,6 @@ def _load_config_module(monkeypatch):
     repo_root = Path(__file__).resolve().parents[3]
     module_path = repo_root / "agent" / "config.py"
 
-    for name in (
-        "AGENT_CONTEXT_COMPACTION_INTERVAL",
-        "AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE",
-        "AGENT_CONTEXT_TOKEN_THRESHOLD",
-        "AGENT_CONTEXT_EVENT_RETENTION_SIZE",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
     dotenv_stub = types.ModuleType("dotenv")
     dotenv_stub.load_dotenv = lambda *args, **kwargs: None
 
@@ -48,10 +40,18 @@ def _load_config_module(monkeypatch):
 
 
 @pytest.mark.unit
-def test_context_compaction_config_uses_safe_defaults(monkeypatch) -> None:
+def test_dialog_memory_max_turns_default(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_DIALOG_MEMORY_MAX_TURNS", raising=False)
+
     config = _load_config_module(monkeypatch)
 
-    assert config.AGENT_CONTEXT_COMPACTION_INTERVAL == 60
-    assert config.AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE == 3
-    assert config.AGENT_CONTEXT_TOKEN_THRESHOLD == 16000
-    assert config.AGENT_CONTEXT_EVENT_RETENTION_SIZE == 60
+    assert config.AGENT_DIALOG_MEMORY_MAX_TURNS == 3
+
+
+@pytest.mark.unit
+def test_dialog_memory_max_turns_reads_env(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_DIALOG_MEMORY_MAX_TURNS", "5")
+
+    config = _load_config_module(monkeypatch)
+
+    assert config.AGENT_DIALOG_MEMORY_MAX_TURNS == 5
