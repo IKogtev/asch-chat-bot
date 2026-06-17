@@ -19,8 +19,7 @@ def max_doc_list_rank() -> int:
         1,
         int(
             os.getenv(
-                "KB_TOP_K",
-                os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")),
+                "KB_TOP_K", 20
             )
         ),
     )

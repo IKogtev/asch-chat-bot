@@ -34,7 +34,7 @@ LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 ACTIVE_DOCUMENTS_COLLECTION = os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb_collection").strip()
 KB_DOCUMENTS_COLLECTION = os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base_collection").strip()
 FAQ_DOCUMENTS_COLLECTION = os.getenv("FAQ_DOCUMENTS_COLLECTION", "faq_collection").strip()
-KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
+KB_TOP_K = int(os.getenv("KB_TOP_K", "20"))
 # Сколько документов показывать в первом ответе и шаг «ещё»
 DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")))
 
