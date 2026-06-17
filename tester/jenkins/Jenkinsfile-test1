@@ -8,7 +8,7 @@ pipeline {
     )
     hidden(
       name: 'LLM_API_URL',
-      defaultValue: 'https://dsrv1.llm.nstcloud.ru/v1',
+      defaultValue: 'https://api.llm.nstcloud.ru/v1',
       description: 'LLM API URL'
     )
     choice(
@@ -45,7 +45,7 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:faad1f88738acc4b0d141997d2736bf683087fde92b96b17cf8a623f461ac1f2
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.5-amd64
                   command:
                     - cat
                   tty: true
@@ -98,7 +98,7 @@ pipeline {
               fi
 
               # Run the tester (writes REPORT_* and answers_* into /app)
-              python3 /app/adk_agent_tester_v1.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out "/app"
+              python3 /app/adk_agent_tester.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out "/app"
 
               echo "Copying artifacts from /app to workspace: ${WORKSPACE}/tester"
               mkdir -p "${WORKSPACE}/tester"
