@@ -193,13 +193,14 @@ class DocSearchOrchestrator(BaseAgent):
         :param ctx: Контекст сессии пользователя, содержит все данные сессии.
         """
         user_query = str(ctx.session.state.get("user_query") or "").strip()
+        doc_search_query = str(ctx.session.state.get("doc_search_query") or user_query).strip()
         intent = str(ctx.session.state.get("doc_search_intent") or "doc_search").strip()
 
         # Логирование полученного интента и запроса
         logger.info(
             "doc_search_orchestrator: intent=%s query=%s",
             intent,
-            truncate_for_log(user_query, 300),
+            truncate_for_log(doc_search_query, 300),
         )
 
         # Обрабатываем только новый поиск, для других интентов — возвращаем обработанное сообщение
@@ -253,7 +254,7 @@ class DocSearchOrchestrator(BaseAgent):
         # Асинхронное сохранение результата поиска пользователя в БД
         await _persist_full_list(
             ctx,
-            query=user_query,
+            query=doc_search_query,
             items=normalized,
             shown_count=shown,
         )

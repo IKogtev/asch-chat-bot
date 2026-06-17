@@ -93,6 +93,66 @@ def find_terms_in_text(
     return result
 
 
+def _flexible_term_pattern(normalized_term: str) -> str:
+    """Строит регэксп для поиска термина в исходном тексте с учётом регистра и «ё»."""
+    parts: list[str] = []
+    for ch in normalized_term:
+        if ch == " ":
+            parts.append(r"\s+")
+        elif ch == "е":
+            parts.append("[еёЕЁ]")
+        elif "a" <= ch <= "z":
+            parts.append(f"[{ch}{ch.upper()}]")
+        elif "а" <= ch <= "я":
+            parts.append(f"[{ch}{ch.upper()}]")
+        elif ch.isdigit():
+            parts.append(re.escape(ch))
+        else:
+            parts.append(re.escape(ch))
+    return "".join(parts)
+
+
+def apply_glossary_to_text(text: str, glossary_pairs: list[list[str]] | list[tuple[str, str]]) -> str:
+    """Подставляет расшифровки терминов из глоссария в пользовательский текст.
+
+    Args:
+        text: Исходное сообщение пользователя.
+        glossary_pairs: Список пар ``[term, definition]`` из ``from_glossary``.
+
+    Returns:
+        Текст с заменёнными терминами. Более длинные термины заменяются первыми,
+        совпадения ищутся по границам слов без учёта регистра и «ё»/«е».
+    """
+    source = str(text or "")
+    if not source.strip() or not glossary_pairs:
+        return source
+
+    items: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for pair in glossary_pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        term = str(pair[0] or "").strip()
+        definition = str(pair[1] or "").strip()
+        if not term or not definition:
+            continue
+        normalized = normalize_glossary_text(term)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        items.append((normalized, definition))
+
+    items.sort(key=lambda item: len(item[0]), reverse=True)
+
+    result = source
+    for normalized_term, definition in items:
+        pattern = re.compile(
+            rf"(?<![{WORD_CHAR}]){_flexible_term_pattern(normalized_term)}(?![{WORD_CHAR}])",
+        )
+        result = pattern.sub(definition, result)
+    return result
+
+
 class GlossaryLookup:
     """Загружает глоссарий из PostgreSQL и ищет его термины в тексте."""
 
