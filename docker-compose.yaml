@@ -159,7 +159,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.4
+      - PLATFORM_VERSION=0.7.5
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -198,7 +198,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.4
+      - PLATFORM_VERSION=0.7.5
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -252,7 +252,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
-      - PLATFORM_VERSION=0.7.4
+      - PLATFORM_VERSION=0.7.5
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -352,8 +352,8 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${FAQ_LOG_LEVEL:-DEBUG}
 
-      - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB}
-      - EMBEDDING_API_KEY=${OPENROUTER_API_KEY}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
@@ -414,6 +414,10 @@ services:
       - ./filegator_init.sh:/filegator_init.sh:ro
     environment:
       - TZ=Europe/Moscow
+      # Переменные для автоматического создания пользователя:
+      - FILEGATOR_USER=ASLife
+      - FILEGATOR_PASS=YourSuperSecretPassword  
+      - FILEGATOR_HOMEDIR=/manager             # Папка внутри repository
     networks:
       - aszh-bot-network
 
