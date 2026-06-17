@@ -1,6 +1,11 @@
 import pytest
 
-from agent.glossary import GlossaryEntry, find_terms_in_text, normalize_glossary_text
+from agent.glossary import (
+    GlossaryEntry,
+    apply_glossary_to_text,
+    find_terms_in_text,
+    normalize_glossary_text,
+)
 
 
 @pytest.mark.unit
@@ -72,3 +77,33 @@ def test_find_terms_in_text_returns_empty_for_no_matches() -> None:
     ]
 
     assert find_terms_in_text("обычный вопрос", entries) == []
+
+
+@pytest.mark.unit
+def test_apply_glossary_to_text_replaces_known_terms() -> None:
+    glossary = [["ФК", "Fort Knox"], ["НСЖ", "накопительное страхование жизни"]]
+
+    assert apply_glossary_to_text("дай документы по ФК", glossary) == "дай документы по Fort Knox"
+    assert apply_glossary_to_text("что такое НСЖ?", glossary) == "что такое накопительное страхование жизни?"
+
+
+@pytest.mark.unit
+def test_apply_glossary_to_text_replaces_longer_terms_first() -> None:
+    glossary = [
+        ["ФК", "Fort Knox"],
+        ["ФК 6", "Fort Knox 6 месяцев"],
+    ]
+
+    assert apply_glossary_to_text("презентер ФК 6", glossary) == "презентер Fort Knox 6 месяцев"
+
+
+@pytest.mark.unit
+def test_apply_glossary_to_text_does_not_replace_inside_words() -> None:
+    glossary = [["ФН", "финансовый навигатор"]]
+
+    assert apply_glossary_to_text("кафнедра", glossary) == "кафнедра"
+
+
+@pytest.mark.unit
+def test_apply_glossary_to_text_returns_original_when_glossary_empty() -> None:
+    assert apply_glossary_to_text("дай документы по ФК", []) == "дай документы по ФК"

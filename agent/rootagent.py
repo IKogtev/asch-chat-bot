@@ -21,7 +21,7 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
-from .glossary import GlossaryLookup
+from .glossary import GlossaryLookup, apply_glossary_to_text
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -589,6 +589,7 @@ class RootAgent(BaseAgent):
                     "_root_final_text",
                     "_bot_action",
                     "from_glossary",
+                    "doc_search_query",
                 ],
             )
 
@@ -695,8 +696,11 @@ class RootAgent(BaseAgent):
                     dr = extract_download_ranks(user_text)
 
             if dispatch["route"] == "doc_search":
-                ctx.session.state["doc_search_intent"] = dispatch["intent"]
-                async for event in self.doc_search_orchestrator.run_async(ctx):
+                async for event in self._handle_doc_search(
+                    ctx,
+                    user_text,
+                    dispatch["intent"],
+                ):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
@@ -773,6 +777,26 @@ class RootAgent(BaseAgent):
                 else "Произошла ошибка при обработке запроса. Попробуйте позже."
             )
             yield self._build_final_event_with_history(ctx, user_text, message)
+
+    async def _handle_doc_search(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        intent: str,
+    ) -> AsyncGenerator[Event, None]:
+        glossary = ctx.session.state.get("from_glossary") or []
+        doc_search_query = apply_glossary_to_text(user_message, glossary)
+        logger.info(
+            "doc_search route: query=%s intent=%s",
+            truncate_for_log(doc_search_query, 300),
+            intent,
+        )
+
+        ctx.session.state["doc_search_intent"] = intent
+        ctx.session.state["doc_search_query"] = doc_search_query
+
+        async for event in self.doc_search_orchestrator.run_async(ctx):
+            yield event
 
     async def _handle_kb_answer(
         self,

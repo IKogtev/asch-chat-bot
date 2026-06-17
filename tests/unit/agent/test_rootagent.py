@@ -1296,3 +1296,93 @@ async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer
     assert events[0].content.parts[0].text == "Я умею искать документы и помогать продавать продукты АСЖ."
     assert kb_called is True
     assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_doc_search_sets_doc_search_query_from_glossary() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[],
+        session_state={"from_glossary": [["ФК", "Fort Knox"]]},
+    )
+    orchestrator_called = False
+
+    async def fake_doc_run_async(ctx):
+        nonlocal orchestrator_called
+        orchestrator_called = True
+        if False:
+            yield None
+
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [
+        event
+        async for event in agent._handle_doc_search(
+            ctx,
+            "дай презентеры по ФК",
+            "doc_search",
+        )
+    ]
+
+    assert events == []
+    assert orchestrator_called is True
+    assert ctx.session.state["doc_search_intent"] == "doc_search"
+    assert ctx.session.state["doc_search_query"] == "дай презентеры по Fort Knox"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_sets_doc_search_query_before_orchestrator() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            assert text == "дай презентеры по ФК"
+            return [["ФК", "Fort Knox"]]
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="дай презентеры по ФК")], session_state={})
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "doc_search",
+                "intent": "doc_search",
+                "reason": "documents",
+                "search_query": "дай презентеры по ФК",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        assert ctx.session.state["doc_search_query"] == "дай презентеры по Fort Knox"
+        assert ctx.session.state["doc_search_intent"] == "doc_search"
+        ctx.session.state["_root_final_text"] = "ok"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "ok"
+    assert doc_called is True
