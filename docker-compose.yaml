@@ -166,6 +166,7 @@ services:
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
+      - KB_TOP_K=${KB_TOP_K:-20}
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
@@ -466,7 +467,7 @@ services:
       - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
       - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
 
-      - KB_TOP_K=${KB_TOP_K:-5}
+      - KB_TOP_K=${KB_TOP_K:-20}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
