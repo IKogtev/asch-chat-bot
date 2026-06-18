@@ -33,6 +33,7 @@ def _load_rootagent_module():
     config_stub.DEBUG_EXCEPTIONS = False
     config_stub.FAQ_DOCUMENTS_COLLECTION = "faq"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
+    config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
@@ -119,6 +120,7 @@ def _load_rootagent_module():
         invocation_id: str
         content: Content
         actions: EventActions
+        timestamp: float = 0.0
 
     adk_events_stub.Event = Event
     adk_events_stub.EventActions = EventActions
@@ -176,15 +178,135 @@ def _make_ctx(
     *,
     user_state=None,
     session_state=None,
+    session_events=None,
     parts=None,
     invocation_id="inv-1",
 ):
     return types.SimpleNamespace(
         user=types.SimpleNamespace(state=user_state or {}),
-        session=types.SimpleNamespace(state=session_state or {}),
+        session=types.SimpleNamespace(
+            id="session-1",
+            app_name="agent",
+            user_id="user-1",
+            state=session_state or {},
+            events=session_events or [],
+            last_update_time=0,
+        ),
         user_content=types.SimpleNamespace(parts=parts or []),
         invocation_id=invocation_id,
     )
+
+
+def _make_event(role: str, text: str, idx: int, *, state_delta=None):
+    return rootagent_module.Event(
+        author=role,
+        invocation_id=f"inv-{idx}",
+        content=rootagent_module.genai_types.Content(
+            role=role,
+            parts=[rootagent_module.genai_types.Part(text=text)],
+        ),
+        actions=rootagent_module.EventActions(
+            state_delta=state_delta,
+        ),
+        timestamp=float(idx),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_trim_dialog_memory_keeps_last_max_turns_and_state() -> None:
+    agent = _make_agent()
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "m1", 2),
+        _make_event("user", "u2", 3),
+        _make_event("model", "m2", 4),
+        _make_event("user", "u3", 5),
+        _make_event("model", "m3", 6),
+        _make_event("user", "u4", 7),
+        _make_event("model", "m4", 8),
+    ]
+    ctx = _make_ctx(
+        session_state={"product": "kept"},
+        session_events=events,
+    )
+
+    await agent._trim_dialog_memory(ctx)
+
+    assert [event.content.parts[0].text for event in ctx.session.events] == [
+        "u2",
+        "m2",
+        "u3",
+        "m3",
+        "u4",
+        "m4",
+    ]
+    assert ctx.session.state == {"product": "kept"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_trim_dialog_memory_keeps_event_state_delta_in_memory_only() -> None:
+    agent = _make_agent()
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "m1", 2),
+        _make_event("user", "u2", 3),
+        _make_event("model", "m2", 4, state_delta={"product": "old"}),
+        _make_event("user", "u3", 5),
+        _make_event("model", "m3", 6),
+        _make_event("user", "u4", 7),
+        _make_event("model", "m4", 8),
+    ]
+    ctx = _make_ctx(
+        session_state={"product": "current"},
+        session_events=events,
+    )
+
+    await agent._trim_dialog_memory(ctx)
+
+    assert ctx.session.state == {"product": "current"}
+    retained_with_delta = [
+        event
+        for event in ctx.session.events
+        if getattr(event.actions, "state_delta", None)
+    ]
+    assert retained_with_delta[0].actions.state_delta == {"product": "old"}
+
+
+@pytest.mark.unit
+def test_retained_dialog_memory_events_keeps_complete_recent_turns() -> None:
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "owasp1", 2),
+        _make_event("model", "dispatcher1", 3),
+        _make_event("model", "answer1", 4),
+        _make_event("user", "u2", 5),
+        _make_event("model", "owasp2", 6),
+        _make_event("model", "answer2", 7),
+        _make_event("user", "u3", 8),
+        _make_event("model", "answer3", 9),
+    ]
+
+    retained = RootAgent._retained_dialog_memory_events(events, 2)
+
+    assert [event.content.parts[0].text for event in retained] == [
+        "u2",
+        "owasp2",
+        "answer2",
+        "u3",
+        "answer3",
+    ]
+
+
+@pytest.mark.unit
+def test_retained_dialog_memory_events_does_nothing_when_disabled() -> None:
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "m1", 2),
+    ]
+
+    assert RootAgent._retained_dialog_memory_events(events, 0) == events
 
 
 @pytest.mark.unit

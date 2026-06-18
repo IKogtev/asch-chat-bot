@@ -34,17 +34,10 @@ LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 ACTIVE_DOCUMENTS_COLLECTION = os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb_collection").strip()
 KB_DOCUMENTS_COLLECTION = os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base_collection").strip()
 FAQ_DOCUMENTS_COLLECTION = os.getenv("FAQ_DOCUMENTS_COLLECTION", "faq_collection").strip()
-KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
+KB_TOP_K = int(os.getenv("KB_TOP_K", "20"))
+AGENT_DIALOG_MEMORY_MAX_TURNS = int(os.getenv("AGENT_DIALOG_MEMORY_MAX_TURNS", "3"))
 # Сколько документов показывать в первом ответе и шаг «ещё»
 DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")))
-
-# =============================================================================
-# CONTEXT COMPACTION
-# =============================================================================
-AGENT_CONTEXT_COMPACTION_INTERVAL = int(os.getenv("AGENT_CONTEXT_COMPACTION_INTERVAL", "60"))
-AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE = int(os.getenv("AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE", "3"))
-AGENT_CONTEXT_TOKEN_THRESHOLD = int(os.getenv("AGENT_CONTEXT_TOKEN_THRESHOLD", "16000"))
-AGENT_CONTEXT_EVENT_RETENTION_SIZE = int(os.getenv("AGENT_CONTEXT_EVENT_RETENTION_SIZE", "60"))
 
 # =============================================================================
 # KB_SEARCH MCP SETTINGS

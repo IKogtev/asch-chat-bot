@@ -8,7 +8,12 @@ from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
-from .config import DEBUG_EXCEPTIONS, FAQ_DOCUMENTS_COLLECTION, KB_DOCUMENTS_COLLECTION
+from .config import (
+    AGENT_DIALOG_MEMORY_MAX_TURNS,
+    DEBUG_EXCEPTIONS,
+    FAQ_DOCUMENTS_COLLECTION,
+    KB_DOCUMENTS_COLLECTION,
+)
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
@@ -31,8 +36,7 @@ OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
-    "Показать параметры какого-то продукта или скачать комплект документов? "
-    "Напишите, например: \"параметры 2867\" или \"скачать комплект 2867\"."
+    "Могу показать карточку продукта или скачать комплект. Какой продукт Вас интересует ?"
 )
 
 
@@ -170,6 +174,51 @@ class RootAgent(BaseAgent):
         self._append_recent_message(ctx, "user", user_text)
         self._append_recent_message(ctx, "assistant", text)
         return self._build_final_event(ctx, text)
+
+    @staticmethod
+    def _is_dialog_memory_event(event: Any) -> bool:
+        content = getattr(event, "content", None)
+        role = getattr(content, "role", None)
+        if role not in {"user", "model"}:
+            return False
+
+        parts = getattr(content, "parts", None) or []
+        return any(str(getattr(part, "text", "") or "").strip() for part in parts)
+
+    @staticmethod
+    def _retained_dialog_memory_events(events: List[Any], max_turns: int) -> List[Any]:
+        if max_turns <= 0:
+            return list(events)
+
+        user_turn_indices = [
+            idx
+            for idx, event in enumerate(events)
+            if RootAgent._is_dialog_memory_event(event)
+            and getattr(getattr(event, "content", None), "role", None) == "user"
+        ]
+        if len(user_turn_indices) <= max_turns:
+            return list(events)
+
+        cutoff_idx = user_turn_indices[-max_turns]
+        return list(events[cutoff_idx:])
+
+    async def _trim_dialog_memory(self, ctx: InvocationContext) -> None:
+        events = list(getattr(ctx.session, "events", None) or [])
+        retained_events = self._retained_dialog_memory_events(
+            events,
+            AGENT_DIALOG_MEMORY_MAX_TURNS,
+        )
+        if len(retained_events) == len(events):
+            return
+
+        ctx.session.events = retained_events
+
+        logger.info(
+            "Dialog memory trimmed in current invocation: kept_events=%s removed_events=%s max_turns=%s",
+            len(retained_events),
+            len(events) - len(retained_events),
+            AGENT_DIALOG_MEMORY_MAX_TURNS,
+        )
 
     def _clear_state_keys(self, ctx: InvocationContext, keys: List[str]) -> None:
         """Очищает указанные ключи из `state`."""
@@ -510,6 +559,8 @@ class RootAgent(BaseAgent):
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
 
         try:
+            await self._trim_dialog_memory(ctx)
+
             if not user_text:
                 yield self._build_final_event_with_history(
                     ctx,
