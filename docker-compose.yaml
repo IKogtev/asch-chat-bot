@@ -93,14 +93,9 @@ services:
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
       - FAQ_DOCUMENTS_PATH=manager/faq
       - GLOSSARY_CACHE_TTL_SEC=600
+      - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
-      # Context compaction
-      - AGENT_CONTEXT_COMPACTION_INTERVAL=60
-      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=3
-      - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
-      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
-
-      - KB_TOP_K=${KB_TOP_K:-5}
+      - KB_TOP_K=${KB_TOP_K:-20}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
@@ -166,6 +161,7 @@ services:
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
+      - KB_TOP_K=${KB_TOP_K:-20}
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
@@ -301,9 +297,9 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${KB_LOG_LEVEL:-DEBUG}
 
-      - EMBEDDING_API_URL=${EMBEDDING_API_URL}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://api.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
 
       - KB_CHUNK_SIZE=512
       - KB_CHUNK_OVERLAP=50
@@ -352,9 +348,9 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${FAQ_LOG_LEVEL:-DEBUG}
 
-      - EMBEDDING_API_URL=${EMBEDDING_API_URL}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://api.llm.nstcloud.ru/v1/embeddings}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
       - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-10}
@@ -459,14 +455,9 @@ services:
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
       - GLOSSARY_CACHE_TTL_SEC=600
+      - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
-      # Context compaction
-      - AGENT_CONTEXT_COMPACTION_INTERVAL=60
-      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=3
-      - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
-      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
-
-      - KB_TOP_K=${KB_TOP_K:-5}
+      - KB_TOP_K=${KB_TOP_K:-20}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
