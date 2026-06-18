@@ -41,7 +41,6 @@ __pycache__
 
 # Adk agent tester
 *.xlsx
-*.png
 *.csv
 *.parquet
 
