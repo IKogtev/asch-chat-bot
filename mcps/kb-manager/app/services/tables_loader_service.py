@@ -34,6 +34,7 @@ PRODUCT_SEARCH_COLUMNS = [
     "canonical_name",
     "alias",
     "normalized_alias",
+    "search_tokens",
     "match_type",
     "priority",
 ]
@@ -71,6 +72,22 @@ CYR_TO_LAT = {
     "э": "e",
     "ю": "yu",
     "я": "ya",
+}
+
+COMMON_PRODUCT_WORDS = {
+    "kids": "кидс",
+    "kid": "кид",
+    "junior": "джуниор",
+    "premium": "премиум",
+    "life": "лайф",
+    "smart": "смарт",
+    "invest": "инвест",
+    "plus": "плюс",
+}
+
+COMMON_PRODUCT_WORDS_REVERSE = {
+    v: k
+    for k, v in COMMON_PRODUCT_WORDS.items()
 }
 
 DATA_CATALOG_SHEETS = {
@@ -179,6 +196,9 @@ class TablesLoaderService:
         await self.ensure_database_exists()
         conn = await asyncpg.connect(self.database_url)
         try:
+            await conn.execute("""
+                CREATE EXTENSION IF NOT EXISTS pg_trgm
+            """)
             await self._drop_public_tables(conn)
             loaded_tables.extend(await self._load_regular_tables(conn))
             loaded_tables.extend(await self._load_data_catalog(conn))
@@ -256,36 +276,164 @@ class TablesLoaderService:
             )
             if not product_code or not product_name:
                 continue
-            normalized_name = self.normalize_product_text(
+            for alias, match_type, priority in self._generate_search_variants(
                 product_name
-            )
-
-            transliterated_name = self.transliterate_ru_to_en(
-                normalized_name
-            )
-            rows.append(
-                {
-                    "product_code": product_code,
-                    "canonical_name": product_name,
-                    "alias": product_name,
-                    "normalized_alias": normalized_name,
-                    "match_type": "canonical",
-                    "priority": 100,
-                }
-            )
-            if transliterated_name != normalized_name:
+            ):
+                normalized_alias = (
+                    self.normalize_product_text(alias)
+                )
+                search_tokens = " ".join(
+                    self.tokenize_product_text(alias)
+                )
                 rows.append(
                     {
                         "product_code": product_code,
                         "canonical_name": product_name,
-                        "alias": transliterated_name,
-                        "normalized_alias": transliterated_name,
-                        "match_type": "translit",
-                        "priority": 90,
+                        "alias": alias,
+                        "normalized_alias": normalized_alias,
+                        "search_tokens": search_tokens,
+                        "match_type": match_type,
+                        "priority": priority,
                     }
                 )
+        # логика дедупликации 
+        deduped_rows = []
+        seen = set()
+        for row in rows:
+            key = (
+                row["product_code"],
+                row["normalized_alias"],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_rows.append(row)
+        return pd.DataFrame(
+            deduped_rows,
+            columns=PRODUCT_SEARCH_COLUMNS,
+        )
+    
+    def _generate_product_aliases(
+        self,
+        product_name: str,
+    ) -> list[tuple[str, str, int]]:
+        
+        aliases = []
+        normalized = self.normalize_product_text(
+            product_name
+        )
+        transliterated = self.transliterate_ru_to_en(
+            normalized
+        )
+        aliases.append(
+            (
+                product_name,
+                "canonical",
+                100,
+            )
+        )
+        aliases.append(
+            (
+                normalized,
+                "normalized",
+                90,
+            )
+        )
+        if transliterated != normalized:
+            aliases.append(
+                (
+                    transliterated,
+                    "translit",
+                    80,
+                )
+            )
+        return aliases
 
-        return pd.DataFrame(rows, columns=PRODUCT_SEARCH_COLUMNS)
+    def _generate_search_variants(
+        self,
+        product_name: str,
+    ) -> list[tuple[str, str, int]]:
+        """
+        Возвращает:
+        (
+            alias,
+            match_type,
+            priority
+        )
+        """
+        variants = []
+        normalized = self.normalize_product_text(
+            product_name
+        )
+        # 1. Оригинал
+        variants.append(
+            (
+                product_name,
+                "canonical",
+                100,
+            )
+        )
+        # 2. Нормализованный
+        variants.append(
+            (
+                normalized,
+                "normalized",
+                90,
+            )
+        )
+        # 3. Полная транслитерация
+        transliterated = self.transliterate_ru_to_en(
+            normalized
+        )
+        if transliterated != normalized:
+            variants.append(
+                (
+                    transliterated,
+                    "translit",
+                    80,
+                )
+            )
+        tokens = normalized.split()
+        # 4. Смешанный вариант
+        mixed_tokens = self._replace_known_tokens(
+            tokens
+        )
+        mixed_variant = " ".join(
+            mixed_tokens
+        )
+        if mixed_variant != normalized:
+            variants.append(
+                (
+                    mixed_variant,
+                    "mixed",
+                    85,
+                )
+            )
+        # 5. Вариант для plus
+        if "plus" in tokens:
+            without_plus = " ".join(
+                t for t in tokens
+                if t != "plus"
+            )
+            if without_plus:
+                variants.append(
+                    (
+                        without_plus,
+                        "plus_token",
+                        70,
+                    )
+                )
+            variants.append(
+                (
+                    normalized.replace(
+                        " plus",
+                        "+"
+                    ),
+                    "plus_symbol",
+                    75,
+                )
+            )
+        return variants
 
     async def _drop_public_tables(self, conn: asyncpg.Connection) -> None:
         """Удаляет все пользовательские таблицы из схемы public.
@@ -337,6 +485,7 @@ class TablesLoaderService:
                 if product_search_df is not None:
                     await self._replace_table(conn, PRODUCT_SEARCH_TABLE, product_search_df)
                     await self._create_indexes(conn, PRODUCT_SEARCH_TABLE, ["product_code", "normalized_alias",])
+                    await self._create_product_search_indexes(conn)
                 loaded_tables.append(
                     LoadedTable(
                         table_name=table_name,
@@ -431,6 +580,47 @@ class TablesLoaderService:
         if not df.empty:
             df = df.iloc[1:].reset_index(drop=True)
         return df
+
+    @classmethod
+    def tokenize_product_text(
+        cls,
+        value: str,
+    ) -> list[str]:
+        normalized = cls.normalize_product_text(value)
+        tokens = [
+            token
+            for token in normalized.split()
+            if token
+        ]
+        result = []
+        for token in tokens:
+            result.append(token)
+            translit = cls.transliterate_ru_to_en(token)
+            if translit != token:
+                result.append(translit)
+            if token in COMMON_PRODUCT_WORDS:
+                result.append(
+                    COMMON_PRODUCT_WORDS[token]
+                )
+            if token in COMMON_PRODUCT_WORDS_REVERSE:
+                result.append(
+                    COMMON_PRODUCT_WORDS_REVERSE[token]
+                )
+        return sorted(set(result))
+
+    @classmethod
+    def _replace_known_tokens(cls, tokens: list[str]) -> list[str]:
+        result = []
+
+        for token in tokens:
+            if token in COMMON_PRODUCT_WORDS:
+                result.append(COMMON_PRODUCT_WORDS[token])
+            elif token in COMMON_PRODUCT_WORDS_REVERSE:
+                result.append(COMMON_PRODUCT_WORDS_REVERSE[token])
+            else:
+                result.append(token)
+
+        return result
 
     @staticmethod
     def _deduplicate_glossary_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -804,6 +994,25 @@ class TablesLoaderService:
                 f"{self._quote_ident(index_name)} ON {self._quote_ident(table_name)} "
                 f"({self._quote_ident(column)})"
             )
+
+    async def _create_product_search_indexes(
+        self,
+        conn: asyncpg.Connection,
+    ) -> None:
+        """
+        Индексы для быстрого поиска продуктов.
+        """
+
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS
+            idx_product_search_trgm
+            ON {PRODUCT_SEARCH_TABLE}
+            USING gin (
+                normalized_alias gin_trgm_ops
+            )
+            """
+        )
 
     async def _validate_data_catalog(self, conn: asyncpg.Connection) -> list[str]:
         """Проверяет согласованность таблиц каталога данных.
