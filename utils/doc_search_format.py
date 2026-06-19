@@ -2,26 +2,64 @@
 Форматирование списка документов и разбор follow-up команд (общее для бота и агента).
 """
 import html as html_module
+import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+_RANK_SEP = r"\s*(?:[,\s]+|\s+и\s+)\s*"
+
+
+def max_doc_list_rank() -> int:
+    """Максимальный номер документа в списке (KB_TOP_K / SHOW_LIST_SIZE)."""
+    return max(
+        1,
+        int(
+            os.getenv(
+                "KB_TOP_K", 20
+            )
+        ),
+    )
+
+
+def _rank_number_pattern(max_rank: int) -> str:
+    if max_rank < 1:
+        return "(?!)"
+    return "(?:" + "|".join(str(i) for i in range(max_rank, 0, -1)) + ")"
+
+
+def _rank_list_pattern(rank_pat: str) -> str:
+    return rf"(?:{rank_pat}{_RANK_SEP})*{rank_pat}"
+
+
+def build_download_rank_patterns(max_rank: int) -> Tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
+    """Собирает regexp для разбора номеров документов (1..max_rank)."""
+    rank_pat = _rank_number_pattern(max_rank)
+    rank_list = _rank_list_pattern(rank_pat)
+    download_re = re.compile(
+        rf"^\s*(?:скачай|пришли|отправь|документ)?\s*({rank_list})\s*$",
+        re.IGNORECASE | re.UNICODE,
+    )
+    ranks_only_re = re.compile(
+        rf"^\s*({rank_list})\s*$",
+        re.IGNORECASE | re.UNICODE,
+    )
+    rank_block_at_end = re.compile(
+        rf"(?<![\d.])({rank_pat}(?:{_RANK_SEP}{rank_pat})+)\s*$",
+        re.UNICODE | re.IGNORECASE,
+    )
+    return download_re, ranks_only_re, rank_block_at_end
+
+
+_MAX_DOC_LIST_RANK = max_doc_list_rank()
+_DOWNLOAD_RE, _RANKS_ONLY_RE, _RANK_BLOCK_AT_END = build_download_rank_patterns(_MAX_DOC_LIST_RANK)
 # Совпадает с bot.services.config.Settings.DOWNLOAD_RE
-_DOWNLOAD_RE = re.compile(
-    r"^\s*(?:скачай|пришли|отправь|документ)?\s*((?:\d+\s*(?:[,\s]+|\s+и\s+)\s*)*\d+)\s*$",
-    re.IGNORECASE | re.UNICODE,
-)
-# Только номера через запятую/пробел/«и» (вся строка), без глагола — как «8,13» или «8 и 13».
-_RANKS_ONLY_RE = re.compile(
-    r"^\s*(\d+(?:\s*(?:[,\s]+|\s+и\s+)\s*\d+)*)\s*$",
-    re.IGNORECASE | re.UNICODE,
-)
+DOWNLOAD_RE = _DOWNLOAD_RE
 
 _LOOSE_TAIL_MAX_CHARS = 15
-# Два и больше номеров в конце строки (после «… Fort Knox 1 и 5»).
-_RANK_BLOCK_AT_END = re.compile(
-    r"(?<![\d.])(\d+(?:\s*(?:[,\s]+|\s+и\s+)\s*\d+)+)\s*$",
-    re.UNICODE | re.IGNORECASE,
-)
 
 
 def parse_download_ranks(text: str) -> List[int]:
