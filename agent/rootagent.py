@@ -21,7 +21,7 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
-from .glossary import GlossaryLookup, apply_glossary_to_text
+from .glossary import GlossaryLookup
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -784,8 +784,7 @@ class RootAgent(BaseAgent):
         user_message: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        glossary = ctx.session.state.get("from_glossary") or []
-        doc_search_query = apply_glossary_to_text(user_message, glossary)
+        doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
         logger.info(
             "doc_search route: query=%s intent=%s",
             truncate_for_log(doc_search_query, 300),
@@ -814,7 +813,10 @@ class RootAgent(BaseAgent):
             search_query: Нормализованный поисковый запрос.
             intent: Тип запроса (kb_answer, smalltalk).
         """
-        effective_search_query = (search_query or user_message).strip()
+        base_search_query = (search_query or user_message).strip()
+        effective_search_query = await self.glossary_lookup.expand_search_query(
+            base_search_query,
+        )
         logger.info(
             "kb_answer route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
@@ -852,7 +854,10 @@ class RootAgent(BaseAgent):
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        effective_search_query = (search_query or user_message).strip()
+        base_search_query = (search_query or user_message).strip()
+        effective_search_query = await self.glossary_lookup.expand_search_query(
+            base_search_query,
+        )
         logger.info(
             "product_selection route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),

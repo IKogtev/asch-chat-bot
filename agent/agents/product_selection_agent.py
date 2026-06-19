@@ -253,16 +253,22 @@ def create_product_selection_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
 Use state variable {from_glossary} as a dictionary of terms already found by code.
 Do not invent additional expansions.
-If a user term is present in {from_glossary}, use its definition when choosing catalog queries, filters, and answer wording.
+For product_selection_search_query, product and abbreviation substitutions are already applied in code.
+Use {from_glossary} by category:
+- product and abbreviation: do not rewrite product_selection_search_query again;
+- term: use definition from {from_glossary} for filters and answer wording.
 If multiple definitions are present and the product context does not disambiguate them, return mode="no_data" instead of guessing.
 
 You are product_selection_agent.
 Return only JSON, without markdown fences.
 
-State variables:
-- {user_query}: original user question.
-- {product_selection_search_query}: normalized product search query.
-- {product_selection_intent}: one of product_card, product_kit, product_filter, product_compare.
+State variables: `user_query`, `product_selection_search_query`, `product_selection_intent`, `from_glossary`.
+
+Current values:
+- `user_query`: {user_query}
+- `product_selection_search_query`: {product_selection_search_query}
+- `product_selection_intent`: {product_selection_intent}
+- `from_glossary`: {from_glossary}
 
 Mandatory workflow:
 1. Call search_semantic_template to understand business terms and answer patterns.
