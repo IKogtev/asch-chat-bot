@@ -22,7 +22,6 @@ from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
-from .product_resolver_service import ProductResolverService
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -841,9 +840,6 @@ class RootAgent(BaseAgent):
             ctx.session.state[key] = value
         ctx.session.state["product_selection_intent"] = intent
         ctx.session.state["product_selection_search_query"] = effective_search_query
-
-        # добавляем resolve продукта
-        resolver = ProductResolverService()
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,

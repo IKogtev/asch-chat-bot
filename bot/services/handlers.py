@@ -1165,18 +1165,10 @@ class BotResponse:
 
     async def start_typing(self):
         """Запуск typing-индикатора"""
-        # Telegram требует постоянного обновления typing
-        if self.is_tg:
-
-            if self._typing_task is None or self._typing_task.done():
-
-                self._typing_task = asyncio.create_task(
-                    self._typing_loop()
-                )
-
-        else:
-            # MAX достаточно одного action
-            await self._send_typing_once()
+        if self._typing_task is None or self._typing_task.done():
+            self._typing_task = asyncio.create_task(
+                self._typing_loop()
+            )
         
     async def stop_typing(self):
         """Остановка typing-индикатора"""
