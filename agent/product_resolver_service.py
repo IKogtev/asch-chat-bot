@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 import asyncpg
-import re
+import re, os
 
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
+DEFAULT_DATABASE_URL = "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 
 CYR_TO_LAT = {
     "а": "a",
@@ -88,8 +89,11 @@ class ProductResolverService:
 
     def __init__(
         self,
+        database_url: str | None=None,
         conn: asyncpg.Connection,
     ):
+        self.database_url = database_url or os.getenv("NSTYA_DATA_URL", DEFAULT_DATABASE_URL)
+        
         self.conn = conn
 
     async def _search_exact(
