@@ -4,12 +4,61 @@ from dataclasses import dataclass
 from typing import Literal
 
 import asyncpg
-
-from app.services.tables_loader_service import (
-    TablesLoaderService,
-)
+import re
 
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
+
+CYR_TO_LAT = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "sch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
+
+COMMON_PRODUCT_WORDS = {
+    "kids": "кидс",
+    "kid": "кид",
+    "junior": "джуниор",
+    "premium": "премиум",
+    "life": "лайф",
+    "smart": "смарт",
+    "invest": "инвест",
+    "plus": "плюс",
+}
+
+COMMON_PRODUCT_WORDS_REVERSE = {
+    v: k
+    for k, v in COMMON_PRODUCT_WORDS.items()
+}
 
 @dataclass
 class ProductCandidate:
@@ -49,9 +98,7 @@ class ProductResolverService:
     ) -> list[ProductCandidate]:
 
         normalized_query = (
-            TablesLoaderService.normalize_product_text(
-                query
-            )
+            self.normalize_product_text(query)
         )
 
         rows = await self.conn.fetch(
@@ -108,9 +155,7 @@ class ProductResolverService:
     ) -> list[ProductCandidate]:
 
         tokens = (
-            TablesLoaderService.tokenize_product_text(
-                query
-            )
+            self.tokenize_product_text(query)
         )
 
         if not tokens:
@@ -166,9 +211,7 @@ class ProductResolverService:
     ) -> list[ProductCandidate]:
 
         normalized_query = (
-            TablesLoaderService.normalize_product_text(
-                query
-            )
+            self.normalize_product_text(query)
         )
 
         rows = await self.conn.fetch(
@@ -309,3 +352,57 @@ class ProductResolverService:
             result.append(candidate)
 
         return result
+    
+    @staticmethod
+    def normalize_product_text(value: str) -> str:
+        """
+        Нормализация текста продукта для поиска.
+        """
+        value = str(value or "").strip().lower()
+        # ё -> е
+        value = value.replace("ё", "е")
+        # плюс превращаем в слово
+        value = value.replace("+", " plus ")
+        # любые разделители в пробел
+        value = re.sub(r"[-_/.,;:()]+", " ", value)
+        # удалить мусор
+        value = re.sub(r"[^a-zа-я0-9\s]", " ", value)
+        # схлопнуть пробелы
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
+
+    @classmethod
+    def transliterate_ru_to_en(cls, value: str) -> str:
+        value = str(value or "").lower()
+
+        return "".join(
+            CYR_TO_LAT.get(char, char)
+            for char in value
+        )
+
+    @classmethod
+    def tokenize_product_text(
+        cls,
+        value: str,
+    ) -> list[str]:
+        normalized = cls.normalize_product_text(value)
+        tokens = [
+            token
+            for token in normalized.split()
+            if token
+        ]
+        result = []
+        for token in tokens:
+            result.append(token)
+            translit = cls.transliterate_ru_to_en(token)
+            if translit != token:
+                result.append(translit)
+            if token in COMMON_PRODUCT_WORDS:
+                result.append(
+                    COMMON_PRODUCT_WORDS[token]
+                )
+            if token in COMMON_PRODUCT_WORDS_REVERSE:
+                result.append(
+                    COMMON_PRODUCT_WORDS_REVERSE[token]
+                )
+        return sorted(set(result))
