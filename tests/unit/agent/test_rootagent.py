@@ -161,6 +161,12 @@ def _make_agent(**kwargs) -> RootAgent:
         async def find(self, text):
             return []
 
+        async def expand_search_query(self, text):
+            return text
+
+        async def build_doc_search_query(self, text):
+            return await self.expand_search_query(text)
+
     kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
     fake_subagent = object()
     fake_doc_orchestrator = type("DocSearchOrchestratorFake", (), {"run_async": lambda self, ctx: ()})()
@@ -1157,7 +1163,7 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
     class FakeGlossaryLookup:
         async def find(self, text):
             assert text == "Что такое НСЖ?"
-            return [["НСЖ", "накопительное страхование жизни"]]
+            return [["НСЖ", "накопительное страхование жизни", "сокращение"]]
 
     agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="Что такое НСЖ?")], session_state={})
@@ -1176,7 +1182,7 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
 
         if kwargs["log_label"] == "dispatcher_result_json":
             assert ctx.session.state["from_glossary"] == [
-                ["НСЖ", "накопительное страхование жизни"]
+                ["НСЖ", "накопительное страхование жизни", "сокращение"]
             ]
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
@@ -1196,7 +1202,7 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
         nonlocal kb_called
         kb_called = True
         assert ctx.session.state["from_glossary"] == [
-            ["НСЖ", "накопительное страхование жизни"]
+            ["НСЖ", "накопительное страхование жизни", "сокращение"]
         ]
         ctx.session.state["_root_final_text"] = "answer"
         if False:
@@ -1210,6 +1216,89 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
     assert len(events) == 1
     assert events[0].content.parts[0].text == "answer"
     assert kb_called is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_kb_answer_expands_search_query_with_glossary() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def expand_search_query(self, text):
+            if "НСЖ" in text:
+                return "НСЖ накопительное страхование жизни"
+            return text
+
+        async def build_doc_search_query(self, text):
+            return await self.expand_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["search_query"] == "НСЖ накопительное страхование жизни"
+        ctx.session.state["_kb_answer_result_parsed"] = {"message": "ok"}
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_kb_answer(
+            ctx,
+            "Что такое НСЖ?",
+            "Что такое НСЖ?",
+            "kb_answer",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_expands_search_query_with_glossary() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def expand_search_query(self, text):
+            if "ФК" in text:
+                return text.replace("ФК", "Fort Knox")
+            return text
+
+        async def build_doc_search_query(self, text):
+            return await self.expand_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert (
+            ctx.session.state["product_selection_search_query"]
+            == "карточка продукта Fort Knox"
+        )
+        ctx.session.state["_product_selection_result_parsed"] = {"message": "ok", "mode": "no_data"}
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "карточка продукта ФК",
+            "карточка продукта ФК",
+            "product_card",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "ok"
 
 
 @pytest.mark.unit
@@ -1301,11 +1390,19 @@ async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_handle_doc_search_sets_doc_search_query_from_glossary() -> None:
-    agent = _make_agent()
-    ctx = _make_ctx(
-        parts=[],
-        session_state={"from_glossary": [["ФК", "Fort Knox"]]},
-    )
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def build_doc_search_query(self, text):
+            assert text == "дай презентеры по ФК"
+            return "дай презентеры по Fort Knox"
+
+        async def expand_search_query(self, text):
+            return await self.build_doc_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[], session_state={})
     orchestrator_called = False
 
     async def fake_doc_run_async(ctx):
@@ -1337,7 +1434,14 @@ async def test_run_async_impl_sets_doc_search_query_before_orchestrator() -> Non
     class FakeGlossaryLookup:
         async def find(self, text):
             assert text == "дай презентеры по ФК"
-            return [["ФК", "Fort Knox"]]
+            return [["ФК", "Fort Knox", "продукт"]]
+
+        async def build_doc_search_query(self, text):
+            assert text == "дай презентеры по ФК"
+            return "дай презентеры по Fort Knox"
+
+        async def expand_search_query(self, text):
+            return await self.build_doc_search_query(text)
 
     agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="дай презентеры по ФК")], session_state={})
