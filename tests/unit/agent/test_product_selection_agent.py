@@ -125,6 +125,9 @@ def test_validate_product_selection_result_accepts_filter_answer() -> None:
         "resolved_product": None,
         "clarification_options": [],
         "products": [],
+        "attribute_name": "",
+        "attribute_column": "",
+        "attribute_values": [],
     }
 
 
@@ -156,6 +159,31 @@ def test_validate_product_selection_result_accepts_products_for_filter_answer() 
             "folder_kit": "Fort Knox (2867)",
         }
     ]
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_attribute_values_answer() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "product_attribute_values",
+            "message": "Values found",
+            "used_tables": ["products"],
+            "resolved_product": None,
+            "clarification_options": [],
+            "products": [],
+            "attribute_name": "currency",
+            "attribute_column": "currency",
+            "attribute_values": ["RUB", "USD", "CNY"],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert result["mode"] == "product_attribute_values"
+    assert result["products"] == []
+    assert result["attribute_name"] == "currency"
+    assert result["attribute_column"] == "currency"
+    assert result["attribute_values"] == ["RUB", "USD", "CNY"]
 
 
 @pytest.mark.unit
@@ -420,6 +448,23 @@ def test_validate_product_selection_result_requires_code_for_product_kit() -> No
         )
 
     assert "requires resolved_product.code" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_requires_values_for_attribute_values() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_product_selection_result(
+            {
+                "status": "ok",
+                "mode": "product_attribute_values",
+                "message": "Values found",
+                "used_tables": ["products"],
+                "attribute_values": [],
+            },
+            SQL_CONTEXT,
+        )
+
+    assert "requires attribute_values" in str(exc.value)
 
 
 @pytest.mark.unit
