@@ -90,22 +90,39 @@ class ProductResolverService:
     def __init__(
         self,
         database_url: str | None=None,
-        conn: asyncpg.Connection,
     ):
         self.database_url = database_url or os.getenv("NSTYA_DATA_URL", DEFAULT_DATABASE_URL)
         
-        self.conn = conn
+        self._pool: asyncpg.Pool | None = None
+
+    async def _get_pool(self) -> asyncpg.Pool:
+        """
+        Вспомогательный метод. Создает пул при первом обращении к БД.
+        """
+        if self._pool is None:
+            # Используем Pool вместо Connection. 
+            # Пул сам управляет соединениями и не падает при обрывах связи.
+            self._pool = await asyncpg.create_pool(self.database_url)
+        return self._pool
+
+    async def close(self):
+        """Вызывайте этот метод при остановке приложения, чтобы закрыть пул."""
+        if self._pool:
+            await self._pool.close()
 
     async def _search_exact(
         self,
         query: str,
     ) -> list[ProductCandidate]:
 
+        #  Получаем пул (он создастся, если еще не создан)
+        pool = await self._get_pool()
+
         normalized_query = (
             self.normalize_product_text(query)
         )
 
-        rows = await self.conn.fetch(
+        rows = await pool.fetch(
             f"""
             SELECT
                 product_code,
@@ -158,6 +175,8 @@ class ProductResolverService:
         query: str,
     ) -> list[ProductCandidate]:
 
+        #  Получаем пул (он создастся, если еще не создан)
+        pool = await self._get_pool()
         tokens = (
             self.tokenize_product_text(query)
         )
@@ -193,7 +212,7 @@ class ProductResolverService:
             LIMIT 20
         """
 
-        rows = await self.conn.fetch(
+        rows = await pool.fetch(
             sql,
             *values,
         )
@@ -214,11 +233,13 @@ class ProductResolverService:
         query: str,
     ) -> list[ProductCandidate]:
 
+        #  Получаем пул (он создастся, если еще не создан)
+        pool = await self._get_pool()
         normalized_query = (
             self.normalize_product_text(query)
         )
 
-        rows = await self.conn.fetch(
+        rows = await pool.fetch(
             f"""
             SELECT
                 product_code,
