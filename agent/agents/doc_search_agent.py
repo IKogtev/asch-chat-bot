@@ -267,12 +267,12 @@ For document search, glossary context must not erase document type, product name
 
 Правила:
 1. Для содержательного запроса на поиск документов обязательно вызови tool kb_search.
-2. Передавай:
-   - query={doc_search_query}
-   - collection={doc_search_collection}
-   - include_metadata=true
-   - search_profile="doc_search" (обязательно при каждом вызове kb_search)
-3. Сжатие и канонизация {doc_search_query} под `kb_search` — на твоей стороне; не удаляй тип документа, продукт, коды и слова пользователя из {user_query}.
+2. Передавай в `kb_search`:
+   - `query` — нормализуй **от** `{doc_search_query}` (глоссарий + опечатки из промпта + убрать мусорные слова); не подставляй `Форт Нокс` вместо `Fort Knox`;
+   - `collection` = `{doc_search_collection}` (строго, не `default_collection`);
+   - `include_metadata=true`
+   - `search_profile="doc_search"` (обязательно при каждом вызове kb_search)
+3. Не бери название продукта для `query` из TEXT в CONTEXT — только из `doc_search_query` / `user_query` и таблицы канонов.
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
