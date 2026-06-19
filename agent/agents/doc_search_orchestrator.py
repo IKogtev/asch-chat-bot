@@ -232,7 +232,8 @@ class DocSearchOrchestrator(BaseAgent):
             ctx.session.state["_root_final_text"] = format_text_answer(doc_search["message"])
             return
 
-        # Нормализуем список документов (добавляем ранги, отрезаем snippet и т.п.)
+        # Нормализуем список: validate_doc_search_result уже отфильтровал is_relevant=true
+        # и отсортировал по new_rank; rank в БД — порядковый номер после сортировки.
         results_raw = doc_search["results"]
         normalized: List[Dict[str, Any]] = []
         for i, item in enumerate(results_raw, start=1):
