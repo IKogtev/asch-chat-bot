@@ -168,11 +168,12 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 invalid_reasons.append(f"item[{index}] missing source_name")
                 continue
 
+            path_raw = item.get("source_path") or item.get("relative_path")
             relevant_items.append(
                 {
                     "document_id": document_id,
                     "source_name": source_name,
-                    "source_path": str(item["source_path"]).strip() if item.get("source_path") else None,
+                    "source_path": str(path_raw).strip() if path_raw else None,
                     "snippet": str(item.get("snippet") or "").strip()[:500],
                     "new_rank": new_rank,
                     "_order": index,
