@@ -313,42 +313,6 @@ class TablesLoaderService:
             columns=PRODUCT_SEARCH_COLUMNS,
         )
     
-    def _generate_product_aliases(
-        self,
-        product_name: str,
-    ) -> list[tuple[str, str, int]]:
-        
-        aliases = []
-        normalized = self.normalize_product_text(
-            product_name
-        )
-        transliterated = self.transliterate_ru_to_en(
-            normalized
-        )
-        aliases.append(
-            (
-                product_name,
-                "canonical",
-                100,
-            )
-        )
-        aliases.append(
-            (
-                normalized,
-                "normalized",
-                90,
-            )
-        )
-        if transliterated != normalized:
-            aliases.append(
-                (
-                    transliterated,
-                    "translit",
-                    80,
-                )
-            )
-        return aliases
-
     def _generate_search_variants(
         self,
         product_name: str,
