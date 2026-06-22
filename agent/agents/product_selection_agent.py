@@ -33,7 +33,7 @@ PRODUCT_SELECTION_MODES = {
 
 PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
 CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
-PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
+PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit", "is_active")
 PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
@@ -284,7 +284,7 @@ Rules:
 - Do not use SELECT * for final user-facing answers.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
-- For product_filter, end message with a clarification question about showing product parameters or sending the document kit, and fill products with shown rows.
+- For product_filter, always include is_active in SQL when showing a product list; for rows with is_active="Архивный", format list lines as `CODE - **Архивный**. NAME (...)`; do not mark active products; end message with a clarification question about showing product parameters or sending the document kit, and fill products with shown rows.
 - If mode="needs_clarification", clarification_options must be a non-empty array of objects.
 - Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
 - For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
