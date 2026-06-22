@@ -33,7 +33,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - `route` один из `doc_search`, `kb_answer`, `product_selection`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
       `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
-      `product_compare`;
+      `product_compare`, `product_attribute_values`;
     - `reason` обязателен всегда.
 
     Семантические правила:
@@ -64,6 +64,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
         "product_kit",
         "product_filter",
         "product_compare",
+        "product_attribute_values",
     }
     allowed_intents = doc_route_intents | kb_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}

@@ -725,6 +725,52 @@ async def test_handle_product_selection_filter_stores_products_and_adds_followup
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_handle_product_selection_attribute_values_stores_context_and_adds_followup_question() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "product_attribute_values",
+            "message": "Available values:\n- RUB\n- CNY",
+            "used_tables": ["products"],
+            "resolved_product": None,
+            "clarification_options": [],
+            "products": [],
+            "attribute_name": "currency",
+            "attribute_column": "currency",
+            "attribute_values": ["RUB", "CNY"],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "which currencies exist",
+            "which currencies exist",
+            "product_attribute_values",
+        )
+    ]
+
+    assert events == []
+    assert rootagent_module.PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
+    assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
+        "last_mode": "product_attribute_values",
+        "attribute_name": "currency",
+        "attribute_column": "currency",
+        "attribute_values": ["RUB", "CNY"],
+        "products": [],
+        "selected_product": None,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_handle_product_selection_sets_bot_action_for_product_kit() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
@@ -1032,6 +1078,64 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
     assert product_called is True
     assert kb_called is False
     assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_attribute_value_followup_to_product_filter() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="CNY")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_attribute_values",
+                "attribute_name": "currency",
+                "attribute_column": "currency",
+                "attribute_values": ["RUB", "CNY"],
+                "products": [],
+                "selected_product": None,
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "CNY"
+        assert search_query == "покажи продукты, у которых currency: CNY"
+        assert intent == "product_filter"
+        ctx.session.state["_root_final_text"] = "filtered products"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "filtered products"
+    assert product_called is True
+    assert dispatcher_called is False
 
 
 @pytest.mark.unit
