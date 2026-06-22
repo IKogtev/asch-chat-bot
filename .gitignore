@@ -48,6 +48,7 @@ __pycache__
 *.png
 *.csv
 *.parquet
+*.html
 
 # Next.js / Copilot web (generated & deps — do not commit)
 web/copilot-web/node_modules/
