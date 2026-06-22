@@ -205,7 +205,10 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
     fallback = f"""
 Use state variable {{from_glossary}} as a dictionary of terms already found by code.
 Do not search for or invent additional expansions.
-If a user term is present in {{from_glossary}}, use its definition when searching and answering.
+For {{search_query}}, product and abbreviation substitutions are already applied in code.
+Use {{from_glossary}} by category:
+- product and abbreviation: do not rewrite {{search_query}} again;
+- term: use definition from {{from_glossary}} when interpreting {{user_query}} and answering.
 If multiple definitions are present and context does not disambiguate them, do not guess.
 
 Ты - kb_answer_agent.

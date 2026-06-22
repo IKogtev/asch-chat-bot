@@ -10,6 +10,29 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+_ARCHIVE_LABEL = "(архивный)"
+_ARCHIVE_FOLDER_RE = re.compile(r"^\d+\s+Архив$", re.UNICODE)
+
+
+def _doc_search_archive_section() -> str:
+    """Имя папки архива (без зависимости от qdrant_client)."""
+    return os.getenv("DOC_SEARCH_ARCHIVE_SECTION", "6 Архив").strip()
+
+
+def _first_path_segment(path: str) -> str:
+    return path.strip().replace("\\", "/").split("/", 1)[0].strip()
+
+
+def _is_archive_folder_name(name: str) -> bool:
+    """True для «5 Архив», «6 Архив» и совпадения с DOC_SEARCH_ARCHIVE_SECTION."""
+    folder = name.strip()
+    if not folder:
+        return False
+    configured = _doc_search_archive_section()
+    if configured and folder == configured:
+        return True
+    return bool(_ARCHIVE_FOLDER_RE.match(folder))
+
 _RANK_SEP = r"\s*(?:[,\s]+|\s+и\s+)\s*"
 
 
@@ -109,6 +132,35 @@ def extract_download_ranks(user_text: str, extra_hint: Optional[str] = None) -> 
     return []
 
 
+def is_archive_document(item: dict) -> bool:
+    """True, если документ лежит в папке архива (DOC_SEARCH_ARCHIVE_SECTION или «N Архив»)."""
+    for key in ("source_path", "relative_path", "file_path"):
+        raw = (item.get(key) or "").strip().replace("\\", "/")
+        if raw and _is_archive_folder_name(_first_path_segment(raw)):
+            return True
+
+    kb_id = (item.get("kb_id") or "").strip()
+    if kb_id and _is_archive_folder_name(kb_id):
+        return True
+
+    section_path = item.get("section_path")
+    if isinstance(section_path, list) and section_path:
+        if _is_archive_folder_name(str(section_path[0]).strip()):
+            return True
+    elif isinstance(section_path, str) and section_path.strip():
+        first = section_path.replace(" / ", "/").split("/", 1)[0].strip()
+        if _is_archive_folder_name(first):
+            return True
+
+    section_relationships = item.get("section_relationships")
+    if isinstance(section_relationships, list):
+        for rel in section_relationships:
+            if _is_archive_folder_name(str(rel).strip()):
+                return True
+
+    return False
+
+
 def render_doc_list_html(items: list[dict], total: int, offset: int = 0) -> str:
     """HTML-список документов для Telegram (аналог render_results в боте)."""
     if not items:
@@ -122,12 +174,13 @@ def render_doc_list_html(items: list[dict], total: int, offset: int = 0) -> str:
     lines = []
     for i, item in enumerate(items, start=offset + 1):
         title = html_module.escape(item["source_name"])
+        archive_prefix = f"{_ARCHIVE_LABEL} " if is_archive_document(item) else ""
         snippet = (item.get("snippet") or "").strip().replace("\n", " ")
         if len(snippet) > 180:
             snippet = snippet[:177] + "..."
         snippet = html_module.escape(snippet)
 
-        block = f"<b>{i}. {title}</b>"
+        block = f"<b>{i}. {archive_prefix}{title}</b>"
         if snippet:
             block += f"\n{snippet}"
         lines.append(block)
