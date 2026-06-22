@@ -11,6 +11,11 @@ GLOSSARY_TABLE_NAME = "glossary"
 DEFAULT_DATABASE_URL = "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 WORD_CHAR = r"0-9A-Za-z_А-Яа-яЁё"
 
+CATEGORY_PRODUCT = "продукт"
+CATEGORY_ABBREVIATION = "сокращение"
+CATEGORY_TERM = "термин"
+GLOSSARY_QUERY_EXPAND_CATEGORIES = frozenset({CATEGORY_PRODUCT, CATEGORY_ABBREVIATION})
+
 
 @dataclass(frozen=True)
 class GlossaryEntry:
@@ -19,6 +24,15 @@ class GlossaryEntry:
     term: str
     definition: str
     normalized_terms: tuple[str, ...]
+    category: str = ""
+
+
+@dataclass(frozen=True)
+class _GlossarySpan:
+    start: int
+    end: int
+    matched: str
+    entry: GlossaryEntry
 
 
 def normalize_glossary_text(value: str) -> str:
@@ -35,6 +49,11 @@ def normalize_glossary_text(value: str) -> str:
     text = re.sub(r"\s+", " ", text)
     text = re.sub(rf"^[^{WORD_CHAR}]+|[^{WORD_CHAR}]+$", "", text)
     return text.strip()
+
+
+def normalize_glossary_category(value: str) -> str:
+    """Нормализует значение колонки ``category`` из глоссария."""
+    return normalize_glossary_text(value)
 
 
 def _split_aliases(value: str) -> list[str]:
@@ -64,9 +83,9 @@ def find_terms_in_text(
         entries: Записи глоссария, загруженные из хранилища.
 
     Returns:
-        Список пар `[term, definition]` для найденных записей. Более длинные
-        термины проверяются первыми, дубли удаляются, совпадения ищутся по
-        границам слов.
+        Список троек ``[term, definition, category]`` для найденных записей.
+        Более длинные термины проверяются первыми, дубли удаляются,
+        совпадения ищутся по границам слов.
     """
     normalized_text = normalize_glossary_text(text)
     if not normalized_text:
@@ -87,10 +106,99 @@ def find_terms_in_text(
         key = (entry.term, entry.definition)
         if key in seen:
             continue
-        result.append([entry.term, entry.definition])
+        result.append([entry.term, entry.definition, entry.category])
         seen.add(key)
 
     return result
+
+
+def _flexible_term_pattern(normalized_term: str) -> str:
+    """Строит регэксп для поиска термина в исходном тексте с учётом регистра и «ё»."""
+    parts: list[str] = []
+    for ch in normalized_term:
+        if ch == " ":
+            parts.append(r"\s+")
+        elif ch == "е":
+            parts.append("[еёЕЁ]")
+        elif "a" <= ch <= "z":
+            parts.append(f"[{ch}{ch.upper()}]")
+        elif "а" <= ch <= "я":
+            parts.append(f"[{ch}{ch.upper()}]")
+        elif ch.isdigit():
+            parts.append(re.escape(ch))
+        else:
+            parts.append(re.escape(ch))
+    return "".join(parts)
+
+
+def _term_pattern(normalized_term: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![{WORD_CHAR}]){_flexible_term_pattern(normalized_term)}(?![{WORD_CHAR}])",
+    )
+
+
+def _definition_already_present(text: str, start: int, end: int, definition: str) -> bool:
+    tail = text[end : end + len(definition) + 8].strip().lower()
+    return tail.startswith(definition.strip().lower())
+
+
+def _collect_glossary_spans(text: str, entries: list[GlossaryEntry]) -> list[_GlossarySpan]:
+    spans: list[_GlossarySpan] = []
+    for entry in entries:
+        category = normalize_glossary_category(entry.category)
+        if category not in GLOSSARY_QUERY_EXPAND_CATEGORIES:
+            continue
+        for normalized_term in entry.normalized_terms:
+            if not normalized_term:
+                continue
+            for match in _term_pattern(normalized_term).finditer(text):
+                spans.append(
+                    _GlossarySpan(
+                        start=match.start(),
+                        end=match.end(),
+                        matched=match.group(0),
+                        entry=entry,
+                    )
+                )
+
+    spans.sort(key=lambda item: (item.end - item.start, -item.start), reverse=True)
+    chosen: list[_GlossarySpan] = []
+    occupied: list[tuple[int, int]] = []
+    for span in spans:
+        if any(not (span.end <= start or span.start >= end) for start, end in occupied):
+            continue
+        chosen.append(span)
+        occupied.append((span.start, span.end))
+    return sorted(chosen, key=lambda item: item.start, reverse=True)
+
+
+def build_glossary_expanded_query(text: str, entries: list[GlossaryEntry]) -> str:
+    """Расширяет поисковый запрос с учётом категорий глоссария.
+
+    - ``продукт``: сокращение/синоним заменяется на полное название;
+    - ``сокращение``: после сокращения добавляется расшифровка;
+    - ``термин`` и прочие категории для расширения запроса не используются.
+    """
+    source = str(text or "")
+    if not source.strip() or not entries:
+        return source
+
+    result = source
+    for span in _collect_glossary_spans(source, entries):
+        category = normalize_glossary_category(span.entry.category)
+        if category == CATEGORY_PRODUCT:
+            replacement = span.entry.definition
+        elif category == CATEGORY_ABBREVIATION:
+            if _definition_already_present(result, span.start, span.end, span.entry.definition):
+                continue
+            replacement = f"{span.matched} {span.entry.definition}"
+        else:
+            continue
+        result = result[: span.start] + replacement + result[span.end :]
+    return result
+
+
+build_doc_search_query = build_glossary_expanded_query
 
 
 class GlossaryLookup:
@@ -127,14 +235,26 @@ class GlossaryLookup:
             text: Исходное сообщение пользователя.
 
         Returns:
-            Список пар `[term, definition]`. Если глоссарий не удалось
-            загрузить, возвращается пустой список.
+            Список троек ``[term, definition, category]``. Если глоссарий
+            не удалось загрузить, возвращается пустой список.
         """
         try:
             entries = await self._get_entries()
         except Exception:
             return []
         return find_terms_in_text(text, entries)
+
+    async def expand_search_query(self, text: str) -> str:
+        """Возвращает запрос с расширениями глоссария по категориям."""
+        try:
+            entries = await self._get_entries()
+        except Exception:
+            return str(text or "")
+        return build_glossary_expanded_query(text, entries)
+
+    async def build_doc_search_query(self, text: str) -> str:
+        """Возвращает запрос doc_search с расширениями по категориям глоссария."""
+        return await self.expand_search_query(text)
 
     async def _get_entries(self) -> list[GlossaryEntry]:
         """Возвращает записи из кэша или перечитывает их после истечения TTL.
@@ -175,7 +295,7 @@ class GlossaryLookup:
 
             rows = await conn.fetch(
                 f"""
-                SELECT term, definition, aliases_normalized
+                SELECT term, definition, aliases_normalized, category
                 FROM {self._quote_ident(GLOSSARY_TABLE_NAME)}
                 WHERE term IS NOT NULL
                   AND definition IS NOT NULL
@@ -196,8 +316,8 @@ class GlossaryLookup:
         """Преобразует строку PostgreSQL в запись глоссария.
 
         Args:
-            row: Строка БД с полями `term`, `definition` и
-                `aliases_normalized`.
+            row: Строка БД с полями `term`, `definition`, `aliases_normalized`
+                и `category`.
 
         Returns:
             GlossaryEntry, если в строке достаточно данных для поиска, иначе
@@ -221,6 +341,7 @@ class GlossaryLookup:
             term=term,
             definition=definition,
             normalized_terms=normalized_terms,
+            category=str(row.get("category") or "").strip(),
         )
 
     def _asyncpg_database_url(self) -> str:
