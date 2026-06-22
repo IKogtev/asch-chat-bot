@@ -992,11 +992,29 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     session_id=session_id, channel=platform,
                     payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                 )
+        # Блоки исключений, чтобы ответы были точнее от бота
+        except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, ConnectionResetError, ConnectionError) as e:
+            # Таймауты, обрывы сети, проблемы с HTTP-сессией ADK
+            logger.warning(f"⚠️ Сбой связи с ADK (таймаут/обрыв): {e}")
+            response_time = int((time.time() - start_time) * 1000)
+            
+            timeout_msg = (
+                "⏳ К сожалению, база знаний сейчас недоступна или отвечает слишком долго (таймаут).\n\n"
+                "💡 <b>Что можно сделать:</b>\n"
+                "• Подождать немного и попробовать отправить вопрос еще раз.\n"
+                "• Использовать команду /reset, чтобы сбросить зависшую сессию и начать заново."
+            )
+            await bot_res.send(timeout_msg)
+            await eventlogger.log_event(
+                event_type="timeout_error", user_id=str(global_user_id), 
+                session_id=session_id, channel=platform, 
+                payload={"error":str(e), "response_time_ms": response_time}
+            )
+
         except asyncio.CancelledError:
             logger.info(
                 f"🛑 Запрос cancelled user={global_user_id}"
             )
-
             return
         except Exception as e:
             logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
@@ -1014,7 +1032,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     f"Пропускаем ответ после reset user={global_user_id}"
                 )
                 return
-            await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
+            await bot_res.send("😔 Произошла техническая ошибка при обработке вашего запроса.\n Попробуйте переформулировать запрос или используйте /reset для сброса диалога.")
         finally:
             ACTIVE_REQUESTS.pop(
                 str(global_user_id),

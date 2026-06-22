@@ -39,6 +39,9 @@ PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
     "Могу показать карточку продукта или скачать комплект. Какой продукт Вас интересует ?"
 )
+PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
+    "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
+)
 
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
@@ -343,6 +346,11 @@ class RootAgent(BaseAgent):
                 message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
             return message
 
+        if product_selection.get("mode") == "product_attribute_values":
+            if PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION not in message:
+                message = "\n\n".join([message, PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION])
+            return message
+
         if product_selection.get("mode") != "needs_clarification":
             return message
 
@@ -390,12 +398,44 @@ class RootAgent(BaseAgent):
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
 
+    @staticmethod
+    def _normalize_attribute_values(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+
+        values: List[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item or "").strip()
+            key = RootAgent._normalize_product_dialog_text(text)
+            if text and key and key not in seen:
+                values.append(text)
+                seen.add(key)
+        return values
+
     def _store_product_dialog_context(
         self,
         ctx: InvocationContext,
         product_selection: Dict[str, Any],
     ) -> None:
         mode = product_selection.get("mode")
+        if mode == "product_attribute_values":
+            attribute_values = self._normalize_attribute_values(
+                product_selection.get("attribute_values")
+            )
+            if attribute_values:
+                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                    "last_mode": "product_attribute_values",
+                    "attribute_name": str(product_selection.get("attribute_name") or "").strip(),
+                    "attribute_column": str(product_selection.get("attribute_column") or "").strip(),
+                    "attribute_values": attribute_values,
+                    "products": [],
+                    "selected_product": None,
+                }
+            else:
+                self._clear_product_dialog_context(ctx)
+            return
+
         if mode == "product_filter":
             products = self._normalize_dialog_products(product_selection.get("products"))
             if products:
@@ -434,6 +474,39 @@ class RootAgent(BaseAgent):
 
         if mode in {"no_data", "product_compare"}:
             self._clear_product_dialog_context(ctx)
+
+    def _find_attribute_value_in_dialog_context(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+    ) -> str | None:
+        context = self._get_product_dialog_context(ctx)
+        if context.get("last_mode") != "product_attribute_values":
+            return None
+
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized:
+            return None
+
+        values = self._normalize_attribute_values(context.get("attribute_values"))
+        exact_matches = [
+            value
+            for value in values
+            if self._normalize_product_dialog_text(value) == normalized
+        ]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        contained_matches = [
+            value
+            for value in values
+            if self._normalize_product_dialog_text(value)
+            and self._normalize_product_dialog_text(value) in normalized
+        ]
+        if len(contained_matches) == 1:
+            return contained_matches[0]
+
+        return None
 
     def _find_product_in_dialog_context(
         self,
@@ -541,6 +614,24 @@ class RootAgent(BaseAgent):
         normalized = self._normalize_product_dialog_text(user_text)
         if not normalized or not self._get_product_dialog_context(ctx):
             return None
+
+        attribute_value = self._find_attribute_value_in_dialog_context(ctx, user_text)
+        if attribute_value:
+            context = self._get_product_dialog_context(ctx)
+            attribute_name = str(context.get("attribute_name") or "").strip()
+            attribute_column = str(context.get("attribute_column") or "").strip()
+            attribute_label = attribute_name or attribute_column or "selected attribute"
+            query = f"покажи продукты, у которых {attribute_label}: {attribute_value}"
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": "product_filter",
+                    "reason": "product_attribute_value_followup",
+                    "search_query": query,
+                },
+                dict(ctx.session.state),
+            )
 
         asks_kit = bool(
             re.search(
