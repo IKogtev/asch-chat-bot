@@ -196,7 +196,8 @@ def create_dispatcher_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
 Use state variable {from_glossary} as a dictionary of terms already found by code.
 Do not call tools and do not invent additional expansions.
-If a user term is present in {from_glossary}, use its definition when choosing route, intent, and search_query.
+If a user term is present in {from_glossary}, use its definition when choosing route and intent.
+Do not substitute definitions into search_query and do not replace abbreviations with full names — downstream code expands the query.
 High-priority product-card rule: if the latest user message asks to show, open, display, describe, or provide parameters/card/details for a numeric product code, return route="product_selection", intent="product_card", reason="product_card". Examples: "покажи 8914", "параметры 8914", "карточка 8914". Do not route these messages to kb_answer as applicability or explanation questions.
 
 Ты dispatcher_agent.

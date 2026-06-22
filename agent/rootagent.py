@@ -589,6 +589,7 @@ class RootAgent(BaseAgent):
                     "_root_final_text",
                     "_bot_action",
                     "from_glossary",
+                    "doc_search_query",
                 ],
             )
 
@@ -695,8 +696,11 @@ class RootAgent(BaseAgent):
                     dr = extract_download_ranks(user_text)
 
             if dispatch["route"] == "doc_search":
-                ctx.session.state["doc_search_intent"] = dispatch["intent"]
-                async for event in self.doc_search_orchestrator.run_async(ctx):
+                async for event in self._handle_doc_search(
+                    ctx,
+                    user_text,
+                    dispatch["intent"],
+                ):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
@@ -774,6 +778,25 @@ class RootAgent(BaseAgent):
             )
             yield self._build_final_event_with_history(ctx, user_text, message)
 
+    async def _handle_doc_search(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        intent: str,
+    ) -> AsyncGenerator[Event, None]:
+        doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
+        logger.info(
+            "doc_search route: query=%s intent=%s",
+            truncate_for_log(doc_search_query, 300),
+            intent,
+        )
+
+        ctx.session.state["doc_search_intent"] = intent
+        ctx.session.state["doc_search_query"] = doc_search_query
+
+        async for event in self.doc_search_orchestrator.run_async(ctx):
+            yield event
+
     async def _handle_kb_answer(
         self,
         ctx: InvocationContext,
@@ -790,7 +813,10 @@ class RootAgent(BaseAgent):
             search_query: Нормализованный поисковый запрос.
             intent: Тип запроса (kb_answer, smalltalk).
         """
-        effective_search_query = (search_query or user_message).strip()
+        base_search_query = (search_query or user_message).strip()
+        effective_search_query = await self.glossary_lookup.expand_search_query(
+            base_search_query,
+        )
         logger.info(
             "kb_answer route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
@@ -828,7 +854,10 @@ class RootAgent(BaseAgent):
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        effective_search_query = (search_query or user_message).strip()
+        base_search_query = (search_query or user_message).strip()
+        effective_search_query = await self.glossary_lookup.expand_search_query(
+            base_search_query,
+        )
         logger.info(
             "product_selection route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
