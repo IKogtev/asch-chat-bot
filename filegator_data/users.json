@@ -28,6 +28,6 @@
     "role": "user",
     "homedir": "/manager",
     "permissions": "read|write|upload|download",
-    "password": "$2y$10$.YyMIHU8JcRZuyMq416qme2bOK.o0OSeL3PA.IZbgKHfM76G00Yhm"
+    "password": "$2y$10$68pKFTtjVk6Po9BX0rewJuzEFVGMUq6UfkeeA1PDna3nvI8NitGj."
   }
 }
