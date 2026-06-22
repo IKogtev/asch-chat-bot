@@ -357,6 +357,10 @@ async def send_to_bots(
 # Mount static files
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+@app.get("/favicon.ico")
+# функция для статики чтобы обрабатывать иконку
+async def favicon():
+    return FileResponse("static/favicon.ico")
 # функция для получения текущего сервиса хранилища
 def get_current_storage() -> FileStorageService:
     """Возвращает сервис хранилища для текущей активной коллекции Qdrant"""

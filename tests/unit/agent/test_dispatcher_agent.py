@@ -111,7 +111,7 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "intent",
-    ["product_card", "product_kit", "product_filter", "product_compare"],
+    ["product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values"],
 )
 def test_validate_dispatcher_result_accepts_product_selection_with_query(intent: str) -> None:
     result = validate_dispatcher_result(
