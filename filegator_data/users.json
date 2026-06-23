@@ -13,5 +13,21 @@
     "role": "admin",
     "homedir": "/",
     "permissions": "read|write|upload|download|batchdownload|zip"
+  },
+  "0": {
+    "username": "ASLife",
+    "name": "ASLife",
+    "role": "user",
+    "homedir": "/manager",
+    "permissions": "read|write|upload|download",
+    "password": "$2y$10$UPhz4NZ72ztx/2TJeSIJ/OvdJ1MsI5OFyTH0RFgtYkNpDidJr026q"
+  },
+  "ASLife": {
+    "username": "ASLife",
+    "name": "ASLife",
+    "role": "user",
+    "homedir": "/manager",
+    "permissions": "read|write|upload|download",
+    "password": "$2y$10$U.3.9uAl0vucF2/IrCjLM.hpJycIetwaRSo5ft9Mc18bOxPHsmjFS"
   }
 }

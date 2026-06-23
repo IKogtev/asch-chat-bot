@@ -52,8 +52,8 @@ MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", 7000))
 
 # Конфигурация индексирования
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "REDACTED_EXAMPLE")
-OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL_EMB", "https://api.llm.nstcloud.ru/v1/embeddings")
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "REDACTED_EXAMPLE")
+EMBEDDING_API_URL = os.getenv("EMBEDDING_API_URL", "https://api.llm.nstcloud.ru/v1/embeddings")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", 5))
 SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", 0.0))
@@ -70,8 +70,8 @@ FAQ_QDRANT_INIT_TIMEOUT = float(os.getenv("FAQ_QDRANT_INIT_TIMEOUT", "600"))
 logger = setup_logger("faq_rag_server", service_dir=FAQ_SERVICE_DIR)
 idx_config = IndexerConfig(
     service_dir=FAQ_SERVICE_DIR,
-    embed_api_url=OPENROUTER_API_URL,
-    embed_api_key=OPENROUTER_API_KEY,
+    embed_api_url=EMBEDDING_API_URL,
+    embed_api_key=EMBEDDING_API_KEY,
     embed_model_name=EMBEDDING_MODEL,
     similarity_top_k=SIMILARITY_TOP_K,
     similarity_cutoff=SIMILARITY_CUTOFF,

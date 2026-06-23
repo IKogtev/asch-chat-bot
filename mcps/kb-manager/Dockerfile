@@ -1,7 +1,6 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-
 # Копируем pip.conf для ускорения установки
 COPY mcps/kb-manager/pip.conf /etc/pip.conf
 

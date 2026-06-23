@@ -1,8 +1,10 @@
 import pytest
 
 from utils.doc_search_format import (
+    build_download_rank_patterns,
     extract_download_ranks,
     extract_loose_tail_ranks,
+    is_archive_document,
     parse_download_ranks,
     render_doc_list_html,
 )
@@ -13,8 +15,8 @@ from utils.doc_search_format import (
     ("text", "expected"),
     [
         ("скачай 1 и 3", [1, 3]),
-        ("8,13", [8, 13]),
-        ("  7  ", [7]),
+        ("8,13", []),
+        ("  4  ", [4]),
         ("документ 2", [2]),
         ("ничего похожего", []),
         ("", []),
@@ -30,7 +32,7 @@ def test_parse_download_ranks(text, expected) -> None:
     ("text", "expected"),
     [
         ("1 и 5", [1, 5]),
-        ("8, 13", [8, 13]),
+        ("8, 13", []),
         ("Fort Knox 1 и 5", [1, 5]),
         ("слишком длинная строка для loose tail 1 и 5", []),
         ("1", []),
@@ -52,6 +54,17 @@ def test_extract_download_ranks_returns_empty_when_neither_text_nor_hint_match()
     result = extract_download_ranks("покажи документы", extra_hint="подсказка без рангов")
 
     assert result == []
+
+
+@pytest.mark.unit
+def test_parse_download_ranks_respects_max_list_rank() -> None:
+    download_re, ranks_only_re, _ = build_download_rank_patterns(10)
+
+    assert download_re.match("8,3")
+    assert ranks_only_re.match("  7  ")
+    assert ranks_only_re.match("1 и 10")
+    assert not ranks_only_re.match("8,13")
+    assert not ranks_only_re.match("11")
 
 
 @pytest.mark.unit
@@ -86,4 +99,53 @@ def test_render_doc_list_html_contains_pagination_hint_when_not_all_items_shown(
     assert "<b>ещё</b>" in result
 
 
+@pytest.mark.unit
+def test_is_archive_document_by_source_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DOC_SEARCH_ARCHIVE_SECTION", "6 Архив")
+
+    assert is_archive_document({"source_path": "6 Архив/Fort Knox/file.pdf"}) is True
+    assert is_archive_document({"source_path": "Маркетинговые материалы/Fort Knox/file.pdf"}) is False
+    assert is_archive_document({"source_name": "file.pdf"}) is False
+
+
+@pytest.mark.unit
+def test_is_archive_document_detects_archive_folder_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOC_SEARCH_ARCHIVE_SECTION", raising=False)
+
+    assert is_archive_document({"source_path": "6 Архив/Fort Knox/file.pdf"}) is True
+    assert is_archive_document({"kb_id": "6 Архив"}) is True
+    assert is_archive_document({"relative_path": "5 Архив/Product/file.pdf"}) is True
+
+
+@pytest.mark.unit
+def test_is_archive_document_by_section_relationships() -> None:
+    item = {
+        "source_name": "file.pdf",
+        "section_relationships": ["6 Архив", "6 Архив/Fort Knox"],
+    }
+
+    assert is_archive_document(item) is True
+
+
+@pytest.mark.unit
+def test_render_doc_list_html_marks_archive_documents(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DOC_SEARCH_ARCHIVE_SECTION", "6 Архив")
+    items = [
+        {
+            "source_name": "Fort_Knox.pdf",
+            "source_path": "6 Архив/Fort Knox/Fort_Knox.pdf",
+            "snippet": "Архивный файл",
+        },
+        {
+            "source_name": "Active.pdf",
+            "source_path": "Маркетинговые материалы/Fort Knox/Active.pdf",
+            "snippet": "Актуальный файл",
+        },
+    ]
+
+    result = render_doc_list_html(items, total=2)
+
+    assert "<b>1. (архивный) Fort_Knox.pdf</b>" in result
+    assert "<b>2. Active.pdf</b>" in result
+    assert result.count("(архивный)") == 1
 

@@ -60,6 +60,8 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_MODEL=${LLM_API_MODEL}
+      # путь к бд Насти
+      - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
       - PORT=8000
       - HOST=0.0.0.0
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
@@ -82,22 +84,18 @@ services:
       - DBHUB_MCP_TIMEOUT_SEC=${DBHUB_MCP_TIMEOUT_SEC:-${MCP_TIMEOUT_SEC:-60}}
 
       # Documents paths
-      - ACTIVE_DOCUMENTS_PATH=kb/
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
-      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb
       - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
-      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_PATH=knowledge_base
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - FAQ_DOCUMENTS_PATH=manager/faq
       - GLOSSARY_CACHE_TTL_SEC=600
+      - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
-      # Context compaction
-      - AGENT_CONTEXT_COMPACTION_INTERVAL=60
-      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=3
-      - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
-      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
-
-      - KB_TOP_K=${KB_TOP_K:-5}
+      - KB_TOP_K=${KB_TOP_K:-20}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
@@ -148,7 +146,7 @@ services:
       - .env
     volumes:
       - ./kb_storage/bot/:/app/data
-      - ./kb_storage/kb:/app/kb_storage/kb:ro
+      - ./kb_storage/manager/kb:/app/kb_storage/manager/kb:ro
     environment:
       - LOG_LEVEL=${BOT_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
@@ -156,13 +154,15 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.4
+      - PLATFORM_VERSION=0.7.6
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
+      - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
+      - KB_TOP_K=${KB_TOP_K:-20}
+      - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
     networks:
       - aszh-bot-network
@@ -187,7 +187,7 @@ services:
       - .env
     volumes:
       - ./kb_storage/bot/:/app/data
-      - ./kb_storage/kb:/app/kb_storage/kb:ro
+      - ./kb_storage/manager/kb:/app/kb_storage/manager/kb:ro
     environment:
       - LOG_LEVEL=${BOT_MAX_LOG_LEVEL:-DEBUG}
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
@@ -195,11 +195,12 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.4
+      - PLATFORM_VERSION=0.7.6
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
-      - PRODUCT_KITS_ROOT=/app/kb_storage/kb/1 Продукты
+      - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
+      - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
@@ -229,8 +230,6 @@ services:
       - "5000:5000"
     volumes:
       - ./kb_storage:/app/data/kb_documents
-      - ./kb_storage/prompts:/app/data/prompts
-      - ./kb_storage/bot:/app/data/bot
     environment:
       - LOG_LEVEL=${KB_MANAGER_LOG_LEVEL:-DEBUG}
       - LOG_TO_FILE=false
@@ -241,17 +240,17 @@ services:
       - EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - ACTIVE_DOCUMENTS_PATH=kb/
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
       - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
-      - ARCHIVE_DOCUMENTS_PATH=archive_kb/
+      - ARCHIVE_DOCUMENTS_PATH=archive_kb
       - ARCHIVE_DOCUMENTS_COLLECTION=archive_kb_collection
-      - KB_DOCUMENTS_PATH=knowledge_base/
+      - KB_DOCUMENTS_PATH=knowledge_base
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
-      - FAQ_DOCUMENTS_PATH=faq/
+      - FAQ_DOCUMENTS_PATH=manager/faq
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
-      - PROMPTS_STORAGE_ROOT=/app/data/prompts
-      - PLATFORM_VERSION=0.7.4
+      - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
+      - PLATFORM_VERSION=0.7.6
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -260,8 +259,9 @@ services:
       # путь к базе данных
       - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
       - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
-      - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/tables
-      - PRODUCT_KITS_ROOT=/app/data/kb_documents/kb/1 Продукты
+      - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/manager/tables
+      - GLOSSARY_SOURCE_DIR=/app/data/kb_documents/manager/glossary
+      - PRODUCT_KITS_ROOT=/app/data/kb_documents/manager/kb/1 Продукты
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
@@ -300,7 +300,7 @@ services:
       - LOG_LEVEL=${KB_LOG_LEVEL:-DEBUG}
 
       - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://api.llm.nstcloud.ru/v1/embeddings}
-      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-REDACTED_EXAMPLE}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
 
       - KB_CHUNK_SIZE=512
@@ -350,12 +350,12 @@ services:
       - LOG_TO_FILE=false
       - LOG_LEVEL=${FAQ_LOG_LEVEL:-DEBUG}
 
-      - EMBEDDING_API_URL=${OPENROUTER_API_URL_EMB:-https://api.llm.nstcloud.ru/v1/embeddings}
-      - EMBEDDING_API_KEY=${OPENROUTER_API_KEY:-REDACTED_EXAMPLE}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-https://api.llm.nstcloud.ru/v1/embeddings}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-10}
+      - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-5}
       - SIMILARITY_CUTOFF=${FAQ_SIMILARITY_CUTOFF:-0.5}
       
       - QDRANT_HOST=qdrant
@@ -412,6 +412,10 @@ services:
       - ./filegator_init.sh:/filegator_init.sh:ro
     environment:
       - TZ=Europe/Moscow
+      # Переменные для автоматического создания пользователя:
+      - FILEGATOR_USER=ASLife
+      - FILEGATOR_PASS=YourSuperSecretPassword  
+      - FILEGATOR_HOMEDIR=/manager             # Папка внутри repository
     networks:
       - aszh-bot-network
 
@@ -453,14 +457,9 @@ services:
       - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
       - FAQ_DOCUMENTS_COLLECTION=faq_collection
       - GLOSSARY_CACHE_TTL_SEC=600
+      - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
-      # Context compaction
-      - AGENT_CONTEXT_COMPACTION_INTERVAL=60
-      - AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE=3
-      - AGENT_CONTEXT_TOKEN_THRESHOLD=16000
-      - AGENT_CONTEXT_EVENT_RETENTION_SIZE=60
-
-      - KB_TOP_K=${KB_TOP_K:-5}
+      - KB_TOP_K=${KB_TOP_K:-20}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
