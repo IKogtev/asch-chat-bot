@@ -33,6 +33,7 @@ def _load_rootagent_module():
     config_stub.DEBUG_EXCEPTIONS = False
     config_stub.FAQ_DOCUMENTS_COLLECTION = "faq"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
+    config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
@@ -67,6 +68,26 @@ def _load_rootagent_module():
 
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.validate_product_selection_result = lambda data, context: data
+
+    product_resolver_stub = types.ModuleType("agent.product_resolver_service")
+
+    class ProductResolverService:
+        async def resolve_product(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "mention": query}
+            )
+
+        async def resolve_products(self, query, expected_count=None):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "items": []}
+            )
+
+        async def resolve_product_filter(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "query": query, "product_codes": [], "products": []}
+            )
+
+    product_resolver_stub.ProductResolverService = ProductResolverService
 
     doc_search_stub = types.ModuleType("agent.agents.doc_search_orchestrator")
     doc_search_stub.DocSearchOrchestrator = type(
@@ -119,6 +140,7 @@ def _load_rootagent_module():
         invocation_id: str
         content: Content
         actions: EventActions
+        timestamp: float = 0.0
 
     adk_events_stub.Event = Event
     adk_events_stub.EventActions = EventActions
@@ -134,6 +156,7 @@ def _load_rootagent_module():
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
     sys.modules["agent.agents.product_selection_agent"] = product_selection_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
+    sys.modules["agent.product_resolver_service"] = product_resolver_stub
     sys.modules["google"] = google_pkg
     sys.modules["google.genai"] = genai_pkg
     sys.modules["google.genai.types"] = genai_types_stub
@@ -159,7 +182,30 @@ def _make_agent(**kwargs) -> RootAgent:
         async def find(self, text):
             return []
 
+        async def expand_search_query(self, text):
+            return text
+
+        async def build_doc_search_query(self, text):
+            return await self.expand_search_query(text)
+
+    class EmptyProductResolver:
+        async def resolve_product(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "mention": query}
+            )
+
+        async def resolve_products(self, query, expected_count=None):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "items": []}
+            )
+
+        async def resolve_product_filter(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "query": query, "product_codes": [], "products": []}
+            )
+
     kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
+    kwargs.setdefault("product_resolver", EmptyProductResolver())
     fake_subagent = object()
     fake_doc_orchestrator = type("DocSearchOrchestratorFake", (), {"run_async": lambda self, ctx: ()})()
     return RootAgent(
@@ -176,15 +222,135 @@ def _make_ctx(
     *,
     user_state=None,
     session_state=None,
+    session_events=None,
     parts=None,
     invocation_id="inv-1",
 ):
     return types.SimpleNamespace(
         user=types.SimpleNamespace(state=user_state or {}),
-        session=types.SimpleNamespace(state=session_state or {}),
+        session=types.SimpleNamespace(
+            id="session-1",
+            app_name="agent",
+            user_id="user-1",
+            state=session_state or {},
+            events=session_events or [],
+            last_update_time=0,
+        ),
         user_content=types.SimpleNamespace(parts=parts or []),
         invocation_id=invocation_id,
     )
+
+
+def _make_event(role: str, text: str, idx: int, *, state_delta=None):
+    return rootagent_module.Event(
+        author=role,
+        invocation_id=f"inv-{idx}",
+        content=rootagent_module.genai_types.Content(
+            role=role,
+            parts=[rootagent_module.genai_types.Part(text=text)],
+        ),
+        actions=rootagent_module.EventActions(
+            state_delta=state_delta,
+        ),
+        timestamp=float(idx),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_trim_dialog_memory_keeps_last_max_turns_and_state() -> None:
+    agent = _make_agent()
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "m1", 2),
+        _make_event("user", "u2", 3),
+        _make_event("model", "m2", 4),
+        _make_event("user", "u3", 5),
+        _make_event("model", "m3", 6),
+        _make_event("user", "u4", 7),
+        _make_event("model", "m4", 8),
+    ]
+    ctx = _make_ctx(
+        session_state={"product": "kept"},
+        session_events=events,
+    )
+
+    await agent._trim_dialog_memory(ctx)
+
+    assert [event.content.parts[0].text for event in ctx.session.events] == [
+        "u2",
+        "m2",
+        "u3",
+        "m3",
+        "u4",
+        "m4",
+    ]
+    assert ctx.session.state == {"product": "kept"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_trim_dialog_memory_keeps_event_state_delta_in_memory_only() -> None:
+    agent = _make_agent()
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "m1", 2),
+        _make_event("user", "u2", 3),
+        _make_event("model", "m2", 4, state_delta={"product": "old"}),
+        _make_event("user", "u3", 5),
+        _make_event("model", "m3", 6),
+        _make_event("user", "u4", 7),
+        _make_event("model", "m4", 8),
+    ]
+    ctx = _make_ctx(
+        session_state={"product": "current"},
+        session_events=events,
+    )
+
+    await agent._trim_dialog_memory(ctx)
+
+    assert ctx.session.state == {"product": "current"}
+    retained_with_delta = [
+        event
+        for event in ctx.session.events
+        if getattr(event.actions, "state_delta", None)
+    ]
+    assert retained_with_delta[0].actions.state_delta == {"product": "old"}
+
+
+@pytest.mark.unit
+def test_retained_dialog_memory_events_keeps_complete_recent_turns() -> None:
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "owasp1", 2),
+        _make_event("model", "dispatcher1", 3),
+        _make_event("model", "answer1", 4),
+        _make_event("user", "u2", 5),
+        _make_event("model", "owasp2", 6),
+        _make_event("model", "answer2", 7),
+        _make_event("user", "u3", 8),
+        _make_event("model", "answer3", 9),
+    ]
+
+    retained = RootAgent._retained_dialog_memory_events(events, 2)
+
+    assert [event.content.parts[0].text for event in retained] == [
+        "u2",
+        "owasp2",
+        "answer2",
+        "u3",
+        "answer3",
+    ]
+
+
+@pytest.mark.unit
+def test_retained_dialog_memory_events_does_nothing_when_disabled() -> None:
+    events = [
+        _make_event("user", "u1", 1),
+        _make_event("model", "m1", 2),
+    ]
+
+    assert RootAgent._retained_dialog_memory_events(events, 0) == events
 
 
 @pytest.mark.unit
@@ -264,6 +430,27 @@ def test_build_final_event_includes_bot_action_state_delta() -> None:
             "type": "send_product_kit",
             "product_code": "2832",
         }
+    }
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_product_dialog_context_state_delta() -> None:
+    product_dialog_context = {
+        "last_mode": "product_filter",
+        "products": [{"code": "8914", "name": "Fort Knox 1 год"}],
+        "selected_product": None,
+    }
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: product_dialog_context,
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta == {
+        rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: product_dialog_context,
     }
 
 
@@ -520,6 +707,104 @@ async def test_handle_product_selection_appends_clarification_options() -> None:
         "8793 Fort Knox 6 months - short, RUB"
     )
     assert "_bot_action" not in ctx.session.state
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_filter_stores_products_and_adds_followup_question() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "product_filter",
+            "message": "Найдено продуктов: 1.\n2867 - Bundle Fort Knox 3+36 месяцев",
+            "used_tables": ["products"],
+            "resolved_product": None,
+            "clarification_options": [],
+            "products": [
+                {
+                    "code": "2867",
+                    "name": "Bundle Fort Knox 3+36 месяцев",
+                    "folder_kit": "Fort Knox (2867)",
+                }
+            ],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "show products",
+            "список продуктов",
+            "product_filter",
+        )
+    ]
+
+    assert events == []
+    assert rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
+    assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
+        "last_mode": "product_filter",
+        "products": [
+            {
+                "code": "2867",
+                "name": "Bundle Fort Knox 3+36 месяцев",
+                "folder_kit": "Fort Knox (2867)",
+            }
+        ],
+        "selected_product": None,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_attribute_values_stores_context_and_adds_followup_question() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "product_attribute_values",
+            "message": "Available values:\n- RUB\n- CNY",
+            "used_tables": ["products"],
+            "resolved_product": None,
+            "clarification_options": [],
+            "products": [],
+            "attribute_name": "currency",
+            "attribute_column": "currency",
+            "attribute_values": ["RUB", "CNY"],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "which currencies exist",
+            "which currencies exist",
+            "product_attribute_values",
+        )
+    ]
+
+    assert events == []
+    assert rootagent_module.PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
+    assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
+        "last_mode": "product_attribute_values",
+        "attribute_name": "currency",
+        "attribute_column": "currency",
+        "attribute_values": ["RUB", "CNY"],
+        "products": [],
+        "selected_product": None,
+    }
 
 
 @pytest.mark.unit
@@ -835,11 +1120,192 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_run_async_impl_routes_attribute_value_followup_to_product_filter() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="CNY")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_attribute_values",
+                "attribute_name": "currency",
+                "attribute_column": "currency",
+                "attribute_values": ["RUB", "CNY"],
+                "products": [],
+                "selected_product": None,
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "CNY"
+        assert search_query == "покажи продукты, у которых currency: CNY"
+        assert intent == "product_filter"
+        ctx.session.state["_root_final_text"] = "filtered products"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "filtered products"
+    assert product_called is True
+    assert dispatcher_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_product_card_followup_from_saved_product_list() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="параметры 2867")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_filter",
+                "products": [
+                    {
+                        "code": "2867",
+                        "name": "Bundle Fort Knox 3+36 месяцев",
+                    }
+                ],
+                "selected_product": None,
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "параметры 2867"
+        assert search_query == "показать параметры продукта 2867"
+        assert intent == "product_card"
+        ctx.session.state["_root_final_text"] = "product card answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product card answer"
+    assert product_called is True
+    assert dispatcher_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_product_kit_followup_from_selected_product() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="скачать комплект")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_card",
+                "products": [
+                    {
+                        "code": "2867",
+                        "name": "Bundle Fort Knox 3+36 месяцев",
+                    }
+                ],
+                "selected_product": {
+                    "code": "2867",
+                    "name": "Bundle Fort Knox 3+36 месяцев",
+                },
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "скачать комплект"
+        assert search_query == "скачать комплект документов по продукту 2867"
+        assert intent == "product_kit"
+        ctx.session.state["_root_final_text"] = "product kit answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product kit answer"
+    assert product_called is True
+    assert dispatcher_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
     class FakeGlossaryLookup:
         async def find(self, text):
             assert text == "Что такое НСЖ?"
-            return [["НСЖ", "накопительное страхование жизни"]]
+            return [["НСЖ", "накопительное страхование жизни", "сокращение"]]
 
     agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="Что такое НСЖ?")], session_state={})
@@ -858,7 +1324,7 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
 
         if kwargs["log_label"] == "dispatcher_result_json":
             assert ctx.session.state["from_glossary"] == [
-                ["НСЖ", "накопительное страхование жизни"]
+                ["НСЖ", "накопительное страхование жизни", "сокращение"]
             ]
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
@@ -878,7 +1344,7 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
         nonlocal kb_called
         kb_called = True
         assert ctx.session.state["from_glossary"] == [
-            ["НСЖ", "накопительное страхование жизни"]
+            ["НСЖ", "накопительное страхование жизни", "сокращение"]
         ]
         ctx.session.state["_root_final_text"] = "answer"
         if False:
@@ -892,6 +1358,244 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
     assert len(events) == 1
     assert events[0].content.parts[0].text == "answer"
     assert kb_called is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_kb_answer_expands_search_query_with_glossary() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def expand_search_query(self, text):
+            if "НСЖ" in text:
+                return "НСЖ накопительное страхование жизни"
+            return text
+
+        async def build_doc_search_query(self, text):
+            return await self.expand_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["search_query"] == "НСЖ накопительное страхование жизни"
+        ctx.session.state["_kb_answer_result_parsed"] = {"message": "ok"}
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_kb_answer(
+            ctx,
+            "Что такое НСЖ?",
+            "Что такое НСЖ?",
+            "kb_answer",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_sets_single_product_resolution_state() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            assert query == "Fort Knox"
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "mention": query,
+                    "product_code": "2832",
+                    "product_name": "Fort Knox",
+                    "options": [],
+                    "error": None,
+                }
+            )
+
+        async def resolve_products(self, query, expected_count=None):
+            raise AssertionError("resolve_products must not be called")
+
+        async def resolve_product_filter(self, query):
+            raise AssertionError("resolve_product_filter must not be called")
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["product_resolution"]["product_code"] == "2832"
+        assert ctx.session.state["product_resolutions"] == {}
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "show Fort Knox",
+            "Fort Knox",
+            "product_card",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["product_resolution"]["status"] == "resolved"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_sets_compare_product_resolutions_state() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            raise AssertionError("resolve_product must not be called")
+
+        async def resolve_products(self, query, expected_count=None):
+            assert query == "Fort Knox and Unit Linked"
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "items": [
+                        {"status": "resolved", "product_code": "2832"},
+                        {"status": "resolved", "product_code": "7698"},
+                    ],
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["product_resolutions"]["status"] == "resolved"
+        assert ctx.session.state["product_resolution"] == {}
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "compare products",
+            "Fort Knox and Unit Linked",
+            "product_compare",
+        )
+    ]
+
+    assert events == []
+    assert len(ctx.session.state["product_resolutions"]["items"]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_resolves_product_filter() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            raise AssertionError("resolve_product must not be called")
+
+        async def resolve_products(self, query, expected_count=None):
+            raise AssertionError("resolve_products must not be called")
+
+        async def resolve_product_filter(self, query):
+            assert query == "products in USD"
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "query": query,
+                    "product_codes": ["2832", "2867"],
+                    "products": [
+                        {"product_code": "2832", "canonical_name": "Fort Knox"},
+                    ],
+                    "matched_terms": ["products in USD"],
+                    "error": None,
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["product_resolution"] == {}
+        assert ctx.session.state["product_resolutions"] == {}
+        assert ctx.session.state["product_filter_resolution"]["product_codes"] == ["2832", "2867"]
+        assert "products" not in ctx.session.state["product_filter_resolution"]
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "show products",
+            "products in USD",
+            "product_filter",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["product_filter_resolution"]["status"] == "resolved"
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_expands_search_query_with_glossary() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def expand_search_query(self, text):
+            if "ФК" in text:
+                return text.replace("ФК", "Fort Knox")
+            return text
+
+        async def build_doc_search_query(self, text):
+            return await self.expand_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert (
+            ctx.session.state["product_selection_search_query"]
+            == "карточка продукта Fort Knox"
+        )
+        ctx.session.state["_product_selection_result_parsed"] = {"message": "ok", "mode": "no_data"}
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "карточка продукта ФК",
+            "карточка продукта ФК",
+            "product_card",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "ok"
 
 
 @pytest.mark.unit
@@ -978,3 +1682,108 @@ async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer
     assert events[0].content.parts[0].text == "Я умею искать документы и помогать продавать продукты АСЖ."
     assert kb_called is True
     assert doc_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_doc_search_sets_doc_search_query_from_glossary() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def build_doc_search_query(self, text):
+            assert text == "дай презентеры по ФК"
+            return "дай презентеры по Fort Knox"
+
+        async def expand_search_query(self, text):
+            return await self.build_doc_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[], session_state={})
+    orchestrator_called = False
+
+    async def fake_doc_run_async(ctx):
+        nonlocal orchestrator_called
+        orchestrator_called = True
+        if False:
+            yield None
+
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [
+        event
+        async for event in agent._handle_doc_search(
+            ctx,
+            "дай презентеры по ФК",
+            "doc_search",
+        )
+    ]
+
+    assert events == []
+    assert orchestrator_called is True
+    assert ctx.session.state["doc_search_intent"] == "doc_search"
+    assert ctx.session.state["doc_search_query"] == "дай презентеры по Fort Knox"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_sets_doc_search_query_before_orchestrator() -> None:
+    class FakeGlossaryLookup:
+        async def find(self, text):
+            assert text == "дай презентеры по ФК"
+            return [["ФК", "Fort Knox", "продукт"]]
+
+        async def build_doc_search_query(self, text):
+            assert text == "дай презентеры по ФК"
+            return "дай презентеры по Fort Knox"
+
+        async def expand_search_query(self, text):
+            return await self.build_doc_search_query(text)
+
+    agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="дай презентеры по ФК")], session_state={})
+    doc_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "doc_search",
+                "intent": "doc_search",
+                "reason": "documents",
+                "search_query": "дай презентеры по ФК",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal doc_called
+        doc_called = True
+        assert ctx.session.state["doc_search_query"] == "дай презентеры по Fort Knox"
+        assert ctx.session.state["doc_search_intent"] == "doc_search"
+        ctx.session.state["_root_final_text"] = "ok"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "ok"
+    assert doc_called is True

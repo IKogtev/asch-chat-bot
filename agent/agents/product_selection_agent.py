@@ -2,7 +2,7 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool.mcp_toolset import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
 from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL
@@ -27,12 +27,14 @@ PRODUCT_SELECTION_MODES = {
     "product_kit",
     "product_filter",
     "product_compare",
+    "product_attribute_values",
     "needs_clarification",
     "no_data",
 }
 
 PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
 CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
+PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit", "is_active")
 PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
@@ -81,6 +83,31 @@ def _normalize_clarification_options(value: Any) -> list[dict[str, str]]:
     return options
 
 
+def _normalize_products(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError(f"expected list, got {type(value).__name__}")
+
+    products: list[dict[str, str]] = []
+    for item in value:
+        normalized = _normalize_product(item, PRODUCT_LIST_FIELD_KEYS)
+        if normalized is None:
+            raise ValueError("product item must not be empty")
+        products.append(normalized)
+
+    return products
+
+
+def _normalize_text_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} expected list, got {type(value).__name__}")
+
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def _normalize_tool_calls(value: Any) -> set[str]:
     if value is None:
         return set()
@@ -107,11 +134,18 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
     mode = str(data.get("mode", "")).strip()
     message = str(data.get("message", "")).strip()
     used_tables = _normalize_used_tables(data.get("used_tables"))
+    attribute_name = str(data.get("attribute_name", "")).strip()
+    attribute_column = str(data.get("attribute_column", "")).strip()
 
     try:
         resolved_product = _normalize_product(data.get("resolved_product"))
         clarification_options = _normalize_clarification_options(
             data.get("clarification_options")
+        )
+        products = _normalize_products(data.get("products"))
+        attribute_values = _normalize_text_list(
+            data.get("attribute_values"),
+            "attribute_values",
         )
     except (TypeError, ValueError) as exc:
         raise build_validation_error(
@@ -119,7 +153,7 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             stage="basic_fields",
             problem=str(exc),
             data=data,
-            fields=("resolved_product", "clarification_options"),
+            fields=("resolved_product", "clarification_options", "products", "attribute_values"),
         ) from exc
 
     if status != "ok":
@@ -178,6 +212,15 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "resolved_product"),
         )
 
+    if mode == "product_attribute_values" and not attribute_values:
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem="mode='product_attribute_values' requires attribute_values",
+            data=data,
+            fields=("mode", "attribute_values"),
+        )
+
     if mode == "needs_clarification" and not clarification_options:
         raise build_validation_error(
             agent=agent_name,
@@ -203,6 +246,10 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
         "used_tables": used_tables,
         "resolved_product": resolved_product,
         "clarification_options": clarification_options,
+        "products": products,
+        "attribute_name": attribute_name,
+        "attribute_column": attribute_column,
+        "attribute_values": attribute_values,
     }
 
 
@@ -234,16 +281,29 @@ def create_product_selection_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
 Use state variable {from_glossary} as a dictionary of terms already found by code.
 Do not invent additional expansions.
-If a user term is present in {from_glossary}, use its definition when choosing catalog queries, filters, and answer wording.
+For product_selection_search_query, product and abbreviation substitutions are already applied in code.
+Use {from_glossary} by category:
+- product and abbreviation: do not rewrite product_selection_search_query again;
+- term: use definition from {from_glossary} for filters and answer wording.
+For name ILIKE / name LIKE: use the canonical product name from product_selection_search_query, not Cyrillic abbreviations or synonyms from user_query (e.g. use Fort Knox, not FK or Fort Noks in Cyrillic).
+Always use partial match: name ILIKE '%Fort Knox%', never name ILIKE 'Fort Knox' without wildcards.
+In name ILIKE include only the product name token; put service words (list, archive, products) into other filters such as is_active.
+Example: user_query=products FK, product_selection_search_query=list products Fort Knox -> name ILIKE '%Fort Knox%', not '%FK%' and not 'Fort Knox'.
+If execute_sql returns 0 rows and name ILIKE had no % wildcards, retry with '%canonical%'.
 If multiple definitions are present and the product context does not disambiguate them, return mode="no_data" instead of guessing.
 
 You are product_selection_agent.
 Return only JSON, without markdown fences.
 
-State variables:
-- {user_query}: original user question.
-- {product_selection_search_query}: normalized product search query.
-- {product_selection_intent}: one of product_card, product_kit, product_filter, product_compare.
+State variables: `user_query`, `product_selection_search_query`, `product_selection_intent`, `from_glossary`, `product_resolution`, `product_resolutions`, `product_filter_resolution`.
+
+Current values:
+- `user_query`: {user_query}
+- `product_selection_search_query`: {product_selection_search_query}
+- `product_selection_intent`: {product_selection_intent}
+- `from_glossary`: {from_glossary}
+- `product_resolution`: {product_resolution}
+- `product_resolutions`: {product_resolutions}
 
 Mandatory workflow:
 1. Call search_semantic_template to understand business terms and answer patterns.
@@ -259,8 +319,12 @@ Rules:
 - Do not use SELECT * for final user-facing answers.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
+- For product_filter, always include is_active in SQL when showing a product list; for rows with is_active="Архивный", format list lines as `CODE - **Архивный**. NAME (...)`; do not mark active products; end message with a clarification question about showing product parameters or sending the document kit, and fill products with shown rows.
+- For product_attribute_values, show only user-facing values as a list, do not show technical table or column names, end message with the exact question: "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?", fill attribute_name and attribute_values, and fill attribute_column only for internal follow-up routing when the catalog confirmed it.
 - If mode="needs_clarification", clarification_options must be a non-empty array of objects.
 - Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
+- For product_card and product_kit, use product_resolution prepared by code; do not resolve product names yourself.
+- For product_compare, use product_resolutions prepared by code; do not resolve product names yourself.
 - For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
 - Do not include source in JSON.
@@ -272,7 +336,11 @@ Response format:
   "message": "short answer for the user",
   "used_tables": ["products"],
   "resolved_product": null,
-  "clarification_options": []
+  "clarification_options": [],
+  "products": [],
+  "attribute_name": "",
+  "attribute_column": "",
+  "attribute_values": []
 }
 """
     prompt_file = "product_selection_agent_prompt.md"

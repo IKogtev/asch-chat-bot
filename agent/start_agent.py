@@ -1,13 +1,8 @@
-from google.adk.apps.app import App, EventsCompactionConfig
-from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
+from google.adk.apps.app import App
 
 from .rootagent import RootAgent
 from .config import (
     ACTIVE_DOCUMENTS_COLLECTION,
-    AGENT_CONTEXT_COMPACTION_INTERVAL,
-    AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE,
-    AGENT_CONTEXT_EVENT_RETENTION_SIZE,
-    AGENT_CONTEXT_TOKEN_THRESHOLD,
     KB_DOCUMENTS_COLLECTION,
     build_common_model,
 )
@@ -48,13 +43,6 @@ root_agent = build_agent_chain()
 app = App(
     name="agent",
     root_agent=root_agent,
-    events_compaction_config=EventsCompactionConfig(
-        compaction_interval=AGENT_CONTEXT_COMPACTION_INTERVAL,
-        overlap_size=AGENT_CONTEXT_COMPACTION_OVERLAP_SIZE,
-        token_threshold=AGENT_CONTEXT_TOKEN_THRESHOLD,
-        event_retention_size=AGENT_CONTEXT_EVENT_RETENTION_SIZE,
-        summarizer=LlmEventSummarizer(llm=build_common_model()),
-    ),
 )
 
 __all__ = [

@@ -173,17 +173,14 @@ async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_
     user_data = await subscriber_store.get_user_data(user_id)
     if not user_data and not global_user_id:
         return
-
     # Лишние персональные данные в ADK не передаем
     user_data.pop("phone_number", None)
     adk_user_id = str(global_user_id)
-
     # Убеждаемся, что имя не пустое (иначе агент не обратится по имени)
     if not user_data.get("first_name"):
         logger.warning(f"first_name пуст для user_id={user_id}")
     if not user_data.get("last_name"):
         logger.warning(f"last_name пуст для user_id={user_id}")
-
     await adk.set_user_state(
         user_id=adk_user_id,
         session_id=adk_user_id,
@@ -196,10 +193,8 @@ async def get_tree_cached():
     # кэшируем дерево чтобы постоянно не обращаться к api 15 sec 
     if TREE_CACHE and time.time() - TREE_TS < Settings.TIME_SET_WAIT:
         return TREE_CACHE
-
     TREE_CACHE = await get_kb_tree()
     TREE_TS = time.time()
-
     return TREE_CACHE
 
 # получаем клавиатуру 
@@ -230,7 +225,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     if is_tg:
         from aiogram.filters import Command
         from aiogram import F
-        bot_started = None
         message_decorator = dp.message
         callback_decorator = dp.callback_query
         home_filter = (F.data == "home")
@@ -249,15 +243,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         async def wrapper(event, *args, **kwargs):
             # АНТИ-БЭКЛОГ ЗАЩИТА 
             is_callback = hasattr(event, "data") or hasattr(event, "callback")
-
             # применяем ТОЛЬКО к обычным сообщениям
             if not is_callback:
-
                 # 1. защита при старте
                 if time.time() - BOT_START_TIME < STARTUP_GRACE_PERIOD:
                     logger.warning("⏳ Skip message during startup")
                     return
-
                 # 2. защита от старых сообщений
                 if is_old_message(event, platform):
                     logger.warning("⏳ Skip old message (backlog)")
@@ -266,7 +257,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             ud, bot_res = await unified_auth(event)
             if ud is None:
                 return # Прерываем, если телефон не получен
-            
             # Передаем управление в основную функцию, добавляя ud и bot_res
             return await func(event, ud, bot_res, *args, **kwargs)
         return wrapper
@@ -276,29 +266,23 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         """Отсекаем старые сообщения (backlog)"""
         try:
             now = time.time()
-
             if platform == "telegram":
                 msg_time = getattr(event, "date", None)
                 if not msg_time:
                     return False
                 msg_ts = msg_time.timestamp()
-
             else:  # max
                 msg = getattr(event, "message", None)
                 if not msg:
                     return False
-
                 msg_time = getattr(msg, "timestamp", None) or getattr(msg, "created_at", None)
-
                 if isinstance(msg_time, (int, float)):
                     msg_ts = msg_time
                 elif hasattr(msg_time, "timestamp"):
                     msg_ts = msg_time.timestamp()
                 else:
                     return False
-
             return (now - msg_ts) > OLD_MESSAGE_THRESHOLD
-
         except Exception:
             return False
 
@@ -309,7 +293,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
          # Определяем, является ли событие стартовым (у него нет message)
         is_bot_started_event = (platform == "max" and type(event).__name__ == "BotStarted") or \
                                (platform == "telegram" and type(event).__name__ == "ChatMemberUpdated")
-
         #  Безопасно получаем пользователя (для BotStarted в maxapi это может быть event.user)
         if is_tg:
             user_obj = getattr(event, 'from_user', None)
@@ -318,7 +301,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 user_obj = getattr(event.callback, 'user', None)
             else:
                 user_obj = getattr(event, 'from_user', None) or getattr(event, 'user', None)
-
         user_id = int(getattr(user_obj, 'id' if is_tg else 'user_id'))
         # Проверка, не является ли текущее сообщение контактом
         is_incoming_contact = False
@@ -334,22 +316,18 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         is_incoming_contact = True
                         contact_obj = att
                         break
-
         username = user_obj.username or "unknown"
         first_name = user_obj.first_name or "Гость"
         last_name = getattr(user_obj, 'last_name', None)
         # Телефон (ВАЖНО: сначала из event, потом из БД) ---
         phone = None
-
         if is_incoming_contact and contact_obj:
             # берем из события, а не из БД
             raw_phone = getattr(contact_obj, "phone_number", None)
             phone = normalize_phone(raw_phone)
-
             # контакт может содержать более точные данные
             first_name = getattr(contact_obj, "first_name", None) or first_name
             last_name = getattr(contact_obj, "last_name", None) or last_name
-
         else:
             # fallback в БД
             phone = await subscriber_store.get_phone(user_id)
@@ -367,7 +345,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 )
             except Exception as e:
                 logger.error(f"UserResolver error: {e}", exc_info=True)
-
         # всегда обновляем подписчика
         await subscriber_store.add(
             user_id=user_id, username=username,
@@ -384,8 +361,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 "🚫 Доступ для вашей учетной записи ограничен.\n\n"
                 "Пожалуйста, обратитесь к администратору сервиса."
                 )
-            return None, None
-        
+            return None, None  
         user_data["global_user_id"] = str(global_user_id) if global_user_id else None
         logger.info(
             f"[USER_RESOLVE] platform={platform} "
@@ -405,7 +381,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             )
             await bot_res.send(text, menu=keyboard)
             return None, None
-        
         return user_data, bot_res
     # обработчик стартовой логики
     async def handle_start_logic(
@@ -435,8 +410,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
     async def start(event, ud, bot_res, **kwargs):
         """Обработчик /start"""
         global_user_id = ud.get("global_user_id")
-        logger.info(f"Команда /start [{platform}] от user_id={global_user_id} (@{ud['username']})")
-        
+        logger.info(f"Команда /start [{platform}] от user_id={global_user_id} (@{ud['username']})") 
         await handle_start_logic(
             bot_res=bot_res,
             global_user_id=global_user_id,
@@ -1018,11 +992,29 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     session_id=session_id, channel=platform,
                     payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                 )
+        # Блоки исключений, чтобы ответы были точнее от бота
+        except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, ConnectionResetError, ConnectionError) as e:
+            # Таймауты, обрывы сети, проблемы с HTTP-сессией ADK
+            logger.warning(f"⚠️ Сбой связи с ADK (таймаут/обрыв): {e}")
+            response_time = int((time.time() - start_time) * 1000)
+            
+            timeout_msg = (
+                "⏳ К сожалению, база знаний сейчас недоступна или отвечает слишком долго (таймаут).\n\n"
+                "💡 <b>Что можно сделать:</b>\n"
+                "• Подождать немного и попробовать отправить вопрос еще раз.\n"
+                "• Использовать команду /reset, чтобы сбросить зависшую сессию и начать заново."
+            )
+            await bot_res.send(timeout_msg)
+            await eventlogger.log_event(
+                event_type="timeout_error", user_id=str(global_user_id), 
+                session_id=session_id, channel=platform, 
+                payload={"error":str(e), "response_time_ms": response_time}
+            )
+
         except asyncio.CancelledError:
             logger.info(
                 f"🛑 Запрос cancelled user={global_user_id}"
             )
-
             return
         except Exception as e:
             logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
@@ -1040,7 +1032,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     f"Пропускаем ответ после reset user={global_user_id}"
                 )
                 return
-            await bot_res.send("😔 Произошла ошибка при обработке запроса.\n Попробуйте позже или используйте /reset для сброса диалога.")
+            await bot_res.send(
+                "😔 Не удалось завершить обработку запроса.\n\n"
+                "Попробуйте:\n"
+                "• переформулировать вопрос;\n"
+                "• уточнить формулировку;\n"
+                "• использовать /reset, если проблема повторяется."
+            )
         finally:
             ACTIVE_REQUESTS.pop(
                 str(global_user_id),
@@ -1191,18 +1189,10 @@ class BotResponse:
 
     async def start_typing(self):
         """Запуск typing-индикатора"""
-        # Telegram требует постоянного обновления typing
-        if self.is_tg:
-
-            if self._typing_task is None or self._typing_task.done():
-
-                self._typing_task = asyncio.create_task(
-                    self._typing_loop()
-                )
-
-        else:
-            # MAX достаточно одного action
-            await self._send_typing_once()
+        if self._typing_task is None or self._typing_task.done():
+            self._typing_task = asyncio.create_task(
+                self._typing_loop()
+            )
         
     async def stop_typing(self):
         """Остановка typing-индикатора"""

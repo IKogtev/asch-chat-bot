@@ -6,6 +6,8 @@ from collections import OrderedDict
 # Загружаем переменные окружения ДО импорта setup_logger
 load_dotenv(override=True)
 
+from utils.doc_search_format import DOWNLOAD_RE as _DOC_DOWNLOAD_RE
+
 class Settings():
     # версия платформы
     PLATFORM_VERSION: str = os.getenv("PLATFORM_VERSION", "0.5.1")
@@ -29,16 +31,13 @@ class Settings():
         os.getenv("UPLOAD_NEWS", "/app/data/upload")
     )
     PRODUCT_KITS_ROOT: Path = Path(
-        os.getenv("PRODUCT_KITS_ROOT", r"kb_storage\kb\1 Продукты")
+        os.getenv("PRODUCT_KITS_ROOT", r"kb_storage\manager\kb\1 Продукты")
     )
     PRODUCT_KITS_MAX_FILES: int = int(os.getenv("PRODUCT_KITS_MAX_FILES", 10))
     PRODUCT_KITS_MAX_FILE_SIZE_MB: int = int(os.getenv("PRODUCT_KITS_MAX_FILE_SIZE_MB", 50))
     
     # Регулярные выражения для распознавания команд
-    DOWNLOAD_RE = re.compile(
-        r"^\s*(?:скачай|пришли|отправь|документ)?\s*((?:\d+\s*(?:[,\s]+|\s+и\s+)\s*)*\d+)\s*$",
-        re.IGNORECASE | re.UNICODE,
-    )
+    DOWNLOAD_RE = _DOC_DOWNLOAD_RE
     SHOW_MORE_RE = re.compile(
         r'^\s*(?:ещ[её]|покажи\s+ещ[её]|дальше|ещ[её]\s+файлы)\s*$',
         re.IGNORECASE

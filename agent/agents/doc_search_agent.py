@@ -2,7 +2,8 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 from utils.logger import setup_logger
 from ..config import KBSEARCH_MCP_URL, MCP_TIMEOUT_SEC, MCP_TOKEN
@@ -12,6 +13,28 @@ from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
 from .validation_utils import build_validation_error
 
 logger = setup_logger("doc_search_agent", "agent.log")
+
+
+def _parse_is_relevant(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return None
+
+
+def _parse_new_rank(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 1 else None
 
 
 def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -26,8 +49,9 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Нормализация для `document_list`:
     - отбрасываются элементы не-`dict`;
-    - отбрасываются элементы с `is_relevant=false`;
-    - обязательны `document_id` и `source_name`;
+    - обязательны `document_id`, `source_name`, `is_relevant`, `new_rank`;
+    - для `is_relevant=true` — `new_rank` целое >= 1; для `is_relevant=false` — `new_rank` должен быть `null`;
+    - в итоговый список попадают только `is_relevant=true`, отсортированные по `new_rank`;
     - `snippet` обрезается до 500 символов;
     - `source_path` приводится к строке или `None`.
 
@@ -103,12 +127,36 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             )
 
         invalid_reasons: list[str] = []
+        relevant_items: list[Dict[str, Any]] = []
         for index, item in enumerate(results_raw):
             if not isinstance(item, dict):
                 invalid_reasons.append(f"item[{index}] is {type(item).__name__}, expected dict")
                 continue
-            if item.get("is_relevant") is False:
-                invalid_reasons.append(f"item[{index}] filtered by is_relevant=false")
+
+            if "is_relevant" not in item:
+                invalid_reasons.append(f"item[{index}] missing is_relevant")
+                continue
+            is_relevant = _parse_is_relevant(item.get("is_relevant"))
+            if is_relevant is None:
+                invalid_reasons.append(f"item[{index}] invalid is_relevant={item.get('is_relevant')!r}")
+                continue
+
+            if "new_rank" not in item:
+                invalid_reasons.append(f"item[{index}] missing new_rank")
+                continue
+            new_rank = _parse_new_rank(item.get("new_rank"))
+
+            if not is_relevant:
+                if item.get("new_rank") is not None:
+                    invalid_reasons.append(
+                        f"item[{index}] is_relevant=false requires new_rank=null, got {item.get('new_rank')!r}"
+                    )
+                continue
+
+            if new_rank is None:
+                invalid_reasons.append(
+                    f"item[{index}] is_relevant=true requires new_rank>=1, got {item.get('new_rank')!r}"
+                )
                 continue
 
             document_id = str(item.get("document_id") or "").strip()
@@ -120,23 +168,46 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 invalid_reasons.append(f"item[{index}] missing source_name")
                 continue
 
-            validated.append(
+            path_raw = item.get("source_path") or item.get("relative_path")
+            relevant_items.append(
                 {
                     "document_id": document_id,
                     "source_name": source_name,
-                    "source_path": str(item["source_path"]).strip() if item.get("source_path") else None,
+                    "source_path": str(path_raw).strip() if path_raw else None,
                     "snippet": str(item.get("snippet") or "").strip()[:500],
+                    "new_rank": new_rank,
+                    "_order": index,
                 }
             )
 
-        if not validated:
+        if invalid_reasons:
             raise build_validation_error(
                 agent=agent_name,
                 stage="results_normalization",
-                problem="document_list returned no valid items after normalization: " + "; ".join(invalid_reasons[:5]),
+                problem="document_list validation failed: " + "; ".join(invalid_reasons[:8]),
                 data=data,
-                fields=("mode",),
+                fields=("mode", "results"),
             )
+
+        if not relevant_items:
+            raise build_validation_error(
+                agent=agent_name,
+                stage="results_normalization",
+                problem="document_list has no items with is_relevant=true; use mode='no_data' instead",
+                data=data,
+                fields=("mode", "results"),
+            )
+
+        relevant_items.sort(key=lambda entry: (entry["new_rank"], entry["_order"]))
+        validated = [
+            {
+                "document_id": item["document_id"],
+                "source_name": item["source_name"],
+                "source_path": item["source_path"],
+                "snippet": item["snippet"],
+            }
+            for item in relevant_items
+        ]
 
     return {
         "status": status,
@@ -192,20 +263,23 @@ For document search, glossary context must not erase document type, product name
 
 Тебе доступны переменные состояния:
 - {user_query} — исходное сообщение пользователя
+- {doc_search_query} — запрос с подставленными расшифровками из глоссария (если термины найдены)
 - {doc_search_collection} — имя коллекции для поиска, его надо передавать в kb_search
 
 Правила:
 1. Для содержательного запроса на поиск документов обязательно вызови tool kb_search.
-2. Передавай:
-   - query={user_query}
-   - collection={doc_search_collection}
-   - include_metadata=true
-   - search_profile="doc_search" (обязательно при каждом вызове kb_search)
-3. Сжатие и канонизация {user_query} под `kb_search` — на твоей стороне.
+2. Передавай в `kb_search`:
+   - `query` — нормализуй **от** `{doc_search_query}` (глоссарий + опечатки из промпта + убрать мусорные слова); не подставляй `Форт Нокс` вместо `Fort Knox`;
+   - `collection` = `{doc_search_collection}` (строго, не `default_collection`);
+   - `include_metadata=true`
+   - `search_profile="doc_search"` (обязательно при каждом вызове kb_search)
+3. Не бери название продукта для `query` из TEXT в CONTEXT — только из `doc_search_query` / `user_query` и таблицы канонов.
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
 7. В results — каждый документ из CONTEXT kb_search; отсев только через is_relevant: false, не укорачивай список.
+8. У каждого элемента results обязательны is_relevant и new_rank: для релевантных new_rank — целое ≥ 1 (одинаковые new_rank допустимы); для нерелевантных new_rank: null.
+9. Если пользователь указал тип материала (презентер, сториз, ПФ и т.д.), is_relevant=true только при совпадении типа в FILE_NAME; сториз/сторис при запросе презентеров — is_relevant=false.
 
 Формат ответа:
 {
@@ -213,7 +287,14 @@ For document search, glossary context must not erase document type, product name
   "mode": "document_list",
   "message": "",
   "results": [
-    {"document_id": "...", "source_name": "...", "source_path": null, "snippet": "..."}
+    {
+      "document_id": "...",
+      "source_name": "...",
+      "source_path": null,
+      "is_relevant": true,
+      "new_rank": 1,
+      "snippet": "..."
+    }
   ]
 }
 """

@@ -46,9 +46,12 @@ def _load_doc_search_module():
     lite_llm_stub = types.ModuleType("google.adk.models.lite_llm")
     lite_llm_stub.LiteLlm = type("LiteLlm", (), {})
 
+    mcp_session_manager_stub = types.ModuleType(
+        "google.adk.tools.mcp_tool.mcp_session_manager"
+    )
     mcp_toolset_stub = types.ModuleType("google.adk.tools.mcp_tool.mcp_toolset")
     mcp_toolset_stub.McpToolset = type("McpToolset", (), {})
-    mcp_toolset_stub.StreamableHTTPConnectionParams = type(
+    mcp_session_manager_stub.StreamableHTTPConnectionParams = type(
         "StreamableHTTPConnectionParams", (), {}
     )
 
@@ -62,6 +65,9 @@ def _load_doc_search_module():
     sys.modules["agent.tools.refreshing_mcp_toolset"] = refreshing_toolset_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
+    sys.modules[
+        "google.adk.tools.mcp_tool.mcp_session_manager"
+    ] = mcp_session_manager_stub
     sys.modules["google.adk.tools.mcp_tool.mcp_toolset"] = mcp_toolset_stub
 
     spec = importlib.util.spec_from_file_location("agent.agents.doc_search_agent", module_path)
@@ -86,18 +92,72 @@ def test_validate_doc_search_result_accepts_document_list() -> None:
             "message": "",
             "results": [
                 {
+                    "document_id": "doc-2",
+                    "source_name": "second.pdf",
+                    "source_path": "/x/second.pdf",
+                    "is_relevant": True,
+                    "new_rank": 2,
+                    "snippet": "second",
+                },
+                {
                     "document_id": "doc-1",
                     "source_name": "file.pdf",
                     "source_path": "/x/file.pdf",
-                    "snippet": "fragment",
-                }
+                    "is_relevant": True,
+                    "new_rank": 1,
+                    "snippet": "first",
+                },
+                {
+                    "document_id": "doc-3",
+                    "source_name": "skip.pdf",
+                    "is_relevant": False,
+                    "new_rank": None,
+                    "snippet": "filtered out",
+                },
             ],
         },
         VALIDATION_CONTEXT,
     )
 
     assert result["mode"] == "document_list"
-    assert result["results"][0]["document_id"] == "doc-1"
+    assert [item["document_id"] for item in result["results"]] == ["doc-1", "doc-2"]
+
+
+@pytest.mark.unit
+def test_validate_doc_search_result_allows_duplicate_new_rank() -> None:
+    result = validate_doc_search_result(
+        {
+            "status": "ok",
+            "mode": "document_list",
+            "message": "",
+            "results": [
+                {
+                    "document_id": "doc-a",
+                    "source_name": "a.pdf",
+                    "is_relevant": True,
+                    "new_rank": 1,
+                    "snippet": "a",
+                },
+                {
+                    "document_id": "doc-b",
+                    "source_name": "b.pdf",
+                    "is_relevant": True,
+                    "new_rank": 1,
+                    "snippet": "b",
+                },
+                {
+                    "document_id": "doc-c",
+                    "source_name": "c.pdf",
+                    "is_relevant": True,
+                    "new_rank": 2,
+                    "snippet": "c",
+                },
+            ],
+        },
+        VALIDATION_CONTEXT,
+    )
+
+    assert [item["document_id"] for item in result["results"]] == ["doc-a", "doc-b", "doc-c"]
 
 
 @pytest.mark.unit
@@ -159,6 +219,52 @@ def test_validate_doc_search_result_rejects_empty_document_list() -> None:
 
 
 @pytest.mark.unit
+def test_validate_doc_search_result_rejects_missing_rank_fields() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_doc_search_result(
+            {
+                "status": "ok",
+                "mode": "document_list",
+                "message": "",
+                "results": [
+                    {
+                        "document_id": "doc-1",
+                        "source_name": "file.pdf",
+                        "snippet": "x",
+                    }
+                ],
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "missing is_relevant" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_doc_search_result_rejects_all_irrelevant() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_doc_search_result(
+            {
+                "status": "ok",
+                "mode": "document_list",
+                "message": "",
+                "results": [
+                    {
+                        "document_id": "doc-1",
+                        "source_name": "file.pdf",
+                        "is_relevant": False,
+                        "new_rank": None,
+                        "snippet": "x",
+                    }
+                ],
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "no items with is_relevant=true" in str(exc.value)
+
+
+@pytest.mark.unit
 def test_validate_doc_search_result_reports_invalid_items_after_normalization() -> None:
     with pytest.raises(ValueError) as exc:
         validate_doc_search_result(
@@ -166,10 +272,15 @@ def test_validate_doc_search_result_reports_invalid_items_after_normalization() 
                 "status": "ok",
                 "mode": "document_list",
                 "message": "",
-                "results": [{"source_name": "x"}],
+                "results": [
+                    {
+                        "source_name": "x",
+                        "is_relevant": True,
+                        "new_rank": 1,
+                    }
+                ],
             },
             VALIDATION_CONTEXT,
         )
 
-    assert "returned no valid items after normalization" in str(exc.value)
     assert "missing document_id" in str(exc.value)
