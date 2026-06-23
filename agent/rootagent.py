@@ -32,6 +32,15 @@ OWASP_INVALID_CONTRACT_USER_MESSAGE = (
 
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
 VALIDATION_ERROR_USER_MESSAGE = "Не удалось корректно обработать запрос. Попробуйте переформулировать вопрос."
+RECOVERY_MESSAGE = (
+    "Я не смог корректно обработать запрос.\n\n"
+    "Попробуйте:\n"
+    "• уточнить формулировку вопроса;\n"
+    "• задать вопрос другими словами;\n"
+    "• использовать /reset если диалог зашел в тупик;\n"
+    "• подождать и задать вопрос позже"
+)
+VALIDATION_ERROR_USER_MESSAGE = RECOVERY_MESSAGE
 OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
@@ -865,7 +874,8 @@ class RootAgent(BaseAgent):
             message = (
                 f"DEBUG: {type(exc).__name__}: {exc}"
                 if DEBUG_EXCEPTIONS
-                else "Произошла ошибка при обработке запроса. Попробуйте позже."
+                # fallback при нескольких сообщениях подряд
+                else RECOVERY_MESSAGE
             )
             yield self._build_final_event_with_history(ctx, user_text, message)
 
