@@ -1032,7 +1032,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     f"Пропускаем ответ после reset user={global_user_id}"
                 )
                 return
-            await bot_res.send("😔 Произошла техническая ошибка при обработке вашего запроса.\n Попробуйте переформулировать запрос или используйте /reset для сброса диалога.")
+            await bot_res.send(
+                "😔 Не удалось завершить обработку запроса.\n\n"
+                "Попробуйте:\n"
+                "• переформулировать вопрос;\n"
+                "• уточнить формулировку;\n"
+                "• использовать /reset, если проблема повторяется."
+            )
         finally:
             ACTIVE_REQUESTS.pop(
                 str(global_user_id),
