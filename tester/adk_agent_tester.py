@@ -353,10 +353,45 @@ class AdkApiClient:
 
 def load_test_cases(file_name: Path):
     df = pd.read_excel(file_name)
+    if "Use case" in df.columns:
+        df["Use case"] = df["Use case"].ffill()
+    if "Dialog tag" in df.columns:
+        df["Dialog tag"] = df["Dialog tag"].ffill()
     if "№" not in df.columns or df["№"].isnull().any():
         logger.info("!!! Перенумерация вопросов ...")
         df["№"] = df.index + 1
     return df
+
+
+def _dialog_block_key(row, *, has_dialog_tag: bool) -> Any:
+    if has_dialog_tag:
+        dialog_tag = row.get("Dialog tag", "")
+        if pd.isna(dialog_tag):
+            dialog_tag = ""
+        return dialog_tag
+    return None
+
+
+def _iter_dialog_blocks(df) -> Iterable[Tuple[Any, List[Any]]]:
+    """
+    Yield (dialog_tag, row_indices) in spreadsheet order.
+    With Dialog tag: one ADK session per Dialog tag block (continuation rows share tag).
+    Without Dialog tag: single block for the whole sheet (legacy layout).
+    """
+    has_dialog_tag = "Dialog tag" in df.columns
+    current_key: Any = None
+    current_indices: List[Any] = []
+
+    for i, row in df.iterrows():
+        key = _dialog_block_key(row, has_dialog_tag=has_dialog_tag)
+        if current_key is not None and key != current_key:
+            yield current_key, current_indices
+            current_indices = []
+        current_key = key
+        current_indices.append(i)
+
+    if current_indices:
+        yield current_key, current_indices
 
 
 def initialize_session(client: AdkApiClient, user_id: str, session_id: str) -> str:
@@ -373,7 +408,7 @@ def interrogate_agent(
     client: AdkApiClient,
     *,
     user_id: str,
-    session_id: str,
+    session_id: Optional[str],
     tc_df,
     answers_file_path: Path,
     ask_questions: bool,
@@ -400,40 +435,66 @@ def interrogate_agent(
     tc_df["answer_raw"] = ""
     tc_df["response_time"] = 0.0
     tc_df["adk_error"] = ""
+    tc_df["adk_session_id"] = ""
 
-    for i, row in _iter_rows(tc_df, desc="Обработка вопросов"):
-        question = str(row.get("Вопросы", "")).strip()
-        q_num = row.get("№")
-        if not question:
-            tc_df.loc[i, "adk_error"] = "Пустой вопрос"
-            continue
+    has_dialog_tag = "Dialog tag" in tc_df.columns
+    first_block = True
+    dialog_blocks = list(_iter_dialog_blocks(tc_df))
+    logger.info(
+        f"Число диалоговых блоков (Dialog tag): {len(dialog_blocks)}"
+        if has_dialog_tag
+        else "Колонка Dialog tag отсутствует — одна ADK-сессия на весь файл"
+    )
 
-        logger.info(f"\nВопрос {q_num}: {question}")
-        start_time = time.time()
-        try:
-            answer, answer_raw, _events = client.run(
-                user_id=user_id, session_id=session_id, text=question
+    for dialog_tag, row_indices in dialog_blocks:
+        if has_dialog_tag:
+            block_session_id = str(uuid4())
+            logger.info(
+                f"\n=== Новый ADK session для блока Dialog tag={dialog_tag}: {block_session_id} (число вопросов: {len(row_indices)}) ==="
             )
-            tc_df.loc[i, "answer_raw"] = answer_raw
-            tc_df.loc[i, "answer"] = answer
-        except (RuntimeError, requests.RequestException, OSError) as e:
-            tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
-            tc_df.loc[i, "answer"] = ""
-            tc_df.loc[i, "answer_raw"] = ""
-        except Exception as e:
-            logger.exception(f"Неожиданная ошибка при запросе к ADK (вопрос {q_num})")
-            tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
-            tc_df.loc[i, "answer"] = ""
-            tc_df.loc[i, "answer_raw"] = ""
-        finally:
-            tc_df.loc[i, "response_time"] = round(time.time() - start_time, 2)
+        else:
+            block_session_id = (session_id or str(uuid4())).strip()
+            if first_block:
+                logger.info(f"\n=== ADK session для всего файла: {block_session_id} ===")
 
-        logger.info(
-            f"Ответ: {str(tc_df.loc[i, 'answer'])[:120]}..."
-            if len(str(tc_df.loc[i, "answer"])) > 120
-            else f"Ответ: {tc_df.loc[i, 'answer']}"
-        )
-        logger.info(f"⏱️ Время ответа: {tc_df.loc[i, 'response_time']} сек.")
+        initialize_session(client, user_id=user_id, session_id=block_session_id)
+        first_block = False
+
+        for i in row_indices:
+            row = tc_df.loc[i]
+            question = str(row.get("Вопросы", "")).strip()
+            q_num = row.get("№")
+            tc_df.loc[i, "adk_session_id"] = block_session_id
+            if not question:
+                tc_df.loc[i, "adk_error"] = "Пустой вопрос"
+                continue
+
+            logger.info(f"\nВопрос {q_num}: {question}")
+            start_time = time.time()
+            try:
+                answer, answer_raw, _events = client.run(
+                    user_id=user_id, session_id=block_session_id, text=question
+                )
+                tc_df.loc[i, "answer_raw"] = answer_raw
+                tc_df.loc[i, "answer"] = answer
+            except (RuntimeError, requests.RequestException, OSError) as e:
+                tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
+                tc_df.loc[i, "answer"] = ""
+                tc_df.loc[i, "answer_raw"] = ""
+            except Exception as e:
+                logger.exception(f"Неожиданная ошибка при запросе к ADK (вопрос {q_num})")
+                tc_df.loc[i, "adk_error"] = f"{type(e).__name__}: {e}"
+                tc_df.loc[i, "answer"] = ""
+                tc_df.loc[i, "answer_raw"] = ""
+            finally:
+                tc_df.loc[i, "response_time"] = round(time.time() - start_time, 2)
+
+            logger.info(
+                f"Ответ: {str(tc_df.loc[i, 'answer'])[:120]}..."
+                if len(str(tc_df.loc[i, "answer"])) > 120
+                else f"Ответ: {tc_df.loc[i, 'answer']}"
+            )
+            logger.info(f"⏱️ Время ответа: {tc_df.loc[i, 'response_time']} сек.")
 
     # cache answers similar to prompt-manager (parquet), with CSV fallback
     try:
@@ -778,30 +839,33 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
         tc_df = tc_df.copy()
         tc_df["answer_raw"] = tc_df["answer"]
 
-    report_df = tc_df.rename(
-        columns={
-            "Use case": "Код use case",
-            "answer": "Ответ ADK Agent",
-            "answer_raw": "Ответ ADK Agent (raw)",
-            "response_time": "Время ответа (сек)",
-            "accuracy": "Точность",
-            "completeness": "Полнота",
-            "relevance": "Релевантность",
-            "meets_criteria": "Соответствие критериям",
-            "overall_score": "Общая оценка",
-            "explanation": "Объяснение",
-        }
-    )
+    rename_map = {
+        "Use case": "Код use case",
+        "Dialog tag": "Dialog tag",
+        "answer": "Ответ ADK Agent",
+        "answer_raw": "Ответ ADK Agent (raw)",
+        "adk_session_id": "ADK session id",
+        "response_time": "Время ответа (сек)",
+        "accuracy": "Точность",
+        "completeness": "Полнота",
+        "relevance": "Релевантность",
+        "meets_criteria": "Соответствие критериям",
+        "overall_score": "Общая оценка",
+        "explanation": "Объяснение",
+    }
+    report_df = tc_df.rename(columns=rename_map)
 
     with pd.ExcelWriter(report_path, engine="xlsxwriter") as writer:
         summary_df.to_excel(writer, sheet_name="Итоги тестирования", index=False)
 
         columns = [
             "Код use case",
+            "Dialog tag",
             "№",
             "Вопросы",
             "Ожидаемые ответы",
             "Критерий успеха",
+            "ADK session id",
             "Ответ ADK Agent",
             "Ответ ADK Agent (raw)",
             "Время ответа (сек)",
@@ -812,6 +876,7 @@ def save_report_and_plot(tc_df, base_filename: str, output_dir: Path) -> Tuple[P
             "Общая оценка",
             "Объяснение",
         ]
+        columns = [c for c in columns if c in report_df.columns]
         for use_case, use_case_df in report_df.groupby("Код use case"):
             sheet = f"Детали {str(use_case)[:20]}"
             use_case_df[columns].to_excel(writer, sheet_name=sheet, index=False)
@@ -906,7 +971,10 @@ def main() -> None:
     parser.add_argument(
         "--session-id",
         default=os.getenv("ADK_TEST_SESSION_ID"),
-        help="ADK session_id (defaults to new uuid4 per run for a clean conversation).",
+        help=(
+            "ADK session_id для legacy-файлов без колонки Dialog tag. "
+            "При наличии Dialog tag для каждого блока Dialog tag создаётся новый uuid4."
+        ),
     )
     parser.add_argument(
         "--fake-first-name",
@@ -915,10 +983,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     user_id = str(args.user_id)
-    session_id = (args.session_id or str(uuid4())).strip()
-    if not session_id:
-        raise RuntimeError("session_id is empty; set --session-id or ADK_TEST_SESSION_ID")
-    logger.info("ADK user_id=%s session_id=%s", user_id, session_id)
+    session_id = (args.session_id or "").strip() or None
+    logger.info("ADK user_id=%s", user_id)
 
     excel_path = Path(args.excel).expanduser().resolve()
     output_dir = Path(args.out).expanduser().resolve()
@@ -938,8 +1004,6 @@ def main() -> None:
         timeout_sec=ADK_TIMEOUT_SEC,
         profile_state_delta=profile,
     )
-    session_id = initialize_session(client, user_id=user_id, session_id=session_id)
-
     answers_file_path = SCRIPT_DIR / ("answers_" + excel_path.stem + (".parquet" if ASK_QUESTIONS else ".parquet"))
     tc_df = interrogate_agent(
         client,
