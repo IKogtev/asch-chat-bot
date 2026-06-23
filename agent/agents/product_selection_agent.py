@@ -34,7 +34,7 @@ PRODUCT_SELECTION_MODES = {
 
 PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
 CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
-PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
+PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit", "is_active")
 PRODUCT_SELECTION_REQUIRED_TOOL = "execute_sql"
 
 
@@ -285,6 +285,11 @@ For product_selection_search_query, product and abbreviation substitutions are a
 Use {from_glossary} by category:
 - product and abbreviation: do not rewrite product_selection_search_query again;
 - term: use definition from {from_glossary} for filters and answer wording.
+For name ILIKE / name LIKE: use the canonical product name from product_selection_search_query, not Cyrillic abbreviations or synonyms from user_query (e.g. use Fort Knox, not FK or Fort Noks in Cyrillic).
+Always use partial match: name ILIKE '%Fort Knox%', never name ILIKE 'Fort Knox' without wildcards.
+In name ILIKE include only the product name token; put service words (list, archive, products) into other filters such as is_active.
+Example: user_query=products FK, product_selection_search_query=list products Fort Knox -> name ILIKE '%Fort Knox%', not '%FK%' and not 'Fort Knox'.
+If execute_sql returns 0 rows and name ILIKE had no % wildcards, retry with '%canonical%'.
 If multiple definitions are present and the product context does not disambiguate them, return mode="no_data" instead of guessing.
 
 You are product_selection_agent.
@@ -314,7 +319,7 @@ Rules:
 - Do not use SELECT * for final user-facing answers.
 - Do not expose internal fields unless the data explicitly allows using them in client text.
 - If data is missing, return mode="no_data", used_tables=[].
-- For product_filter, end message with a clarification question about showing product parameters or sending the document kit, and fill products with shown rows.
+- For product_filter, always include is_active in SQL when showing a product list; for rows with is_active="Архивный", format list lines as `CODE - **Архивный**. NAME (...)`; do not mark active products; end message with a clarification question about showing product parameters or sending the document kit, and fill products with shown rows.
 - For product_attribute_values, show only user-facing values as a list, do not show technical table or column names, end message with the exact question: "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?", fill attribute_name and attribute_values, and fill attribute_column only for internal follow-up routing when the catalog confirmed it.
 - If mode="needs_clarification", clarification_options must be a non-empty array of objects.
 - Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
