@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-_ARCHIVE_LABEL = "(архивный)"
+_ARCHIVE_LABEL = "(Архивный)"
 _ARCHIVE_FOLDER_RE = re.compile(r"^\d+\s+Архив$", re.UNICODE)
 
 
