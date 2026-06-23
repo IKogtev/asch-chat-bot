@@ -69,6 +69,26 @@ def _load_rootagent_module():
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.validate_product_selection_result = lambda data, context: data
 
+    product_resolver_stub = types.ModuleType("agent.product_resolver_service")
+
+    class ProductResolverService:
+        async def resolve_product(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "mention": query}
+            )
+
+        async def resolve_products(self, query, expected_count=None):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "items": []}
+            )
+
+        async def resolve_product_filter(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "query": query, "product_codes": [], "products": []}
+            )
+
+    product_resolver_stub.ProductResolverService = ProductResolverService
+
     doc_search_stub = types.ModuleType("agent.agents.doc_search_orchestrator")
     doc_search_stub.DocSearchOrchestrator = type(
         "DocSearchOrchestrator",
@@ -136,6 +156,7 @@ def _load_rootagent_module():
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
     sys.modules["agent.agents.product_selection_agent"] = product_selection_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
+    sys.modules["agent.product_resolver_service"] = product_resolver_stub
     sys.modules["google"] = google_pkg
     sys.modules["google.genai"] = genai_pkg
     sys.modules["google.genai.types"] = genai_types_stub
@@ -167,7 +188,24 @@ def _make_agent(**kwargs) -> RootAgent:
         async def build_doc_search_query(self, text):
             return await self.expand_search_query(text)
 
+    class EmptyProductResolver:
+        async def resolve_product(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "mention": query}
+            )
+
+        async def resolve_products(self, query, expected_count=None):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "items": []}
+            )
+
+        async def resolve_product_filter(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {"status": "not_found", "query": query, "product_codes": [], "products": []}
+            )
+
     kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
+    kwargs.setdefault("product_resolver", EmptyProductResolver())
     fake_subagent = object()
     fake_doc_orchestrator = type("DocSearchOrchestratorFake", (), {"run_async": lambda self, ctx: ()})()
     return RootAgent(
@@ -1361,6 +1399,161 @@ async def test_handle_kb_answer_expands_search_query_with_glossary() -> None:
     assert events == []
     assert ctx.session.state["_root_final_text"] == "ok"
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_sets_single_product_resolution_state() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            assert query == "Fort Knox"
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "mention": query,
+                    "product_code": "2832",
+                    "product_name": "Fort Knox",
+                    "options": [],
+                    "error": None,
+                }
+            )
+
+        async def resolve_products(self, query, expected_count=None):
+            raise AssertionError("resolve_products must not be called")
+
+        async def resolve_product_filter(self, query):
+            raise AssertionError("resolve_product_filter must not be called")
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["product_resolution"]["product_code"] == "2832"
+        assert ctx.session.state["product_resolutions"] == {}
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "show Fort Knox",
+            "Fort Knox",
+            "product_card",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["product_resolution"]["status"] == "resolved"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_sets_compare_product_resolutions_state() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            raise AssertionError("resolve_product must not be called")
+
+        async def resolve_products(self, query, expected_count=None):
+            assert query == "Fort Knox and Unit Linked"
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "items": [
+                        {"status": "resolved", "product_code": "2832"},
+                        {"status": "resolved", "product_code": "7698"},
+                    ],
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["product_resolutions"]["status"] == "resolved"
+        assert ctx.session.state["product_resolution"] == {}
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "compare products",
+            "Fort Knox and Unit Linked",
+            "product_compare",
+        )
+    ]
+
+    assert events == []
+    assert len(ctx.session.state["product_resolutions"]["items"]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_resolves_product_filter() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            raise AssertionError("resolve_product must not be called")
+
+        async def resolve_products(self, query, expected_count=None):
+            raise AssertionError("resolve_products must not be called")
+
+        async def resolve_product_filter(self, query):
+            assert query == "products in USD"
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "query": query,
+                    "product_codes": ["2832", "2867"],
+                    "products": [
+                        {"product_code": "2832", "canonical_name": "Fort Knox"},
+                    ],
+                    "matched_terms": ["products in USD"],
+                    "error": None,
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        assert ctx.session.state["product_resolution"] == {}
+        assert ctx.session.state["product_resolutions"] == {}
+        assert ctx.session.state["product_filter_resolution"]["product_codes"] == ["2832", "2867"]
+        assert "products" not in ctx.session.state["product_filter_resolution"]
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "show products",
+            "products in USD",
+            "product_filter",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["product_filter_resolution"]["status"] == "resolved"
 
 @pytest.mark.unit
 @pytest.mark.asyncio

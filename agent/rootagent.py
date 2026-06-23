@@ -22,6 +22,7 @@ from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
+from .product_resolver_service import ProductResolverService
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -69,6 +70,7 @@ class RootAgent(BaseAgent):
     kb_answer_agent: LlmAgent
     product_selection_agent: LlmAgent
     glossary_lookup: GlossaryLookup
+    product_resolver: ProductResolverService
     faq_collection: str
     kb_collection: str
 
@@ -83,6 +85,7 @@ class RootAgent(BaseAgent):
         kb_answer_agent: LlmAgent,
         product_selection_agent: LlmAgent,
         glossary_lookup: GlossaryLookup | None = None,
+        product_resolver: ProductResolverService | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
     ):
@@ -94,6 +97,7 @@ class RootAgent(BaseAgent):
             kb_answer_agent=kb_answer_agent,
             product_selection_agent=product_selection_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
+            product_resolver=product_resolver or ProductResolverService(),
             faq_collection=faq_collection,
             kb_collection=kb_collection,
             sub_agents=[
@@ -547,6 +551,74 @@ class RootAgent(BaseAgent):
 
         return None
 
+    @staticmethod
+    def _product_resolution_to_state(value: Any) -> Dict[str, Any]:
+        if hasattr(value, "to_dict"):
+            data = value.to_dict()
+            return data if isinstance(data, dict) else {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _product_resolutions_to_state(value: Any) -> Dict[str, Any]:
+        if hasattr(value, "to_dict"):
+            data = value.to_dict()
+            return data if isinstance(data, dict) else {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _product_filter_resolution_to_state(value: Any) -> Dict[str, Any]:
+        if hasattr(value, "to_dict"):
+            data = value.to_dict()
+        elif isinstance(value, dict):
+            data = value
+        else:
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        return {
+            "status": data.get("status"),
+            "query": data.get("query"),
+            "product_codes": data.get("product_codes") or [],
+            "matched_terms": data.get("matched_terms") or [],
+            "error": data.get("error"),
+        }
+
+    async def _prepare_product_resolution_state(
+        self,
+        ctx: InvocationContext,
+        query: str,
+        intent: str,
+    ) -> None:
+        ctx.session.state["product_resolution"] = {}
+        ctx.session.state["product_resolutions"] = {}
+        ctx.session.state["product_filter_resolution"] = {}
+
+        if intent == "product_filter":
+            result = await self.product_resolver.resolve_product_filter(query)
+            ctx.session.state["product_filter_resolution"] = self._product_filter_resolution_to_state(
+                result
+            )
+            logger.debug(
+                "product_filter_resolution state: %s",
+                ctx.session.state["product_filter_resolution"],
+            )
+            return
+
+        if intent == "product_compare":
+            result = await self.product_resolver.resolve_products(query)
+            ctx.session.state["product_resolutions"] = self._product_resolutions_to_state(
+                result
+            )
+            return
+
+        if intent in {"product_card", "product_kit"}:
+            result = await self.product_resolver.resolve_product(query)
+            ctx.session.state["product_resolution"] = self._product_resolution_to_state(
+                result
+            )
+
     def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
         normalized = self._normalize_product_dialog_text(user_text)
         if not normalized or not self._get_product_dialog_context(ctx):
@@ -690,6 +762,9 @@ class RootAgent(BaseAgent):
                     "_bot_action",
                     "from_glossary",
                     "doc_search_query",
+                    "product_resolution",
+                    "product_resolutions",
+                    "product_filter_resolution",
                 ],
             )
 
@@ -970,6 +1045,7 @@ class RootAgent(BaseAgent):
             ctx.session.state[key] = value
         ctx.session.state["product_selection_intent"] = intent
         ctx.session.state["product_selection_search_query"] = effective_search_query
+        await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
