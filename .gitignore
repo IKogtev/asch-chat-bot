@@ -43,6 +43,7 @@ __pycache__
 *.xlsx
 *.csv
 *.parquet
+*.html
 
 # Next.js / Copilot web (generated & deps — do not commit)
 web/copilot-web/node_modules/
