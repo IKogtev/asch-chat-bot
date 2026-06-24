@@ -69,6 +69,13 @@ def main() -> int:
             f"{result.product_kit_folders_found} of "
             f"{result.product_kit_products_total} products."
         )
+    if result.product_input_dates_missing is not None:
+        print(
+            "Product input dates: "
+            f"{result.product_input_dates_from_table} from table, "
+            f"{result.product_input_dates_from_kits} from product kit folders/files, "
+            f"{result.product_input_dates_missing} products without input date."
+        )
     if result.validation_errors:
         print("Validation warnings:")
         for error in result.validation_errors:

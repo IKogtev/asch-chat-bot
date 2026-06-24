@@ -611,12 +611,20 @@ class RootAgent(BaseAgent):
             ctx.session.state["product_resolutions"] = self._product_resolutions_to_state(
                 result
             )
+            logger.debug(
+                "product_resolutions state: %s",
+                ctx.session.state["product_resolutions"],
+            )
             return
 
         if intent in {"product_card", "product_kit"}:
             result = await self.product_resolver.resolve_product(query)
             ctx.session.state["product_resolution"] = self._product_resolution_to_state(
                 result
+            )
+            logger.debug(
+                "product_resolution state: %s",
+                ctx.session.state["product_resolution"],
             )
 
     def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
@@ -660,7 +668,10 @@ class RootAgent(BaseAgent):
         product = self._find_product_in_dialog_context(
             ctx,
             user_text,
-            allow_selected_product=asks_kit and not self._extract_product_codes(user_text),
+            allow_selected_product=(
+                (asks_kit or asks_card)
+                and not self._extract_product_codes(user_text)
+            ),
         )
         if not product:
             return None

@@ -149,6 +149,9 @@ class TablesLoadResult:
     validation_errors: list[str]
     product_kit_folders_found: int | None = None
     product_kit_products_total: int | None = None
+    product_input_dates_from_table: int | None = None
+    product_input_dates_from_kits: int | None = None
+    product_input_dates_missing: int | None = None
 
 
 class TablesLoaderService:
@@ -175,6 +178,9 @@ class TablesLoaderService:
         )
         self.product_kit_folders_found: int | None = None
         self.product_kit_products_total: int | None = None
+        self.product_input_dates_from_table: int | None = None
+        self.product_input_dates_from_kits: int | None = None
+        self.product_input_dates_missing: int | None = None
 
     def load_all(self) -> TablesLoadResult:
         """Синхронно загружает все поддерживаемые Excel-таблицы.
@@ -199,6 +205,9 @@ class TablesLoaderService:
         loaded_tables: list[LoadedTable] = []
         self.product_kit_folders_found = None
         self.product_kit_products_total = None
+        self.product_input_dates_from_table = None
+        self.product_input_dates_from_kits = None
+        self.product_input_dates_missing = None
         await self.ensure_database_exists()
         conn = await asyncpg.connect(self.database_url)
         try:
@@ -218,6 +227,9 @@ class TablesLoaderService:
             validation_errors=validation_errors,
             product_kit_folders_found=self.product_kit_folders_found,
             product_kit_products_total=self.product_kit_products_total,
+            product_input_dates_from_table=self.product_input_dates_from_table,
+            product_input_dates_from_kits=self.product_input_dates_from_kits,
+            product_input_dates_missing=self.product_input_dates_missing,
         )
 
     async def ensure_database_exists(self) -> None:
@@ -843,13 +855,26 @@ class TablesLoaderService:
 
         code_column = self._first_existing_column(df, ["code", "id", "product_id"])
         name_column = self._first_existing_column(df, ["name", "product_name"])
+        dates_from_table = 0
+        dates_from_kits = 0
+        dates_missing = 0
+        total = 0
         kits_root_value = os.getenv(PRODUCT_KITS_ROOT_ENV, "").strip()
         if not kits_root_value:
             df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
             df[PRODUCT_KIT_STATUS_COLUMN] = f"{PRODUCT_KITS_ROOT_ENV} is empty"
+            for _idx, row in df.iterrows():
+                total += 1
+                if self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN)) is not None:
+                    dates_from_table += 1
+                else:
+                    dates_missing += 1
             self._normalize_product_input_date_column(df)
             self.product_kit_folders_found = 0
-            self.product_kit_products_total = self._dataframe_row_count(df)
+            self.product_kit_products_total = total
+            self.product_input_dates_from_table = dates_from_table
+            self.product_input_dates_from_kits = dates_from_kits
+            self.product_input_dates_missing = dates_missing
             return df
         kits_root = Path(kits_root_value)
 
@@ -858,13 +883,21 @@ class TablesLoaderService:
             df[PRODUCT_KIT_STATUS_COLUMN] = (
                 "code column not found; expected one of ['code', 'id', 'product_id']"
             )
+            for _idx, row in df.iterrows():
+                total += 1
+                if self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN)) is not None:
+                    dates_from_table += 1
+                else:
+                    dates_missing += 1
             self._normalize_product_input_date_column(df)
             self.product_kit_folders_found = 0
-            self.product_kit_products_total = self._dataframe_row_count(df)
+            self.product_kit_products_total = total
+            self.product_input_dates_from_table = dates_from_table
+            self.product_input_dates_from_kits = dates_from_kits
+            self.product_input_dates_missing = dates_missing
             return df
 
         found = 0
-        total = 0
         for idx, row in df.iterrows():
             resolution = resolve_product_kit_folder(
                 kits_root=kits_root,
@@ -879,6 +912,7 @@ class TablesLoaderService:
             )
             if current_input_date is not None:
                 df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = current_input_date
+                dates_from_table += 1
             elif resolution.folder_kit != NOT_FOUND_VALUE:
                 inferred_input_date = resolve_product_input_date_from_kit(
                     kits_root=kits_root,
@@ -886,6 +920,11 @@ class TablesLoaderService:
                 )
                 if inferred_input_date is not None:
                     df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = inferred_input_date
+                    dates_from_kits += 1
+                else:
+                    dates_missing += 1
+            else:
+                dates_missing += 1
 
             total += 1
             if resolution.folder_kit != NOT_FOUND_VALUE:
@@ -894,6 +933,9 @@ class TablesLoaderService:
         self._normalize_product_input_date_column(df)
         self.product_kit_folders_found = found
         self.product_kit_products_total = total
+        self.product_input_dates_from_table = dates_from_table
+        self.product_input_dates_from_kits = dates_from_kits
+        self.product_input_dates_missing = dates_missing
 
         return df
 

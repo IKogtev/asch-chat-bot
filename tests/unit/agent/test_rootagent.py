@@ -1238,6 +1238,69 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_run_async_impl_routes_product_card_followup_from_selected_product() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="покажи карточку")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_card",
+                "products": [
+                    {
+                        "code": "2867",
+                        "name": "Bundle Fort Knox 3+36 месяцев",
+                    }
+                ],
+                "selected_product": {
+                    "code": "2867",
+                    "name": "Bundle Fort Knox 3+36 месяцев",
+                },
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "покажи карточку"
+        assert "2867" in search_query
+        assert intent == "product_card"
+        ctx.session.state["_root_final_text"] = "product card answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product card answer"
+    assert product_called is True
+    assert dispatcher_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_async_impl_routes_product_kit_followup_from_selected_product() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
