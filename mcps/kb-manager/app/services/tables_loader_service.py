@@ -15,6 +15,7 @@ import pandas as pd
 
 from app.services.product_kit_folder_resolver import (
     NOT_FOUND_VALUE,
+    resolve_product_input_date_from_kit,
     resolve_product_kit_folder,
 )
 
@@ -26,6 +27,11 @@ GLOSSARY_FILE_NAME = "glossary_active.xlsx"
 GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
 PRODUCT_KIT_STATUS_COLUMN = "folder_kit_status"
+PRODUCT_INPUT_DATE_COLUMN = "input_date"
+PRODUCT_INPUT_DATE_COLUMN_CANDIDATES = (
+    PRODUCT_INPUT_DATE_COLUMN,
+    "\u0434\u0430\u0442\u0430_\u0432\u0432\u043e\u0434\u0430_\u043f\u0440\u043e\u0434\u0443\u043a\u0442\u0430",
+)
 PRODUCT_KITS_ROOT_ENV = "PRODUCT_KITS_ROOT"
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
 
@@ -824,6 +830,14 @@ class TablesLoaderService:
             Копию DataFrame с колонками папки продуктового кита и статуса поиска.
         """
         df = df.copy()
+        input_date_column = self._first_existing_column(
+            df,
+            list(PRODUCT_INPUT_DATE_COLUMN_CANDIDATES),
+        )
+        if input_date_column is None:
+            df[PRODUCT_INPUT_DATE_COLUMN] = ""
+        elif input_date_column != PRODUCT_INPUT_DATE_COLUMN:
+            df[PRODUCT_INPUT_DATE_COLUMN] = df[input_date_column]
         df[PRODUCT_KIT_FOLDER_COLUMN] = ""
         df[PRODUCT_KIT_STATUS_COLUMN] = ""
 
@@ -833,6 +847,7 @@ class TablesLoaderService:
         if not kits_root_value:
             df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
             df[PRODUCT_KIT_STATUS_COLUMN] = f"{PRODUCT_KITS_ROOT_ENV} is empty"
+            self._normalize_product_input_date_column(df)
             self.product_kit_folders_found = 0
             self.product_kit_products_total = self._dataframe_row_count(df)
             return df
@@ -843,6 +858,7 @@ class TablesLoaderService:
             df[PRODUCT_KIT_STATUS_COLUMN] = (
                 "code column not found; expected one of ['code', 'id', 'product_id']"
             )
+            self._normalize_product_input_date_column(df)
             self.product_kit_folders_found = 0
             self.product_kit_products_total = self._dataframe_row_count(df)
             return df
@@ -857,14 +873,65 @@ class TablesLoaderService:
             )
             df.at[idx, PRODUCT_KIT_FOLDER_COLUMN] = resolution.folder_kit
             df.at[idx, PRODUCT_KIT_STATUS_COLUMN] = resolution.folder_kit_status
+
+            current_input_date = self._coerce_product_input_date(
+                row.get(PRODUCT_INPUT_DATE_COLUMN)
+            )
+            if current_input_date is not None:
+                df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = current_input_date
+            elif resolution.folder_kit != NOT_FOUND_VALUE:
+                inferred_input_date = resolve_product_input_date_from_kit(
+                    kits_root=kits_root,
+                    folder_kit=resolution.folder_kit,
+                )
+                if inferred_input_date is not None:
+                    df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = inferred_input_date
+
             total += 1
             if resolution.folder_kit != NOT_FOUND_VALUE:
                 found += 1
 
+        self._normalize_product_input_date_column(df)
         self.product_kit_folders_found = found
         self.product_kit_products_total = total
 
         return df
+
+    def _coerce_product_input_date(self, value: Any) -> date | None:
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.date()
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        try:
+            parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+        except AttributeError:
+            return None
+        if pd.isna(parsed):
+            return None
+        if isinstance(parsed, pd.Timestamp):
+            return parsed.date()
+        return None
+
+    def _normalize_product_input_date_column(self, df: pd.DataFrame) -> None:
+        if PRODUCT_INPUT_DATE_COLUMN not in set(df.columns):
+            return
+        try:
+            df[PRODUCT_INPUT_DATE_COLUMN] = pd.to_datetime(
+                df[PRODUCT_INPUT_DATE_COLUMN],
+                errors="coerce",
+                dayfirst=True,
+            )
+        except (TypeError, ValueError, AttributeError):
+            return
 
     def _dataframe_row_count(self, df: pd.DataFrame) -> int:
         try:

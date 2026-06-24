@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 
 NOT_FOUND_VALUE = "не найдена"
+DATE_IN_NAME_RE = re.compile(r"(?<!\d)(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,58 @@ def _candidate_folders(kits_root: Path, code: str) -> list[Path]:
         ],
         key=lambda path: _folder_value(kits_root, path).casefold(),
     )
+
+
+def _date_from_match(match: re.Match[str]) -> date | None:
+    day = int(match.group(1))
+    month = int(match.group(2))
+    year = int(match.group(3))
+    if year < 100:
+        year += 2000
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def dates_from_name(value: Any) -> list[date]:
+    text = _normalize_text(value)
+    dates = []
+    for match in DATE_IN_NAME_RE.finditer(text):
+        parsed = _date_from_match(match)
+        if parsed is not None:
+            dates.append(parsed)
+    return dates
+
+
+def latest_date_from_name(value: Any) -> date | None:
+    dates = dates_from_name(value)
+    return max(dates) if dates else None
+
+
+def resolve_product_input_date_from_kit(
+    *,
+    kits_root: Path,
+    folder_kit: Any,
+) -> date | None:
+    folder_value = _normalize_text(folder_kit)
+    if not folder_value or folder_value == NOT_FOUND_VALUE:
+        return None
+
+    folder_date = latest_date_from_name(folder_value)
+    if folder_date is not None:
+        return folder_date
+
+    folder_path = kits_root / Path(*Path(folder_value).parts)
+    if not folder_path.exists() or not folder_path.is_dir():
+        return None
+
+    file_dates = []
+    for item in folder_path.rglob("*"):
+        if item.is_file():
+            file_dates.extend(dates_from_name(item.name))
+
+    return max(file_dates) if file_dates else None
 
 
 def resolve_product_kit_folder(
