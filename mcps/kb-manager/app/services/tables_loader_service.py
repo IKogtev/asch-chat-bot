@@ -27,6 +27,7 @@ GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
 PRODUCT_KIT_STATUS_COLUMN = "folder_kit_status"
 PRODUCT_KITS_ROOT_ENV = "PRODUCT_KITS_ROOT"
+ARCHIVE_KITS_ROOT_ENV = "ARCHIVE_KITS_ROOT"
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
 
 PRODUCT_SEARCH_COLUMNS = [
@@ -142,6 +143,7 @@ class TablesLoadResult:
     loaded_tables: list[LoadedTable]
     validation_errors: list[str]
     product_kit_folders_found: int | None = None
+    archive_product_kit_folders_found: int | None = None
     product_kit_products_total: int | None = None
 
 
@@ -168,6 +170,7 @@ class TablesLoaderService:
             else Path(os.getenv("GLOSSARY_SOURCE_DIR", self.tables_dir.parent / "glossary"))
         )
         self.product_kit_folders_found: int | None = None
+        self.archive_product_kit_folders_found: int | None = None
         self.product_kit_products_total: int | None = None
 
     def load_all(self) -> TablesLoadResult:
@@ -192,6 +195,7 @@ class TablesLoaderService:
 
         loaded_tables: list[LoadedTable] = []
         self.product_kit_folders_found = None
+        self.archive_product_kit_folders_found = None
         self.product_kit_products_total = None
         await self.ensure_database_exists()
         conn = await asyncpg.connect(self.database_url)
@@ -211,6 +215,7 @@ class TablesLoaderService:
             loaded_tables=loaded_tables,
             validation_errors=validation_errors,
             product_kit_folders_found=self.product_kit_folders_found,
+            archive_product_kit_folders_found=self.archive_product_kit_folders_found,
             product_kit_products_total=self.product_kit_products_total,
         )
 
@@ -837,6 +842,12 @@ class TablesLoaderService:
             self.product_kit_products_total = self._dataframe_row_count(df)
             return df
         kits_root = Path(kits_root_value)
+        archive_root_value = os.getenv(ARCHIVE_KITS_ROOT_ENV, "").strip()
+        archive_root = (
+            Path(archive_root_value)
+            if archive_root_value
+            else None
+        )
 
         if code_column is None:
             df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
@@ -847,21 +858,70 @@ class TablesLoaderService:
             self.product_kit_products_total = self._dataframe_row_count(df)
             return df
 
-        found = 0
+        active_found = 0
+        archive_found = 0
         total = 0
+        is_active_column = self._first_existing_column(
+            df,
+            ["is_active"]
+        )
         for idx, row in df.iterrows():
             resolution = resolve_product_kit_folder(
                 kits_root=kits_root,
                 product_code=row.get(code_column),
                 product_name=row.get(name_column) if name_column else "",
             )
-            df.at[idx, PRODUCT_KIT_FOLDER_COLUMN] = resolution.folder_kit
-            df.at[idx, PRODUCT_KIT_STATUS_COLUMN] = resolution.folder_kit_status
-            total += 1
-            if resolution.folder_kit != NOT_FOUND_VALUE:
-                found += 1
 
-        self.product_kit_folders_found = found
+            found_in_archive = False
+
+            product_status = (
+                str(row.get(is_active_column, ""))
+                .strip()
+                .lower()
+                if is_active_column
+                else ""
+            )
+
+            is_archived_product = (
+                product_status == "архивный"
+            )
+
+            if (
+                resolution.folder_kit == NOT_FOUND_VALUE
+                and is_archived_product
+                and archive_root is not None
+            ):
+                archive_resolution = resolve_product_kit_folder(
+                    kits_root=archive_root,
+                    product_code=row.get(code_column),
+                    product_name=row.get(name_column)
+                    if name_column
+                    else "",
+                )
+
+                if archive_resolution.folder_kit != NOT_FOUND_VALUE:
+                    resolution = archive_resolution
+                    found_in_archive = True
+
+            df.at[idx, PRODUCT_KIT_FOLDER_COLUMN] = (
+                resolution.folder_kit
+            )
+
+            df.at[idx, PRODUCT_KIT_STATUS_COLUMN] = (
+                resolution.folder_kit_status
+            )
+
+            total += 1
+
+            if resolution.folder_kit != NOT_FOUND_VALUE:
+
+                if found_in_archive:
+                    archive_found += 1
+                else:
+                    active_found += 1
+
+        self.product_kit_folders_found = active_found
+        self.archive_product_kit_folders_found = archive_found
         self.product_kit_products_total = total
 
         return df
