@@ -64,9 +64,28 @@ def main() -> int:
         
 
     if result.product_kit_products_total is not None:
+        active_found = (
+            result.product_kit_folders_found or 0
+        )
+        archive_found = (
+            result.archive_product_kit_folders_found or 0
+        )
+        total_found = (
+            active_found
+            + archive_found
+        )
         print(
             "Product kit folders found: "
-            f"{result.product_kit_folders_found} of "
+            f"{active_found} active of "
+            f"{result.product_kit_products_total} products."
+        )
+        print(
+            "Archive product kit folders found: "
+            f"{archive_found}."
+        )
+        print(
+            "Total product kit folders resolved: "
+            f"{total_found} of "
             f"{result.product_kit_products_total} products."
         )
     if result.validation_errors:
