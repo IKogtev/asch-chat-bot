@@ -52,6 +52,7 @@ PRODUCT_FILTER_FOLLOWUP_QUESTION = (
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
 )
+PRODUCT_CARD_KIT_OFFER = "\n\n📂 Могу также прислать комплект документов по этому продукту. Напишите «документы» или «комплект», если нужно."
 
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
@@ -351,28 +352,37 @@ class RootAgent(BaseAgent):
     @classmethod
     def _format_product_selection_answer(cls, product_selection: Dict[str, Any]) -> str:
         message = format_text_answer(product_selection["message"])
-        if product_selection.get("mode") == "product_filter":
+        mode = product_selection.get("mode")
+        if mode == "product_filter":
             if PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
                 message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
             return message
 
-        if product_selection.get("mode") == "product_attribute_values":
+        if mode == "product_attribute_values":
             if PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION not in message:
                 message = "\n\n".join([message, PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION])
             return message
 
-        if product_selection.get("mode") != "needs_clarification":
+        if mode == "product_card":
+            # Добавляем предложение, только если агент сам его ещё не добавил
+            message_lower = message.lower()
+            if "комплект документов" not in message_lower and "скачать комплект" not in message_lower:
+                message = message + PRODUCT_CARD_KIT_OFFER
             return message
 
-        options = [
-            cls._format_clarification_option(option)
-            for option in product_selection.get("clarification_options") or []
-        ]
-        options = [option for option in options if option]
-        if not options:
-            return message
+        if mode == "needs_clarification":
+            
+            options = [
+                cls._format_clarification_option(option)
+                for option in product_selection.get("clarification_options") or []
+            ]
+            options = [option for option in options if option]
+            if not options:
+                return message
 
-        return "\n".join([message, *options])
+            return "\n".join([message, *options])
+        return message
+
 
     @staticmethod
     def _normalize_product_dialog_text(text: str) -> str:
