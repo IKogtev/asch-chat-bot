@@ -661,6 +661,31 @@ class RootAgent(BaseAgent):
                 dict(ctx.session.state),
             )
 
+        codes = self._extract_product_codes(user_text)
+        if len(codes) == 1 and normalized == codes[0].lower():
+            product = self._find_product_in_dialog_context(
+                ctx,
+                user_text,
+                allow_selected_product=False,
+            )
+            if product:
+                context = self._get_product_dialog_context(ctx)
+                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                    **context,
+                    "selected_product": product,
+                }
+                code = product.get("code") or codes[0]
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "product_selection",
+                        "intent": "product_card",
+                        "reason": "product_code_followup",
+                        "search_query": f"показать карточку продукта {code}",
+                    },
+                    dict(ctx.session.state),
+                )
+
         asks_kit = bool(
             re.search(
                 r"\b(скач|пришл|отправ|дай|дать|комплект|материал|документ)",
