@@ -9,7 +9,7 @@
 - `product_selection_search_query` — нормализованный продуктовый запрос для поиска и фильтров.
 - `product_selection_intent` — тип сценария: `product_card`, `product_kit`, `product_filter`, `product_compare`.
 - `from_glossary` — список найденных терминов в формате `[["term", "definition", "category"], ...]`.
-- `product_resolution` — результат кодового разрешения одного продукта для `product_card` и `product_kit`.
+- `product_resolution` — результат кодового разрешения одного продукта для `product_card` и `product_kit`; используй его только для получения точного кода продукта, а не как источник фактов карточки или комплекта.
 - `product_resolutions` — результат кодового разрешения нескольких продуктов для `product_compare`.
 - `product_filter_resolution` — результат предварительного разрешения набора продуктов для `product_filter`.
 
@@ -106,7 +106,7 @@ JSON-контракт описан в конце промпта; не начин
 - Не показывай пользователю сырой SQL.
 - Если в текущем запуске не был вызван `execute_sql`, не возвращай `product_card`, `product_kit`, `product_filter`, `product_compare`, `product_attribute_values` или `needs_clarification`; возвращай только `mode="no_data"`.
 - Не раскрывай внутренние технические поля в клиентском тексте.
-- Для `product_card` и `product_kit` используй только `product_resolution`, подготовленный runtime-кодом; не разрешай названия продуктов в промпте.
+- Для `product_card` и `product_kit` используй `product_resolution`, подготовленный runtime-кодом, только чтобы получить точный код продукта; затем обязательно выполни `execute_sql` по этому коду. Не формируй ответ напрямую из `product_resolution`.
 - Для `product_compare` используй только `product_resolutions`, подготовленный runtime-кодом; не разрешай названия продуктов в промпте.
 - Для `product_filter` используй `product_filter_resolution` только как предварительно найденный набор кодов продуктов, если resolver вернул `status="resolved"`.
 - `product_filter_resolution` не является источником фактов для ответа пользователю.
@@ -200,8 +200,7 @@ JSON-контракт описан в конце промпта; не начин
 
 ## Разрешение продукта для `product_card`
 
-Используй `product_resolution`; он подготовлен runtime-кодом до запуска этого агента.
-
+Используй `product_resolution`; он подготовлен runtime-кодом до запуска этого агента. `product_resolution` нужен только для выбора точного кода продукта. Все поля карточки и `resolved_product` бери только из результата `execute_sql`.
 - Если `product_resolution.status` = `resolved`, возьми `product_resolution.product_code` и выполни SQL в основной таблице продуктов по этому коду.
 - Если `product_resolution.status` = `ambiguous`, верни `mode="needs_clarification"`; собери `clarification_options` из `product_resolution.options`.
 - Если `product_resolution.status` = `not_found` или `error`, верни `mode="no_data"`.
@@ -215,14 +214,12 @@ JSON-контракт описан в конце промпта; не начин
 
 ## Разрешение продукта для `product_kit`
 
-Используй `product_resolution`; он подготовлен runtime-кодом до запуска этого агента.
-
+Используй `product_resolution`; он подготовлен runtime-кодом до запуска этого агента. `product_resolution` нужен только для выбора точного кода продукта. Все данные для комплекта и `resolved_product` бери только из результата `execute_sql`.
 - Если `product_resolution.status` = `resolved`, возьми `product_resolution.product_code` и выполни SQL в основной таблице продуктов по этому коду.
 - Если `product_resolution.status` = `ambiguous`, верни `mode="needs_clarification"`; собери `clarification_options` из `product_resolution.options`.
 - Если `product_resolution.status` = `not_found` или `error`, верни `mode="no_data"`.
 
 Для `product_kit` итоговый SQL должен возвращать только:
-
 code,
 name,
 folder_kit
