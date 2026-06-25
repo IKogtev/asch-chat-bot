@@ -52,7 +52,7 @@ PRODUCT_FILTER_FOLLOWUP_QUESTION = (
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
 )
-PRODUCT_CARD_KIT_OFFER = "\n\n📂 Могу также прислать комплект документов по этому продукту. Напишите «документы» или «комплект», если нужно."
+PRODUCT_CARD_KIT_OFFER = "\n\n📂 Могу также найти документы или прислать комплект документов по этому продукту. Напишите «документы» или «комплект», если нужно."
 
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
@@ -638,6 +638,60 @@ class RootAgent(BaseAgent):
                 ctx.session.state["product_resolution"],
             )
 
+    @staticmethod
+    def _normalize_search_query_morphology(text: str) -> str:
+        """
+        Срезает типичные русские окончания (множественное число, падежи), 
+        чтобы LLM генерировал более точные SQL ILIKE запросы.
+        Пример: 'форт ноксы' -> 'форт нокс', 'продукты' -> 'продукт'
+        """
+        # Эвристика: срезаем окончания у слов длиннее 3 букв
+        return re.sub(
+            r'([а-яё]{3,})(ы|и|а|я|ов|ев|ий|ый|ой|ем|ам|ом|их|ых|у|ю)\b', 
+            r'\1', 
+            text, 
+            flags=re.IGNORECASE
+        )
+    
+    def _get_explicit_intent_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
+        """
+        Перехватывает явные запросы на комплект или фильтр до вызова LLM-dispatcher.
+        """
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized:
+            return None
+
+        # 1. Явный запрос комплекта/документов (но не "какие документы есть" -> это фильтр)
+        is_explicit_kit = bool(re.search(r"\b(комплект|документы|файлы|материалы|пф|презентер|отправь|пришли)\b", normalized))
+        is_asking_list = bool(re.search(r"\b(какие|что за|список|покажи список|есть ли)\b", normalized))
+        
+        if is_explicit_kit and not is_asking_list:
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": "product_kit",
+                    "reason": "explicit_kit_short_circuit",
+                    "search_query": user_text,
+                },
+                dict(ctx.session.state),
+            )
+
+        # 2. Явный запрос списка/архива/фильтра
+        if re.search(r"\b(архивные|все продукты|список продуктов|покажи продукты|покажи архивные)\b", normalized):
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": "product_filter",
+                    "reason": "explicit_filter_short_circuit",
+                    "search_query": user_text,
+                },
+                dict(ctx.session.state),
+            )
+
+        return None
+
     def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
         normalized = self._normalize_product_dialog_text(user_text)
         if not normalized or not self._get_product_dialog_context(ctx):
@@ -842,8 +896,13 @@ class RootAgent(BaseAgent):
                 "Glossary terms found: %s",
                 len(ctx.session.state["from_glossary"]),
             )
-
-            dispatch = self._product_followup_dispatch(ctx, user_text)
+            # 1. Пытаемся перехватить явные интенты (Комплект, Архивные) без LLM
+            dispatch = self._get_explicit_intent_dispatch(ctx, user_text)
+            
+            # 2. Если не явный, проверяем контекст диалога (follow-up)
+            if not dispatch:
+                dispatch = self._product_followup_dispatch(ctx, user_text)
+                
             if dispatch:
                 ctx.session.state["_dispatcher_result_parsed"] = dispatch
                 ctx.session.state.pop("dispatcher_result_json", None)
@@ -1160,6 +1219,8 @@ class RootAgent(BaseAgent):
         intent: str,
     ) -> AsyncGenerator[Event, None]:
         base_search_query = (search_query or user_message).strip()
+        # Программное снятие окончаний для лучшего SQL ILIKE
+        base_search_query = self._normalize_search_query_morphology(base_search_query)
         effective_search_query = await self.glossary_lookup.expand_search_query(
             base_search_query,
         )
