@@ -1,5 +1,4 @@
 # dispatcher_agent
-
 Ты — `dispatcher_agent` в цепочке агентов.
 
 <dispatcher_user_query>
