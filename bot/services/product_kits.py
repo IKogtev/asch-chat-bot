@@ -100,7 +100,6 @@ def get_product_kit(
             "files": [],
             "skipped_files": [],
         }
-
     if not folder.exists() or not folder.is_dir():
         return {
             "status": "not_found",
@@ -135,9 +134,22 @@ def get_product_kit(
         len(matching_product_dirs) == 0
     )
    
+    candidate_files = sorted(
+        [
+            item
+            for item in folder.rglob("*")
+            if item.is_file()
+        ],
+        key=lambda path: str(path).lower(),
+    )
 
-    for item in sorted(folder.iterdir(), key=lambda path: path.name.lower()):
+    for item in candidate_files:
         if not item.is_file():
+            continue
+        if not _file_matches_product_code(
+            item,
+            normalized_product_code,
+        ):
             continue
         if filter_by_product_code:
 
