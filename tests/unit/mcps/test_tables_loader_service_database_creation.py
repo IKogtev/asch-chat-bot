@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -181,6 +182,9 @@ def test_enrich_products_with_kit_folders_rebuilds_columns(monkeypatch, tmp_path
     assert "Fort Knox (2832)" in result.rows[0]["folder_kit_status"]
     assert service.product_kit_folders_found == 1
     assert service.product_kit_products_total == 1
+    assert service.product_input_dates_from_table == 0
+    assert service.product_input_dates_from_kits == 0
+    assert service.product_input_dates_missing == 1
 
 
 @pytest.mark.unit
@@ -327,3 +331,101 @@ def test_read_glossary_sheet_skips_second_description_row(monkeypatch) -> None:
     assert result.rows == [
         {"term": "НСЖ", "definition": "Накопительное страхование жизни"}
     ]
+
+
+class DateFakeAt:
+    def __init__(self, frame):
+        self.frame = frame
+
+    def __setitem__(self, key, value):
+        idx, column = key
+        self.frame.rows[idx][column] = value
+
+
+class DateFakeDataFrame:
+    def __init__(self, rows):
+        self.rows = rows
+        self.columns = list(rows[0].keys())
+        self.at = DateFakeAt(self)
+
+    def copy(self):
+        return DateFakeDataFrame([row.copy() for row in self.rows])
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, column):
+        return [row.get(column) for row in self.rows]
+
+    def __setitem__(self, column, value):
+        if column not in self.columns:
+            self.columns.append(column)
+        values = value if isinstance(value, list) else [value] * len(self.rows)
+        for row, item in zip(self.rows, values):
+            row[column] = item
+
+    def iterrows(self):
+        for idx, row in enumerate(self.rows):
+            yield idx, row
+
+
+@pytest.mark.unit
+def test_enrich_products_preserves_existing_input_date(monkeypatch, tmp_path) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    (tmp_path / "Fort Knox (2832) 20.05.26").mkdir()
+    monkeypatch.setenv("PRODUCT_KITS_ROOT", str(tmp_path))
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    df = DateFakeDataFrame([{"code": "2832", "name": "Fort Knox", "input_date": date(2026, 4, 8)}])
+
+    result = service._enrich_products_with_kit_folders(df)
+
+    assert result.rows[0]["input_date"] == date(2026, 4, 8)
+    assert result.rows[0]["folder_kit"] == "Fort Knox (2832) 20.05.26"
+    assert service.product_input_dates_from_table == 1
+    assert service.product_input_dates_from_kits == 0
+    assert service.product_input_dates_missing == 0
+
+
+@pytest.mark.unit
+def test_enrich_products_infers_input_date_from_kit_files(monkeypatch, tmp_path) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    folder = tmp_path / "Fort Knox (2832)"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    (folder / "presenter 08.04.26.pdf").write_text("x", encoding="utf-8")
+    (nested / "presenter 20.05.26.pdf").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("PRODUCT_KITS_ROOT", str(tmp_path))
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    df = DateFakeDataFrame([{"code": "2832", "name": "Fort Knox", "input_date": ""}])
+
+    result = service._enrich_products_with_kit_folders(df)
+
+    assert result.rows[0]["input_date"] == date(2026, 5, 20)
+    assert result.rows[0]["folder_kit"] == "Fort Knox (2832)"
+    assert service.product_input_dates_from_table == 0
+    assert service.product_input_dates_from_kits == 1
+    assert service.product_input_dates_missing == 0
+
+
+@pytest.mark.unit
+def test_enrich_products_counts_input_dates_without_kits_root(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    monkeypatch.delenv("PRODUCT_KITS_ROOT", raising=False)
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    df = DateFakeDataFrame(
+        [
+            {"code": "1", "name": "A", "input_date": date(2026, 4, 8)},
+            {"code": "2", "name": "B", "input_date": ""},
+        ]
+    )
+
+    service._enrich_products_with_kit_folders(df)
+
+    assert service.product_kit_folders_found == 0
+    assert service.product_kit_products_total == 2
+    assert service.product_input_dates_from_table == 1
+    assert service.product_input_dates_from_kits == 0
+    assert service.product_input_dates_missing == 1

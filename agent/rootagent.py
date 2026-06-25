@@ -23,6 +23,7 @@ from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
+from .smart_fallback import generate_agent_fallback
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -611,12 +612,20 @@ class RootAgent(BaseAgent):
             ctx.session.state["product_resolutions"] = self._product_resolutions_to_state(
                 result
             )
+            logger.debug(
+                "product_resolutions state: %s",
+                ctx.session.state["product_resolutions"],
+            )
             return
 
         if intent in {"product_card", "product_kit"}:
             result = await self.product_resolver.resolve_product(query)
             ctx.session.state["product_resolution"] = self._product_resolution_to_state(
                 result
+            )
+            logger.debug(
+                "product_resolution state: %s",
+                ctx.session.state["product_resolution"],
             )
 
     def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
@@ -660,7 +669,10 @@ class RootAgent(BaseAgent):
         product = self._find_product_in_dialog_context(
             ctx,
             user_text,
-            allow_selected_product=asks_kit and not self._extract_product_codes(user_text),
+            allow_selected_product=(
+                (asks_kit or asks_card)
+                and not self._extract_product_codes(user_text)
+            ),
         )
         if not product:
             return None
@@ -910,11 +922,77 @@ class RootAgent(BaseAgent):
                 exc.validation_error,
                 truncate_for_log(exc.raw, 500),
             )
+            # Определяем, какой агент работал
+            agent_name = None
+            if "product_selection" in exc.log_label:
+                agent_name = "product_selection"
+            elif "kb_answer" in exc.log_label:
+                agent_name = "kb_answer"
+            elif "dispatcher" in exc.log_label:
+                agent_name = "dispatcher"
+            elif "doc_search" in exc.log_label:
+                agent_name = "doc_search"
+
+            # Собираем контекст из состояния
+            context: Dict[str, Any] = {
+                "validation_error": exc.validation_error,
+            }
+            
+            # Поисковый запрос — в разных ключах для разных агентов
+            context["search_query"] = (
+                ctx.session.state.get("product_selection_search_query")
+                or ctx.session.state.get("doc_search_query")
+                or ctx.session.state.get("search_query")
+                or ctx.session.state.get("dispatcher_user_query")
+                or ""
+            )
+            # Специфичные данные для каждого агента
+            if agent_name == "product_selection":
+                parsed = ctx.session.state.get("_product_selection_result_parsed") or {}
+                context["used_tables"] = parsed.get("used_tables") or []
+                context["mode"] = parsed.get("mode", "")
+                context["resolved_product"] = parsed.get("resolved_product")
+                context["clarification_options"] = parsed.get("clarification_options") or []
+                context["products"] = parsed.get("products") or []
+            
+            elif agent_name == "doc_search":
+                parsed = ctx.session.state.get("_doc_search_result_parsed") or {}
+                context["mode"] = parsed.get("mode", "")
+                context["results_count"] = len(parsed.get("results") or [])
+                context["source"] = "kb_search"
+            
+            elif agent_name == "kb_answer":
+                parsed = ctx.session.state.get("_kb_answer_result_parsed") or {}
+                context["mode"] = parsed.get("mode", "")
+                context["source"] = parsed.get("source", "")
+            
+            elif agent_name == "dispatcher":
+                parsed = ctx.session.state.get("_dispatcher_result_parsed") or {}
+                context["route"] = parsed.get("route", "")
+                context["intent"] = parsed.get("intent", "")
+
+            # Пытаемся извлечь данные из сырого ответа
+            payload = {}
+            if exc.log_label == "product_selection_result_json":
+                try:
+                    payload = extract_json(exc.raw)
+                    # Дополняем контекст данными из payload (они могут быть свежее state)
+                    context.setdefault("resolved_product", payload.get("resolved_product"))
+                    context.setdefault(
+                        "clarification_options",
+                        payload.get("clarification_options") or [],
+                    )
+                    context.setdefault("mode", payload.get("mode", ""))
+                    context.setdefault("used_tables", payload.get("used_tables") or [])
+                except Exception:
+                    pass
+            
+            # Пытаемся извлечь сообщение из сырого ответа 
             product_selection_tool_usage_failure = (
                 exc.log_label == "product_selection_result_json"
                 and "tool_usage" in exc.validation_error
             )
-            fallback_message = (
+            legacy_message = (
                 self._fallback_product_selection_message(exc.raw)
                 if (
                     exc.log_label == "product_selection_result_json"
@@ -922,26 +1000,42 @@ class RootAgent(BaseAgent):
                 )
                 else None
             )
+            # Приоритет 2: Умный fallback
+            smart_message = None
+            if not legacy_message:
+                smart_message = generate_agent_fallback(
+                    user_text=user_text,
+                    error_type="validation_failure",
+                    agent_name=agent_name,
+                    context=context,
+                )
+            final_fallback_message = legacy_message or smart_message or exc.user_message
             if exc.log_label == "product_selection_result_json":
-                try:
-                    payload = extract_json(exc.raw)
-                except Exception:
-                    payload = {}
                 logger.debug(
-                    "product_selection fallback diagnostics: fallback_used=%s "
+                    "product_selection fallback diagnostics: legacy_used=%s smart_used=%s "
                     "blocked_by_tool_usage=%s mode=%s resolved_product=%s "
                     "clarification_options_count=%s message_preview=%s",
-                    bool(fallback_message),
+                    bool(legacy_message),
+                    bool(smart_message),
                     product_selection_tool_usage_failure,
                     payload.get("mode"),
                     payload.get("resolved_product"),
                     len(payload.get("clarification_options") or []),
                     truncate_for_log(payload.get("message"), 300),
                 )
+            else:
+                logger.debug(
+                    "agent fallback diagnostics: agent=%s smart_used=%s "
+                    "search_query=%s validation_error=%s",
+                    agent_name,
+                    bool(smart_message),
+                    truncate_for_log(context.get("search_query"), 100),
+                    truncate_for_log(context.get("validation_error"), 200),
+                )
             yield self._build_final_event_with_history(
                 ctx,
                 user_text,
-                fallback_message or exc.user_message,
+                final_fallback_message,
             )
 
         except Exception as exc:
