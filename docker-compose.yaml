@@ -159,7 +159,7 @@ services:
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
-      - ARCHIVE_KITS_ROOT=/app/data/kb_documents/manager/kb/6 Архив
+      - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
       - KB_TOP_K=${KB_TOP_K:-20}
@@ -201,7 +201,7 @@ services:
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
-      - ARCHIVE_KITS_ROOT=/app/data/kb_documents/manager/kb/6 Архив
+      - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
       - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
