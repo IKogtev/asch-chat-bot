@@ -29,6 +29,15 @@ LLM_API_URL = os.getenv("LLM_API_URL", "").strip()
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 
 # =============================================================================
+# AGENT TEMPERATURES
+# =============================================================================
+ROOT_TEMPERATURE = float(os.getenv("ROOT_TEMPERATURE", 0.0))
+DISPATCHER_TEMPERATURE = float(os.getenv("DISPATCHER_TEMPERATURE", ROOT_TEMPERATURE))
+DOC_SEARCH_TEMPERATURE = float(os.getenv("DOC_SEARCH_TEMPERATURE", ROOT_TEMPERATURE))
+KB_ANSWER_TEMPERATURE = float(os.getenv("KB_ANSWER_TEMPERATURE", ROOT_TEMPERATURE))
+PRODUCT_SELECTION_TEMPERATURE = float(os.getenv("PRODUCT_SELECTION_TEMPERATURE", ROOT_TEMPERATURE))
+
+# =============================================================================
 # COLLECTIONS
 # =============================================================================
 ACTIVE_DOCUMENTS_COLLECTION = os.getenv("ACTIVE_DOCUMENTS_COLLECTION", "kb_collection").strip()
