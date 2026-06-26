@@ -213,3 +213,70 @@ def test_tokenize_product_text_adds_translit_and_known_word_variants() -> None:
     assert "life" in tokens
     assert "лайф" in tokens
     assert "plus" in tokens
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_combines_exact_and_token_matches() -> None:
+    resolver = FakeProductResolver(
+        exact={"форт нокс": [candidate("8841", "Fort Knox 3 месяца")]},
+        tokens={
+            "форт нокс": [
+                candidate("8841", "Fort Knox 3 месяца"),
+                candidate("8958", "Bundle Fort Knox 3+12 месяцев"),
+                candidate("2867", "Bundle Fort Knox 3+36 месяцев"),
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product("покажи продукты форт нокс")
+
+    assert result.status == "ambiguous"
+    assert [item.product_code for item in result.options or []] == ["8841", "8958", "2867"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("query", "expected_groups"),
+    [
+        ("какие есть форт ноксы", [{"форт", "fort"}, {"ноксы", "knox"}]),
+        ("какие есть форт ноксов", [{"форт", "fort"}, {"ноксов", "knox", "нокс"}]),
+        ("покажи продукты альфа кидс", [{"альфа", "alfa", "alpha"}, {"кидс", "kids"}]),
+        ("покажи все бандлы", [{"бандлы", "bundle", "bundl", "бандл"}]),
+        ("покажи список продуктов бандлов", [{"бандлов", "bundle", "bundl", "бандл"}]),
+    ],
+)
+def test_token_alternative_groups_keep_query_words_as_or_groups(
+    query: str,
+    expected_groups: list[set[str]],
+) -> None:
+    groups = [set(group) for group in ProductResolverService._token_alternative_groups(query)]
+
+    assert len(groups) == len(expected_groups)
+    for group, expected in zip(groups, expected_groups):
+        assert expected <= group
+
+
+@pytest.mark.unit
+def test_tokenize_product_text_adds_bundle_fort_knox_plural_variants() -> None:
+    tokens = ProductResolverService.tokenize_product_text("Bundle Fort Knox 3+12 месяцев")
+
+    assert "bundle" in tokens
+    assert "бандл" in tokens
+    assert "бандлы" in tokens
+    assert "fort" in tokens
+    assert "форт" in tokens
+    assert "knox" in tokens
+    assert "нокс" in tokens
+    assert "ноксы" in tokens
+
+
+@pytest.mark.unit
+def test_tokenize_product_text_adds_alfa_kids_variants() -> None:
+    tokens = ProductResolverService.tokenize_product_text("Альфа Kids+ 5 лет")
+
+    assert "альфа" in tokens
+    assert "alfa" in tokens
+    assert "alpha" in tokens
+    assert "kids" in tokens
+    assert "кидс" in tokens

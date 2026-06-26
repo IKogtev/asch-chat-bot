@@ -81,19 +81,68 @@ CYR_TO_LAT = {
 }
 
 COMMON_PRODUCT_WORDS = {
-    "kids": "кидс",
-    "kid": "кид",
-    "junior": "джуниор",
-    "premium": "премиум",
-    "life": "лайф",
-    "smart": "смарт",
-    "invest": "инвест",
+    "alfa": "альфа",
+    "alpha": "альфа",
+    "альфа": "alfa alpha",
+    "alfainvest": "альфаинвестиции",
+    "альфаинвестиции": "alfa invest investments",
+    "invest": "инвест инвестиции",
+    "investment": "инвестиции инвест",
+    "investments": "инвестиции инвест",
+    "инвест": "invest investment investments",
+    "инвестиции": "invest investment investments",
+    "balance": "баланс",
+    "баланс": "balance",
+    "health": "здоровье",
+    "здоровье": "health",
+    "kids": "кидс детский",
+    "kid": "кид кидс детский",
+    "кидс": "kids kid",
+    "кид": "kids kid",
+    "детский": "kids kid",
     "plus": "плюс",
+    "плюс": "plus",
+    "bundle": "бандл бандлы бандлов",
+    "bundl": "бандл бандлы бандлов",
+    "бандл": "bundle bundl бандлы бандлов",
+    "бандлы": "bundle bundl бандл",
+    "бандлов": "bundle bundl бандл",
+    "fort": "форт",
+    "форт": "fort",
+    "knox": "нокс ноксы ноксов",
+    "нокс": "knox ноксы ноксов",
+    "ноксы": "knox нокс",
+    "ноксов": "knox нокс",
+    "unit": "юнит",
+    "юнит": "unit",
+    "linked": "линкед линкд",
+    "link": "линкед линкд",
+    "линкед": "linked link",
+    "линкд": "linked link",
+    "protected": "защищенный защищенные",
+    "protection": "защита защищенный защищенные",
+    "защищенный": "protected protection",
+    "защищенные": "protected protection",
+    "защита": "protection protected",
+    "capital": "капитал",
+    "капитал": "capital",
+    "month": "месяц месяца месяцев мес",
+    "months": "месяц месяца месяцев мес",
+    "месяц": "month months",
+    "месяца": "month months",
+    "месяцев": "month months",
+    "мес": "month months месяц месяца месяцев",
+    "year": "год года лет",
+    "years": "год года лет",
+    "год": "year years",
+    "года": "year years",
+    "лет": "year years",
 }
 
 COMMON_PRODUCT_WORDS_REVERSE = {
-    v: k
-    for k, v in COMMON_PRODUCT_WORDS.items()
+    alias: key
+    for key, value in COMMON_PRODUCT_WORDS.items()
+    for alias in value.split()
 }
 
 DATA_CATALOG_SHEETS = {
@@ -581,12 +630,12 @@ class TablesLoaderService:
             if translit != token:
                 result.append(translit)
             if token in COMMON_PRODUCT_WORDS:
-                result.append(
-                    COMMON_PRODUCT_WORDS[token]
+                result.extend(
+                    COMMON_PRODUCT_WORDS[token].split()
                 )
             if token in COMMON_PRODUCT_WORDS_REVERSE:
-                result.append(
-                    COMMON_PRODUCT_WORDS_REVERSE[token]
+                result.extend(
+                    COMMON_PRODUCT_WORDS_REVERSE[token].split()
                 )
         return sorted(set(result))
 
@@ -596,9 +645,9 @@ class TablesLoaderService:
 
         for token in tokens:
             if token in COMMON_PRODUCT_WORDS:
-                result.append(COMMON_PRODUCT_WORDS[token])
+                result.extend(COMMON_PRODUCT_WORDS[token].split())
             elif token in COMMON_PRODUCT_WORDS_REVERSE:
-                result.append(COMMON_PRODUCT_WORDS_REVERSE[token])
+                result.extend(COMMON_PRODUCT_WORDS_REVERSE[token].split())
             else:
                 result.append(token)
 
