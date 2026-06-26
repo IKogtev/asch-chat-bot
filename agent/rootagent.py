@@ -739,13 +739,64 @@ class RootAgent(BaseAgent):
                     },
                     dict(ctx.session.state),
                 )
+        
+        # Приоритет 1: Запрос специфичного типа документа (ПФ, презентер, сторис и т.д.) -> doc_search
+        specific_doc_pattern = r"\b(пф|презентер|сторис|памятка|правила|договор|анкета|заявление|буклет)\b"
+        if re.search(specific_doc_pattern, normalized):
+            product = self._find_product_in_dialog_context(ctx, user_text, allow_selected_product=True)
+            if product:
+                code = product.get("code") or ""
+                name = product.get("name") or ""
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "doc_search",
+                        "intent": "doc_search",
+                        "reason": "specific_document_followup",
+                        "search_query": f"{user_text} {name} {code}".strip(),
+                    },
+                    dict(ctx.session.state),
+                )
 
+        # Приоритет 2: Запрос списка документов ("какие документы", "документы по") -> doc_search
+        asks_doc_list = bool(re.search(r"(какие|список|покажи|найди|что за)\s*(документ|файл)", normalized))
+        asks_doc_by_product = bool(re.search(r"документ(ы)?\s*(по|для)", normalized))
+        if asks_doc_list or asks_doc_by_product:
+            product = self._find_product_in_dialog_context(ctx, user_text, allow_selected_product=True)
+            if product:
+                code = product.get("code") or ""
+                name = product.get("name") or ""
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "doc_search",
+                        "intent": "doc_search",
+                        "reason": "document_list_followup",
+                        "search_query": f"документы {name} {code}".strip(),
+                    },
+                    dict(ctx.session.state),
+                )
+        # Приоритет 3: Запрос списка продуктов серии ("покажи продукты фк", "все фк") -> product_filter
+        asks_filter = bool(re.search(r"\b(покажи|выведи|список|все)\s*(продукты|фк|зк|нкс|fort knox|защищенный капитал)\b", normalized))
+        if asks_filter:
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": "product_filter",
+                    "reason": "product_series_filter_followup",
+                    "search_query": user_text,
+                },
+                dict(ctx.session.state),
+            )
+        # Приоритет 4: Запрос полного комплекта ("дай комплект", "пришли") -> product_kit
         asks_kit = bool(
             re.search(
-                r"\b(скач|пришл|отправ|дай|дать|комплект|материал|документ)",
+                r"\b(скач|пришл|отправ|дай|дать|комплект|материал)",
                 normalized,
             )
         )
+        # Приоритет 5: Запрос карточки ("покажи параметры", "расскажи") -> product_card
         asks_card = bool(
             re.search(
                 r"\b(параметр|карточк|свойств|характеристик|подробн|покаж|расскаж)",

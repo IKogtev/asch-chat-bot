@@ -101,6 +101,24 @@ def get_product_kit(
             "skipped_files": [],
         }
     if not folder.exists() or not folder.is_dir():
+        # Ищем любую папку внутри kits_root, в названии которой есть код продукта, например "(7698)"
+        fallback_folder = None
+        if normalized_product_code:
+            for candidate in kits_root.rglob(f"*({normalized_product_code})*"):
+                if candidate.is_dir():
+                    fallback_folder = candidate
+                    break
+                    
+        if fallback_folder:
+            # Подменяем путь на найденный
+            try:
+                root_resolved, folder = _resolve_inside(kits_root, fallback_folder)
+                folder_name = str(fallback_folder.relative_to(kits_root))
+            except ValueError:
+                pass # Если путь невалидный, просто идем дальше и вернем not_found
+
+    # Если даже fallback не помог, возвращаем not_found
+    if not folder.exists() or not folder.is_dir():
         return {
             "status": "not_found",
             "product_code": normalized_product_code,
