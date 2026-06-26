@@ -2,7 +2,8 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-
+from google.genai.types import GenerateContentConfig
+from ..config import DISPATCHER_TEMPERATURE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -235,12 +236,17 @@ High-priority product-card rule: if the latest user message asks to show, open, 
 """
     prompt_file = "dispatcher_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
+    name = "dispatcher_agent"
+    logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")
     agent = LlmAgent(
-        name="dispatcher_agent",
+        name=name,
         model=model,
         instruction=instruction,
         include_contents="none",
         output_key="dispatcher_result_json",
+        generate_content_config=GenerateContentConfig(
+            temperature=DISPATCHER_TEMPERATURE,
+        )
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

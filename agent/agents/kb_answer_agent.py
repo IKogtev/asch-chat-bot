@@ -1,6 +1,7 @@
 from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
+from google.genai.types import GenerateContentConfig
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -13,6 +14,7 @@ from ..config import (
     KBSEARCH_MCP_URL,
     MCP_TIMEOUT_SEC,
     MCP_TOKEN,
+    KB_ANSWER_TEMPERATURE,
 )
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
@@ -22,6 +24,7 @@ from .validation_utils import build_validation_error
 logger = setup_logger("kb_answer_agent", "agent.log")
 
 ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и помогать продавать продукты АСЖ."
+
 
 
 def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -274,12 +277,17 @@ If multiple definitions are present and context does not disambiguate them, do n
 """
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
+    name = "kb_answer_agent"
+    logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
     agent = LlmAgent(
-        name="kb_answer_agent",
+        name=name,
         model=model,
         instruction=instruction,
         tools=tools,
         output_key="kb_answer_result_json",
+        generate_content_config=GenerateContentConfig(
+            temperature=KB_ANSWER_TEMPERATURE,
+        )
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
