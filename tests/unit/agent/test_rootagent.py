@@ -465,6 +465,96 @@ def test_clear_state_keys_removes_requested_keys_only() -> None:
 
 
 @pytest.mark.unit
+def test_reset_turn_state_removes_turn_specific_state_keys() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "user_query": "старый вопрос",
+            "search_query": "старый поиск",
+            "product_selection_search_query": "old_selection",
+            "product_selection_intent": "product_card",
+            "dispatcher_user_query": "старый запрос",
+            "_owasp_result_parsed": {"status": "ok"},
+            "_root_final_text": "старый ответ",
+            "persistent": "keep",
+        }
+    )
+
+    agent._reset_turn_state(ctx)
+
+    assert ctx.session.state == {"persistent": "keep"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_resets_turn_state_before_processing_new_message() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="новый вопрос")],
+        session_state={
+            "user_query": "старый вопрос",
+            "search_query": "старый поиск",
+            "product_selection_search_query": "old_selection",
+            "product_selection_intent": "product_card",
+            "dispatcher_user_query": "старый запрос",
+            "_owasp_result_parsed": {"status": "ok"},
+            "_root_final_text": "старый ответ",
+            "persistent": "keep",
+        },
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "kb_answer",
+                "reason": "ok",
+                "search_query": "новый вопрос",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(ctx_, user_message, search_query, intent):
+        assert user_message == "новый вопрос"
+        assert search_query == "новый вопрос"
+        assert intent == "kb_answer"
+        ctx_.session.state["search_query"] = "новый вопрос"
+        ctx_.session.state["_root_final_text"] = "ответ"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = lambda ctx_: ()
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "ответ"
+    assert ctx.session.state["user_query"] == "новый вопрос"
+    assert ctx.session.state["search_query"] == "новый вопрос"
+    assert ctx.session.state["dispatcher_user_query"] == "новый вопрос"
+    assert ctx.session.state.get("product_selection_search_query") is None
+    assert ctx.session.state.get("_root_final_text") == "ответ"
+    assert ctx.session.state["persistent"] == "keep"
+
+
+@pytest.mark.unit
 def test_append_recent_message_keeps_only_bounded_history() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
