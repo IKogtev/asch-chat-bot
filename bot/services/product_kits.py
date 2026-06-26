@@ -124,7 +124,7 @@ def get_product_kit(
             "product_code": normalized_product_code,
             "product_name": normalized_product_name,
             "folder": str(folder),
-            "message": "Комплект для продукта пока не загружен.",
+            "message": f"Комплект для продукта пока не загружен.",
             "files": [],
             "skipped_files": [],
         }
