@@ -230,7 +230,23 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "clarification_options"),
         )
 
-    if mode != "no_data" and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
+    # Разрешаем не вызывать execute_sql, если данные уже резолвлены кодом (через product_resolver)
+    is_kit_resolved = (
+        mode == "product_kit"
+        and resolved_product
+        and resolved_product.get("folder_kit")
+    )
+    is_clarification_ready = (
+        mode == "needs_clarification"
+        and clarification_options
+    )
+
+    if (
+        mode != "no_data"
+        and not is_kit_resolved
+        and not is_clarification_ready
+        and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls
+    ):
         raise build_validation_error(
             agent=agent_name,
             stage="tool_usage",
