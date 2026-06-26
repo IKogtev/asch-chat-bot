@@ -58,9 +58,11 @@ USER_ACTIVE_REQUESTS: dict[str, asyncio.Event] = {}
 
 async def get_user_lock(user_id: str) -> asyncio.Lock:
     """Получить или создать блокировку для пользователя"""
-    if user_id not in USER_LOCKS:
-        USER_LOCKS[user_id] = asyncio.Lock()
-    return USER_LOCKS[user_id]
+    lock = USER_LOCKS.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        USER_LOCKS[user_id] = lock
+    return lock
 
 async def get_user_active_event(user_id: str) -> asyncio.Event:
     """Получить или создать событие активности запроса"""
@@ -776,15 +778,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         session_id: str,
         bot_res,
     ):
-        # Отменяем HTTP-запрос к ADK (очищаем состояние)
+        # Отменяем HTTP-запрос к ADK и сбрасываем состояние сессии
         with contextlib.suppress(Exception):
             await adk.cancel_request(global_user_id, session_id)
-        
-        # Отменяем Python-задачу
-        task = ACTIVE_REQUESTS.get(str(global_user_id))
-        if task and not task.done():
-            logger.info(f"🛑 Отмена задачи: user={global_user_id}")
-            task.cancel()
+        with contextlib.suppress(Exception):
+            await cancel_user_request(str(global_user_id))
+        with contextlib.suppress(Exception):
+            await adk.delete_session(user_id=str(global_user_id), session_id=session_id)
         
         # Останавливаем typing индикатор
         with contextlib.suppress(Exception):
@@ -850,175 +850,226 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         user_lock = await get_user_lock(user_key)
         # Если блокировка уже захвачена - отменяем предыдущий запрос и ждём его завершения
         if user_lock.locked():
-            logger.info(f"🔄 Обнаружен параллельный запрос для user={global_user_id}, отменяем предыдущий")
-            
-            # Отменяем предыдущую задачу
+            logger.info(f"Пользователь {user_key}: отменяем предыдущий запрос")
+
             await interrupt_previous_request(
-                global_user_id=str(global_user_id),
+                global_user_id=user_key,
                 session_id=session_id,
                 bot_res=bot_res,
             )
-            
-            # ЖДЁМ завершения отменённой задачи БЕЗ таймаута
-            task = ACTIVE_REQUESTS.get(user_key)
-            if task and not task.done():
-                logger.info(f"⏳ Ожидание завершения предыдущего запроса: user={global_user_id}")
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    logger.info(f"✓ Предыдущий запрос отменён: user={global_user_id}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка при ожидании: {e}")
-            
-            # Очищаем блокировку
-            ACTIVE_REQUESTS.pop(user_key, None)
-        await user_lock.acquire()
-        try:
-            # сохраняем текущую задачу
+        async with user_lock:
+
             ACTIVE_REQUESTS[user_key] = asyncio.current_task()
-
-            # логируем скорость ответа
-            logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
-            await eventlogger.log_event(
-                event_type="message_received", user_id=str(global_user_id), 
-                user_name=ud.get("username"), session_id=session_id, 
-                channel=platform, payload={"text": user_text, "turn_id": turn_id, "start_time": start_time}
-            )
-            adk_user_id = str(global_user_id) if global_user_id else str(user_id)
-            await adk.ensure_session(user_id=adk_user_id, session_id=adk_user_id)
-
-            # Пагинация и скачивание по номеру — из БД, без вызова ADK
-            """
-            Основной блок обработки пользовательских текстовых сообщений.
-            Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
-            поиск по базе знаний (через ADK), а также отправка найденных документов.
-
-            Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
-            """
-            # --- Пагинация: показать следующую порцию сохранённого списка документов ---
-            if Settings.SHOW_MORE_RE.match(user_text):
-                ok = await handle_show_more(event=event, store=store, user_id=global_user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform=platform)
-                if not ok:
-                    # Сообщение для пользователя, если списка нет
-                    response_time = int((time.time() - start_time) * 1000)
-                    answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                    # await send_answer(event, answer)
-                    if str(global_user_id) in RESET_USERS:
-                        logger.info(
-                            f"Пропускаем ответ после reset user={global_user_id}"
-                        )
-                        return
-                    if not await _skip_if_cancelled(global_user_id):
-                        await bot_res.send(answer)
-                        await eventlogger.log_event(
-                            event_type="response",
-                            user_id=str(global_user_id),
-                            session_id=session_id,
-                            channel=platform,
-                            payload={
-                                "turn_id": turn_id,
-                                "text": answer, 
-                                "response_time_ms": response_time
-                            }    
-                        )
-                # Логируем пользовательский запрос и результат в историю
-                await store.append(user_id, "user", user_text, global_user_id)
-                await store.append(
-                    user_id,
-                    "model",
-                    "Показана следующая порция списка документов."
-                    if ok
-                    else "Список документов не найден.",
-                    global_user_id
+            try:
+                # логируем скорость ответа
+                logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
+                await eventlogger.log_event(
+                    event_type="message_received", user_id=str(global_user_id), 
+                    user_name=ud.get("username"), session_id=session_id, 
+                    channel=platform, payload={"text": user_text, "turn_id": turn_id, "start_time": start_time}
                 )
-                return
-            # --- Пагинация: показать полный список сохранённых документов ---
-            if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
-                # Только если это не "показать еще"
-                ok = await handle_show_all(event, store, global_user_id, session_id, turn_id, start_time, platform)
-                if not ok:
-                    response_time = int((time.time() - start_time) * 1000)
-                    answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                    if str(global_user_id) in RESET_USERS:
-                        logger.info(
-                            f"Пропускаем ответ после reset user={global_user_id}"
-                        )
-                        return
-                    if not await _skip_if_cancelled(global_user_id):
-                        await bot_res.send(answer)
-                        await eventlogger.log_event(
-                            event_type="response",
-                            user_id=str(global_user_id),
-                            session_id=session_id,
-                            channel=platform,
-                            payload={
-                                "turn_id": turn_id,
-                                "text": answer, 
-                                "response_time_ms": response_time
-                            }    
-                        )
-                await store.append(user_id, "user", user_text, global_user_id)
-                await store.append(
-                    user_id,
-                    "model",
-                    "Показан полный список документов."
-                    if ok
-                    else "Список документов не найден.",
-                    global_user_id
-                )
-                return
-            
-            # --- Обработка запроса на скачивание файлов по номерам из списка ---
-            dl_ranks = parse_download_ranks(user_text)
-            if dl_ranks:
+                adk_user_id = str(global_user_id) if global_user_id else str(user_id)
+                await adk.ensure_session(user_id=adk_user_id, session_id=adk_user_id)
+
+                # Пагинация и скачивание по номеру — из БД, без вызова ADK
                 """
-                Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
-                вызываем обработчик отправки файлов.
+                Основной блок обработки пользовательских текстовых сообщений.
+                Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
+                поиск по базе знаний (через ADK), а также отправка найденных документов.
+
+                Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
                 """
-                await handle_download_by_ranks(event, store, doc_handler, global_user_id, session_id, dl_ranks, turn_id, start_time, platform)
+                # --- Пагинация: показать следующую порцию сохранённого списка документов ---
+                if Settings.SHOW_MORE_RE.match(user_text):
+                    ok = await handle_show_more(event=event, store=store, user_id=global_user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform=platform)
+                    if not ok:
+                        # Сообщение для пользователя, если списка нет
+                        response_time = int((time.time() - start_time) * 1000)
+                        answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                        # await send_answer(event, answer)
+                        if str(global_user_id) in RESET_USERS:
+                            logger.info(
+                                f"Пропускаем ответ после reset user={global_user_id}"
+                            )
+                            return
+                        if not await _skip_if_cancelled(global_user_id):
+                            await bot_res.send(answer)
+                            await eventlogger.log_event(
+                                event_type="response",
+                                user_id=str(global_user_id),
+                                session_id=session_id,
+                                channel=platform,
+                                payload={
+                                    "turn_id": turn_id,
+                                    "text": answer, 
+                                    "response_time_ms": response_time
+                                }    
+                            )
+                    # Логируем пользовательский запрос и результат в историю
+                    await store.append(user_id, "user", user_text, global_user_id)
+                    await store.append(
+                        user_id,
+                        "model",
+                        "Показана следующая порция списка документов."
+                        if ok
+                        else "Список документов не найден.",
+                        global_user_id
+                    )
+                    return
+                # --- Пагинация: показать полный список сохранённых документов ---
+                if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
+                    # Только если это не "показать еще"
+                    ok = await handle_show_all(event, store, global_user_id, session_id, turn_id, start_time, platform)
+                    if not ok:
+                        response_time = int((time.time() - start_time) * 1000)
+                        answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                        if str(global_user_id) in RESET_USERS:
+                            logger.info(
+                                f"Пропускаем ответ после reset user={global_user_id}"
+                            )
+                            return
+                        if not await _skip_if_cancelled(global_user_id):
+                            await bot_res.send(answer)
+                            await eventlogger.log_event(
+                                event_type="response",
+                                user_id=str(global_user_id),
+                                session_id=session_id,
+                                channel=platform,
+                                payload={
+                                    "turn_id": turn_id,
+                                    "text": answer, 
+                                    "response_time_ms": response_time
+                                }    
+                            )
+                    await store.append(user_id, "user", user_text, global_user_id)
+                    await store.append(
+                        user_id,
+                        "model",
+                        "Показан полный список документов."
+                        if ok
+                        else "Список документов не найден.",
+                        global_user_id
+                    )
+                    return
+                
+                # --- Обработка запроса на скачивание файлов по номерам из списка ---
+                dl_ranks = parse_download_ranks(user_text)
+                if dl_ranks:
+                    """
+                    Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
+                    вызываем обработчик отправки файлов.
+                    """
+                    await handle_download_by_ranks(event, store, doc_handler, global_user_id, session_id, dl_ranks, turn_id, start_time, platform)
+                    await store.append(user_id, "user", user_text, global_user_id)
+                    await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.", global_user_id)
+                    return
+
+                # Синхронизируем профиль пользователя в ADK перед run()
+                await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
+                
+                # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
+                meta_before = await store.get_last_search_meta(global_user_id, session_id)
+                search_id_before = meta_before["search_id"] if meta_before else None
+                # инициализация статуса "печатает..." для пользователя
+                await bot_res.start_typing()
+                ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
+                # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
+                answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+                if asyncio.current_task().cancelled():
+                    logger.info(f"🛑 Задача отменена после ADK run: user={global_user_id}")
+                    raise asyncio.CancelledError()
+
+                # Проверка флага reset
+                if str(global_user_id) in RESET_USERS:
+                    logger.info(f"Пропускаем ответ после reset user={global_user_id}")
+                    return
+                logger.warning("END %s", time.time())
+                if str(global_user_id) in RESET_USERS:
+                    logger.info(
+                        f"Пропускаем ответ после reset user={global_user_id}"
+                    )
+                    return
+                if asyncio.current_task().cancelled():
+                    raise asyncio.CancelledError()
+                response_time = int((time.time() - start_time) * 1000)
+                work = answer or ""
+
+                # сохраняем историю диалога
                 await store.append(user_id, "user", user_text, global_user_id)
-                await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.", global_user_id)
-                return
+                await store.append(user_id, "model", answer, global_user_id)
 
-            # Синхронизируем профиль пользователя в ADK перед run()
-            await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
-            
-            # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
-            meta_before = await store.get_last_search_meta(global_user_id, session_id)
-            search_id_before = meta_before["search_id"] if meta_before else None
-            # инициализация статуса "печатает..." для пользователя
-            await bot_res.start_typing()
-            ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
-            # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-            answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
-            if asyncio.current_task().cancelled():
-                logger.info(f"🛑 Задача отменена после ADK run: user={global_user_id}")
-                raise asyncio.CancelledError()
+                bot_action = extract_bot_action(events)
+                if isinstance(bot_action, dict) and bot_action.get("type") == "send_product_kit":
+                    if work.strip():
+                        is_already_html = "<b>" in work or work.lstrip().startswith("<")
+                        final_text = work if is_already_html else markdown_to_safe_html(work)
+                        if str(global_user_id) in RESET_USERS:
+                            logger.info(
+                                f"Пропускаем ответ после reset user={global_user_id}"
+                            )
+                            return
+                        if not await _skip_if_cancelled(global_user_id):
+                            await bot_res.send(final_text)
+                            await eventlogger.log_event(
+                                event_type="response",
+                                user_id=str(global_user_id),
+                                session_id=session_id,
+                                channel=platform,
+                                payload={
+                                    "turn_id": turn_id,
+                                    "text": final_text,
+                                    "response_time_ms": response_time,
+                                },
+                            )
 
-            # Проверка флага reset
-            if str(global_user_id) in RESET_USERS:
-                logger.info(f"Пропускаем ответ после reset user={global_user_id}")
-                return
-            logger.warning("END %s", time.time())
-            if str(global_user_id) in RESET_USERS:
-                logger.info(
-                    f"Пропускаем ответ после reset user={global_user_id}"
-                )
-                return
-            if asyncio.current_task().cancelled():
-                raise asyncio.CancelledError()
-            response_time = int((time.time() - start_time) * 1000)
-            work = answer or ""
+                    await handle_product_kit_action(
+                        bot_res=bot_res,
+                        bot_action=bot_action,
+                        user_id=global_user_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        start_time=start_time,
+                        platform=platform,
+                    )
+                    return
 
-            # сохраняем историю диалога
-            await store.append(user_id, "user", user_text, global_user_id)
-            await store.append(user_id, "model", answer, global_user_id)
+                # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
+                meta_after = await store.get_last_search_meta(global_user_id, session_id)
+                search_id_after = meta_after["search_id"] if meta_after else None
+                
+                if search_id_after and search_id_after != search_id_before and meta_after:
+                    items = await store.get_last_search_results(global_user_id, session_id)
+                    if items:
+                        shown = min(max(int(meta_after.get("shown_count", 5)), 0), len(items))
+                        text_list = render_results(items[:shown], total=len(items), offset=0)
+                        if str(global_user_id) in RESET_USERS:
+                            logger.info(
+                                f"Пропускаем ответ после reset user={global_user_id}"
+                            )
+                            return
+                        if not await _skip_if_cancelled(global_user_id):
+                            await bot_res.send(text_list) # Используем наш хелпер!
+                            response_time = int((time.time() - start_time) * 1000)
+                            await eventlogger.log_event(
+                                event_type="response",
+                                user_id=str(global_user_id),
+                                session_id=session_id,
+                                channel=platform,
+                                payload={
+                                    "turn_id": turn_id,
+                                    "text": text_list,
+                                    "response_time_ms": response_time
+                                }    
+                            )
+                        return
 
-            bot_action = extract_bot_action(events)
-            if isinstance(bot_action, dict) and bot_action.get("type") == "send_product_kit":
-                if work.strip():
+                # 2. Если это просто текстовый ответ от нейронки
+                if work and work.strip():
+                    # Проверяем, нужно ли конвертировать Markdown в HTML
                     is_already_html = "<b>" in work or work.lstrip().startswith("<")
                     final_text = work if is_already_html else markdown_to_safe_html(work)
+                    response_time = int((time.time() - start_time) * 1000)
+                    # Отправляем одной командой для любой платформы!
                     if str(global_user_id) in RESET_USERS:
                         logger.info(
                             f"Пропускаем ответ после reset user={global_user_id}"
@@ -1026,135 +1077,66 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         return
                     if not await _skip_if_cancelled(global_user_id):
                         await bot_res.send(final_text)
+                    
                         await eventlogger.log_event(
-                            event_type="response",
-                            user_id=str(global_user_id),
-                            session_id=session_id,
-                            channel=platform,
-                            payload={
-                                "turn_id": turn_id,
-                                "text": final_text,
-                                "response_time_ms": response_time,
-                            },
+                            event_type="response", user_id=str(global_user_id),
+                            session_id=session_id, channel=platform,
+                            payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
                         )
+            # Блоки исключений, чтобы ответы были точнее от бота
+            except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, ConnectionResetError, ConnectionError) as e:
+                # Таймауты, обрывы сети, проблемы с HTTP-сессией ADK
+                logger.warning(f"⚠️ Сбой связи с ADK (таймаут/обрыв): {e}")
+                response_time = int((time.time() - start_time) * 1000)
+                
+                timeout_msg = (
+                    "⏳ К сожалению, база знаний сейчас недоступна или отвечает слишком долго (таймаут).\n\n"
+                    "💡 <b>Что можно сделать:</b>\n"
+                    "• Подождать немного и попробовать отправить вопрос еще раз.\n"
+                    "• Использовать команду /reset, чтобы сбросить зависшую сессию и начать заново."
+                )
+                await bot_res.send(timeout_msg)
+                await eventlogger.log_event(
+                    event_type="timeout_error", user_id=str(global_user_id), 
+                    session_id=session_id, channel=platform, 
+                    payload={"error":str(e), "response_time_ms": response_time}
+                )
 
-                await handle_product_kit_action(
-                    bot_res=bot_res,
-                    bot_action=bot_action,
-                    user_id=global_user_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    start_time=start_time,
-                    platform=platform,
+            except asyncio.CancelledError:
+                logger.info(
+                    f"🛑 Запрос cancelled user={global_user_id}"
                 )
                 return
-
-            # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
-            meta_after = await store.get_last_search_meta(global_user_id, session_id)
-            search_id_after = meta_after["search_id"] if meta_after else None
-            
-            if search_id_after and search_id_after != search_id_before and meta_after:
-                items = await store.get_last_search_results(global_user_id, session_id)
-                if items:
-                    shown = min(max(int(meta_after.get("shown_count", 5)), 0), len(items))
-                    text_list = render_results(items[:shown], total=len(items), offset=0)
-                    if str(global_user_id) in RESET_USERS:
-                        logger.info(
-                            f"Пропускаем ответ после reset user={global_user_id}"
-                        )
-                        return
-                    if not await _skip_if_cancelled(global_user_id):
-                        await bot_res.send(text_list) # Используем наш хелпер!
-                        response_time = int((time.time() - start_time) * 1000)
-                        await eventlogger.log_event(
-                            event_type="response",
-                            user_id=str(global_user_id),
-                            session_id=session_id,
-                            channel=platform,
-                            payload={
-                                "turn_id": turn_id,
-                                "text": text_list,
-                                "response_time_ms": response_time
-                            }    
-                        )
-                    return
-
-            # 2. Если это просто текстовый ответ от нейронки
-            if work and work.strip():
-                # Проверяем, нужно ли конвертировать Markdown в HTML
-                is_already_html = "<b>" in work or work.lstrip().startswith("<")
-                final_text = work if is_already_html else markdown_to_safe_html(work)
-                response_time = int((time.time() - start_time) * 1000)
-                # Отправляем одной командой для любой платформы!
+            except Exception as e:
+                logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
+                await eventlogger.log_event(
+                    event_type="error",
+                    user_id=str(global_user_id),
+                    session_id=session_id,
+                    channel=platform,
+                    payload={
+                        "error": str(e)
+                    }
+                )
                 if str(global_user_id) in RESET_USERS:
                     logger.info(
                         f"Пропускаем ответ после reset user={global_user_id}"
                     )
                     return
-                if not await _skip_if_cancelled(global_user_id):
-                    await bot_res.send(final_text)
-                
-                    await eventlogger.log_event(
-                        event_type="response", user_id=str(global_user_id),
-                        session_id=session_id, channel=platform,
-                        payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
-                    )
-        # Блоки исключений, чтобы ответы были точнее от бота
-        except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, ConnectionResetError, ConnectionError) as e:
-            # Таймауты, обрывы сети, проблемы с HTTP-сессией ADK
-            logger.warning(f"⚠️ Сбой связи с ADK (таймаут/обрыв): {e}")
-            response_time = int((time.time() - start_time) * 1000)
-            
-            timeout_msg = (
-                "⏳ К сожалению, база знаний сейчас недоступна или отвечает слишком долго (таймаут).\n\n"
-                "💡 <b>Что можно сделать:</b>\n"
-                "• Подождать немного и попробовать отправить вопрос еще раз.\n"
-                "• Использовать команду /reset, чтобы сбросить зависшую сессию и начать заново."
-            )
-            await bot_res.send(timeout_msg)
-            await eventlogger.log_event(
-                event_type="timeout_error", user_id=str(global_user_id), 
-                session_id=session_id, channel=platform, 
-                payload={"error":str(e), "response_time_ms": response_time}
-            )
-
-        except asyncio.CancelledError:
-            logger.info(
-                f"🛑 Запрос cancelled user={global_user_id}"
-            )
-            return
-        except Exception as e:
-            logger.error(f" ❌ Ошибка обработки сообщения на платформе: [{platform}] от user_id={global_user_id}: {e}", exc_info=True)
-            await eventlogger.log_event(
-                event_type="error",
-                user_id=str(global_user_id),
-                session_id=session_id,
-                channel=platform,
-                payload={
-                    "error": str(e)
-                }
-            )
-            if str(global_user_id) in RESET_USERS:
-                logger.info(
-                    f"Пропускаем ответ после reset user={global_user_id}"
+                await bot_res.send(
+                    "😔 Не удалось завершить обработку запроса.\n\n"
+                    "Попробуйте:\n"
+                    "• переформулировать вопрос;\n"
+                    "• уточнить формулировку;\n"
+                    "• использовать /reset, если проблема повторяется."
                 )
-                return
-            await bot_res.send(
-                "😔 Не удалось завершить обработку запроса.\n\n"
-                "Попробуйте:\n"
-                "• переформулировать вопрос;\n"
-                "• уточнить формулировку;\n"
-                "• использовать /reset, если проблема повторяется."
-            )
-        finally:
-            # Освобождаем блокировку
-            if user_lock.locked():
-                user_lock.release()
-            ACTIVE_REQUESTS.pop(
-                str(global_user_id),
-                None
-            )
-            await bot_res.stop_typing()
+            finally:
+                # Освобождаем блокировку
+                ACTIVE_REQUESTS.pop(
+                    str(global_user_id),
+                    None
+                )
+                await bot_res.stop_typing()
 
 # --- Универсальный Адаптер Ответов ---
 class BotResponse:
