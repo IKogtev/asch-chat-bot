@@ -95,12 +95,30 @@ async def handle_product_kit_action(
     product_code = str(bot_action.get("product_code") or "").strip()
     product_name = str(bot_action.get("product_name") or "").strip()
     folder_kit = str(bot_action.get("folder_kit") or "").strip()
+    folder_kit_root = str(bot_action.get("folder_kit_root") or "").strip()
+    # 1. Первичный поиск (в активной папке или той, что явно указал агент)
     result = get_product_kit(
         product_code=product_code,
         product_name=product_name,
         folder_kit=folder_kit,
+        folder_kit_root=folder_kit_root,
     )
-
+    logger.info(f"DEBUG what returns: {result}")
+    is_archive_fallback = False
+    # 2. Fallback: если не нашли в основной папке, автоматически ищем в архиве
+    if result["status"] in ("not_found", "empty") and folder_kit_root != "archive":
+        logger.info(
+            f"Product kit not found in primary root for code={product_code}, "
+            f"falling back to archive."
+        )
+        result = get_product_kit(
+            product_code=product_code,
+            product_name=product_name,
+            folder_kit=folder_kit,
+            folder_kit_root="archive",  # Ищем в архиве
+        )
+        if result["status"] == "ok":
+            is_archive_fallback = True
     if result["status"] != "ok":
         response_time = int((time.time() - start_time) * 1000)
         await bot_res.send(result["message"])
@@ -120,7 +138,10 @@ async def handle_product_kit_action(
             },
         )
         return False
-
+    # 3. Предупреждение, если комплект был найден именно в архиве
+    if is_archive_fallback:
+        await bot_res.send("<b>Внимание:</b> Данный продукт находится в архиве.")
+    
     sent = 0
     for file_info in result["files"]:
         await bot_res.send(
@@ -143,6 +164,7 @@ async def handle_product_kit_action(
                 "product_code": product_code,
                 "product_name": product_name,
                 "folder_kit": folder_kit,
+                "is_archive": is_archive_fallback,  # Флаг для аналитики
             },
         )
 
@@ -160,6 +182,7 @@ async def handle_product_kit_action(
             "files_sent": sent,
             "skipped_files": result.get("skipped_files", []),
             "response_time_ms": response_time,
+            "is_archive": is_archive_fallback,  # Флаг для аналитики
         },
     )
     return sent > 0

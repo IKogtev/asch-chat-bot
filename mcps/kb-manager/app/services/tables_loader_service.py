@@ -33,6 +33,7 @@ PRODUCT_INPUT_DATE_COLUMN_CANDIDATES = (
     "\u0434\u0430\u0442\u0430_\u0432\u0432\u043e\u0434\u0430_\u043f\u0440\u043e\u0434\u0443\u043a\u0442\u0430",
 )
 PRODUCT_KITS_ROOT_ENV = "PRODUCT_KITS_ROOT"
+ARCHIVE_KITS_ROOT_ENV = "ARCHIVE_KITS_ROOT"
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
 
 PRODUCT_SEARCH_COLUMNS = [
@@ -197,6 +198,7 @@ class TablesLoadResult:
     loaded_tables: list[LoadedTable]
     validation_errors: list[str]
     product_kit_folders_found: int | None = None
+    archive_product_kit_folders_found: int | None = None
     product_kit_products_total: int | None = None
     product_input_dates_from_table: int | None = None
     product_input_dates_from_kits: int | None = None
@@ -226,6 +228,7 @@ class TablesLoaderService:
             else Path(os.getenv("GLOSSARY_SOURCE_DIR", self.tables_dir.parent / "glossary"))
         )
         self.product_kit_folders_found: int | None = None
+        self.archive_product_kit_folders_found: int | None = None
         self.product_kit_products_total: int | None = None
         self.product_input_dates_from_table: int | None = None
         self.product_input_dates_from_kits: int | None = None
@@ -253,6 +256,7 @@ class TablesLoaderService:
 
         loaded_tables: list[LoadedTable] = []
         self.product_kit_folders_found = None
+        self.archive_product_kit_folders_found = None
         self.product_kit_products_total = None
         self.product_input_dates_from_table = None
         self.product_input_dates_from_kits = None
@@ -275,6 +279,7 @@ class TablesLoaderService:
             loaded_tables=loaded_tables,
             validation_errors=validation_errors,
             product_kit_folders_found=self.product_kit_folders_found,
+            archive_product_kit_folders_found=self.archive_product_kit_folders_found,
             product_kit_products_total=self.product_kit_products_total,
             product_input_dates_from_table=self.product_input_dates_from_table,
             product_input_dates_from_kits=self.product_input_dates_from_kits,
@@ -904,14 +909,21 @@ class TablesLoaderService:
 
         code_column = self._first_existing_column(df, ["code", "id", "product_id"])
         name_column = self._first_existing_column(df, ["name", "product_name"])
+        is_active_column = self._first_existing_column(
+            df,
+            ["is_active"]
+        )
+        # инициализация счетчиков
+        active_found = 0
+        archive_found = 0
         dates_from_table = 0
         dates_from_kits = 0
         dates_missing = 0
         total = 0
         kits_root_value = os.getenv(PRODUCT_KITS_ROOT_ENV, "").strip()
-        if not kits_root_value:
-            df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
-            df[PRODUCT_KIT_STATUS_COLUMN] = f"{PRODUCT_KITS_ROOT_ENV} is empty"
+        archive_root_value = os.getenv(ARCHIVE_KITS_ROOT_ENV, "").strip()
+        if not kits_root_value or code_column is None:
+            # Обработка случая, когда нет базовых настроек
             for _idx, row in df.iterrows():
                 total += 1
                 if self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN)) is not None:
@@ -919,52 +931,42 @@ class TablesLoaderService:
                 else:
                     dates_missing += 1
             self._normalize_product_input_date_column(df)
-            self.product_kit_folders_found = 0
             self.product_kit_products_total = total
-            self.product_input_dates_from_table = dates_from_table
-            self.product_input_dates_from_kits = dates_from_kits
-            self.product_input_dates_missing = dates_missing
             return df
+            
         kits_root = Path(kits_root_value)
-
-        if code_column is None:
-            df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
-            df[PRODUCT_KIT_STATUS_COLUMN] = (
-                "code column not found; expected one of ['code', 'id', 'product_id']"
-            )
-            for _idx, row in df.iterrows():
-                total += 1
-                if self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN)) is not None:
-                    dates_from_table += 1
-                else:
-                    dates_missing += 1
-            self._normalize_product_input_date_column(df)
-            self.product_kit_folders_found = 0
-            self.product_kit_products_total = total
-            self.product_input_dates_from_table = dates_from_table
-            self.product_input_dates_from_kits = dates_from_kits
-            self.product_input_dates_missing = dates_missing
-            return df
-
-        found = 0
+        archive_root = Path(archive_root_value) if archive_root_value else None
         for idx, row in df.iterrows():
+            total += 1
+            # 1. Попытка найти папку (основной + архивный)
             resolution = resolve_product_kit_folder(
                 kits_root=kits_root,
                 product_code=row.get(code_column),
                 product_name=row.get(name_column) if name_column else "",
             )
+            found_in_archive = False
+            product_status = str(row.get(is_active_column, "")).strip().lower() if is_active_column else ""
+            is_archived_product = (product_status == "архивный")
+            if resolution.folder_kit == NOT_FOUND_VALUE and is_archived_product and archive_root:
+                archive_resolution = resolve_product_kit_folder(
+                    kits_root=archive_root,
+                    product_code=row.get(code_column),
+                    product_name=row.get(name_column) if name_column else "",
+                )
+                if archive_resolution.folder_kit != NOT_FOUND_VALUE:
+                    resolution = archive_resolution
+                    found_in_archive = True
+
             df.at[idx, PRODUCT_KIT_FOLDER_COLUMN] = resolution.folder_kit
             df.at[idx, PRODUCT_KIT_STATUS_COLUMN] = resolution.folder_kit_status
-
-            current_input_date = self._coerce_product_input_date(
-                row.get(PRODUCT_INPUT_DATE_COLUMN)
-            )
+            # 2. Логика дат
+            current_input_date = self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN))
             if current_input_date is not None:
                 df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = current_input_date
                 dates_from_table += 1
             elif resolution.folder_kit != NOT_FOUND_VALUE:
                 inferred_input_date = resolve_product_input_date_from_kit(
-                    kits_root=kits_root,
+                    kits_root=archive_root if found_in_archive else kits_root,
                     folder_kit=resolution.folder_kit,
                 )
                 if inferred_input_date is not None:
@@ -975,12 +977,16 @@ class TablesLoaderService:
             else:
                 dates_missing += 1
 
-            total += 1
+            # 3. Подсчет найденных папок
             if resolution.folder_kit != NOT_FOUND_VALUE:
-                found += 1
+                if found_in_archive:
+                    archive_found += 1
+                else:
+                    active_found += 1
 
         self._normalize_product_input_date_column(df)
-        self.product_kit_folders_found = found
+        self.product_kit_folders_found = active_found
+        self.archive_product_kit_folders_found = archive_found
         self.product_kit_products_total = total
         self.product_input_dates_from_table = dates_from_table
         self.product_input_dates_from_kits = dates_from_kits

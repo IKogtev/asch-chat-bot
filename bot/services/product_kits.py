@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from typing import Any
 
 SERVICE_FILE_NAMES = {"thumbs.db", "desktop.ini", ".ds_store"}
@@ -25,11 +26,32 @@ def _resolve_inside(root: Path, child: Path) -> tuple[Path, Path]:
 
     return root_resolved, child_resolved
 
+def _file_matches_product_code(
+    path: Path,
+    product_code: str,
+) -> bool:
+    code = str(product_code).strip()
+
+    if not code:
+        return False
+
+    for match in re.finditer(
+        r"\(([^)]*)\)",
+        path.name,
+    ):
+        if re.search(
+            rf"(?<!\d){re.escape(code)}(?!\d)",
+            match.group(1),
+        ):
+            return True
+
+    return False
 
 def get_product_kit(
     product_code: str,
     product_name: str | None = None,
     folder_kit: str | None = None,
+    folder_kit_root: str | None=None,
     *,
     root: Path | None = None,
     max_files: int | None = None,
@@ -51,7 +73,10 @@ def get_product_kit(
 
     if root is None:
         settings = _settings()
-        kits_root = settings.PRODUCT_KITS_ROOT
+        if folder_kit_root=="archive":
+            kits_root = Path(settings.ARCHIVE_KITS_ROOT)
+        else:
+            kits_root = settings.PRODUCT_KITS_ROOT
         default_max_files = settings.PRODUCT_KITS_MAX_FILES
         default_max_file_size_mb = settings.PRODUCT_KITS_MAX_FILE_SIZE_MB
     else:
@@ -75,24 +100,82 @@ def get_product_kit(
             "files": [],
             "skipped_files": [],
         }
+    if not folder.exists() or not folder.is_dir():
+        # Ищем любую папку внутри kits_root, в названии которой есть код продукта, например "(7698)"
+        fallback_folder = None
+        if normalized_product_code:
+            for candidate in kits_root.rglob(f"*({normalized_product_code})*"):
+                if candidate.is_dir():
+                    fallback_folder = candidate
+                    break
+                    
+        if fallback_folder:
+            # Подменяем путь на найденный
+            try:
+                root_resolved, folder = _resolve_inside(kits_root, fallback_folder)
+                folder_name = str(fallback_folder.relative_to(kits_root))
+            except ValueError:
+                pass # Если путь невалидный, просто идем дальше и вернем not_found
 
+    # Если даже fallback не помог, возвращаем not_found
     if not folder.exists() or not folder.is_dir():
         return {
             "status": "not_found",
             "product_code": normalized_product_code,
             "product_name": normalized_product_name,
             "folder": str(folder),
-            "message": "Комплект для продукта пока не загружен.",
+            "message": f"Комплект для продукта пока не загружен.",
             "files": [],
             "skipped_files": [],
         }
+    # Сценарий №1:
+    # внутри folder лежит отдельная папка продукта
+    matching_product_dirs = [
+        child
+        for child in folder.iterdir()
+        if child.is_dir()
+        and _file_matches_product_code(
+            Path(child.name),
+            normalized_product_code,
+        )
+    ]
+
+    if matching_product_dirs:
+        folder = matching_product_dirs[0]
 
     files: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    # Если отдельной папки продукта нет,
+    # считаем что работаем в режиме
+    # "файлы лежат непосредственно в папке"
+    filter_by_product_code = (
+        len(matching_product_dirs) == 0
+    )
+   
+    candidate_files = sorted(
+        [
+            item
+            for item in folder.rglob("*")
+            if item.is_file()
+        ],
+        key=lambda path: str(path).lower(),
+    )
 
-    for item in sorted(folder.iterdir(), key=lambda path: path.name.lower()):
+    for item in candidate_files:
         if not item.is_file():
             continue
+        if not _file_matches_product_code(
+            item,
+            normalized_product_code,
+        ):
+            continue
+        if filter_by_product_code:
+
+            if not _file_matches_product_code(
+                item,
+                normalized_product_code,
+            ):
+                continue
 
         if _is_hidden_or_service_file(item):
             skipped.append({"path": str(item), "reason": "hidden_or_service"})
