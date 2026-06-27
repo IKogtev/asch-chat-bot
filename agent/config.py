@@ -61,6 +61,8 @@ DIALOG_STATE_KEYS = (
     "pending_clarification",
     "session_intro_done",
     "smalltalk_kind",
+    "active_product",
+    "last_user_query",
 )
 # Сколько документов показывать в первом ответе и шаг «ещё»
 DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")))

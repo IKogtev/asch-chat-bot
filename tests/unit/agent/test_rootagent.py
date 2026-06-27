@@ -51,7 +51,25 @@ def _load_rootagent_module():
     dialogue_manager_stub.adjust_dispatch = lambda dispatch, user_text, session_state: dispatch
     dialogue_manager_stub.classify_smalltalk_kind = lambda user_text: "other"
     dialogue_manager_stub.is_social_smalltalk = lambda user_text: False
+    dialogue_manager_stub.should_use_social_fast_path = lambda user_text: False
     dialogue_manager_stub.render_smalltalk_reply = lambda *a, **k: None
+    dialogue_manager_stub.resolve_context_followup = lambda session_state, user_text: None
+    dialogue_manager_stub.extract_dialog_state_delta = lambda session_state: {
+        key: session_state[key]
+        for key in (
+            "dialog_phase",
+            "dialog_topic",
+            "smalltalk_turns",
+            "last_route",
+            "last_cta",
+            "pending_clarification",
+            "session_intro_done",
+            "smalltalk_kind",
+            "active_product",
+            "last_user_query",
+        )
+        if key in session_state
+    }
 
     smart_fallback_stub = types.ModuleType("agent.smart_fallback")
     smart_fallback_stub.generate_agent_fallback = lambda *a, **k: "fallback"
@@ -489,6 +507,26 @@ def test_build_final_event_includes_product_dialog_context_state_delta() -> None
     assert event.actions.state_delta == {
         rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: product_dialog_context,
     }
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_dialog_state_delta() -> None:
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            "session_intro_done": True,
+            "active_product": "Fort Knox",
+            "last_user_query": "Расскажи про Fort Knox",
+            "ignored_key": "x",
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta["session_intro_done"] is True
+    assert event.actions.state_delta["active_product"] == "Fort Knox"
+    assert event.actions.state_delta["last_user_query"] == "Расскажи про Fort Knox"
+    assert "ignored_key" not in event.actions.state_delta
 
 
 @pytest.mark.unit

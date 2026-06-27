@@ -1,0 +1,36 @@
+{
+  "id": "real-14",
+  "title": "Filter → код → комплект",
+  "description": "Plan 004 / product pipeline: product_filter, выбор кода, follow-up «комплект» без повторного filter.",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "product_selection", "follow_up", "product_kit", "requires_mcp"],
+  "requires_mcp": ["DBHUB_MCP_URL"],
+  "turns": [
+    {
+      "user": "Покажи продукты на 1 год в рублях",
+      "notes": "product_filter",
+      "expect_route": "product_selection",
+      "expect_intent": "product_filter"
+    },
+    {
+      "user": "8914",
+      "notes": "короткий код после списка",
+      "expect_route": "product_selection"
+    },
+    {
+      "user": "Пришли комплект документов по этому продукту",
+      "notes": "product_kit follow-up из контекста",
+      "expect_route": "product_selection",
+      "expect_intent": "product_kit"
+    },
+    {
+      "user": "Спасибо",
+      "notes": "smalltalk",
+      "expect_not_contains": ["Дмитрий"]
+    }
+  ]
+}

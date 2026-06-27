@@ -1,0 +1,35 @@
+{
+  "id": "real-18",
+  "title": "Вернулся — без повторного intro",
+  "description": "Plan 004: defer «позже вернусь», потом новый заход — без «Я Настя…» и без name spam.",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "session", "smalltalk", "defer"],
+  "max_name_in_replies": 1,
+  "turns": [
+    {
+      "user": "Доброе утро",
+      "notes": "intro один раз",
+      "expect_contains": ["Настя"]
+    },
+    {
+      "user": "Позже вернусь с вопросом по продукту",
+      "notes": "defer",
+      "expect_not_contains": ["Дмитрий"]
+    },
+    {
+      "user": "Привет, снова на связи",
+      "notes": "повторное приветствие — без full intro",
+      "expect_not_contains": ["Я Настя", "ваш помощник", "Рада, что вы", "Дмитрий"]
+    },
+    {
+      "user": "Что такое ГСС?",
+      "notes": "рабочий вопрос после return",
+      "expect_contains": ["ГСС"],
+      "expect_not_contains": ["Дмитрий"]
+    }
+  ]
+}

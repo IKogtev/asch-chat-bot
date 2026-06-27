@@ -14,6 +14,8 @@ DIALOG_STATE_KEYS = (
     "pending_clarification",
     "session_intro_done",
     "smalltalk_kind",
+    "active_product",
+    "last_user_query",
 )
 
 _SMALLTALK_REDIRECT = (
@@ -156,6 +158,27 @@ _CLARIFICATION_ANSWER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_WORK_IN_SOCIAL_RE = re.compile(
+    r"(?:"
+    r"что\s+такое|чем\s+отлича|расскаж|покаж|документ|продукт|"
+    r"гсс\b|fort\s*knox|\bfn\b|\b\d{3,}\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_CONTEXT_FOLLOWUP_RE = re.compile(
+    r"(?:"
+    r"плюс|минус|срок|услов|для\s+клиент|"
+    r"короче|минимальн|рекоменду|"
+    r"а\s+по\s+|"
+    r"что\s+обычно|"
+    r"уточн|подробн|ещё|еще"
+    r")",
+    re.IGNORECASE,
+)
+
+_ELLIPSIS_PREFIX_RE = re.compile(r"^\s*(?:а|и|ну|короче)\b", re.IGNORECASE)
+
 
 @dataclass
 class DialogState:
@@ -166,6 +189,8 @@ class DialogState:
     last_cta: str = ""
     pending_clarification: bool = False
     session_intro_done: bool = False
+    active_product: str = ""
+    last_user_query: str = ""
 
 
 def _read_state(session_state: Dict[str, Any]) -> DialogState:
@@ -177,6 +202,8 @@ def _read_state(session_state: Dict[str, Any]) -> DialogState:
         last_cta=str(session_state.get("last_cta") or ""),
         pending_clarification=bool(session_state.get("pending_clarification")),
         session_intro_done=bool(session_state.get("session_intro_done")),
+        active_product=str(session_state.get("active_product") or ""),
+        last_user_query=str(session_state.get("last_user_query") or ""),
     )
 
 
@@ -188,6 +215,28 @@ def _write_state(session_state: Dict[str, Any], state: DialogState) -> None:
     session_state["last_cta"] = state.last_cta
     session_state["pending_clarification"] = state.pending_clarification
     session_state["session_intro_done"] = state.session_intro_done
+    session_state["active_product"] = state.active_product
+    session_state["last_user_query"] = state.last_user_query
+
+
+def extract_dialog_state_delta(session_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist dialogue slots between ADK turns via stateDelta."""
+    delta: Dict[str, Any] = {}
+    for key in DIALOG_STATE_KEYS:
+        if key in session_state:
+            delta[key] = session_state[key]
+    return delta
+
+
+def _extract_active_product(*sources: str) -> str:
+    for source in sources:
+        text = (source or "").strip()
+        if not text:
+            continue
+        match = _PRODUCT_NAME_RE.search(text)
+        if match:
+            return match.group(0)
+    return ""
 
 
 def _with_name(first_name: str, message: str) -> str:
@@ -228,6 +277,13 @@ def _pick_variant(
     turn_index: int = 0,
 ) -> str:
     return variants[_variant_index(seed, turn_index, len(variants))]
+
+
+def should_use_social_fast_path(user_text: str) -> bool:
+    """Social-only messages — skip when same turn has a work query."""
+    if not is_social_smalltalk(user_text):
+        return False
+    return not bool(_WORK_IN_SOCIAL_RE.search(user_text or ""))
 
 
 def is_social_smalltalk(user_text: str) -> bool:
@@ -299,6 +355,10 @@ def adjust_dispatch(
     if followup:
         return followup
 
+    context_followup = resolve_context_followup(session_state, user_text)
+    if context_followup:
+        return context_followup
+
     if is_social_smalltalk(text):
         out["route"] = "kb_answer"
         out["intent"] = "smalltalk"
@@ -310,6 +370,49 @@ def adjust_dispatch(
         out["intent"] = "smalltalk"
         out["search_query"] = ""
     return out
+
+
+def _is_context_followup_text(text: str, state: DialogState) -> bool:
+    normalized = (text or "").strip()
+    if not normalized or len(normalized.split()) > 15:
+        return False
+    if state.last_route != "kb_answer":
+        return False
+    if not (state.active_product or state.dialog_topic or state.last_user_query):
+        return False
+    if _CONTEXT_FOLLOWUP_RE.search(normalized):
+        return True
+    if len(normalized.split()) <= 10 and _ELLIPSIS_PREFIX_RE.search(normalized):
+        return True
+    if len(normalized.split()) <= 8 and "?" in normalized:
+        product_in_text = _extract_active_product(normalized)
+        if product_in_text and product_in_text.lower() != (state.active_product or "").lower():
+            return False
+        return True
+    return False
+
+
+def resolve_context_followup(
+    session_state: Dict[str, Any],
+    user_text: str,
+) -> Optional[Dict[str, Any]]:
+    """Short follow-up in same kb topic — e.g. «по срокам», «короче»."""
+    state = _read_state(session_state)
+    text = (user_text or "").strip()
+    if not _is_context_followup_text(text, state):
+        return None
+    if is_social_smalltalk(text) and not _CONTEXT_FOLLOWUP_RE.search(text):
+        return None
+
+    topic = state.active_product or state.last_user_query or state.dialog_topic[:80]
+    search_query = f"{topic} {text}".strip()
+    return {
+        "status": "ok",
+        "route": "kb_answer",
+        "intent": "kb_answer",
+        "reason": "context_followup",
+        "search_query": search_query,
+    }
 
 
 def resolve_clarification_followup(
@@ -387,6 +490,30 @@ def render_smalltalk_reply(
         return _pick_variant(_OTHER_SOCIAL, seed=seed, turn_index=turn_idx)
 
     return None
+
+
+def apply_name_budget(
+    message: str,
+    session_state: Dict[str, Any],
+    first_name: str,
+    *,
+    allow_name: bool = False,
+) -> str:
+    """Strip «Имя,» after first intro — name budget in code, not prompt-only."""
+    if allow_name:
+        return message
+    name = (first_name or "").strip()
+    if not name or name.lower() == "unknown":
+        return message
+    if not _read_state(session_state).session_intro_done:
+        return message
+    pattern = rf"^\s*{re.escape(name)}\s*,\s*"
+    stripped = re.sub(pattern, "", message or "", count=1, flags=re.IGNORECASE)
+    if stripped != message:
+        stripped = stripped.lstrip()
+        if stripped and stripped[0].islower():
+            stripped = stripped[0].upper() + stripped[1:]
+    return stripped
 
 
 def mark_session_intro_done(session_state: Dict[str, Any], *, kind: str) -> None:
@@ -474,6 +601,11 @@ def update_dialog_state(
         state.smalltalk_turns = 0
         if route == "kb_answer" and intent == "kb_answer":
             state.dialog_topic = (content_message or "")[:120]
+            product = _extract_active_product(user_text, dispatch.get("search_query", ""), content_message)
+            if product:
+                state.active_product = product
+            if user_text:
+                state.last_user_query = user_text.strip()
 
     if intent == "needs_clarification":
         state.pending_clarification = True
@@ -506,9 +638,20 @@ def apply_steering(
     user_text: str,
     draft_message: str,
     content_mode: str = "text_answer",
+    first_name: str = "",
 ) -> str:
     """Apply smalltalk limit, CTA, update state; return final draft text."""
     state = _read_state(session_state)
+    draft_message = apply_name_budget(
+        draft_message,
+        session_state,
+        first_name,
+        allow_name=(
+            dispatch.get("intent") == "smalltalk"
+            and classify_smalltalk_kind(user_text) == "greeting"
+            and not state.session_intro_done
+        ),
+    )
     route = str(dispatch.get("route") or "")
     intent = str(dispatch.get("intent") or "")
 

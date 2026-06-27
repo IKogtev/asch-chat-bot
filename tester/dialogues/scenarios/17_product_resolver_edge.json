@@ -1,0 +1,32 @@
+{
+  "id": "real-17",
+  "title": "Resolver: код и опечатка продукта",
+  "description": "Plan 004 / product_resolver: код 8914 и разговорное «fort knox» / «fn».",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "product_resolver", "product_selection"],
+  "turns": [
+    {
+      "user": "8914",
+      "notes": "только код — карточка или уточнение",
+      "expect_route": "product_selection"
+    },
+    {
+      "user": "Покажи карточку fort knox",
+      "notes": "латиница, lower case",
+      "expect_route": "product_selection"
+    },
+    {
+      "user": "fn — какие условия?",
+      "notes": "аббревиатура + kb-style вопрос"
+    },
+    {
+      "user": "Спасибо, достаточно",
+      "notes": "defer/thanks",
+      "expect_not_contains": ["Дмитрий"]
+    }
+  ]
+}

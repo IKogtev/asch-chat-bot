@@ -28,9 +28,12 @@ from .dialogue.manager import (
     adjust_dispatch,
     apply_steering,
     classify_smalltalk_kind,
+    extract_dialog_state_delta,
     is_social_smalltalk,
     render_smalltalk_reply,
+    resolve_context_followup,
     should_clarify,
+    should_use_social_fast_path,
 )
 from .dialogue.fact_guard import validate_voice
 from .agents.voice_agent import validate_voice_result
@@ -191,6 +194,7 @@ class RootAgent(BaseAgent):
         product_dialog_context = session_state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY)
         if isinstance(product_dialog_context, dict):
             state_delta[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = product_dialog_context
+        state_delta.update(extract_dialog_state_delta(session_state))
 
         actions = EventActions(end_of_agent=True)
         actions.state_delta = state_delta
@@ -863,12 +867,14 @@ class RootAgent(BaseAgent):
         """Apply dialogue steering and optional voice layer."""
         result = format_text_answer(draft)
         if DIALOGUE_MANAGER_ENABLED:
+            profile = self._get_user_profile(ctx)
             result = apply_steering(
                 ctx.session.state,
                 dispatch=dispatch,
                 user_text=user_text,
                 draft_message=result,
                 content_mode=content_mode,
+                first_name=str(profile.get("first_name") or ""),
             )
 
         voice_eligible = (
@@ -923,7 +929,7 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event(ctx, "")
                 return
 
-            if DIALOGUE_MANAGER_ENABLED and is_social_smalltalk(user_text):
+            if DIALOGUE_MANAGER_ENABLED and should_use_social_fast_path(user_text):
                 dispatch = validate_dispatcher_result(
                     {
                         "status": "ok",
@@ -1013,6 +1019,17 @@ class RootAgent(BaseAgent):
             # 2. Если не явный, проверяем контекст диалога (follow-up)
             if not dispatch:
                 dispatch = self._product_followup_dispatch(ctx, user_text)
+            if not dispatch:
+                context_followup = resolve_context_followup(dict(ctx.session.state), user_text)
+                if context_followup:
+                    dispatch = validate_dispatcher_result(
+                        context_followup,
+                        dict(ctx.session.state),
+                    )
+                    logger.info(
+                        "Dispatcher skipped (context followup): search_query=%s",
+                        dispatch.get("search_query"),
+                    )
                 
             if dispatch:
                 ctx.session.state["_dispatcher_result_parsed"] = dispatch

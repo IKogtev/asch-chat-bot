@@ -1,0 +1,31 @@
+{
+  "id": "real-16",
+  "title": "Три off-topic → redirect",
+  "description": "Plan 004 / steering: три chitchat подряд → мягкий redirect к работе (real-05 расширение).",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "steering", "smalltalk", "redirect"],
+  "turns": [
+    {
+      "user": "Как дела?",
+      "notes": "chitchat 1 — fast-path, route в metrics null"
+    },
+    {
+      "user": "Что нового?",
+      "notes": "chitchat 2"
+    },
+    {
+      "user": "Поболтаем?",
+      "notes": "chitchat 3 — redirect или LLM smalltalk",
+      "expect_contains": ["продукт"]
+    },
+    {
+      "user": "Ок, покажи документы по Fort Knox",
+      "notes": "рабочий запрос после chitchat — route зависит от MCP",
+      "expect_not_contains": ["не понял", "не смог"]
+    }
+  ]
+}

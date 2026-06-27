@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -60,6 +61,8 @@ class TurnSpec:
     notes: str = ""
     expect_contains: tuple[str, ...] = ()
     expect_not_contains: tuple[str, ...] = ()
+    expect_route: str = ""
+    expect_intent: str = ""
 
 
 @dataclass
@@ -71,6 +74,8 @@ class DialogueScenario:
     tags: list[str]
     turns: list[TurnSpec]
     source_file: str
+    max_name_in_replies: Optional[int] = None
+    requires_mcp: tuple[str, ...] = ()
 
 
 def _parse_turn(raw: dict[str, Any]) -> TurnSpec:
@@ -79,6 +84,8 @@ def _parse_turn(raw: dict[str, Any]) -> TurnSpec:
         notes=str(raw.get("notes") or ""),
         expect_contains=tuple(raw.get("expect_contains") or ()),
         expect_not_contains=tuple(raw.get("expect_not_contains") or ()),
+        expect_route=str(raw.get("expect_route") or "").strip(),
+        expect_intent=str(raw.get("expect_intent") or "").strip(),
     )
 
 
@@ -90,6 +97,9 @@ def load_scenario(path: Path) -> DialogueScenario:
     for t in turns:
         if not t.user:
             raise ValueError(f"{path.name}: turn with empty user")
+    raw_max_name = data.get("max_name_in_replies")
+    max_name = int(raw_max_name) if raw_max_name is not None else None
+    requires_mcp = tuple(str(x) for x in (data.get("requires_mcp") or ()))
     return DialogueScenario(
         id=str(data.get("id") or path.stem),
         title=str(data.get("title") or path.stem),
@@ -98,6 +108,8 @@ def load_scenario(path: Path) -> DialogueScenario:
         tags=list(data.get("tags") or []),
         turns=turns,
         source_file=path.name,
+        max_name_in_replies=max_name,
+        requires_mcp=requires_mcp,
     )
 
 
@@ -144,6 +156,17 @@ def build_profile(default_persona: dict[str, str], scenario: DialogueScenario) -
 def _check_contains(text: str, parts: tuple[str, ...]) -> bool:
     lower = (text or "").lower()
     return all(p.lower() in lower for p in parts)
+
+
+def _count_name_in_replies(turns: list[TurnRecord], first_name: str) -> int:
+    if not first_name:
+        return 0
+    pattern = re.compile(rf"\b{re.escape(first_name.lower())}\b")
+    count = 0
+    for t in turns:
+        if t.answer and pattern.search(t.answer.lower()):
+            count += 1
+    return count
 
 
 def _check_not_contains(text: str, parts: tuple[str, ...]) -> bool:
@@ -227,13 +250,27 @@ def run_scenario(
                     tr.checks["contains"] = _check_contains(answer, turn.expect_contains)
                 if turn.expect_not_contains:
                     tr.checks["not_contains"] = _check_not_contains(answer, turn.expect_not_contains)
+                if turn.expect_route:
+                    tr.checks["route"] = (tr.metrics.route or "") == turn.expect_route
+                if turn.expect_intent:
+                    tr.checks["intent"] = (tr.metrics.intent or "") == turn.expect_intent
             except Exception as exc:
                 tr.error = str(exc)
             record.turns.append(tr)
 
+        if scenario.max_name_in_replies is not None:
+            name_count = _count_name_in_replies(record.turns, profile.get("first_name", ""))
+            record.turns[-1].checks["max_name"] = name_count <= scenario.max_name_in_replies
+
         checks = [v for t in record.turns for v in t.checks.values()]
         errors = [t for t in record.turns if t.error]
-        record.passed = not errors and all(checks) if checks else not errors
+        mcp_missing = any(
+            not os.getenv(env, "").strip() for env in scenario.requires_mcp
+        )
+        if mcp_missing and scenario.requires_mcp:
+            record.passed = not errors
+        else:
+            record.passed = not errors and all(checks) if checks else not errors
     finally:
         client.delete_session(user_id, session_id)
     return record

@@ -1,0 +1,31 @@
+{
+  "id": "real-15",
+  "title": "Контекст: «по срокам» и «короче»",
+  "description": "Plan 004 / context slots: после темы Fort Knox короткие follow-up не должны уходить в smalltalk или dispatcher fallback.",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "context", "kb_answer", "follow_up"],
+  "turns": [
+    {
+      "user": "Расскажи про Fort Knox",
+      "notes": "прямой продуктовый запрос"
+    },
+    {
+      "user": "Какие плюсы для клиента?",
+      "notes": "уточнение в той же теме"
+    },
+    {
+      "user": "А по срокам — что обычно рекомендуете?",
+      "notes": "ellipsis follow-up — plan 004 target",
+      "expect_not_contains": ["не понял", "не смог", "🔍"]
+    },
+    {
+      "user": "Короче, минимальный срок?",
+      "notes": "разговорное сокращение",
+      "expect_not_contains": ["не понял", "не смог", "🔍"]
+    }
+  ]
+}

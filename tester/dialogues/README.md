@@ -62,7 +62,27 @@ python tester/dialogues/compare_runs.py latest
 | real-10 | 10_end_of_day_wrap.json | конец дня |
 | real-11 | 11_long_work_session.json | длинная сессия (~12 turns) |
 
-## Tuning workflow
+### Plan 004 (hybrid dispatcher + regression)
+
+| ID | Файл | Фокус |
+|----|------|-------|
+| real-12 | 12_name_budget.json | имя ≤1 / social |
+| real-13 | 13_greeting_plus_kb.json | привет + ГСС в одном turn |
+| real-14 | 14_product_kit_followup.json | filter → код → комплект |
+| real-15 | 15_context_followup_shorthand.json | «по срокам», «короче» |
+| real-16 | 16_offtopic_redirect.json | 3× chitchat → redirect |
+| real-17 | 17_product_resolver_edge.json | код / fort knox / fn |
+| real-18 | 18_return_without_reintro.json | defer → return без intro |
+
+Checks в JSON turn:
+- `expect_contains` / `expect_not_contains`
+- `expect_route` / `expect_intent` — из dispatcher events
+
+Checks на сценарий:
+- `max_name_in_replies` — лимит упоминаний `first_name` в ответах
+
+План: `plans/004-hybrid-dispatcher-proactive-dialogue.md`
+
 
 1. Прогон → `runs/<id>/summary.md`
 2. Смотреть `routing/` — drift route/intent

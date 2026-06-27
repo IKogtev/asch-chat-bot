@@ -161,3 +161,83 @@ def test_fact_guard_accepts_safe_rephrase() -> None:
 def test_extract_anchors(text, expected_subset) -> None:
     anchors = fact_guard.extract_anchors(text)
     assert expected_subset.issubset(anchors)
+
+
+@pytest.mark.unit
+def test_should_use_social_fast_path_skips_work_query() -> None:
+    assert manager.should_use_social_fast_path("Привет") is True
+    assert manager.should_use_social_fast_path("Настя, что такое ГСС?") is False
+
+
+@pytest.mark.unit
+def test_resolve_context_followup_fort_knox() -> None:
+    session = {
+        "last_route": "kb_answer",
+        "active_product": "Fort Knox",
+        "last_user_query": "Расскажи про Fort Knox",
+    }
+    out = manager.resolve_context_followup(session, "А по срокам — что обычно рекомендуете?")
+    assert out is not None
+    assert out["intent"] == "kb_answer"
+    assert "Fort Knox" in out["search_query"]
+    assert "срокам" in out["search_query"].lower()
+
+
+@pytest.mark.unit
+def test_resolve_context_followup_shorthand() -> None:
+    session = {
+        "last_route": "kb_answer",
+        "active_product": "Fort Knox",
+        "last_user_query": "Расскажи про Fort Knox",
+    }
+    out = manager.resolve_context_followup(session, "Короче, минимальный срок?")
+    assert out is not None
+    assert "Fort Knox" in out["search_query"]
+
+
+@pytest.mark.unit
+def test_extract_dialog_state_delta() -> None:
+    session = {"session_intro_done": True, "active_product": "Fort Knox", "noise": 1}
+    delta = manager.extract_dialog_state_delta(session)
+    assert delta["session_intro_done"] is True
+    assert delta["active_product"] == "Fort Knox"
+    assert "noise" not in delta
+
+
+@pytest.mark.unit
+def test_apply_name_budget_strips_after_intro() -> None:
+    session = {"session_intro_done": True}
+    out = manager.apply_name_budget(
+        "Дмитрий, уточните продукт.",
+        session,
+        "Дмитрий",
+    )
+    assert out == "Уточните продукт."
+    assert "Дмитрий" not in out
+
+
+@pytest.mark.unit
+def test_apply_name_budget_allows_first_greeting() -> None:
+    session = {"session_intro_done": False}
+    out = manager.apply_name_budget(
+        "Дмитрий, здравствуйте!",
+        session,
+        "Дмитрий",
+        allow_name=True,
+    )
+    assert "Дмитрий" in out
+
+
+@pytest.mark.unit
+def test_render_smalltalk_marks_intro_via_state_delta_path() -> None:
+    session: dict = {}
+    reply = manager.render_smalltalk_reply(session, "Доброе утро", first_name="Дмитрий")
+    assert "Настя" in reply
+    assert session.get("session_intro_done") is not True
+    manager.update_dialog_state(
+        session,
+        dispatch={"route": "kb_answer", "intent": "smalltalk"},
+        content_message=reply,
+        user_text="Доброе утро",
+    )
+    assert session.get("session_intro_done") is True

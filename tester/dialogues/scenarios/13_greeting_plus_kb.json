@@ -1,0 +1,29 @@
+{
+  "id": "real-13",
+  "title": "Привет и вопрос в одном сообщении",
+  "description": "Plan 004: greeting + kb_answer в одном turn — не smalltalk, не повторный intro.",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "dispatcher", "kb_answer", "greeting"],
+  "turns": [
+    {
+      "user": "Настя, что такое ГСС?",
+      "notes": "обращение + термин (не чистое «привет» — иначе fast-path greeting)",
+      "expect_contains": ["ГСС"],
+      "expect_not_contains": ["ваш помощник"]
+    },
+    {
+      "user": "Настя, подскажи — чем отличается от инвестиционного?",
+      "notes": "follow-up сравнение",
+      "expect_not_contains": ["Я Настя —"]
+    },
+    {
+      "user": "Понятно, спасибо",
+      "notes": "короткое закрытие",
+      "expect_not_contains": ["Дмитрий"]
+    }
+  ]
+}

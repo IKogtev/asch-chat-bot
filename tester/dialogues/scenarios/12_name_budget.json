@@ -1,0 +1,35 @@
+{
+  "id": "real-12",
+  "title": "Имя — не в каждой реплике",
+  "description": "Plan 004 / name budget: имя только в первом приветствии, не в thanks/capabilities/farewell.",
+  "persona": {
+    "first_name": "Дмитрий",
+    "last_name": "Иванов",
+    "full_name": "Дмитрий Иванов"
+  },
+  "tags": ["plan004", "name_budget", "smalltalk"],
+  "max_name_in_replies": 1,
+  "turns": [
+    {
+      "user": "Доброе утро",
+      "notes": "первое приветствие — имя допустимо",
+      "expect_contains": ["Настя"]
+    },
+    {
+      "user": "Спасибо",
+      "notes": "благодарность без имени",
+      "expect_not_contains": ["Дмитрий"]
+    },
+    {
+      "user": "Что ты умеешь?",
+      "notes": "capabilities без имени",
+      "expect_not_contains": ["Дмитрий"],
+      "expect_contains": ["АСЖ"]
+    },
+    {
+      "user": "Хорошего дня",
+      "notes": "прощание без имени",
+      "expect_not_contains": ["Дмитрий"]
+    }
+  ]
+}
