@@ -29,6 +29,11 @@ pipeline {
       ],
       description: 'Google ADK Agent API URL'
     )
+    string(
+      name: 'ADK_TIMEOUT_SEC',
+      defaultValue: '180',
+      description: 'Optional ADK API timeout in seconds (default: 180 seconds)'
+    )
   }
 
   options {
@@ -50,7 +55,7 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: adk-agent-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.5-amd64
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.6-amd64
                   command:
                     - cat
                   tty: true
@@ -64,6 +69,7 @@ pipeline {
         ADK_API_BASE = "http://adk-agent.${params.ADK_API_BASE}:8000"
         ADK_APP_NAME = "agent"
         ADK_TEST_FIRST_NAME = "Jenkins"
+        ADK_TIMEOUT_SEC = "${params.ADK_TIMEOUT_SEC}"
 
         // Evaluator LLM
         LLM_API_URL = "${params.LLM_API_URL}"

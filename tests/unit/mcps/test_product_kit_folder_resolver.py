@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -129,3 +130,41 @@ def test_resolve_product_kit_folder_requires_exact_code_marker(tmp_path) -> None
     )
 
     assert result.folder_kit == resolver.NOT_FOUND_VALUE
+
+
+@pytest.mark.unit
+def test_latest_date_from_name_ignores_invalid_dates() -> None:
+    assert resolver.dates_from_name("file 31.02.26 and 08.04.26.pdf") == [date(2026, 4, 8)]
+
+
+@pytest.mark.unit
+def test_resolve_product_input_date_uses_folder_date_first(tmp_path) -> None:
+    folder = tmp_path / "Fort Knox" / "Fort Knox 1 year 12,7% (8914) 20.05.26"
+    folder.mkdir(parents=True)
+    (folder / "presenter 25.05.26.pdf").write_text("x", encoding="utf-8")
+
+    result = resolver.resolve_product_input_date_from_kit(
+        kits_root=tmp_path,
+        folder_kit="Fort Knox/Fort Knox 1 year 12,7% (8914) 20.05.26",
+    )
+
+    assert result == date(2026, 5, 20)
+
+
+@pytest.mark.unit
+def test_resolve_product_input_date_uses_latest_nested_file_date(tmp_path) -> None:
+    folder = tmp_path / "DSZH" / "Protected shares 5 years (8542)"
+    nested = folder / "mobile"
+    nested.mkdir(parents=True)
+    (folder / "old 08.04.26.pdf").write_text("x", encoding="utf-8")
+    (nested / "Protected shares 5 years (8542) mobile presenter 20.05.26.pdf").write_text(
+        "x",
+        encoding="utf-8",
+    )
+
+    result = resolver.resolve_product_input_date_from_kit(
+        kits_root=tmp_path,
+        folder_kit="DSZH/Protected shares 5 years (8542)",
+    )
+
+    assert result == date(2026, 5, 20)

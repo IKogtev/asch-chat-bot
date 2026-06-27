@@ -41,9 +41,9 @@ __pycache__
 
 # Adk agent tester
 *.xlsx
-*.png
 *.csv
 *.parquet
+*.html
 
 # Next.js / Copilot web (generated & deps — do not commit)
 web/copilot-web/node_modules/

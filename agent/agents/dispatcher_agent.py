@@ -2,7 +2,8 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-
+from google.genai.types import GenerateContentConfig
+from ..config import DISPATCHER_TEMPERATURE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -33,7 +34,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - `route` один из `doc_search`, `kb_answer`, `product_selection`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
       `kb_answer`, `smalltalk`, `needs_clarification`, `product_card`, `product_kit`, `product_filter`,
-      `product_compare`;
+      `product_compare`, `product_attribute_values`;
     - `reason` обязателен всегда.
 
     Семантические правила:
@@ -64,6 +65,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
         "product_kit",
         "product_filter",
         "product_compare",
+        "product_attribute_values",
     }
     allowed_intents = doc_route_intents | kb_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}
@@ -238,12 +240,17 @@ High-priority product-card rule: if the latest user message asks to show, open, 
 """
     prompt_file = "dispatcher_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
+    name = "dispatcher_agent"
+    logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")
     agent = LlmAgent(
-        name="dispatcher_agent",
+        name=name,
         model=model,
         instruction=instruction,
         include_contents="none",
         output_key="dispatcher_result_json",
+        generate_content_config=GenerateContentConfig(
+            temperature=DISPATCHER_TEMPERATURE,
+        )
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

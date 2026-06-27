@@ -96,6 +96,7 @@ services:
       - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
       - KB_TOP_K=${KB_TOP_K:-20}
+      - ROOT_TEMPERATURE=0.2
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
@@ -154,11 +155,12 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.5
+      - PLATFORM_VERSION=0.7.6
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
+      - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
       - KB_TOP_K=${KB_TOP_K:-20}
@@ -195,11 +197,12 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.5
+      - PLATFORM_VERSION=0.7.6
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
+      - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
       - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
@@ -250,7 +253,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
-      - PLATFORM_VERSION=0.7.5
+      - PLATFORM_VERSION=0.7.6
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -262,6 +265,7 @@ services:
       - NSTYA_DATA_SOURCE_DIR=/app/data/kb_documents/manager/tables
       - GLOSSARY_SOURCE_DIR=/app/data/kb_documents/manager/glossary
       - PRODUCT_KITS_ROOT=/app/data/kb_documents/manager/kb/1 Продукты
+      - ARCHIVE_KITS_ROOT=/app/data/kb_documents/manager/kb/6 Архив
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
@@ -355,7 +359,7 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=20
-      - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-10}
+      - SIMILARITY_TOP_K=${FAQ_SIMILARITY_TOP_K:-5}
       - SIMILARITY_CUTOFF=${FAQ_SIMILARITY_CUTOFF:-0.5}
       
       - QDRANT_HOST=qdrant
@@ -460,6 +464,7 @@ services:
       - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
       - KB_TOP_K=${KB_TOP_K:-20}
+      - ROOT_TEMPERATURE=0.2
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
