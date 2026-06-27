@@ -48,6 +48,13 @@ def _load_rootagent_module():
     dialogue_manager_stub = types.ModuleType("agent.dialogue.manager")
     dialogue_manager_stub.apply_steering = lambda *a, **k: a[3] if len(a) > 3 else k.get("draft_message", "")
     dialogue_manager_stub.should_clarify = lambda *a, **k: False
+    dialogue_manager_stub.adjust_dispatch = lambda dispatch, user_text, session_state: dispatch
+    dialogue_manager_stub.classify_smalltalk_kind = lambda user_text: "other"
+    dialogue_manager_stub.is_social_smalltalk = lambda user_text: False
+    dialogue_manager_stub.render_smalltalk_reply = lambda *a, **k: None
+
+    smart_fallback_stub = types.ModuleType("agent.smart_fallback")
+    smart_fallback_stub.generate_agent_fallback = lambda *a, **k: "fallback"
 
     fact_guard_stub = types.ModuleType("agent.dialogue.fact_guard")
     fact_guard_stub.validate_voice = lambda draft, voiced: voiced or draft
@@ -166,6 +173,7 @@ def _load_rootagent_module():
     sys.modules["agent.helpers"] = helpers_stub
     sys.modules["agent.dialogue.manager"] = dialogue_manager_stub
     sys.modules["agent.dialogue.fact_guard"] = fact_guard_stub
+    sys.modules["agent.smart_fallback"] = smart_fallback_stub
     sys.modules["agent.agents.voice_agent"] = voice_stub
     sys.modules["agent.json_leaf_runner"] = json_leaf_runner_stub
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
