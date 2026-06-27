@@ -36,6 +36,23 @@ KB_DOCUMENTS_COLLECTION = os.getenv("KB_DOCUMENTS_COLLECTION", "knowledge_base_c
 FAQ_DOCUMENTS_COLLECTION = os.getenv("FAQ_DOCUMENTS_COLLECTION", "faq_collection").strip()
 KB_TOP_K = int(os.getenv("KB_TOP_K", "20"))
 AGENT_DIALOG_MEMORY_MAX_TURNS = int(os.getenv("AGENT_DIALOG_MEMORY_MAX_TURNS", "3"))
+
+# Feature flags — human corporate dialogue (plan 001)
+ADK_ROUTE_ACK_ENABLED = os.getenv("ADK_ROUTE_ACK_ENABLED", "false").lower() == "true"
+DIALOGUE_MANAGER_ENABLED = os.getenv("DIALOGUE_MANAGER_ENABLED", "true").lower() == "true"
+VOICE_AGENT_ENABLED = os.getenv("VOICE_AGENT_ENABLED", "false").lower() == "true"
+LLM_VOICE_MODEL = os.getenv("LLM_VOICE_MODEL", LLM_API_MODEL).strip()
+
+DIALOG_STATE_KEYS = (
+    "dialog_phase",
+    "dialog_topic",
+    "smalltalk_turns",
+    "last_route",
+    "last_cta",
+    "pending_clarification",
+    "session_intro_done",
+    "smalltalk_kind",
+)
 # Сколько документов показывать в первом ответе и шаг «ещё»
 DOC_SEARCH_PAGE_SIZE = int(os.getenv("SHOW_LIST_SIZE", os.getenv("DOC_SEARCH_PAGE_SIZE", "5")))
 
@@ -84,6 +101,15 @@ def build_common_model() -> LiteLlm:
     """
     return LiteLlm(
         model=LLM_API_MODEL,
+        api_key=LLM_API_KEY,
+        api_base=LLM_API_URL,
+    )
+
+
+def build_voice_model() -> LiteLlm:
+    """Модель для voice_agent (может совпадать с общей)."""
+    return LiteLlm(
+        model=LLM_VOICE_MODEL,
         api_key=LLM_API_KEY,
         api_base=LLM_API_URL,
     )

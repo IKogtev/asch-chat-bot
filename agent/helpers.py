@@ -91,6 +91,36 @@ def format_reject_answer(message: str) -> str:
     return message.strip()
 
 
+ACK_SKIP_INTENTS = frozenset(
+    {"smalltalk", "show_more", "show_all", "file_download", "needs_clarification"}
+)
+
+ACK_TEMPLATES: dict[tuple[str, str], str] = {
+    ("doc_search", "doc_search"): "Подберу документы по запросу.",
+    ("doc_search", "file_download"): "Подготовлю файлы из списка.",
+    ("doc_search", "show_more"): "",
+    ("doc_search", "show_all"): "",
+    ("kb_answer", "kb_answer"): "Проверю информацию в базе знаний.",
+    ("kb_answer", "needs_clarification"): "",
+    ("kb_answer", "smalltalk"): "",
+    ("product_selection", "product_card"): "Уточню параметры продукта.",
+    ("product_selection", "product_kit"): "Подготовлю комплект документов.",
+    ("product_selection", "product_filter"): "Уточню параметры продукта.",
+    ("product_selection", "product_compare"): "Сравню продукты.",
+}
+
+
+def format_ack_message(route: str, intent: str) -> str | None:
+    """Route-aware ack text; None if ack should not be sent."""
+    key = (str(route or "").strip(), str(intent or "").strip())
+    if key[1] in ACK_SKIP_INTENTS:
+        return None
+    text = ACK_TEMPLATES.get(key)
+    if text is None:
+        return "Обрабатываю запрос."
+    return text or None
+
+
 def deduplicate_results(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Удаляет дубликаты по document_id, оставляя результат с лучшим score.

@@ -669,6 +669,39 @@ class AdkApiClient:
 
         return ""
 
+    @staticmethod
+    def extract_interim_text(events: list) -> str:
+        """First interim root_agent ack (plan 001 route-aware ack)."""
+        if not events:
+            return ""
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("author") != "root_agent":
+                continue
+            actions = event.get("actions") or {}
+            if not (actions.get("interim")):
+                continue
+            if actions.get("end_of_agent") or actions.get("endOfAgent"):
+                continue
+            content = event.get("content")
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts") or []:
+                if not isinstance(part, dict) or part.get("thought") is True:
+                    continue
+                text = part.get("text")
+                if text and str(text).strip():
+                    return str(text).strip()
+        return ""
+
+    @staticmethod
+    def _extract_interim_and_final(events: list) -> tuple[str, str]:
+        return (
+            AdkApiClient.extract_interim_text(events),
+            AdkApiClient._extract_model_text(events),
+        )
+
     async def set_user_state(self, user_id: str, session_id: str, user_data: dict) -> None:
         """
         Подготавливает профиль пользователя для передачи в ADK через stateDelta

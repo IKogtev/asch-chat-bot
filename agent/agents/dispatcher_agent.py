@@ -32,7 +32,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - `status="ok"`;
     - `route` один из `doc_search`, `kb_answer`, `product_selection`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
-      `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
+      `kb_answer`, `smalltalk`, `needs_clarification`, `product_card`, `product_kit`, `product_filter`,
       `product_compare`;
     - `reason` обязателен всегда.
 
@@ -58,7 +58,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     _ = context
     allowed_routes = {"doc_search", "kb_answer", "product_selection"}
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
-    kb_route_intents = {"kb_answer", "smalltalk"}
+    kb_route_intents = {"kb_answer", "smalltalk", "needs_clarification"}
     product_route_intents = {
         "product_card",
         "product_kit",
@@ -158,16 +158,20 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 fields=("intent", "search_query"),
             )
 
-        if intent == "smalltalk" and search_query:
+        if intent in ("smalltalk", "needs_clarification") and search_query:
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
-                problem="smalltalk must have empty search_query",
+                problem=f"{intent} must have empty search_query",
                 data=payload,
                 fields=("intent", "search_query"),
             )
 
-        if intent not in follow_up_no_query and intent != "smalltalk" and not search_query:
+        if (
+            intent not in follow_up_no_query
+            and intent not in ("smalltalk", "needs_clarification")
+            and not search_query
+        ):
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
@@ -219,7 +223,7 @@ High-priority product-card rule: if the latest user message asks to show, open, 
 
 Разрешённые intent:
 - doc_search, show_more, show_all, file_download (только с route=doc_search)
-- kb_answer, smalltalk (только с route=kb_answer)
+- kb_answer, smalltalk, needs_clarification (только с route=kb_answer)
 - product_card, product_kit, product_filter, product_compare (только с route=product_selection)
 
 Правила:

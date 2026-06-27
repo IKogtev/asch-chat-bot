@@ -9,12 +9,31 @@ from google.adk.events import Event, EventActions
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
 from .config import (
+    ADK_ROUTE_ACK_ENABLED,
     AGENT_DIALOG_MEMORY_MAX_TURNS,
     DEBUG_EXCEPTIONS,
+    DIALOGUE_MANAGER_ENABLED,
     FAQ_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
+    VOICE_AGENT_ENABLED,
 )
-from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
+from .helpers import (
+    extract_json,
+    format_ack_message,
+    format_text_answer,
+    format_reject_answer,
+    truncate_for_log,
+)
+from .dialogue.manager import (
+    adjust_dispatch,
+    apply_steering,
+    classify_smalltalk_kind,
+    is_social_smalltalk,
+    render_smalltalk_reply,
+    should_clarify,
+)
+from .dialogue.fact_guard import validate_voice
+from .agents.voice_agent import validate_voice_result
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
@@ -56,6 +75,7 @@ class RootAgent(BaseAgent):
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
     product_selection_agent: LlmAgent
+    voice_agent: LlmAgent | None
     glossary_lookup: GlossaryLookup
     faq_collection: str
     kb_collection: str
@@ -70,6 +90,7 @@ class RootAgent(BaseAgent):
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
         product_selection_agent: LlmAgent,
+        voice_agent: LlmAgent | None = None,
         glossary_lookup: GlossaryLookup | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
         kb_collection: str = KB_DOCUMENTS_COLLECTION,
@@ -81,6 +102,7 @@ class RootAgent(BaseAgent):
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
             product_selection_agent=product_selection_agent,
+            voice_agent=voice_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             faq_collection=faq_collection,
             kb_collection=kb_collection,
@@ -90,7 +112,8 @@ class RootAgent(BaseAgent):
                 doc_search_orchestrator,
                 kb_answer_agent,
                 product_selection_agent,
-            ],
+            ]
+            + ([voice_agent] if voice_agent is not None else []),
         )
 
     def _get_user_profile(self, ctx: InvocationContext) -> Dict[str, Any]:
@@ -174,6 +197,21 @@ class RootAgent(BaseAgent):
         self._append_recent_message(ctx, "user", user_text)
         self._append_recent_message(ctx, "assistant", text)
         return self._build_final_event(ctx, text)
+
+    @staticmethod
+    def _build_interim_event(ctx: InvocationContext, text: str) -> Event:
+        """Interim ack event (not end_of_agent)."""
+        actions = EventActions()
+        setattr(actions, "interim", True)
+        return Event(
+            author="root_agent",
+            invocation_id=ctx.invocation_id,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(text=text)],
+            ),
+            actions=actions,
+        )
 
     @staticmethod
     def _is_dialog_memory_event(event: Any) -> bool:
@@ -554,6 +592,55 @@ class RootAgent(BaseAgent):
         ):
             yield event
 
+    async def _finalize_draft(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+        dispatch: Dict[str, Any],
+        draft: str,
+        content_mode: str = "text_answer",
+    ) -> AsyncGenerator[Event, None]:
+        """Apply dialogue steering and optional voice layer."""
+        result = format_text_answer(draft)
+        if DIALOGUE_MANAGER_ENABLED:
+            result = apply_steering(
+                ctx.session.state,
+                dispatch=dispatch,
+                user_text=user_text,
+                draft_message=result,
+                content_mode=content_mode,
+            )
+
+        voice_eligible = (
+            VOICE_AGENT_ENABLED
+            and self.voice_agent is not None
+            and dispatch.get("route") in ("kb_answer", "product_selection")
+            and dispatch.get("intent")
+            not in ("smalltalk", "needs_clarification", "show_more", "show_all", "file_download")
+        )
+        if voice_eligible:
+            ctx.session.state["voice_draft"] = result
+            ctx.session.state["voice_profile"] = "corporate_internal"
+            ctx.session.state["intent"] = str(dispatch.get("intent") or "")
+            async for event in self._run_json_leaf_agent(
+                ctx=ctx,
+                agent=self.voice_agent,
+                output_key="voice_result_json",
+                parsed_state_key="_voice_result_parsed",
+                validator=validate_voice_result,
+                log_label="voice_result_json",
+                validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            ):
+                yield event
+            voiced = self._get_required_state_dict(ctx, "_voice_result_parsed")
+            before = result
+            result = validate_voice(before, voiced["message"])
+            ctx.session.state["voice_fallback"] = result == before and voiced["message"] != before
+        else:
+            ctx.session.state.pop("voice_fallback", None)
+
+        ctx.session.state["_root_final_text"] = result
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
@@ -575,6 +662,43 @@ class RootAgent(BaseAgent):
                 logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
                 yield self._build_final_event(ctx, "")
                 return
+
+            if DIALOGUE_MANAGER_ENABLED and is_social_smalltalk(user_text):
+                dispatch = validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "kb_answer",
+                        "intent": "smalltalk",
+                        "reason": f"smalltalk_{classify_smalltalk_kind(user_text)}",
+                        "search_query": "",
+                    },
+                    dict(ctx.session.state),
+                )
+                profile = self._get_user_profile(ctx)
+                smalltalk_reply = render_smalltalk_reply(
+                    ctx.session.state,
+                    user_text,
+                    first_name=str(profile.get("first_name") or ""),
+                )
+                if smalltalk_reply:
+                    ctx.session.state["user_query"] = user_text
+                    ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                    logger.info(
+                        "Social fast-path: kind=%s",
+                        classify_smalltalk_kind(user_text),
+                    )
+                    ctx.session.state["_content_mode"] = "text_answer"
+                    async for event in self._finalize_draft(
+                        ctx,
+                        user_text,
+                        dispatch,
+                        smalltalk_reply,
+                        "text_answer",
+                    ):
+                        yield event
+                    final_text = self._get_required_state_text(ctx, "_root_final_text")
+                    yield self._build_final_event_with_history(ctx, user_text, final_text)
+                    return
 
             ctx.session.state["user_query"] = user_text
             self._prepare_owasp_input(ctx, user_text)
@@ -695,11 +819,46 @@ class RootAgent(BaseAgent):
                 ):
                     dr = extract_download_ranks(user_text)
 
+            if DIALOGUE_MANAGER_ENABLED:
+                dispatch = adjust_dispatch(dispatch, user_text, ctx.session.state)
+                ctx.session.state["_dispatcher_result_parsed"] = dispatch
+
+            if DIALOGUE_MANAGER_ENABLED and should_clarify(dispatch, user_text):
+                dispatch = validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "kb_answer",
+                        "intent": "needs_clarification",
+                        "reason": "vague_query_clarification",
+                        "search_query": "",
+                    },
+                    dict(ctx.session.state),
+                )
+                ctx.session.state["_dispatcher_result_parsed"] = dispatch
+                logger.info("Dispatcher clarification override: intent=needs_clarification")
+
+            if ADK_ROUTE_ACK_ENABLED:
+                ack_text = format_ack_message(
+                    dispatch.get("route", ""),
+                    dispatch.get("intent", ""),
+                )
+                if ack_text:
+                    yield self._build_interim_event(ctx, ack_text)
+
             if dispatch["route"] == "doc_search":
                 async for event in self._handle_doc_search(
                     ctx,
                     user_text,
                     dispatch["intent"],
+                ):
+                    yield event
+                draft = self._get_required_state_text(ctx, "_root_final_text")
+                async for event in self._finalize_draft(
+                    ctx,
+                    user_text,
+                    dispatch,
+                    draft,
+                    str(ctx.session.state.get("_content_mode") or "text_answer"),
                 ):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
@@ -714,15 +873,58 @@ class RootAgent(BaseAgent):
                     dispatch["intent"],
                 ):
                     yield event
+                draft = self._get_required_state_text(ctx, "_root_final_text")
+                async for event in self._finalize_draft(
+                    ctx,
+                    user_text,
+                    dispatch,
+                    draft,
+                    str(ctx.session.state.get("_content_mode") or "text_answer"),
+                ):
+                    yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
+
+            if (
+                DIALOGUE_MANAGER_ENABLED
+                and dispatch.get("route") == "kb_answer"
+                and dispatch.get("intent") == "smalltalk"
+            ):
+                profile = self._get_user_profile(ctx)
+                smalltalk_reply = render_smalltalk_reply(
+                    ctx.session.state,
+                    user_text,
+                    first_name=str(profile.get("first_name") or ""),
+                )
+                if smalltalk_reply:
+                    ctx.session.state["_content_mode"] = "text_answer"
+                    async for event in self._finalize_draft(
+                        ctx,
+                        user_text,
+                        dispatch,
+                        smalltalk_reply,
+                        "text_answer",
+                    ):
+                        yield event
+                    final_text = self._get_required_state_text(ctx, "_root_final_text")
+                    yield self._build_final_event_with_history(ctx, user_text, final_text)
+                    return
 
             async for event in self._handle_kb_answer(
                 ctx,
                 user_text,
                 dispatch["search_query"],
                 dispatch["intent"],
+            ):
+                yield event
+            draft = self._get_required_state_text(ctx, "_root_final_text")
+            async for event in self._finalize_draft(
+                ctx,
+                user_text,
+                dispatch,
+                draft,
+                str(ctx.session.state.get("_content_mode") or "text_answer"),
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
@@ -845,6 +1047,7 @@ class RootAgent(BaseAgent):
             yield event
 
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
+        ctx.session.state["_content_mode"] = kb_answer.get("mode") or "text_answer"
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
 
     async def _handle_product_selection(
@@ -893,6 +1096,7 @@ class RootAgent(BaseAgent):
             len(product_selection.get("clarification_options") or []),
             product_selection.get("used_tables"),
         )
+        ctx.session.state["_content_mode"] = product_selection.get("mode") or "text_answer"
         ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
             product_selection
         )

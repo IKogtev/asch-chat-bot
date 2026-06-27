@@ -4,8 +4,11 @@ from .rootagent import RootAgent
 from .config import (
     ACTIVE_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
+    VOICE_AGENT_ENABLED,
     build_common_model,
+    build_voice_model,
 )
+from .agents.voice_agent import create_voice_agent
 from .agents.owasp_agent import create_owasp_agent
 from .agents.dispatcher_agent import create_dispatcher_agent
 from .agents.doc_search_agent import create_doc_search_agent
@@ -28,6 +31,7 @@ def build_agent_chain() -> RootAgent:
     product_selection_agent = create_product_selection_agent(model)
     dispatcher_agent = create_dispatcher_agent(model)
     owasp_agent = create_owasp_agent(model)
+    voice_agent = create_voice_agent(build_voice_model()) if VOICE_AGENT_ENABLED else None
 
     return RootAgent(
         owasp_agent=owasp_agent,
@@ -35,6 +39,7 @@ def build_agent_chain() -> RootAgent:
         doc_search_orchestrator=doc_search_orchestrator,
         kb_answer_agent=kb_answer_agent,
         product_selection_agent=product_selection_agent,
+        voice_agent=voice_agent,
         kb_collection=KB_DOCUMENTS_COLLECTION,
     )
 

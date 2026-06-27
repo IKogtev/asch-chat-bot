@@ -211,6 +211,27 @@ def test_adk_api_client_extract_model_text_returns_final_root_agent_text() -> No
 
 
 @pytest.mark.unit
+def test_adk_api_client_extract_interim_text_returns_route_ack() -> None:
+    events = [
+        {
+            "author": "root_agent",
+            "actions": {"interim": True},
+            "content": {"parts": [{"text": "Проверю информацию в базе знаний."}]},
+        },
+        {
+            "author": "root_agent",
+            "actions": {"end_of_agent": True},
+            "content": {"parts": [{"text": "Финальный ответ"}]},
+        },
+    ]
+
+    assert AdkApiClient.extract_interim_text(events) == "Проверю информацию в базе знаний."
+    interim, final = AdkApiClient._extract_interim_and_final(events)
+    assert interim == "Проверю информацию в базе знаний."
+    assert final == "Финальный ответ"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_adk_api_client_set_user_state_normalizes_and_merges_values() -> None:
     client = AdkApiClient("http://adk", "app")

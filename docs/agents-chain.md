@@ -11,6 +11,14 @@
 - В state для `kb_answer_agent` передаются `search_query`, `faq_collection`, `kb_answer_collection`, `intent` и пользовательский профиль.
 - Контракт `kb_answer_agent` включает поле `source` со значениями `faq_search | kb_search | faq_search+kb_search | none`.
 
+# Актуализация на 2026-06-21 (plan 001: human corporate dialogue)
+
+- **Ack:** bot generic (`ACK_ENABLED`) или route-aware interim event из `root_agent` (`ADK_ROUTE_ACK_ENABLED`). Ack не пишется в dialog store; event log `event_type=ack`.
+- **Turn guard:** `turn_id` + `ACTIVE_TURNS` в bot — stale final drop при быстром втором сообщении.
+- **Dialogue manager:** `agent/dialogue/manager.py` — CTA whitelist, smalltalk limit (3 → redirect), clarification override (`needs_clarification`).
+- **Voice agent:** опционально (`VOICE_AGENT_ENABLED=false` по умолчанию); `fact_guard.validate_voice` — fallback на draft при новых anchors.
+- **Persistent state:** `dialog_phase`, `dialog_topic`, `smalltalk_turns`, `last_route`, `last_cta`, `pending_clarification` — не очищаются в `_clear_state_keys`.
+
 ---
 # Актуальное описание реализации цепочки агентов
 

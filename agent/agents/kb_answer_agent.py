@@ -21,7 +21,9 @@ from .validation_utils import build_validation_error
 
 logger = setup_logger("kb_answer_agent", "agent.log")
 
-ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и помогать продавать продукты АСЖ."
+ASSISTANT_CAPABILITIES_ANSWER = (
+    "Я помогаю находить документы и отвечать на вопросы по продуктам АСЖ. Чем могу помочь?"
+)
 
 
 def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -113,11 +115,18 @@ def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> 
                 fields=("mode", "source"),
             )
 
-        if mode == "text_answer" and source == "none" and intent != "smalltalk":
+        if (
+            mode == "text_answer"
+            and source == "none"
+            and intent not in ("smalltalk", "needs_clarification")
+        ):
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
-                problem="mode='text_answer' must not use source='none' outside smalltalk",
+                problem=(
+                    "mode='text_answer' must not use source='none' "
+                    "outside smalltalk or needs_clarification"
+                ),
                 data=payload,
                 fields=("mode", "source", "intent"),
             )
@@ -228,12 +237,17 @@ If multiple definitions are present and context does not disambiguate them, do n
      (например: "что ты умеешь", "что умеешь", "что ты можешь", "что можешь",
      "чем ты можешь помочь", "чем можешь помочь", "какие у тебя возможности",
      "каковы твои возможности", "на что ты способен", "на что способен"),
-     отвечай ровно одной фразой: "{ASSISTANT_CAPABILITIES_ANSWER}"
+     отвечай ровно: "{ASSISTANT_CAPABILITIES_ANSWER}"
    - для этого ответа верни source="none"
    - не импровизируй и не добавляй новых деталей
    - в остальных smalltalk-случаях ответь кратко и естественно
 
-2. Если {{intent}} != "smalltalk":
+1b. Если {{intent}} == "needs_clarification":
+   - не вызывай faq_search и kb_search
+   - вежливо попроси уточнить продукт, документ или тему
+   - верни source="none"
+
+2. Если {{intent}} == "kb_answer":
    - сначала ОБЯЗАТЕЛЬНО вызови faq_search
    - передай: query={{user_query}}, collection={{faq_collection}}
 

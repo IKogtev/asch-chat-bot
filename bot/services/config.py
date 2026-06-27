@@ -54,6 +54,13 @@ class Settings():
     TIME_SET_WAIT = 120
     AVAILABLE_GROUPS = ("all", "manager_group", "coach_group")
 
+    # Quick ack (plan 001, stage 1)
+    ACK_ENABLED: bool = os.getenv("ACK_ENABLED", "true").lower() == "true"
+    ACK_GENERIC_TEXT: str = os.getenv("ACK_GENERIC_TEXT", "Обрабатываю запрос.")
+    ADK_ROUTE_ACK_ENABLED: bool = (
+        os.getenv("ADK_ROUTE_ACK_ENABLED", "false").lower() == "true"
+    )
+
     def create_directories(self):
         """Создает необходимые директории при старте, если их нет"""
         self.UPLOAD_NEWS.mkdir(parents=True, exist_ok=True)

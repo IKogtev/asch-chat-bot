@@ -34,12 +34,26 @@ def _load_rootagent_module():
     config_stub.FAQ_DOCUMENTS_COLLECTION = "faq"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
     config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
+    config_stub.ADK_ROUTE_ACK_ENABLED = False
+    config_stub.DIALOGUE_MANAGER_ENABLED = False
+    config_stub.VOICE_AGENT_ENABLED = False
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
     helpers_stub.truncate_for_log = lambda text, max_length=200: (text or "")[:max_length]
     helpers_stub.format_text_answer = lambda text: str(text).strip()
     helpers_stub.format_reject_answer = lambda text: str(text).strip()
+    helpers_stub.format_ack_message = lambda route, intent: None
+
+    dialogue_manager_stub = types.ModuleType("agent.dialogue.manager")
+    dialogue_manager_stub.apply_steering = lambda *a, **k: a[3] if len(a) > 3 else k.get("draft_message", "")
+    dialogue_manager_stub.should_clarify = lambda *a, **k: False
+
+    fact_guard_stub = types.ModuleType("agent.dialogue.fact_guard")
+    fact_guard_stub.validate_voice = lambda draft, voiced: voiced or draft
+
+    voice_stub = types.ModuleType("agent.agents.voice_agent")
+    voice_stub.validate_voice_result = lambda data, context: data
 
     async def _fake_run_json_leaf_agent(**kwargs):
         if False:
@@ -130,6 +144,9 @@ def _load_rootagent_module():
     sys.modules["utils.logger"] = logger_stub
     sys.modules["agent.config"] = config_stub
     sys.modules["agent.helpers"] = helpers_stub
+    sys.modules["agent.dialogue.manager"] = dialogue_manager_stub
+    sys.modules["agent.dialogue.fact_guard"] = fact_guard_stub
+    sys.modules["agent.agents.voice_agent"] = voice_stub
     sys.modules["agent.json_leaf_runner"] = json_leaf_runner_stub
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
@@ -371,6 +388,18 @@ def test_build_final_event_creates_end_of_agent_event() -> None:
     assert event.content.parts[0].text == "Ответ"
     assert event.actions.end_of_agent is True
     assert event.actions.state_delta == {}
+
+
+@pytest.mark.unit
+def test_build_interim_event_sets_interim_flag() -> None:
+    ctx = _make_ctx(invocation_id="abc")
+
+    event = RootAgent._build_interim_event(ctx, "Проверю информацию в базе знаний.")
+
+    assert event.author == "root_agent"
+    assert event.content.parts[0].text == "Проверю информацию в базе знаний."
+    assert getattr(event.actions, "interim", False) is True
+    assert event.actions.end_of_agent is False
 
 
 @pytest.mark.unit

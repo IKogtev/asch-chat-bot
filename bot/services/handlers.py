@@ -15,7 +15,14 @@ from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
 from utils.doc_search_format import parse_download_ranks
 from bot.services.adk_events import extract_bot_action
+from bot.services.ack import (
+    invalidate_turn,
+    is_turn_still_active,
+    register_turn,
+    should_send_ack,
+)
 from bot.services.product_kits import get_product_kit
+from bot.services.database import AdkApiClient
 
 from bot.services.utils import (
     markdown_to_safe_html,
@@ -469,6 +476,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         try:
             # отменяем текущий запрос пользователя
             RESET_USERS.add(str(global_user_id))
+            invalidate_turn(str(global_user_id))
             await cancel_user_request(
                 str(global_user_id)
             )
@@ -781,6 +789,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         start_time = time.time()
         user_key = str(global_user_id)
         ACTIVE_REQUESTS[user_key] = asyncio.current_task()
+        register_turn(user_key, turn_id)
 
         # логируем скорость ответа
         logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
@@ -891,11 +900,71 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
             meta_before = await store.get_last_search_meta(global_user_id, session_id)
             search_id_before = meta_before["search_id"] if meta_before else None
-            # инициализация статуса "печатает..." для пользователя
             await bot_res.start_typing()
             ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
-            # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-            answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+
+            use_bot_ack = (
+                Settings.ACK_ENABLED
+                and not Settings.ADK_ROUTE_ACK_ENABLED
+                and should_send_ack(user_text)
+            )
+            adk_task = asyncio.create_task(
+                adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+            )
+            ack_ms = None
+            if use_bot_ack:
+                ack_t0 = time.time()
+                await bot_res.send(Settings.ACK_GENERIC_TEXT)
+                ack_ms = int((time.time() - ack_t0) * 1000)
+                await eventlogger.log_event(
+                    event_type="ack",
+                    user_id=str(global_user_id),
+                    session_id=session_id,
+                    channel=platform,
+                    payload={
+                        "turn_id": turn_id,
+                        "text": Settings.ACK_GENERIC_TEXT,
+                        "ack_ms": ack_ms,
+                        "ack_source": "bot_generic",
+                    },
+                )
+
+            answer, events = await adk_task
+
+            if Settings.ADK_ROUTE_ACK_ENABLED:
+                interim_text = AdkApiClient.extract_interim_text(events)
+                if interim_text and is_turn_still_active(user_key, turn_id):
+                    if str(global_user_id) not in RESET_USERS:
+                        ack_t0 = time.time()
+                        await bot_res.send(interim_text)
+                        ack_ms = int((time.time() - ack_t0) * 1000)
+                        await eventlogger.log_event(
+                            event_type="ack",
+                            user_id=str(global_user_id),
+                            session_id=session_id,
+                            channel=platform,
+                            payload={
+                                "turn_id": turn_id,
+                                "text": interim_text,
+                                "ack_ms": ack_ms,
+                                "ack_source": "adk_route",
+                            },
+                        )
+
+            if not is_turn_still_active(user_key, turn_id):
+                logger.info(
+                    "Stale turn dropped user=%s turn_id=%s",
+                    global_user_id,
+                    turn_id,
+                )
+                await eventlogger.log_event(
+                    event_type="turn_cancelled",
+                    user_id=str(global_user_id),
+                    session_id=session_id,
+                    channel=platform,
+                    payload={"turn_id": turn_id, "reason": "superseded"},
+                )
+                return
             if str(global_user_id) in RESET_USERS:
                 logger.info(
                     f"Пропускаем ответ после reset user={global_user_id}"

@@ -13,6 +13,7 @@ COPY utils/ ./utils/
 # Копируем только необходимые файлы из agent/, исключая кэш
 COPY agent/*.py ./agent/
 COPY agent/agents/*.py ./agent/agents/
+COPY agent/dialogue/*.py ./agent/dialogue/
 COPY agent/tools/*.py ./agent/tools/
 
 # Создаём директорию для логов

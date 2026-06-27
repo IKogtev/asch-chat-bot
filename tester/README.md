@@ -181,3 +181,15 @@ curl -sS -X POST "${ADK_AGENT_URL}/run" \
 }
 EOF
 ```
+
+## Реалистичные диалоги (plan 001 UX)
+
+Каталог `tester/dialogues/scenarios/` — 11 многоходовых сценариев (onboarding, KB, doc_search, steering, длинная сессия).
+
+```bash
+python tester/dialogues/run_dialogues.py --list
+python tester/dialogues/run_dialogues.py --adk-base http://127.0.0.1:8080
+python tester/dialogues/run_dialogues.py --adk-base http://127.0.0.1:8080 --ids real-01,real-11
+```
+
+Подробнее: `tester/dialogues/README.md`.

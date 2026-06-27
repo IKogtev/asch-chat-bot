@@ -33,7 +33,9 @@ def _load_start_agent_module(monkeypatch):
     config_stub = types.ModuleType("agent.config")
     config_stub.ACTIVE_DOCUMENTS_COLLECTION = "active_docs"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb_docs"
+    config_stub.VOICE_AGENT_ENABLED = False
     config_stub.build_common_model = lambda: object()
+    config_stub.build_voice_model = lambda: object()
 
     def _agent_factory(name):
         return lambda model: types.SimpleNamespace(name=name, model=model)
@@ -61,6 +63,9 @@ def _load_start_agent_module(monkeypatch):
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.create_product_selection_agent = _agent_factory("product_selection_agent")
 
+    voice_stub = types.ModuleType("agent.agents.voice_agent")
+    voice_stub.create_voice_agent = _agent_factory("voice_agent")
+
     for name, module in {
         "agent": agent_pkg,
         "google.adk.apps.app": app_stub,
@@ -72,6 +77,7 @@ def _load_start_agent_module(monkeypatch):
         "agent.agents.doc_search_orchestrator": doc_orchestrator_stub,
         "agent.agents.kb_answer_agent": kb_answer_stub,
         "agent.agents.product_selection_agent": product_selection_stub,
+        "agent.agents.voice_agent": voice_stub,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 

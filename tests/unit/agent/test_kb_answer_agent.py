@@ -194,7 +194,7 @@ def test_validate_kb_answer_result_rejects_none_source_for_text_answer() -> None
             DEFAULT_CONTEXT,
         )
 
-    assert "mode='text_answer' must not use source='none' outside smalltalk" in str(exc.value)
+    assert "mode='text_answer' must not use source='none' outside smalltalk or needs_clarification" in str(exc.value)
 
 
 @pytest.mark.unit
@@ -218,5 +218,5 @@ def test_validate_kb_answer_result_allows_none_source_for_smalltalk() -> None:
 def test_assistant_capabilities_answer_constant_matches_expected_phrase() -> None:
     assert (
         kb_answer_module.ASSISTANT_CAPABILITIES_ANSWER
-        == "Я умею искать документы и помогать продавать продукты АСЖ."
+        == "Я помогаю находить документы и отвечать на вопросы по продуктам АСЖ. Чем могу помочь?"
     )
