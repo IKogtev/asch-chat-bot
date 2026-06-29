@@ -429,3 +429,44 @@ def test_enrich_products_counts_input_dates_without_kits_root(monkeypatch) -> No
     assert service.product_input_dates_from_table == 1
     assert service.product_input_dates_from_kits == 0
     assert service.product_input_dates_missing == 1
+
+
+@pytest.mark.unit
+def test_product_search_tokens_include_bundle_fort_knox_variants(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    tokens = module.TablesLoaderService.tokenize_product_text("Bundle Fort Knox 3+12 месяцев")
+
+    assert "bundle" in tokens
+    assert "бандл" in tokens
+    assert "бандлы" in tokens
+    assert "fort" in tokens
+    assert "форт" in tokens
+    assert "knox" in tokens
+    assert "нокс" in tokens
+    assert "ноксы" in tokens
+
+
+@pytest.mark.unit
+def test_product_search_tokens_include_alfa_kids_variants(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    tokens = module.TablesLoaderService.tokenize_product_text("Альфа Kids+ 5 лет")
+
+    assert "альфа" in tokens
+    assert "alfa" in tokens
+    assert "alpha" in tokens
+    assert "kids" in tokens
+    assert "кидс" in tokens
+
+
+@pytest.mark.unit
+def test_product_search_tokens_include_russian_bundle_variants(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    tokens = module.TablesLoaderService.tokenize_product_text("Бандл Защищенный капитал 18+36 мес.")
+
+    assert "бандл" in tokens
+    assert "бандлы" in tokens
+    assert "bundle" in tokens
+    assert "bundl" in tokens
