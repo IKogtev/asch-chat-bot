@@ -53,6 +53,20 @@ OLD_MESSAGE_THRESHOLD = 15  # сек
 ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
 # флаг для сброса пользователей при команде /reset
 RESET_USERS: set[str] = set()
+USER_LOCKS: dict[str, asyncio.Lock] = {}
+USER_ACTIVE_REQUESTS: dict[str, asyncio.Event] = {} 
+
+async def get_user_lock(user_id: str) -> asyncio.Lock:
+    """Получить или создать блокировку для пользователя"""
+    if user_id not in USER_LOCKS:
+        USER_LOCKS[user_id] = asyncio.Lock()
+    return USER_LOCKS[user_id]
+
+async def get_user_active_event(user_id: str) -> asyncio.Event:
+    """Получить или создать событие активности запроса"""
+    if user_id not in USER_ACTIVE_REQUESTS:
+        USER_ACTIVE_REQUESTS[user_id] = asyncio.Event()
+    return USER_ACTIVE_REQUESTS[user_id]
 
 # отменяем активный запрос пользователя 
 async def cancel_user_request(user_id: str):
@@ -68,17 +82,14 @@ async def cancel_user_request(user_id: str):
     logger.info(f"Отмена запроса user={user_id}")
     task.cancel()
     try:
+        # ЖДЁМ завершения отменённой задачи с таймаутом
         await task
     except asyncio.CancelledError:
-        logger.info(
-            f"Запрос пользователя {user_id} успешно отменён"
-        )
+        logger.info(f"Запрос пользователя {user_id} успешно отменён")
     except Exception as e:
-        logger.warning(
-            f"Ошибка при отмене задачи: {e}"
-        )
+        logger.warning(f"Ошибка при отмене задачи: {e}")
+    
     ACTIVE_REQUESTS.pop(user_id, None)
-
     return True
     
 # Отправка комплекта документов продукта по структурному действию от ADK.
@@ -759,10 +770,42 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         "error": str(e)
                     }
                 )
+    # функция прерывания прошлого запроса
+    async def interrupt_previous_request(
+        global_user_id: str,
+        session_id: str,
+        bot_res,
+    ):
+        # Отменяем HTTP-запрос к ADK (очищаем состояние)
+        with contextlib.suppress(Exception):
+            await adk.cancel_request(global_user_id, session_id)
+        
+        # Отменяем Python-задачу
+        task = ACTIVE_REQUESTS.get(str(global_user_id))
+        if task and not task.done():
+            logger.info(f"🛑 Отмена задачи: user={global_user_id}")
+            task.cancel()
+        
+        # Останавливаем typing индикатор
+        with contextlib.suppress(Exception):
+            await bot_res.stop_typing()
+
+    # пропуск если отменена задача
+    async def _skip_if_cancelled(global_user_id: str) -> bool:
+        task = asyncio.current_task()
+        if task and task.cancelled():
+            logger.info(f"Пропускаем ответ — задача отменена user={global_user_id}")
+            return True
+        if str(global_user_id) in RESET_USERS:
+            logger.info(f"Пропускаем ответ после reset user={global_user_id}")
+            return True
+        return False
+
     # хендлер текста
     @message_decorator()
     @universal_handler
     async def on_text(event, ud, bot_res, **kwargs):
+        logger.warning("START %s", time.time())
         # Извлечение данных пользователя
         user_id = ud["user_id"]
         global_user_id = ud.get("global_user_id")
@@ -803,17 +846,44 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         turn_id = str(uuid.uuid4())
         start_time = time.time()
         user_key = str(global_user_id)
-        ACTIVE_REQUESTS[user_key] = asyncio.current_task()
-
-        # логируем скорость ответа
-        logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
-        await eventlogger.log_event(
-            event_type="message_received", user_id=str(global_user_id), 
-            user_name=ud.get("username"), session_id=session_id, 
-            channel=platform, payload={"text": user_text, "turn_id": turn_id, "start_time": start_time}
-        )
-
+        # отменяем запрос пользователя при повторном сообщении используем только последнее
+        user_lock = await get_user_lock(user_key)
+        # Если блокировка уже захвачена - отменяем предыдущий запрос и ждём его завершения
+        if user_lock.locked():
+            logger.info(f"🔄 Обнаружен параллельный запрос для user={global_user_id}, отменяем предыдущий")
+            
+            # Отменяем предыдущую задачу
+            await interrupt_previous_request(
+                global_user_id=str(global_user_id),
+                session_id=session_id,
+                bot_res=bot_res,
+            )
+            
+            # ЖДЁМ завершения отменённой задачи БЕЗ таймаута
+            task = ACTIVE_REQUESTS.get(user_key)
+            if task and not task.done():
+                logger.info(f"⏳ Ожидание завершения предыдущего запроса: user={global_user_id}")
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info(f"✓ Предыдущий запрос отменён: user={global_user_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка при ожидании: {e}")
+            
+            # Очищаем блокировку
+            ACTIVE_REQUESTS.pop(user_key, None)
+        await user_lock.acquire()
         try:
+            # сохраняем текущую задачу
+            ACTIVE_REQUESTS[user_key] = asyncio.current_task()
+
+            # логируем скорость ответа
+            logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
+            await eventlogger.log_event(
+                event_type="message_received", user_id=str(global_user_id), 
+                user_name=ud.get("username"), session_id=session_id, 
+                channel=platform, payload={"text": user_text, "turn_id": turn_id, "start_time": start_time}
+            )
             adk_user_id = str(global_user_id) if global_user_id else str(user_id)
             await adk.ensure_session(user_id=adk_user_id, session_id=adk_user_id)
 
@@ -838,18 +908,19 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                             f"Пропускаем ответ после reset user={global_user_id}"
                         )
                         return
-                    await bot_res.send(answer)
-                    await eventlogger.log_event(
-                        event_type="response",
-                        user_id=str(global_user_id),
-                        session_id=session_id,
-                        channel=platform,
-                        payload={
-                            "turn_id": turn_id,
-                            "text": answer, 
-                            "response_time_ms": response_time
-                        }    
-                    )
+                    if not await _skip_if_cancelled(global_user_id):
+                        await bot_res.send(answer)
+                        await eventlogger.log_event(
+                            event_type="response",
+                            user_id=str(global_user_id),
+                            session_id=session_id,
+                            channel=platform,
+                            payload={
+                                "turn_id": turn_id,
+                                "text": answer, 
+                                "response_time_ms": response_time
+                            }    
+                        )
                 # Логируем пользовательский запрос и результат в историю
                 await store.append(user_id, "user", user_text, global_user_id)
                 await store.append(
@@ -873,18 +944,19 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                             f"Пропускаем ответ после reset user={global_user_id}"
                         )
                         return
-                    await bot_res.send(answer)
-                    await eventlogger.log_event(
-                        event_type="response",
-                        user_id=str(global_user_id),
-                        session_id=session_id,
-                        channel=platform,
-                        payload={
-                            "turn_id": turn_id,
-                            "text": answer, 
-                            "response_time_ms": response_time
-                        }    
-                    )
+                    if not await _skip_if_cancelled(global_user_id):
+                        await bot_res.send(answer)
+                        await eventlogger.log_event(
+                            event_type="response",
+                            user_id=str(global_user_id),
+                            session_id=session_id,
+                            channel=platform,
+                            payload={
+                                "turn_id": turn_id,
+                                "text": answer, 
+                                "response_time_ms": response_time
+                            }    
+                        )
                 await store.append(user_id, "user", user_text, global_user_id)
                 await store.append(
                     user_id,
@@ -919,6 +991,15 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
             # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
             answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+            if asyncio.current_task().cancelled():
+                logger.info(f"🛑 Задача отменена после ADK run: user={global_user_id}")
+                raise asyncio.CancelledError()
+
+            # Проверка флага reset
+            if str(global_user_id) in RESET_USERS:
+                logger.info(f"Пропускаем ответ после reset user={global_user_id}")
+                return
+            logger.warning("END %s", time.time())
             if str(global_user_id) in RESET_USERS:
                 logger.info(
                     f"Пропускаем ответ после reset user={global_user_id}"
@@ -943,18 +1024,19 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                             f"Пропускаем ответ после reset user={global_user_id}"
                         )
                         return
-                    await bot_res.send(final_text)
-                    await eventlogger.log_event(
-                        event_type="response",
-                        user_id=str(global_user_id),
-                        session_id=session_id,
-                        channel=platform,
-                        payload={
-                            "turn_id": turn_id,
-                            "text": final_text,
-                            "response_time_ms": response_time,
-                        },
-                    )
+                    if not await _skip_if_cancelled(global_user_id):
+                        await bot_res.send(final_text)
+                        await eventlogger.log_event(
+                            event_type="response",
+                            user_id=str(global_user_id),
+                            session_id=session_id,
+                            channel=platform,
+                            payload={
+                                "turn_id": turn_id,
+                                "text": final_text,
+                                "response_time_ms": response_time,
+                            },
+                        )
 
                 await handle_product_kit_action(
                     bot_res=bot_res,
@@ -981,19 +1063,20 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                             f"Пропускаем ответ после reset user={global_user_id}"
                         )
                         return
-                    await bot_res.send(text_list) # Используем наш хелпер!
-                    response_time = int((time.time() - start_time) * 1000)
-                    await eventlogger.log_event(
-                        event_type="response",
-                        user_id=str(global_user_id),
-                        session_id=session_id,
-                        channel=platform,
-                        payload={
-                            "turn_id": turn_id,
-                            "text": text_list,
-                            "response_time_ms": response_time
-                        }    
-                    )
+                    if not await _skip_if_cancelled(global_user_id):
+                        await bot_res.send(text_list) # Используем наш хелпер!
+                        response_time = int((time.time() - start_time) * 1000)
+                        await eventlogger.log_event(
+                            event_type="response",
+                            user_id=str(global_user_id),
+                            session_id=session_id,
+                            channel=platform,
+                            payload={
+                                "turn_id": turn_id,
+                                "text": text_list,
+                                "response_time_ms": response_time
+                            }    
+                        )
                     return
 
             # 2. Если это просто текстовый ответ от нейронки
@@ -1008,13 +1091,14 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         f"Пропускаем ответ после reset user={global_user_id}"
                     )
                     return
-                await bot_res.send(final_text)
+                if not await _skip_if_cancelled(global_user_id):
+                    await bot_res.send(final_text)
                 
-                await eventlogger.log_event(
-                    event_type="response", user_id=str(global_user_id),
-                    session_id=session_id, channel=platform,
-                    payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
-                )
+                    await eventlogger.log_event(
+                        event_type="response", user_id=str(global_user_id),
+                        session_id=session_id, channel=platform,
+                        payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
+                    )
         # Блоки исключений, чтобы ответы были точнее от бота
         except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, ConnectionResetError, ConnectionError) as e:
             # Таймауты, обрывы сети, проблемы с HTTP-сессией ADK
@@ -1063,6 +1147,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 "• использовать /reset, если проблема повторяется."
             )
         finally:
+            # Освобождаем блокировку
+            if user_lock.locked():
+                user_lock.release()
             ACTIVE_REQUESTS.pop(
                 str(global_user_id),
                 None

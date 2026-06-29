@@ -1,4 +1,5 @@
 import asyncpg
+import asyncio
 import aiohttp
 import json
 from typing import Optional
@@ -493,7 +494,6 @@ class AdkApiClient:
         # Буфер stateDelta до ближайшего run()
         # ключ: (user_id, session_id)
         self._pending_state_delta: dict[tuple[str, str], dict] = {}
-
         logger.info(f"Инициализация ADK клиента: {base_url}, app={app_name}")
 
     async def open(self) -> None:
@@ -582,13 +582,16 @@ class AdkApiClient:
 
         if state_delta:
             payload["stateDelta"] = state_delta
-
         try:
             logger.debug(f"=== ADK REQUEST ===")
             logger.debug(f"URL: {url}")
             logger.debug(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
 
             async with self.http.post(url, json=payload) as resp:
+                # Проверяем отмену задачи во время ожидания ответа
+                if asyncio.current_task().cancelled():
+                    raise asyncio.CancelledError()
+                
                 text_resp = await resp.text()
 
                 logger.debug(f"=== ADK RESPONSE ===")
@@ -618,9 +621,26 @@ class AdkApiClient:
                 logger.debug(f"Answer: {answer}")
                 return answer, events
 
+        except asyncio.CancelledError:
+            logger.info(f"🛑 ADK запрос отменён: user={user_id}, session={session_id}")
+            raise
         except aiohttp.ClientError as e:
             logger.error(f"Ошибка сети при run: {e}", exc_info=True)
             raise
+    
+    async def cancel_request(self, user_id: str, session_id: str) -> None:
+        """
+        Отмена активного запроса к ADK API.
+        
+        Примечание: ADK API может не поддерживать явную отмену запросов,
+        поэтому этот метод в основном очищает состояние и логирует отмену.
+        """
+        key = (str(user_id), str(session_id))
+        
+        # Очищаем pending state delta
+        self._pending_state_delta.pop(key, None)
+        
+        logger.info(f"🛑 Отмена запроса ADK: user={user_id}, session={session_id}")
 
     @staticmethod
     def _extract_model_text(events: list) -> str:
