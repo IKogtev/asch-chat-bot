@@ -54,7 +54,9 @@ ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
 # флаг для сброса пользователей при команде /reset
 RESET_USERS: set[str] = set()
 USER_LOCKS: dict[str, asyncio.Lock] = {}
-USER_ACTIVE_REQUESTS: dict[str, asyncio.Event] = {} 
+USER_ACTIVE_REQUESTS: dict[str, asyncio.Event] = {}
+# отслеживание текущей session_id для каждого пользователя (для отмены и удаления)
+CURRENT_USER_SESSION: dict[str, str] = {}
 
 async def get_user_lock(user_id: str) -> asyncio.Lock:
     """Получить или создать блокировку для пользователя"""
@@ -219,7 +221,7 @@ async def sync_user_profile_to_adk(adk, subscriber_store, user_id: int, session_
         logger.warning(f"last_name пуст для user_id={user_id}")
     await adk.set_user_state(
         user_id=adk_user_id,
-        session_id=adk_user_id,
+        session_id=session_id,
         user_data=user_data,
     )
 
@@ -493,13 +495,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         user_id = ud["user_id"]
         global_user_id = ud.get("global_user_id")
         username = ud["username"]
-        session_id = str(global_user_id) if global_user_id else str(user_id)
 
         logger.info(f"Команда /reset [{platform}] от user_id={global_user_id} (@{username})")
         await eventlogger.log_event(
             event_type="command_reset",
             user_id=str(global_user_id),
-            session_id=session_id,
+            session_id=str(global_user_id),
             channel=platform
         )
         try:
@@ -512,12 +513,17 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             asyncio.create_task(clear_reset_flag(global_user_id))
             # останавливаем typing прямо сейчас
             await bot_res.stop_typing()
-            # Удаляем сессию в ADK (актуальная + legacy "default" от старых версий бота)
-            await adk.delete_session(user_id=str(global_user_id), session_id=session_id)
+            
+            # Удаляем последнюю активную сессию ADK для пользователя
+            current_session_id = CURRENT_USER_SESSION.get(str(global_user_id))
+            if current_session_id:
+                await adk.delete_session(user_id=str(global_user_id), session_id=current_session_id)
+                CURRENT_USER_SESSION.pop(str(global_user_id), None)
+            
             # Очищаем историю в БД
             await store.reset(user_id, global_user_id)
             # Удаляем состояние результатов поиска
-            await store.reset_search_state(global_user_id, session_id)
+            await store.reset_search_state(global_user_id, str(global_user_id))
 
             # После /reset не создаем новую ADK-сессию
             # и не вызываем set_user_state.
@@ -778,13 +784,23 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         session_id: str,
         bot_res,
     ):
-        # Отменяем HTTP-запрос к ADK и сбрасываем состояние сессии
-        with contextlib.suppress(Exception):
-            await adk.cancel_request(global_user_id, session_id)
+        # Получаем старую сессию пользователя
+        old_session_id = CURRENT_USER_SESSION.get(str(global_user_id))
+        
+        # Отменяем HTTP-запрос к ADK
+        if old_session_id:
+            with contextlib.suppress(Exception):
+                await adk.cancel_request(global_user_id, old_session_id)
+        
+        # Отменяем локальную Python задачу
         with contextlib.suppress(Exception):
             await cancel_user_request(str(global_user_id))
-        with contextlib.suppress(Exception):
-            await adk.delete_session(user_id=str(global_user_id), session_id=session_id)
+        
+        # Удаляем старую ADK-сессию, чтобы избежать 409 Conflict
+        if old_session_id:
+            with contextlib.suppress(Exception):
+                await adk.delete_session(user_id=str(global_user_id), session_id=old_session_id)
+                logger.info(f"Удалена старая ADK сессия: user={global_user_id} session={old_session_id}")
         
         # Останавливаем typing индикатор
         with contextlib.suppress(Exception):
@@ -842,15 +858,15 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     return
         # Если это не контакт — проверяем авторизацию как обычно
         
-        session_id = str(global_user_id)
         turn_id = str(uuid.uuid4())
+        session_id = f"{global_user_id}_{turn_id}"
         start_time = time.time()
         user_key = str(global_user_id)
         # отменяем запрос пользователя при повторном сообщении используем только последнее
         user_lock = await get_user_lock(user_key)
         # Если блокировка уже захвачена - отменяем предыдущий запрос и ждём его завершения
         if user_lock.locked():
-            logger.info(f"Пользователь {user_key}: отменяем предыдущий запрос")
+            logger.info(f"Пользователь {user_key}: отменяем предыдущий запрос и удаляем старую сессию")
 
             await interrupt_previous_request(
                 global_user_id=user_key,
@@ -860,6 +876,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         async with user_lock:
 
             ACTIVE_REQUESTS[user_key] = asyncio.current_task()
+            # Сохраняем текущую сессию для потенциальной отмены
+            CURRENT_USER_SESSION[user_key] = session_id
+            
             try:
                 # логируем скорость ответа
                 logger.info(f"📨 Сообщение [{platform}] от user_id={global_user_id} (@{ud['username']}): {user_text[:100]}")
@@ -967,6 +986,10 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 # Синхронизируем профиль пользователя в ADK перед run()
                 await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
                 
+                # Создаём новую сессию в ADK с новым session_id для избежания конфликтов
+                adk_user_id = str(global_user_id) if global_user_id else str(user_id)
+                await adk.ensure_session(user_id=adk_user_id, session_id=session_id)
+                
                 # --- Получаем информацию о последнем поиске перед текущим запросом (для контроля смены поиска) ---
                 meta_before = await store.get_last_search_meta(global_user_id, session_id)
                 search_id_before = meta_before["search_id"] if meta_before else None
@@ -974,7 +997,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 await bot_res.start_typing()
                 ACTIVE_REQUESTS[str(global_user_id)] = asyncio.current_task()
                 # --- Общий запрос к ADK: поиск и формирование ответа для пользователя ---
-                answer, events = await adk.run(user_id=adk_user_id, session_id=adk_user_id, text=user_text)
+                answer, events = await adk.run(user_id=adk_user_id, session_id=session_id, text=user_text)
                 if asyncio.current_task().cancelled():
                     logger.info(f"🛑 Задача отменена после ADK run: user={global_user_id}")
                     raise asyncio.CancelledError()
