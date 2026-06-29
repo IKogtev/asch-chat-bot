@@ -243,6 +243,37 @@ class RootAgent(BaseAgent):
         for key in keys:
             ctx.session.state.pop(key, None)
 
+    def _reset_turn_state(self, ctx: InvocationContext) -> None:
+        """Сбрасывает служебное состояние перед новым пользовательским сообщением."""
+        self._clear_state_keys(
+            ctx,
+            [
+                "user_query",
+                "search_query",
+                "faq_collection",
+                "kb_answer_collection",
+                "intent",
+                "dispatcher_user_query",
+                "doc_search_query",
+                "doc_search_intent",
+                "product_selection_search_query",
+                "product_selection_intent",
+                "from_glossary",
+                "_owasp_result_parsed",
+                "_dispatcher_result_parsed",
+                "_doc_search_result_parsed",
+                "_kb_answer_result_parsed",
+                "_product_selection_result_parsed",
+                "_root_final_text",
+                "_bot_action",
+                "product_resolution",
+                "product_resolutions",
+                "product_filter_resolution",
+                "owasp_current_user_message",
+                "owasp_recent_messages_json",
+            ],
+        )
+
     def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
         """Возвращает сохраненное ограниченное окно недавних сообщений."""
         value = ctx.session.state.get(OWASP_HISTORY_STATE_KEY)
@@ -841,6 +872,7 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event(ctx, "")
                 return
 
+            self._reset_turn_state(ctx)
             ctx.session.state["user_query"] = user_text
             self._prepare_owasp_input(ctx, user_text)
             self._clear_state_keys(
@@ -853,7 +885,7 @@ class RootAgent(BaseAgent):
                     "_product_selection_result_parsed",
                     "_root_final_text",
                     "_bot_action",
-                    "from_glossary",
+                    "_from_glossary",
                     "doc_search_query",
                     "product_resolution",
                     "product_resolutions",

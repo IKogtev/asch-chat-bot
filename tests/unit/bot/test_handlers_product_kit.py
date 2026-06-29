@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 import types
+import asyncio
 
 import pytest
 
@@ -43,6 +44,15 @@ class _FakeEventLogger:
         self.events.append(kwargs)
 
 
+def _build_logger():
+    return types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+
+
 class _FakeBotResponse:
     def __init__(self):
         self.messages = []
@@ -67,6 +77,21 @@ class _FakeTelegramMessage:
 
     async def answer_document(self, document):
         self.documents.append(document)
+
+
+def _load_cancel_user_request(extra_globals: dict):
+    file_path = Path(__file__).resolve().parents[3] / "bot" / "services" / "handlers.py"
+    tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
+    selected = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_user_request"
+    ]
+    module = ast.Module(body=selected, type_ignores=[])
+    namespace = {"__builtins__": __builtins__}
+    namespace.update(extra_globals)
+    exec(compile(module, str(file_path), "exec"), namespace)
+    return namespace["cancel_user_request"]
 
 
 @pytest.mark.unit
@@ -177,3 +202,51 @@ async def test_handle_product_kit_action_sends_status_message_when_no_files() ->
     assert result is False
     assert bot_res.messages == ["Комплект для продукта пока не загружен."]
     assert eventlogger.events[0]["event_type"] == "product_kit_status"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_user_request_cancels_active_task_and_clears_active_requests() -> None:
+    """Test that cancel_user_request cancels active tasks and removes them from ACTIVE_REQUESTS."""
+    active_requests = {}
+    cancel_user_request = _load_cancel_user_request(
+        {
+            "ACTIVE_REQUESTS": active_requests,
+            "logger": _build_logger(),
+            "asyncio": asyncio,
+        }
+    )
+
+    async def long_running():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            raise
+
+    running_task = asyncio.create_task(long_running())
+    await asyncio.sleep(0)
+    active_requests["user-1"] = running_task
+
+    result = await cancel_user_request("user-1")
+
+    assert result is True
+    assert running_task.cancelled() is True
+    assert "user-1" not in active_requests
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_user_request_returns_false_when_no_active_task() -> None:
+    """Test that cancel_user_request returns False when there's no active task."""
+    active_requests = {}
+    cancel_user_request = _load_cancel_user_request(
+        {
+            "ACTIVE_REQUESTS": active_requests,
+            "logger": _build_logger(),
+            "asyncio": asyncio,
+        }
+    )
+
+    result = await cancel_user_request("missing-user")
+
+    assert result is False
