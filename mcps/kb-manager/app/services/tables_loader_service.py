@@ -518,6 +518,8 @@ class TablesLoaderService:
                     df = self._enrich_products_with_kit_folders(df)
                     product_search_df = self._build_product_search_dictionary(df)
                 await self._replace_table(conn, table_name, df)
+                if table_name == PRODUCTS_TABLE_NAME:
+                    await self._create_products_name_trgm_index(conn, df)
                 if product_search_df is not None:
                     await self._replace_table(conn, PRODUCT_SEARCH_TABLE, product_search_df)
                     await self._create_indexes(conn, PRODUCT_SEARCH_TABLE, ["product_code", "normalized_alias",])
@@ -1138,6 +1140,29 @@ class TablesLoaderService:
             ON {PRODUCT_SEARCH_TABLE}
             USING gin (
                 normalized_alias gin_trgm_ops
+            )
+            """
+        )
+
+    async def _create_products_name_trgm_index(
+        self,
+        conn: asyncpg.Connection,
+        df: pd.DataFrame,
+    ) -> None:
+        """
+        Индекс для поиска продуктов по названию через pg_trgm word similarity.
+        """
+        name_column = self._first_existing_column(df, ["name", "product_name"])
+        if name_column is None:
+            return
+
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS
+            idx_products_name_trgm
+            ON {self._quote_ident(PRODUCTS_TABLE_NAME)}
+            USING gin (
+                {self._quote_ident(name_column)} gin_trgm_ops
             )
             """
         )
