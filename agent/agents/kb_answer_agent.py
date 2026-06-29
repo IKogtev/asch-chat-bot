@@ -278,16 +278,26 @@ If multiple definitions are present and context does not disambiguate them, do n
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "kb_answer_agent"
-    logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
-    agent = LlmAgent(
-        name=name,
-        model=model,
-        instruction=instruction,
-        tools=tools,
-        output_key="kb_answer_result_json",
-        generate_content_config=GenerateContentConfig(
-            temperature=KB_ANSWER_TEMPERATURE,
+    if KB_ANSWER_TEMPERATURE != -1:
+        logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="kb_answer_result_json",
+            generate_content_config=GenerateContentConfig(
+                temperature=KB_ANSWER_TEMPERATURE,
+            )
         )
-    )
+    else: 
+        logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            include_contents="none",
+            output_key="kb_answer_result_json"
+        ) 
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
