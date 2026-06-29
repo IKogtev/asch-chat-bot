@@ -303,16 +303,26 @@ For document search, glossary context must not erase document type, product name
     prompt_file = "doc_search_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "doc_search_agent"
-    logger.debug(f"Agent {name} it's temperature: {DOC_SEARCH_TEMPERATURE}")
-    agent = LlmAgent(
-        name=name,
-        model=model,
-        instruction=instruction,
-        tools=tools,
-        output_key="doc_search_result_json",
-        generate_content_config=GenerateContentConfig(
-            temperature=DOC_SEARCH_TEMPERATURE,
+    if DOC_SEARCH_TEMPERATURE != -1:
+        logger.debug(f"Agent {name} it's temperature: {DOC_SEARCH_TEMPERATURE}")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="doc_search_result_json",
+            generate_content_config=GenerateContentConfig(
+                temperature=DOC_SEARCH_TEMPERATURE,
+            )
         )
-    )
+    else:
+        logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            include_contents="none",
+            output_key="doc_search_result_json"
+        )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

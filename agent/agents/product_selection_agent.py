@@ -363,16 +363,26 @@ Response format:
     prompt_file = "product_selection_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "product_selection_agent"
-    logger.debug(f"Agent {name} it's temperature: {PRODUCT_SELECTION_TEMPERATURE}")
-    agent = LlmAgent(
-        name=name,
-        model=model,
-        instruction=instruction,
-        tools=tools,
-        output_key="product_selection_result_json",
-        generate_content_config=GenerateContentConfig(
-            temperature=PRODUCT_SELECTION_TEMPERATURE,
+    if PRODUCT_SELECTION_TEMPERATURE != -1:
+        logger.debug(f"Agent {name} it's temperature: {PRODUCT_SELECTION_TEMPERATURE}")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="product_selection_result_json",
+            generate_content_config=GenerateContentConfig(
+                temperature=PRODUCT_SELECTION_TEMPERATURE,
+            )
         )
-    )
+    else:
+        logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            include_contents="none",
+            output_key="product_selection_result_json"
+        )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
