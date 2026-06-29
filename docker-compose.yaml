@@ -96,7 +96,8 @@ services:
       - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
       - KB_TOP_K=${KB_TOP_K:-20}
-      - ROOT_TEMPERATURE=0.0
+      - ROOT_TEMPERATURE=-1
+      - KB_ANSWER_TEMPERATURE=0.0
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
@@ -464,7 +465,8 @@ services:
       - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
 
       - KB_TOP_K=${KB_TOP_K:-20}
-      - ROOT_TEMPERATURE=0.0
+      - ROOT_TEMPERATURE=-1
+      - KB_ANSWER_TEMPERATURE=0.0
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
