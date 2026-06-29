@@ -2,10 +2,11 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
+from google.genai.types import GenerateContentConfig
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
-from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL
+from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL, PRODUCT_SELECTION_TEMPERATURE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
@@ -361,12 +362,17 @@ Response format:
 """
     prompt_file = "product_selection_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
+    name = "product_selection_agent"
+    logger.debug(f"Agent {name} it's temperature: {PRODUCT_SELECTION_TEMPERATURE}")
     agent = LlmAgent(
-        name="product_selection_agent",
+        name=name,
         model=model,
         instruction=instruction,
         tools=tools,
         output_key="product_selection_result_json",
+        generate_content_config=GenerateContentConfig(
+            temperature=PRODUCT_SELECTION_TEMPERATURE,
+        )
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
