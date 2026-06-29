@@ -145,17 +145,10 @@ def get_product_kit(
 
     files: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    # Если отдельной папки продукта нет,
-    # считаем что работаем в режиме
-    # "файлы лежат непосредственно в папке"
-    filter_by_product_code = (
-        len(matching_product_dirs) == 0
-    )
-   
     candidate_files = sorted(
         [
             item
-            for item in folder.rglob("*")
+            for item in folder.iterdir()
             if item.is_file()
         ],
         key=lambda path: str(path).lower(),
@@ -164,19 +157,6 @@ def get_product_kit(
     for item in candidate_files:
         if not item.is_file():
             continue
-        if not _file_matches_product_code(
-            item,
-            normalized_product_code,
-        ):
-            continue
-        if filter_by_product_code:
-
-            if not _file_matches_product_code(
-                item,
-                normalized_product_code,
-            ):
-                continue
-
         if _is_hidden_or_service_file(item):
             skipped.append({"path": str(item), "reason": "hidden_or_service"})
             continue
