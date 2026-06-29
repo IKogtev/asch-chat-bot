@@ -649,7 +649,12 @@ class RootAgent(BaseAgent):
             return None
 
         # 1. Явный запрос комплекта/документов (но не "какие документы есть" -> это фильтр)
-        is_explicit_kit = bool(re.search(r"\b(комплект|документы|файлы|материалы|пф|презентер|отправь|пришли)\b", normalized))
+        is_explicit_kit = bool(
+            re.search(
+                r"\b(пакет документов|пакет материалов|комплект документов|полный комплект|комплект|материалы)\b",
+                normalized,
+            )
+        )
         is_asking_list = bool(re.search(r"\b(какие|что за|список|покажи список|есть ли)\b", normalized))
         
         if is_explicit_kit and not is_asking_list:

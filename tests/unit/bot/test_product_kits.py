@@ -49,6 +49,29 @@ def test_get_product_kit_uses_folder_kit_when_present(tmp_path) -> None:
 
 
 @pytest.mark.unit
+def test_get_product_kit_returns_all_direct_files_for_bundle_folder(tmp_path) -> None:
+    folder = tmp_path / "Bundle (8965+7698)"
+    folder.mkdir()
+    bundle_file = folder / "bundle (8965+7698).pdf"
+    first_part_file = folder / "part (8965).pdf"
+    second_part_file = folder / "part (7698).pdf"
+    unrelated_name_file = folder / "terms.pdf"
+    for file_path in [bundle_file, first_part_file, second_part_file, unrelated_name_file]:
+        file_path.write_text(file_path.name, encoding="utf-8")
+
+    result = get_product_kit("8965+7698", "Bundle", folder_kit=folder.name, root=tmp_path)
+
+    assert result["status"] == "ok"
+    assert [item["name"] for item in result["files"]] == [
+        "bundle (8965+7698).pdf",
+        "part (7698).pdf",
+        "part (8965).pdf",
+        "terms.pdf",
+    ]
+    assert result["skipped_files"] == []
+
+
+@pytest.mark.unit
 def test_get_product_kit_ignores_files_in_nested_folders(tmp_path) -> None:
     folder = tmp_path / "Fort Knox" / "Fort Knox (2832)"
     nested = folder / "nested"
