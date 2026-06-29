@@ -51,6 +51,8 @@ STARTUP_GRACE_PERIOD = 5  # сек
 OLD_MESSAGE_THRESHOLD = 15  # сек
 # список текущих задач
 ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
+# Глобальный набор для хранения фоновых задач (чтобы их не удалил Garbage Collector)
+BACKGROUND_TASKS = set()
 # флаг для сброса пользователей при команде /reset
 RESET_USERS: set[str] = set()
 USER_LOCKS: dict[str, asyncio.Lock] = {}
@@ -291,12 +293,38 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 if is_old_message(event, platform):
                     logger.warning("⏳ Skip old message (backlog)")
                     return
-            # Вызываем общую авторизацию
-            ud, bot_res = await unified_auth(event)
-            if ud is None:
-                return # Прерываем, если телефон не получен
-            # Передаем управление в основную функцию, добавляя ud и bot_res
-            return await func(event, ud, bot_res, *args, **kwargs)
+            if not is_tg:
+                # --- ИСПРАВЛЕНИЕ ДЛЯ MAX API ---
+                # Запускаем ВСЮ обработку (включая unified_auth) в фоне.
+                # Это критично, так как поллинг Max API обрабатывает апдейты последовательно.
+                # Если не уйти в фон, второе сообщение не будет получено ботом, пока первое не обработается до конца,
+                # и механизм отмены (user_lock) не сработает.
+                async def _run():
+                    ud, bot_res = await unified_auth(event)
+                    if ud is None:
+                        return
+                    await func(event, ud, bot_res, *args, **kwargs)
+                    
+                task = asyncio.create_task(_run())
+                BACKGROUND_TASKS.add(task)
+                task.add_done_callback(BACKGROUND_TASKS.discard)
+                # Коллбэк для логирования необработанных исключений в фоне
+                def _cb(t):
+                    try:
+                        t.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        logger.error(f"Unhandled exception in background task: {e}", exc_info=True)
+                task.add_done_callback(_cb)
+            else:
+                # В Telegram (aiogram v3) поллинг и так конкурентный
+                # Вызываем общую авторизацию
+                ud, bot_res = await unified_auth(event)
+                if ud is None:
+                    return # Прерываем, если телефон не получен
+                # Передаем управление в основную функцию, добавляя ud и bot_res
+                return await func(event, ud, bot_res, *args, **kwargs)
         return wrapper
     
     #  отсечение по времени: 
