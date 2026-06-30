@@ -296,7 +296,7 @@ If multiple definitions are present and context does not disambiguate them, do n
             name=name,
             model=model,
             instruction=instruction,
-            include_contents="none",
+            tools=tools,
             output_key="kb_answer_result_json"
         ) 
     start_prompt_watcher(prompt_file, agent, logger)

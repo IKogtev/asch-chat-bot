@@ -321,7 +321,7 @@ For document search, glossary context must not erase document type, product name
             name=name,
             model=model,
             instruction=instruction,
-            include_contents="none",
+            tools=tools,
             output_key="doc_search_result_json"
         )
     start_prompt_watcher(prompt_file, agent, logger)
