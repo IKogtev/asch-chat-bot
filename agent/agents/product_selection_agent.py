@@ -381,7 +381,7 @@ Response format:
             name=name,
             model=model,
             instruction=instruction,
-            include_contents="none",
+            tools=tools,
             output_key="product_selection_result_json"
         )
     start_prompt_watcher(prompt_file, agent, logger)
