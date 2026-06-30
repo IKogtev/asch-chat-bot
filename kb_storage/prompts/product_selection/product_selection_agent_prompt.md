@@ -282,12 +282,13 @@ folder_kit
 - выбери из таблицы продуктов все подтвержденные через `search_column` колонки карточки:
   `code`, `name`, `is_active`, `insurance_type`, `product_type`, `term`, `capital_loss_risk`,
   `product_risk_level`, `income`, `contribution_type`, `payout_type`, `liquidity`, `currency`,
-  `fx_protection`, `segment`, `client_goal`, `taxes`, `tax_benefits`, `input_date`, `commission`;
+  `fx_protection`, `segment`, `client_goal`, `taxes`, `tax_benefits`, `in_focus`,
+  `in_focus_condition`, `input_date`, `commission`;
 - в `message` выведи все непустые поля из результата SQL в порядке ниже:
   `Код`, `Продукт`, `Действующий`, `Тип страхования`, `Тип продукта`, `Срок`,
   `Риск потери капитала`, `Уровень риска продукта`, `Доход`, `Тип взноса`, `Тип выплат`, `Ликвидность`,
   `Валюта`, `Защита от девальвации рубля / аллокация на валюту`, `Сегмент`, `Цель клиента`, `Налоги`,
-  `Налоговые преференции`, `Дата ввода`, `КВ`;
+  `Налоговые преференции`, `В фокусе`, `Условие фокуса`, `Дата ввода`, `КВ`;
 - не пропускай поле только потому, что оно не является ключевым: для карточки продукта нужны все поля таблицы продуктов, если значения есть;
 - верни `resolved_product`.
 
@@ -335,17 +336,15 @@ folder_kit
 `CODE - **Архивный**. NAME (PRODUCT_TYPE)`
 `Могу показать карточку продукта или скачать комплект. Какой продукт Вас интересует ?`
 
-Для `product_compare` используй `product_resolutions`.
+Для `product_compare` используй `product_resolutions` только как источник кодов продуктов.
 
-- Если `product_resolutions.status` = `resolved`, выполни SQL в основной таблице продуктов по каждому `product_code` из `items`.
-- Если `product_resolutions.status` = `ambiguous`, верни `mode="needs_clarification"` с вариантами из неоднозначных элементов.
-- Если `product_resolutions.status` = `partial`, попроси уточнить ненайденные продукты или верни `mode="no_data"`, если сравнение невозможно.
-- Если `product_resolutions.status` = `not_found` или `error`, верни `mode="no_data"`.
-- Не сравнивай продукты, которые не подтверждены resolver и SQL.
-
-Для `product_compare` используй `product_resolutions`.
-
-- Если `product_resolutions.status` = `resolved`, выполни SQL в основной таблице продуктов по каждому `product_code` из `items`.
+- Не используй `product_resolutions` как источник фактов, названий в `message`, значений свойств или массива `products`.
+- Если `product_resolutions.status` = `resolved`, возьми из `items` уникальные `product_code`.
+- Если уникальных `product_code` не ровно 2, верни `mode="no_data"` или `mode="needs_clarification"` только при наличии вариантов для уточнения.
+- После получения двух уникальных кодов проверь реальные колонки таблицы через `search_column`.
+- Затем обязательно выполни `execute_sql` в основной таблице продуктов по фильтру `code IN (...)`.
+- Формируй `message` и `products` только из строк, которые вернул успешный `execute_sql`.
+- Если `execute_sql` не был вызван или не вернул две строки по подтвержденным кодам, не возвращай `mode="product_compare"`; верни `mode="no_data"`.
 - Если `product_resolutions.status` = `ambiguous`, верни `mode="needs_clarification"` с вариантами из неоднозначных элементов.
 - Если `product_resolutions.status` = `partial`, попроси уточнить ненайденные продукты или верни `mode="no_data"`, если сравнение невозможно.
 - Если `product_resolutions.status` = `not_found` или `error`, верни `mode="no_data"`.
@@ -376,6 +375,12 @@ folder_kit
 - групповые сравнения, сравнения линеек и семейств продуктов пока не выполняй;
 - если по одной из сторон сравнения найдено несколько продуктов, верни `mode="needs_clarification"` с вариантами из SQL;
 - используй все свойства продуктов;
+- итоговый SQL для сравнения должен выбирать все подтвержденные через `search_column` колонки:
+  `code`, `name`, `is_active`, `insurance_type`, `product_type`, `term`, `capital_loss_risk`,
+  `product_risk_level`, `income`, `contribution_type`, `payout_type`, `liquidity`, `currency`,
+  `fx_protection`, `segment`, `client_goal`, `taxes`, `tax_benefits`, `in_focus`,
+  `in_focus_condition`, `input_date`, `commission`;
+- для `product_compare` не ограничивай состав `SELECT` через `display_columns` или поля по умолчанию;
 - выведи отличающиеся и одинаковые свойства строго в таком формате:
 
 `У двух продуктов отличаются следующие свойства:`
@@ -431,7 +436,8 @@ SQL должен быть:
 
 Если шаблон содержит `display_columns`, не выбирай произвольный набор колонок для списка.
 Для `product_compare` выбирай все подтвержденные свойства продуктов, нужные для полного сравнения двух конкретных продуктов.
-Начинай SELECT с проверенных `display_columns`, затем добавляй только поля, явно нужные для вопроса и подтвержденные каталогом.
+Для `product_compare` выбирай полный список свойств из раздела `product_compare`, а не короткий набор из `display_columns`.
+Для остальных сценариев начинай SELECT с проверенных `display_columns`, затем добавляй только поля, явно нужные для вопроса и подтвержденные каталогом.
 Для `product_filter` колонка `is_active` обязательна в финальном `SELECT`, если в `message` выводится список продуктов.
 
 ## Формат `message`

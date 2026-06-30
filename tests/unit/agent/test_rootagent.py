@@ -1138,6 +1138,24 @@ async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_fa
 
 
 @pytest.mark.unit
+def test_product_compare_tool_usage_fallback_mentions_unconfirmed_sql_data() -> None:
+    message = rootagent_module.generate_agent_fallback(
+        "compare products",
+        error_type="validation_failure",
+        agent_name="product_selection",
+        context={
+            "validation_error": "product_selection_agent validation failed at tool_usage",
+            "mode": "product_compare",
+            "search_query": "compare products 111 and 222",
+        },
+    )
+
+    assert "безопасно получить данные для сравнения продуктов" in message
+    assert "подтверждены запросом к базе данных" in message
+    assert "поиск по продуктам" not in message
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_async_impl_routes_product_selection_to_product_agent_only() -> None:
     agent = _make_agent()
@@ -1711,6 +1729,139 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
 
     assert events == []
     assert len(ctx.session.state["product_resolutions"]["items"]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_deduplicates_compare_product_resolutions_state() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            raise AssertionError("resolve_product must not be called")
+
+        async def resolve_products(self, query, expected_count=None):
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "items": [
+                        {
+                            "status": "resolved",
+                            "mention": "Product A 111",
+                            "product_code": "111",
+                            "product_name": "Product A",
+                        },
+                        {
+                            "status": "resolved",
+                            "mention": "111",
+                            "product_code": "111",
+                            "product_name": "Product A",
+                        },
+                        {
+                            "status": "resolved",
+                            "mention": "Product B 222",
+                            "product_code": "222",
+                            "product_name": "Product B",
+                        },
+                        {
+                            "status": "resolved",
+                            "mention": "222",
+                            "product_code": "222",
+                            "product_name": "Product B",
+                        },
+                    ],
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        items = ctx.session.state["product_resolutions"]["items"]
+        assert [item["product_code"] for item in items] == ["111", "222"]
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "compare products",
+            "Product A 111 and Product B 222",
+            "product_compare",
+        )
+    ]
+
+    assert events == []
+
+
+@pytest.mark.unit
+def test_product_resolutions_dedup_key_keeps_same_code_with_different_names() -> None:
+    state = RootAgent._product_resolutions_to_state(
+        {
+            "status": "resolved",
+            "items": [
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "product_name": "Unit Linked Активные облигации",
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "product_name": "Unit Linked Стратегия роста",
+                },
+            ],
+        }
+    )
+
+    assert [
+        item["product_name"]
+        for item in state["items"]
+    ] == [
+        "Unit Linked Активные облигации",
+        "Unit Linked Стратегия роста",
+    ]
+
+
+@pytest.mark.unit
+def test_product_resolutions_dedup_key_uses_option_name_fallback() -> None:
+    state = RootAgent._product_resolutions_to_state(
+        {
+            "status": "resolved",
+            "items": [
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "options": [
+                        {"canonical_name": "Unit Linked Активные облигации"},
+                    ],
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "options": [
+                        {"alias": "Unit Linked Активные облигации"},
+                    ],
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "options": [
+                        {"canonical_name": "Unit Linked Стратегия роста"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert len(state["items"]) == 2
+    assert state["items"][0]["options"][0]["canonical_name"] == "Unit Linked Активные облигации"
+    assert state["items"][1]["options"][0]["canonical_name"] == "Unit Linked Стратегия роста"
 
 
 @pytest.mark.unit
