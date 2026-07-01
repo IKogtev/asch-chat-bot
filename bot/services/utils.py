@@ -242,6 +242,50 @@ def build_universal_menu(tree: dict, path: list[str], channel: str = "telegram")
             builder.row(*row)
         return builder.as_markup()
 
+async def resolve_search_session_id(
+    store: PostgresChatStore,
+    user_id: str,
+    request_session_id: str,
+) -> str:
+    """
+    Для follow-up (ещё / все / скачать) используем session_id последнего поиска.
+    У каждого сообщения бота свой request_session_id, а список документов привязан к сессии ADK-поиска.
+    """
+    meta = await store.get_last_search_meta(user_id, request_session_id)
+    if meta:
+        logger.debug(
+            "resolve_search_session_id: meta found for request session_id=%s user_id=%s search_id=%s total=%s",
+            request_session_id,
+            user_id,
+            meta.get("search_id"),
+            meta.get("total_count"),
+        )
+        return request_session_id
+
+    latest = await store.get_latest_search_session_id(user_id)
+    if latest and latest != request_session_id:
+        latest_meta = await store.get_last_search_meta(user_id, latest)
+        logger.info(
+            "resolve_search_session_id: request session_id=%s has no search meta, "
+            "fallback to latest=%s user_id=%s search_id=%s total=%s",
+            request_session_id,
+            latest,
+            user_id,
+            (latest_meta or {}).get("search_id"),
+            (latest_meta or {}).get("total_count"),
+        )
+        return latest
+
+    if not latest:
+        logger.warning(
+            "resolve_search_session_id: no search meta for request session_id=%s "
+            "and no previous search for user_id=%s",
+            request_session_id,
+            user_id,
+        )
+    return request_session_id
+
+
 #  обработка команды показать ещё результаты
 async def handle_show_more(
     event, # Может быть Message (TG) или MessageCreated (Max)
@@ -253,11 +297,21 @@ async def handle_show_more(
     start_time: float = None,
     platform: str = "telegram" # "telegram" или "max"
 ) -> bool:
+    search_session_id = await resolve_search_session_id(store, user_id, session_id)
     # 1. Получаем данные из хранилища
-    meta = await store.get_last_search_meta(user_id, session_id)
-    items = await store.get_last_search_results(user_id, session_id)
+    meta = await store.get_last_search_meta(user_id, search_session_id)
+    items = await store.get_last_search_results(user_id, search_session_id)
 
     if not meta or not items:
+        logger.info(
+            "handle_show_more: no saved list user_id=%s request_session_id=%s search_session_id=%s "
+            "meta=%s items=%d",
+            user_id,
+            session_id,
+            search_session_id,
+            bool(meta),
+            len(items or []),
+        )
         return False
 
     # 2. Адаптация под платформу (настройка интерфейса ответа)
@@ -299,7 +353,7 @@ async def handle_show_more(
     chunk = items[start:end]
     text = render_results(chunk, total=len(items), offset=start)
     
-    await store.update_shown_count(user_id, session_id, end)
+    await store.update_shown_count(user_id, search_session_id, end)
     
     # Отправляем сообщение с нужным параметром форматирования
     await answer_func(text, **html_param)
@@ -329,15 +383,22 @@ async def handle_show_all(
     platform: str = "telegram" # "telegram" или "max" или "web"
 ) -> bool:
     """Универсальная функция отображения всех результатов поиска"""
-    
+
+    search_session_id = await resolve_search_session_id(store, user_id, session_id)
     # 1. Получаем данные
-    items = await store.get_last_search_results(user_id, session_id)
+    items = await store.get_last_search_results(user_id, search_session_id)
     if not items:
+        logger.info(
+            "handle_show_all: no saved list user_id=%s request_session_id=%s search_session_id=%s",
+            user_id,
+            session_id,
+            search_session_id,
+        )
         return False
 
     # 2. Формируем текст (общая логика для всех)
     text = render_results(items, total=len(items), offset=0)
-    await store.update_shown_count(user_id, session_id, len(items))
+    await store.update_shown_count(user_id, search_session_id, len(items))
 
     # 3. Адаптация под платформу
     if platform == "telegram":
@@ -384,7 +445,16 @@ async def handle_download_by_ranks(
 ) -> bool:
     if not ranks:
         return False
-        
+
+    search_session_id = await resolve_search_session_id(store, user_id, session_id)
+    logger.info(
+        "handle_download_by_ranks: start user_id=%s request_session_id=%s search_session_id=%s ranks=%s",
+        user_id,
+        session_id,
+        search_session_id,
+        ranks,
+    )
+
     sent_any = False
     # Адаптер для текстовых ответов и данных пользователя
     if platform == "telegram":
@@ -395,27 +465,55 @@ async def handle_download_by_ranks(
         username = event.from_user.username
 
     for rank in ranks:
-        item = await store.get_result_by_rank(user_id, session_id, rank)
-        
+        item = await store.get_result_by_rank(user_id, search_session_id, rank)
+
         # 1. Обработка отсутствия документа в списке
         if not item:
             answer = f"Не нашёл документ №{rank} в последнем списке."
+            logger.warning(
+                "handle_download_by_ranks: rank=%s not found user_id=%s search_session_id=%s",
+                rank,
+                user_id,
+                search_session_id,
+            )
             await answer_func(answer)
             await _log_download_res(user_id, session_id, platform, turn_id, answer, start_time)
             continue
 
         doc_id = item.get("document_id")
+        source_name = item.get("source_name")
         if not doc_id:
             answer = f"Не удалось определить document_id для документа №{rank}."
+            logger.warning(
+                "handle_download_by_ranks: rank=%s missing document_id user_id=%s item=%s",
+                rank,
+                user_id,
+                item,
+            )
             await answer_func(answer)
             await _log_download_res(user_id, session_id, platform, turn_id, answer, start_time)
             continue
+
+        logger.info(
+            "handle_download_by_ranks: downloading rank=%s doc_id=%s source_name=%s user_id=%s",
+            rank,
+            doc_id,
+            source_name,
+            user_id,
+        )
 
         # 2. Попытка скачивания и отправки
         file_path = None
         try:
             file_path = await doc_handler.download_document(doc_id)
             if file_path and file_path.exists():
+                logger.info(
+                    "handle_download_by_ranks: downloaded rank=%s doc_id=%s path=%s size_bytes=%s",
+                    rank,
+                    doc_id,
+                    file_path,
+                    file_path.stat().st_size,
+                )
                 # --- РАЗВИЛКА ОТПРАВКИ ФАЙЛА ---
                 if platform == "telegram":
                     await event.answer_document(
@@ -446,6 +544,14 @@ async def handle_download_by_ranks(
             else:
                 # Лог неудачи скачивания
                 err_msg = f"Не удалось загрузить документ №{rank}."
+                logger.error(
+                    "handle_download_by_ranks: kb-manager returned no file rank=%s doc_id=%s "
+                    "source_name=%s file_path=%s",
+                    rank,
+                    doc_id,
+                    source_name,
+                    file_path,
+                )
                 await answer_func(err_msg)
                 await _log_download_err(user_id, username, session_id, platform, doc_id, rank, turn_id, file_path)
 
@@ -462,6 +568,13 @@ async def handle_download_by_ranks(
                 except Exception:
                     pass
 
+    logger.info(
+        "handle_download_by_ranks: done user_id=%s search_session_id=%s ranks=%s sent_any=%s",
+        user_id,
+        search_session_id,
+        ranks,
+        sent_any,
+    )
     return sent_any
 
 # Вспомогательные функции, чтобы не дублировать длинные вызовы логгера

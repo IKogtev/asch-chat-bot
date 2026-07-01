@@ -51,6 +51,7 @@ from bot.services.utils import (
     markdown_to_safe_html,
     render_results,
     register_callback_path,
+    resolve_search_session_id,
     split_message,
 )
 
@@ -111,6 +112,40 @@ def test_html_to_telegram_converts_and_strips_unsupported_tags() -> None:
 @pytest.mark.unit
 def test_html_to_telegram_returns_empty_string_for_empty_input() -> None:
     assert html_to_telegram("") == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_search_session_id_uses_request_session_when_meta_exists() -> None:
+    class _Store:
+        async def get_last_search_meta(self, user_id, session_id):
+            if session_id == "current":
+                return {"search_id": "s1", "total_count": 3}
+            return None
+
+        async def get_latest_search_session_id(self, user_id):
+            return "previous"
+
+    result = await resolve_search_session_id(_Store(), "user-1", "current")
+
+    assert result == "current"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_search_session_id_falls_back_to_latest_search() -> None:
+    class _Store:
+        async def get_last_search_meta(self, user_id, session_id):
+            if session_id == "previous":
+                return {"search_id": "s-prev", "total_count": 5}
+            return None
+
+        async def get_latest_search_session_id(self, user_id):
+            return "previous"
+
+    result = await resolve_search_session_id(_Store(), "user-1", "current")
+
+    assert result == "previous"
 
 
 @pytest.mark.unit
