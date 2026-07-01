@@ -220,7 +220,7 @@ def get_file_link(file_name: Annotated[str, "Name of source file"], section_list
     return f"{clean_path}"
 
 
-def build_search_prompt(results: list[dict], question: str, top_k: int) -> str:
+def build_search_prompt(results: list[dict], question: str, top_k: int, merge_document_chunks: bool = True) -> str:
     blocks = []
     doc_res = {}
     for item in results:
@@ -229,8 +229,15 @@ def build_search_prompt(results: list[dict], question: str, top_k: int) -> str:
         if doc_id not in doc_res:
             doc_res[doc_id] = item
         else:
-            doc_res[doc_id]["content"] += "\n...\n" + item["content"]
-            doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+            if merge_document_chunks:
+                # если объединяем чанки, то добавляем новый чанк к существующему
+                doc_res[doc_id]["content"] += "\n...\n" + item["content"]
+                doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+            else:
+                # если не объединяем чанки, то заменяем существующий чанк на новый, если ранг нового чанка меньше, чем ранг существующего
+                if item['rank'] < doc_res[doc_id]["rank"]:
+                    doc_res[doc_id]["content"] = item["content"]
+                    doc_res[doc_id]["rank"] = item["rank"]
 
     logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
     shown = 0
@@ -395,7 +402,7 @@ async def kb_search(
                 f"Найдено {len(results)} результатов (Qdrant hybrid, mode={profile_cfg.search_mode})"
             )
 
-            prompt = build_search_prompt(results, query, top_k)
+            prompt = build_search_prompt(results, query, top_k, merge_document_chunks=False if profile=="doc_search" else True)
             logger.debug(f"res:\n{prompt}")
             res = ToolResult(
                 content=prompt,
