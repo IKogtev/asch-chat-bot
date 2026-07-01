@@ -3,12 +3,13 @@ import asyncio
 import json
 import os
 import re
+from starlette.datastructures import State
 import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Dict, List
+from typing import Annotated, Any, Dict, List
 
 import uvicorn
 from dotenv import load_dotenv
@@ -385,7 +386,7 @@ async def kb_search(
                     "dense_score": item.get("dense_score"),
                     "sparse_score": item.get("sparse_score"),
                     "lexical_score": None,
-                    "content": item["text"],
+                    "content": item["text"][:500] if profile=="doc_search" else item["text"],
                     "metadata": metadata,
                 }
                 results.append(entry)
@@ -453,13 +454,13 @@ async def auth_guard(scope, receive, send):
     """
     if scope["type"] == "http":
         # Для HTTP-запросов используем объект Request для удобства
-        request = Request(scope, receive)
+        request = Request[State](scope, receive)
         auth_header = request.headers.get("Authorization", "")
         logger.info(f"=== AUTH CHECK, Path: {scope['path']}")
 
         if API_TOKEN and not auth_header.startswith(f"Bearer {API_TOKEN}"):
             response = JSONResponse({"error": "Unauthorized"}, status_code=401)
-            await response(scope, receive, send)
+            await response[Any, Any, None](scope, receive, send)
             return
     
     # Если аутентификация не требуется или пройдена, передаем управление
