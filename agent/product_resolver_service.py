@@ -73,13 +73,17 @@ COMMON_PRODUCT_WORDS = {
     "детский": "kids kid",
     "plus": "плюс",
     "плюс": "plus",
-    "bundle": "бандл",
-    "bundl": "бандл",
-    "бандл": "bundle bundl",
+    "bundle": "бандл бандлы бандлов",
+    "bundl": "бандл бандлы бандлов",
+    "бандл": "bundle bundl бандлы бандлов",
+    "бандлы": "bundle bundl бандл",
+    "бандлов": "bundle bundl бандл",
     "fort": "форт",
     "форт": "fort",
-    "knox": "нокс",
-    "нокс": "knox",
+    "knox": "нокс ноксы ноксов",
+    "нокс": "knox ноксы ноксов",
+    "ноксы": "knox нокс",
+    "ноксов": "knox нокс",
     "unit": "юнит",
     "юнит": "unit",
     "linked": "линкед линкд",
@@ -405,17 +409,22 @@ class ProductResolverService:
         return self._rows_to_candidates(rows)
 
     async def _search_tokens(self, query: str) -> list[ProductCandidate]:
-        """Ищет продукты, у которых search_tokens содержит все токены запроса."""
+        """Ищет продукты, у которых search_tokens содержит все смысловые токены запроса."""
         pool = await self._get_pool()
-        tokens = self.tokenize_product_text(query)
-        if not tokens:
+        token_groups = self._token_alternative_groups(query)
+        if not token_groups:
             return []
 
         conditions = []
         values = []
-        for idx, token in enumerate(tokens, start=1):
-            conditions.append(f"search_tokens ILIKE ${idx}")
-            values.append(f"%{token}%")
+        idx = 1
+        for group in token_groups:
+            group_conditions = []
+            for token in group:
+                group_conditions.append(f"search_tokens ILIKE ${idx}")
+                values.append(f"%{token}%")
+                idx += 1
+            conditions.append(f"({' OR '.join(group_conditions)})")
 
         sql = f"""
             SELECT
@@ -428,7 +437,7 @@ class ProductResolverService:
                 700 AS score
             FROM {PRODUCT_SEARCH_TABLE}
             WHERE {' AND '.join(conditions)}
-            ORDER BY priority DESC
+            ORDER BY priority DESC, canonical_name, product_code
             LIMIT 20
         """
 
@@ -480,22 +489,15 @@ class ProductResolverService:
         """Выполняет каскад поиска без общего обработчика ошибок публичного метода."""
         for query in self._candidate_queries(mention):
             exact = self._unique_products(await self._search_exact(query))
-            exact_result = self._result_from_candidates(
-                mention=mention,
-                candidates=exact,
-                allow_clear_top=False,
-            )
-            if exact_result.status != "not_found":
-                return exact_result
-
             token_matches = self._unique_products(await self._search_tokens(query))
-            token_result = self._result_from_candidates(
+            exact_and_tokens = self._unique_products([*exact, *token_matches])
+            exact_token_result = self._result_from_candidates(
                 mention=mention,
-                candidates=token_matches,
+                candidates=exact_and_tokens,
                 allow_clear_top=False,
             )
-            if token_result.status != "not_found":
-                return token_result
+            if exact_token_result.status != "not_found":
+                return exact_token_result
 
             fuzzy_matches = self._unique_products(await self._search_fuzzy(query))
             fuzzy_result = self._result_from_candidates(
@@ -778,7 +780,11 @@ class ProductResolverService:
         normalized = cls.normalize_product_text(value)
         tokens = [token for token in normalized.split() if token]
         product_words = cls._normalized_common_product_words()
-        reverse_product_words = {value: key for key, value in product_words.items()}
+        reverse_product_words = {
+            alias: key
+            for key, value in product_words.items()
+            for alias in value.split()
+        }
         result = []
 
         if normalized in product_words:
@@ -796,6 +802,43 @@ class ProductResolverService:
             if token in reverse_product_words:
                 result.extend(reverse_product_words[token].split())
         return sorted(set(result))
+
+    @classmethod
+    def _token_alternative_groups(cls, value: str) -> list[list[str]]:
+        """Группирует формы каждого токена запроса для поиска через OR внутри токена."""
+        normalized = cls.normalize_product_text(value)
+        tokens = [
+            token
+            for token in normalized.split()
+            if token and token not in PRODUCT_QUERY_STOPWORDS
+        ]
+        product_words = cls._normalized_common_product_words()
+        reverse_product_words = {
+            alias: key
+            for key, value in product_words.items()
+            for alias in value.split()
+        }
+        groups = []
+
+        for token in tokens:
+            alternatives = [token]
+            translit = cls.transliterate_ru_to_en(token)
+            if translit != token:
+                alternatives.append(translit)
+            if token in product_words:
+                alternatives.extend(product_words[token].split())
+            if token in reverse_product_words:
+                alternatives.extend(reverse_product_words[token].split())
+
+            deduped = []
+            seen = set()
+            for alternative in alternatives:
+                if alternative and alternative not in seen:
+                    seen.add(alternative)
+                    deduped.append(alternative)
+            if deduped:
+                groups.append(deduped)
+        return groups
 
     @classmethod
     def _normalized_common_product_words(cls) -> dict[str, str]:

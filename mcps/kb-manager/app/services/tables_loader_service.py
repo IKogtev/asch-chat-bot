@@ -15,6 +15,7 @@ import pandas as pd
 
 from app.services.product_kit_folder_resolver import (
     NOT_FOUND_VALUE,
+    resolve_product_input_date_from_kit,
     resolve_product_kit_folder,
 )
 
@@ -26,7 +27,13 @@ GLOSSARY_FILE_NAME = "glossary_active.xlsx"
 GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
 PRODUCT_KIT_STATUS_COLUMN = "folder_kit_status"
+PRODUCT_INPUT_DATE_COLUMN = "input_date"
+PRODUCT_INPUT_DATE_COLUMN_CANDIDATES = (
+    PRODUCT_INPUT_DATE_COLUMN,
+    "\u0434\u0430\u0442\u0430_\u0432\u0432\u043e\u0434\u0430_\u043f\u0440\u043e\u0434\u0443\u043a\u0442\u0430",
+)
 PRODUCT_KITS_ROOT_ENV = "PRODUCT_KITS_ROOT"
+ARCHIVE_KITS_ROOT_ENV = "ARCHIVE_KITS_ROOT"
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
 
 PRODUCT_SEARCH_COLUMNS = [
@@ -75,19 +82,68 @@ CYR_TO_LAT = {
 }
 
 COMMON_PRODUCT_WORDS = {
-    "kids": "кидс",
-    "kid": "кид",
-    "junior": "джуниор",
-    "premium": "премиум",
-    "life": "лайф",
-    "smart": "смарт",
-    "invest": "инвест",
+    "alfa": "альфа",
+    "alpha": "альфа",
+    "альфа": "alfa alpha",
+    "alfainvest": "альфаинвестиции",
+    "альфаинвестиции": "alfa invest investments",
+    "invest": "инвест инвестиции",
+    "investment": "инвестиции инвест",
+    "investments": "инвестиции инвест",
+    "инвест": "invest investment investments",
+    "инвестиции": "invest investment investments",
+    "balance": "баланс",
+    "баланс": "balance",
+    "health": "здоровье",
+    "здоровье": "health",
+    "kids": "кидс детский",
+    "kid": "кид кидс детский",
+    "кидс": "kids kid",
+    "кид": "kids kid",
+    "детский": "kids kid",
     "plus": "плюс",
+    "плюс": "plus",
+    "bundle": "бандл бандлы бандлов",
+    "bundl": "бандл бандлы бандлов",
+    "бандл": "bundle bundl бандлы бандлов",
+    "бандлы": "bundle bundl бандл",
+    "бандлов": "bundle bundl бандл",
+    "fort": "форт",
+    "форт": "fort",
+    "knox": "нокс ноксы ноксов",
+    "нокс": "knox ноксы ноксов",
+    "ноксы": "knox нокс",
+    "ноксов": "knox нокс",
+    "unit": "юнит",
+    "юнит": "unit",
+    "linked": "линкед линкд",
+    "link": "линкед линкд",
+    "линкед": "linked link",
+    "линкд": "linked link",
+    "protected": "защищенный защищенные",
+    "protection": "защита защищенный защищенные",
+    "защищенный": "protected protection",
+    "защищенные": "protected protection",
+    "защита": "protection protected",
+    "capital": "капитал",
+    "капитал": "capital",
+    "month": "месяц месяца месяцев мес",
+    "months": "месяц месяца месяцев мес",
+    "месяц": "month months",
+    "месяца": "month months",
+    "месяцев": "month months",
+    "мес": "month months месяц месяца месяцев",
+    "year": "год года лет",
+    "years": "год года лет",
+    "год": "year years",
+    "года": "year years",
+    "лет": "year years",
 }
 
 COMMON_PRODUCT_WORDS_REVERSE = {
-    v: k
-    for k, v in COMMON_PRODUCT_WORDS.items()
+    alias: key
+    for key, value in COMMON_PRODUCT_WORDS.items()
+    for alias in value.split()
 }
 
 DATA_CATALOG_SHEETS = {
@@ -142,7 +198,11 @@ class TablesLoadResult:
     loaded_tables: list[LoadedTable]
     validation_errors: list[str]
     product_kit_folders_found: int | None = None
+    archive_product_kit_folders_found: int | None = None
     product_kit_products_total: int | None = None
+    product_input_dates_from_table: int | None = None
+    product_input_dates_from_kits: int | None = None
+    product_input_dates_missing: int | None = None
 
 
 class TablesLoaderService:
@@ -168,7 +228,11 @@ class TablesLoaderService:
             else Path(os.getenv("GLOSSARY_SOURCE_DIR", self.tables_dir.parent / "glossary"))
         )
         self.product_kit_folders_found: int | None = None
+        self.archive_product_kit_folders_found: int | None = None
         self.product_kit_products_total: int | None = None
+        self.product_input_dates_from_table: int | None = None
+        self.product_input_dates_from_kits: int | None = None
+        self.product_input_dates_missing: int | None = None
 
     def load_all(self) -> TablesLoadResult:
         """Синхронно загружает все поддерживаемые Excel-таблицы.
@@ -192,7 +256,11 @@ class TablesLoaderService:
 
         loaded_tables: list[LoadedTable] = []
         self.product_kit_folders_found = None
+        self.archive_product_kit_folders_found = None
         self.product_kit_products_total = None
+        self.product_input_dates_from_table = None
+        self.product_input_dates_from_kits = None
+        self.product_input_dates_missing = None
         await self.ensure_database_exists()
         conn = await asyncpg.connect(self.database_url)
         try:
@@ -211,7 +279,11 @@ class TablesLoaderService:
             loaded_tables=loaded_tables,
             validation_errors=validation_errors,
             product_kit_folders_found=self.product_kit_folders_found,
+            archive_product_kit_folders_found=self.archive_product_kit_folders_found,
             product_kit_products_total=self.product_kit_products_total,
+            product_input_dates_from_table=self.product_input_dates_from_table,
+            product_input_dates_from_kits=self.product_input_dates_from_kits,
+            product_input_dates_missing=self.product_input_dates_missing,
         )
 
     async def ensure_database_exists(self) -> None:
@@ -446,6 +518,8 @@ class TablesLoaderService:
                     df = self._enrich_products_with_kit_folders(df)
                     product_search_df = self._build_product_search_dictionary(df)
                 await self._replace_table(conn, table_name, df)
+                if table_name == PRODUCTS_TABLE_NAME:
+                    await self._create_products_name_trgm_index(conn, df)
                 if product_search_df is not None:
                     await self._replace_table(conn, PRODUCT_SEARCH_TABLE, product_search_df)
                     await self._create_indexes(conn, PRODUCT_SEARCH_TABLE, ["product_code", "normalized_alias",])
@@ -563,12 +637,12 @@ class TablesLoaderService:
             if translit != token:
                 result.append(translit)
             if token in COMMON_PRODUCT_WORDS:
-                result.append(
-                    COMMON_PRODUCT_WORDS[token]
+                result.extend(
+                    COMMON_PRODUCT_WORDS[token].split()
                 )
             if token in COMMON_PRODUCT_WORDS_REVERSE:
-                result.append(
-                    COMMON_PRODUCT_WORDS_REVERSE[token]
+                result.extend(
+                    COMMON_PRODUCT_WORDS_REVERSE[token].split()
                 )
         return sorted(set(result))
 
@@ -578,9 +652,9 @@ class TablesLoaderService:
 
         for token in tokens:
             if token in COMMON_PRODUCT_WORDS:
-                result.append(COMMON_PRODUCT_WORDS[token])
+                result.extend(COMMON_PRODUCT_WORDS[token].split())
             elif token in COMMON_PRODUCT_WORDS_REVERSE:
-                result.append(COMMON_PRODUCT_WORDS_REVERSE[token])
+                result.extend(COMMON_PRODUCT_WORDS_REVERSE[token].split())
             else:
                 result.append(token)
 
@@ -824,47 +898,139 @@ class TablesLoaderService:
             Копию DataFrame с колонками папки продуктового кита и статуса поиска.
         """
         df = df.copy()
+        input_date_column = self._first_existing_column(
+            df,
+            list(PRODUCT_INPUT_DATE_COLUMN_CANDIDATES),
+        )
+        if input_date_column is None:
+            df[PRODUCT_INPUT_DATE_COLUMN] = ""
+        elif input_date_column != PRODUCT_INPUT_DATE_COLUMN:
+            df[PRODUCT_INPUT_DATE_COLUMN] = df[input_date_column]
         df[PRODUCT_KIT_FOLDER_COLUMN] = ""
         df[PRODUCT_KIT_STATUS_COLUMN] = ""
 
         code_column = self._first_existing_column(df, ["code", "id", "product_id"])
         name_column = self._first_existing_column(df, ["name", "product_name"])
-        kits_root_value = os.getenv(PRODUCT_KITS_ROOT_ENV, "").strip()
-        if not kits_root_value:
-            df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
-            df[PRODUCT_KIT_STATUS_COLUMN] = f"{PRODUCT_KITS_ROOT_ENV} is empty"
-            self.product_kit_folders_found = 0
-            self.product_kit_products_total = self._dataframe_row_count(df)
-            return df
-        kits_root = Path(kits_root_value)
-
-        if code_column is None:
-            df[PRODUCT_KIT_FOLDER_COLUMN] = NOT_FOUND_VALUE
-            df[PRODUCT_KIT_STATUS_COLUMN] = (
-                "code column not found; expected one of ['code', 'id', 'product_id']"
-            )
-            self.product_kit_folders_found = 0
-            self.product_kit_products_total = self._dataframe_row_count(df)
-            return df
-
-        found = 0
+        is_active_column = self._first_existing_column(
+            df,
+            ["is_active"]
+        )
+        # инициализация счетчиков
+        active_found = 0
+        archive_found = 0
+        dates_from_table = 0
+        dates_from_kits = 0
+        dates_missing = 0
         total = 0
+        kits_root_value = os.getenv(PRODUCT_KITS_ROOT_ENV, "").strip()
+        archive_root_value = os.getenv(ARCHIVE_KITS_ROOT_ENV, "").strip()
+        if not kits_root_value or code_column is None:
+            # Обработка случая, когда нет базовых настроек
+            for _idx, row in df.iterrows():
+                total += 1
+                if self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN)) is not None:
+                    dates_from_table += 1
+                else:
+                    dates_missing += 1
+            self._normalize_product_input_date_column(df)
+            self.product_kit_products_total = total
+            return df
+            
+        kits_root = Path(kits_root_value)
+        archive_root = Path(archive_root_value) if archive_root_value else None
         for idx, row in df.iterrows():
+            total += 1
+            # 1. Попытка найти папку (основной + архивный)
             resolution = resolve_product_kit_folder(
                 kits_root=kits_root,
                 product_code=row.get(code_column),
                 product_name=row.get(name_column) if name_column else "",
             )
+            found_in_archive = False
+            product_status = str(row.get(is_active_column, "")).strip().lower() if is_active_column else ""
+            is_archived_product = (product_status == "архивный")
+            if resolution.folder_kit == NOT_FOUND_VALUE and is_archived_product and archive_root:
+                archive_resolution = resolve_product_kit_folder(
+                    kits_root=archive_root,
+                    product_code=row.get(code_column),
+                    product_name=row.get(name_column) if name_column else "",
+                )
+                if archive_resolution.folder_kit != NOT_FOUND_VALUE:
+                    resolution = archive_resolution
+                    found_in_archive = True
+
             df.at[idx, PRODUCT_KIT_FOLDER_COLUMN] = resolution.folder_kit
             df.at[idx, PRODUCT_KIT_STATUS_COLUMN] = resolution.folder_kit_status
-            total += 1
-            if resolution.folder_kit != NOT_FOUND_VALUE:
-                found += 1
+            # 2. Логика дат
+            current_input_date = self._coerce_product_input_date(row.get(PRODUCT_INPUT_DATE_COLUMN))
+            if current_input_date is not None:
+                df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = current_input_date
+                dates_from_table += 1
+            elif resolution.folder_kit != NOT_FOUND_VALUE:
+                inferred_input_date = resolve_product_input_date_from_kit(
+                    kits_root=archive_root if found_in_archive else kits_root,
+                    folder_kit=resolution.folder_kit,
+                )
+                if inferred_input_date is not None:
+                    df.at[idx, PRODUCT_INPUT_DATE_COLUMN] = inferred_input_date
+                    dates_from_kits += 1
+                else:
+                    dates_missing += 1
+            else:
+                dates_missing += 1
 
-        self.product_kit_folders_found = found
+            # 3. Подсчет найденных папок
+            if resolution.folder_kit != NOT_FOUND_VALUE:
+                if found_in_archive:
+                    archive_found += 1
+                else:
+                    active_found += 1
+
+        self._normalize_product_input_date_column(df)
+        self.product_kit_folders_found = active_found
+        self.archive_product_kit_folders_found = archive_found
         self.product_kit_products_total = total
+        self.product_input_dates_from_table = dates_from_table
+        self.product_input_dates_from_kits = dates_from_kits
+        self.product_input_dates_missing = dates_missing
 
         return df
+
+    def _coerce_product_input_date(self, value: Any) -> date | None:
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.date()
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        try:
+            parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+        except AttributeError:
+            return None
+        if pd.isna(parsed):
+            return None
+        if isinstance(parsed, pd.Timestamp):
+            return parsed.date()
+        return None
+
+    def _normalize_product_input_date_column(self, df: pd.DataFrame) -> None:
+        if PRODUCT_INPUT_DATE_COLUMN not in set(df.columns):
+            return
+        try:
+            df[PRODUCT_INPUT_DATE_COLUMN] = pd.to_datetime(
+                df[PRODUCT_INPUT_DATE_COLUMN],
+                errors="coerce",
+                dayfirst=True,
+            )
+        except (TypeError, ValueError, AttributeError):
+            return
 
     def _dataframe_row_count(self, df: pd.DataFrame) -> int:
         try:
@@ -974,6 +1140,29 @@ class TablesLoaderService:
             ON {PRODUCT_SEARCH_TABLE}
             USING gin (
                 normalized_alias gin_trgm_ops
+            )
+            """
+        )
+
+    async def _create_products_name_trgm_index(
+        self,
+        conn: asyncpg.Connection,
+        df: pd.DataFrame,
+    ) -> None:
+        """
+        Индекс для поиска продуктов по названию через pg_trgm word similarity.
+        """
+        name_column = self._first_existing_column(df, ["name", "product_name"])
+        if name_column is None:
+            return
+
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS
+            idx_products_name_trgm
+            ON {self._quote_ident(PRODUCTS_TABLE_NAME)}
+            USING gin (
+                {self._quote_ident(name_column)} gin_trgm_ops
             )
             """
         )
