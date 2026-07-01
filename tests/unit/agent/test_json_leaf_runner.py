@@ -37,6 +37,27 @@ def _load_json_leaf_runner_module():
 
     helpers_stub.extract_json = extract_json
 
+    agents_pkg = types.ModuleType("agent.agents")
+    agents_pkg.__path__ = [str(repo_root / "agent" / "agents")]
+    sys.modules["agent.agents"] = agents_pkg
+
+    kb_context_spec = importlib.util.spec_from_file_location(
+        "agent.doc_search_kb_context",
+        repo_root / "agent" / "doc_search_kb_context.py",
+    )
+    validation_spec = importlib.util.spec_from_file_location(
+        "agent.doc_search_validation",
+        repo_root / "agent" / "doc_search_validation.py",
+    )
+    assert kb_context_spec is not None and kb_context_spec.loader is not None
+    assert validation_spec is not None and validation_spec.loader is not None
+    kb_context_module = importlib.util.module_from_spec(kb_context_spec)
+    validation_module = importlib.util.module_from_spec(validation_spec)
+    sys.modules["agent.doc_search_kb_context"] = kb_context_module
+    sys.modules["agent.doc_search_validation"] = validation_module
+    kb_context_spec.loader.exec_module(kb_context_module)
+    validation_spec.loader.exec_module(validation_module)
+
     adk_agents_stub = types.ModuleType("google.adk.agents")
     adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
     adk_agents_stub.InvocationContext = type("InvocationContext", (), {})
@@ -287,3 +308,134 @@ def test_run_json_leaf_agent_raises_non_fatal_validation_failure_for_invalid_sch
 
     assert exc.value.validation_error == "Invalid status: bad"
     assert exc.value.user_message == "blocked"
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_stores_doc_search_kb_hits() -> None:
+    kb_response = """CONTEXT
+rank [1] FILE_NAME: a.pdf
+RELATIVE_PATH: path/a.pdf
+
+DOCUMENT_ID: doc-a
+
+TEXT:
+hello
+"""
+    event = _make_event(
+        [
+            types.SimpleNamespace(
+                function_response={
+                    "name": "kb_search",
+                    "response": {"content": kb_response},
+                }
+            )
+        ]
+    )
+    ctx = types.SimpleNamespace(
+        session=types.SimpleNamespace(
+            state={"doc_search_result_json": '{"status":"ok","mode":"no_data","message":"x"}'}
+        )
+    )
+
+    def validator(data, context):
+        return data
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent([event]),
+                output_key="doc_search_result_json",
+                parsed_state_key="_doc_search_result_parsed",
+                validator=validator,
+                log_label="doc_search_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    hits = ctx.session.state.get("_doc_search_kb_hits")
+    assert hits == [
+        {
+            "rank": 1,
+            "source_name": "a.pdf",
+            "source_path": "path/a.pdf",
+            "document_id": "doc-a",
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_uses_last_kb_search_response_for_hits() -> None:
+    first_response = """CONTEXT
+rank [1] FILE_NAME: old.pdf
+RELATIVE_PATH: path/old.pdf
+
+DOCUMENT_ID: doc-old
+
+TEXT:
+old
+"""
+    last_response = """CONTEXT
+rank [1] FILE_NAME: new.pdf
+RELATIVE_PATH: path/new.pdf
+
+DOCUMENT_ID: doc-new
+
+TEXT:
+new
+"""
+    events = [
+        _make_event(
+            [
+                types.SimpleNamespace(
+                    function_response={
+                        "name": "kb_search",
+                        "response": {"content": first_response},
+                    }
+                )
+            ]
+        ),
+        _make_event(
+            [
+                types.SimpleNamespace(
+                    function_response={
+                        "name": "kb_search",
+                        "response": {"content": last_response},
+                    }
+                )
+            ]
+        ),
+    ]
+    ctx = types.SimpleNamespace(
+        session=types.SimpleNamespace(
+            state={"doc_search_result_json": '{"status":"ok","mode":"no_data","message":"x"}'}
+        )
+    )
+
+    def validator(data, context):
+        return data
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent(events),
+                output_key="doc_search_result_json",
+                parsed_state_key="_doc_search_result_parsed",
+                validator=validator,
+                log_label="doc_search_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    hits = ctx.session.state.get("_doc_search_kb_hits")
+    assert hits == [
+        {
+            "rank": 1,
+            "source_name": "new.pdf",
+            "source_path": "path/new.pdf",
+            "document_id": "doc-new",
+        }
+    ]

@@ -15,8 +15,13 @@ from google.adk.events import Event
 
 from ..config import ACTIVE_DOCUMENTS_COLLECTION, DOC_SEARCH_PAGE_SIZE
 from ..helpers import DOC_SEARCH_SUCCESS_HINT, format_text_answer, truncate_for_log
-from ..json_leaf_runner import run_json_leaf_agent
+from ..json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .doc_search_agent import validate_doc_search_result
+from ..doc_search_validation import (
+    DOC_SEARCH_MAX_ATTEMPTS,
+    DOC_SEARCH_NO_DATA_MESSAGE,
+    DocSearchRetryableValidationError,
+)
 from utils.logger import setup_logger
 
 logger = setup_logger("doc_search_orchestrator", "agent.log")
@@ -211,21 +216,109 @@ class DocSearchOrchestrator(BaseAgent):
         page = DOC_SEARCH_PAGE_SIZE  # Количество результатов на страницу (см. конфиг)
 
         ctx.session.state["doc_search_collection"] = self.doc_collection
+        ctx.session.state.pop("_doc_search_kb_hits", None)
+        ctx.session.state["doc_search_rerank_only"] = False
+        ctx.session.state["doc_search_retry_reason"] = ""
 
-        # Запуск агента поиска документов по контракту JSON -> (запись результата в state)
-        async for event in run_json_leaf_agent(
-            ctx=ctx,
-            agent=self.doc_search_agent,
-            output_key="doc_search_result_json",
-            parsed_state_key="_doc_search_result_parsed",
-            validator=validate_doc_search_result,
-            log_label="doc_search_result_json",
-            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-        ):
-            yield event
+        doc_search: Dict[str, Any] | None = None
+        last_validation_failure: AgentValidationFailure | None = None
+        attempts_used = 0
+
+        for attempt in range(1, DOC_SEARCH_MAX_ATTEMPTS + 1):
+            attempts_used = attempt
+            ctx.session.state["doc_search_attempt"] = attempt
+            ctx.session.state["doc_search_rerank_only"] = attempt > 1
+
+            kb_hits_raw = ctx.session.state.get("_doc_search_kb_hits")
+            kb_hit_count = len(kb_hits_raw) if isinstance(kb_hits_raw, list) else 0
+            logger.info(
+                "doc_search_orchestrator: attempt %s/%s rerank_only=%s kb_hits=%s retry_reason=%s",
+                attempt,
+                DOC_SEARCH_MAX_ATTEMPTS,
+                ctx.session.state.get("doc_search_rerank_only"),
+                kb_hit_count,
+                truncate_for_log(ctx.session.state.get("doc_search_retry_reason"), 200),
+            )
+
+            ctx.session.state.pop("doc_search_result_json", None)
+            ctx.session.state.pop("_doc_search_result_parsed", None)
+
+            try:
+                async for event in run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=self.doc_search_agent,
+                    output_key="doc_search_result_json",
+                    parsed_state_key="_doc_search_result_parsed",
+                    validator=validate_doc_search_result,
+                    log_label="doc_search_result_json",
+                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+                ):
+                    yield event
+                doc_search = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
+                if attempt > 1:
+                    logger.info(
+                        "doc_search_orchestrator: rerank retry succeeded on attempt %s mode=%s results=%s",
+                        attempt,
+                        doc_search.get("mode"),
+                        len(doc_search.get("results") or []),
+                    )
+                break
+            except DocSearchRetryableValidationError as exc:
+                logger.warning(
+                    "doc_search_orchestrator: retryable validation on attempt %s/%s: %s",
+                    attempt,
+                    DOC_SEARCH_MAX_ATTEMPTS,
+                    exc,
+                )
+                if attempt >= DOC_SEARCH_MAX_ATTEMPTS:
+                    if exc.reason == "empty_relevant":
+                        logger.info(
+                            "doc_search_orchestrator: no_data after %s attempts "
+                            "(empty_relevant, kb_hits=%s)",
+                            attempt,
+                            kb_hit_count,
+                        )
+                        doc_search = {
+                            "status": "ok",
+                            "mode": "no_data",
+                            "message": DOC_SEARCH_NO_DATA_MESSAGE,
+                            "results": [],
+                        }
+                        break
+                    raise AgentValidationFailure(
+                        log_label="doc_search_result_json",
+                        validation_error=str(exc),
+                        raw=str(ctx.session.state.get("doc_search_result_json") or ""),
+                        user_message=VALIDATION_ERROR_USER_MESSAGE,
+                    ) from exc
+                ctx.session.state["doc_search_retry_reason"] = str(exc)
+                continue
+            except AgentValidationFailure as exc:
+                logger.warning(
+                    "doc_search_orchestrator: validation failure on attempt %s/%s: %s",
+                    attempt,
+                    DOC_SEARCH_MAX_ATTEMPTS,
+                    exc.validation_error,
+                )
+                last_validation_failure = exc
+                if attempt >= DOC_SEARCH_MAX_ATTEMPTS:
+                    raise
+                ctx.session.state["doc_search_retry_reason"] = exc.validation_error
+                continue
+
+        if doc_search is None:
+            if last_validation_failure is not None:
+                raise last_validation_failure
+            raise RuntimeError("doc_search_orchestrator finished without parsed result")
+
+        logger.info(
+            "doc_search_orchestrator: finished attempts=%s mode=%s relevant_docs=%s",
+            attempts_used,
+            doc_search.get("mode"),
+            len(doc_search.get("results") or []),
+        )
 
         # Получаем результат поиска из state
-        doc_search = self._get_required_state_dict(ctx, "_doc_search_result_parsed")
 
         # Если агент вернул не список, а какой-то особый режим (нет данных/сообщение)
         if doc_search["mode"] != "document_list":
