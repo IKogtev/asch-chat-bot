@@ -2,10 +2,11 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
+from google.genai.types import GenerateContentConfig
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 from utils.logger import setup_logger
-from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL
+from ..config import DBHUB_MCP_TIMEOUT_SEC, DBHUB_MCP_TOKEN, DBHUB_MCP_URL, PRODUCT_SELECTION_TEMPERATURE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
@@ -230,7 +231,23 @@ def validate_product_selection_result(data: Dict[str, Any], context: Dict[str, A
             fields=("mode", "clarification_options"),
         )
 
-    if mode != "no_data" and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls:
+    # Разрешаем не вызывать execute_sql, если данные уже резолвлены кодом (через product_resolver)
+    is_kit_resolved = (
+        mode == "product_kit"
+        and resolved_product
+        and resolved_product.get("folder_kit")
+    )
+    is_clarification_ready = (
+        mode == "needs_clarification"
+        and clarification_options
+    )
+
+    if (
+        mode != "no_data"
+        and not is_kit_resolved
+        and not is_clarification_ready
+        and PRODUCT_SELECTION_REQUIRED_TOOL not in tool_calls
+    ):
         raise build_validation_error(
             agent=agent_name,
             stage="tool_usage",
@@ -285,11 +302,11 @@ For product_selection_search_query, product and abbreviation substitutions are a
 Use {from_glossary} by category:
 - product and abbreviation: do not rewrite product_selection_search_query again;
 - term: use definition from {from_glossary} for filters and answer wording.
-For name ILIKE / name LIKE: use the canonical product name from product_selection_search_query, not Cyrillic abbreviations or synonyms from user_query (e.g. use Fort Knox, not FK or Fort Noks in Cyrillic).
-Always use partial match: name ILIKE '%Fort Knox%', never name ILIKE 'Fort Knox' without wildcards.
-In name ILIKE include only the product name token; put service words (list, archive, products) into other filters such as is_active.
-Example: user_query=products FK, product_selection_search_query=list products Fort Knox -> name ILIKE '%Fort Knox%', not '%FK%' and not 'Fort Knox'.
-If execute_sql returns 0 rows and name ILIKE had no % wildcards, retry with '%canonical%'.
+For product name search in `name`, use the canonical product name from product_selection_search_query, not Cyrillic abbreviations or synonyms from user_query (e.g. use Fort Knox, not FK or Fort Noks in Cyrillic).
+Use pg_trgm word similarity for product name search: filter with the indexed operator `'Fort Knox' <% name` and order by `word_similarity('Fort Knox', name) DESC`; do not use name ILIKE, name LIKE, or name = for product name search. The operand order is mandatory: the short canonical product text must be on the left and the `name` column must be on the right; never write `name <% 'Fort Knox'`.
+In word_similarity include only the product name token; put service words (list, archive, products) into other filters such as is_active.
+Example: user_query=products FK, product_selection_search_query=list products Fort Knox -> `'Fort Knox' <% name ORDER BY word_similarity('Fort Knox', name) DESC`, not FK and not the full service phrase.
+If execute_sql returns 0 rows for product name search, retry only after checking that the search phrase contains the canonical product name without service words.
 If multiple definitions are present and the product context does not disambiguate them, return mode="no_data" instead of guessing.
 
 You are product_selection_agent.
@@ -345,12 +362,27 @@ Response format:
 """
     prompt_file = "product_selection_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
-    agent = LlmAgent(
-        name="product_selection_agent",
-        model=model,
-        instruction=instruction,
-        tools=tools,
-        output_key="product_selection_result_json",
-    )
+    name = "product_selection_agent"
+    if PRODUCT_SELECTION_TEMPERATURE != -1:
+        logger.debug(f"Agent {name} it's temperature: {PRODUCT_SELECTION_TEMPERATURE}")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="product_selection_result_json",
+            generate_content_config=GenerateContentConfig(
+                temperature=PRODUCT_SELECTION_TEMPERATURE,
+            )
+        )
+    else:
+        logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="product_selection_result_json"
+        )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
