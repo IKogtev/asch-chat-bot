@@ -31,15 +31,30 @@ class DocumentHandler:
         headers = {}
         if self.kb_manager_token:
             headers["Authorization"] = f"Bearer {self.kb_manager_token}"
-        
+
+        logger.info(
+            "download_document: start document_id=%s url=%s has_token=%s",
+            document_id,
+            url,
+            bool(self.kb_manager_token),
+        )
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:
                     if response.status != 200:
-                        logger.error(f"Ошибка загрузки документа {document_id}: HTTP {response.status}")
+                        body_preview = (await response.text())[:500]
+                        logger.error(
+                            "download_document: HTTP %s document_id=%s url=%s body_preview=%r",
+                            response.status,
+                            document_id,
+                            url,
+                            body_preview,
+                        )
                         return None
-                    
-                    # Парсинг Content-Disposition
+
+                    content_length = response.headers.get("Content-Length")
+                    content_type = response.headers.get("Content-Type")
                     content_disposition = response.headers.get('Content-Disposition', '')
                     filename = None
                     
@@ -53,7 +68,13 @@ class DocumentHandler:
                             filename = unquote(filename.split("''", 1)[-1])
                     
                     if not filename:
-                        logger.warning(f"Не удалось извлечь имя файла для {document_id}")
+                        logger.warning(
+                            "download_document: no filename in Content-Disposition document_id=%s "
+                            "content_type=%s content_disposition=%r",
+                            document_id,
+                            content_type,
+                            content_disposition,
+                        )
                         filename = f"{document_id}.file"
                     
                     # Сохранение файла
@@ -69,12 +90,37 @@ class DocumentHandler:
                     
                     with open(file_path, 'wb') as f:
                         f.write(await response.read())
-                    
-                    logger.info(f"Документ {document_id} скачан как: {filename}")
+
+                    size_bytes = file_path.stat().st_size
+                    logger.info(
+                        "download_document: ok document_id=%s filename=%s path=%s size_bytes=%s "
+                        "content_length=%s content_type=%s",
+                        document_id,
+                        filename,
+                        file_path,
+                        size_bytes,
+                        content_length,
+                        content_type,
+                    )
                     return file_path
-                    
+
+        except aiohttp.ClientError as e:
+            logger.error(
+                "download_document: network error document_id=%s url=%s error=%s",
+                document_id,
+                url,
+                e,
+                exc_info=True,
+            )
+            return None
         except Exception as e:
-            logger.error(f"Ошибка при скачивании документа {document_id}: {e}", exc_info=True)
+            logger.error(
+                "download_document: unexpected error document_id=%s url=%s error=%s",
+                document_id,
+                url,
+                e,
+                exc_info=True,
+            )
             return None
             
     async def download_documents(self, document_ids: List[str]) -> List[Path]:

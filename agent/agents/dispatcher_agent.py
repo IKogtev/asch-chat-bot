@@ -2,7 +2,8 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-
+from google.genai.types import GenerateContentConfig
+from ..config import DISPATCHER_TEMPERATURE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -200,6 +201,7 @@ Do not call tools and do not invent additional expansions.
 If a user term is present in {from_glossary}, use its definition when choosing route and intent.
 Do not substitute definitions into search_query and do not replace abbreviations with full names — downstream code expands the query.
 High-priority product-card rule: if the latest user message asks to show, open, display, describe, or provide parameters/card/details for a numeric product code, return route="product_selection", intent="product_card", reason="product_card". Examples: "покажи 8914", "параметры 8914", "карточка 8914". Do not route these messages to kb_answer as applicability or explanation questions.
+High-priority product-focus rule: if the latest user message is "Что сейчас в фокусе?" or "что в фокусе", return route="product_selection", intent="product_filter", reason="product_filter", search_query="покажи продукты в фокусе". Do not route these messages to kb_answer.
 
 Ты dispatcher_agent.
 Верни только JSON без markdown и без пояснений.
@@ -235,12 +237,27 @@ High-priority product-card rule: if the latest user message asks to show, open, 
 """
     prompt_file = "dispatcher_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
-    agent = LlmAgent(
-        name="dispatcher_agent",
-        model=model,
-        instruction=instruction,
-        include_contents="none",
-        output_key="dispatcher_result_json",
-    )
+    name = "dispatcher_agent"
+    if DISPATCHER_TEMPERATURE != -1:
+        logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")    
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            include_contents="none",
+            output_key="dispatcher_result_json",
+            generate_content_config=GenerateContentConfig(
+                temperature=DISPATCHER_TEMPERATURE,
+            )
+        )
+    else:
+        logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            include_contents="none",
+            output_key="dispatcher_result_json"
+        )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
