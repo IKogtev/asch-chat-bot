@@ -27,6 +27,7 @@ def _load_product_selection_module():
     config_stub.DBHUB_MCP_TIMEOUT_SEC = 30.0
     config_stub.DBHUB_MCP_TOKEN = ""
     config_stub.DBHUB_MCP_URL = ""
+    config_stub.PRODUCT_SELECTION_TEMPERATURE = 0.0
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -102,6 +103,59 @@ def _load_product_selection_module():
 product_selection_module = _load_product_selection_module()
 validate_product_selection_result = product_selection_module.validate_product_selection_result
 SQL_CONTEXT = {"_adk_tool_calls": ["execute_sql"]}
+PRODUCT_COMPARE_COLUMNS = [
+    "code",
+    "name",
+    "is_active",
+    "insurance_type",
+    "product_type",
+    "term",
+    "capital_loss_risk",
+    "product_risk_level",
+    "income",
+    "contribution_type",
+    "payout_type",
+    "liquidity",
+    "currency",
+    "fx_protection",
+    "segment",
+    "client_goal",
+    "taxes",
+    "tax_benefits",
+    "in_focus",
+    "in_focus_condition",
+    "input_date",
+    "commission",
+]
+
+
+@pytest.mark.unit
+def test_product_compare_prompt_requires_all_product_columns() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt_path = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_selection"
+        / "product_selection_agent_prompt.md"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    compare_section = prompt.split("### `product_compare`:", maxsplit=1)[1].split(
+        "### `needs_clarification`:",
+        maxsplit=1,
+    )[0]
+
+    for column in PRODUCT_COMPARE_COLUMNS:
+        assert f"`{column}`" in compare_section
+
+    assert "не ограничивай состав `SELECT` через `display_columns`" in compare_section
+    assert "не ограничивай состав `SELECT` через `display_columns`" in prompt
+    assert "полный список свойств из раздела `product_compare`" in prompt
+    assert "`product_resolutions` только как источник кодов продуктов" in prompt
+    assert "Не используй `product_resolutions` как источник фактов" in prompt
+    assert "Если уникальных `product_code` не ровно 2" in prompt
+    assert "обязательно выполни `execute_sql`" in prompt
 
 
 @pytest.mark.unit
