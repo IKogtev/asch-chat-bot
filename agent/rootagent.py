@@ -651,8 +651,59 @@ class RootAgent(BaseAgent):
     def _product_resolutions_to_state(value: Any) -> Dict[str, Any]:
         if hasattr(value, "to_dict"):
             data = value.to_dict()
-            return data if isinstance(data, dict) else {}
-        return value if isinstance(value, dict) else {}
+        elif isinstance(value, dict):
+            data = value
+        else:
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        items = data.get("items")
+        if not isinstance(items, list):
+            return data
+
+        unique_items = []
+        seen_keys = set()
+        for item in items:
+            if not isinstance(item, dict):
+                unique_items.append(item)
+                continue
+
+            dedup_key = RootAgent._product_resolution_dedup_key(item)
+            if dedup_key is not None:
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+
+            unique_items.append(item)
+
+        return {**data, "items": unique_items}
+
+    @staticmethod
+    def _product_resolution_dedup_key(item: Dict[str, Any]) -> tuple[str, str] | None:
+        product_code = str(item.get("product_code", "")).strip()
+        if not product_code:
+            return None
+
+        name = str(
+            item.get("product_name")
+            or item.get("canonical_name")
+            or ""
+        ).strip()
+
+        options = item.get("options")
+        if not name and isinstance(options, list) and options:
+            first_option = options[0]
+            if isinstance(first_option, dict):
+                name = str(
+                    first_option.get("canonical_name")
+                    or first_option.get("alias")
+                    or ""
+                ).strip()
+
+        normalized_name = " ".join(name.casefold().split())
+        return product_code, normalized_name
 
     @staticmethod
     def _product_filter_resolution_to_state(value: Any) -> Dict[str, Any]:

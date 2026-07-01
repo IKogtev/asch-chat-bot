@@ -729,3 +729,9 @@ kb_storage/
 - используем word_similarity
 - в таблице продуктов надо предусмотреть индекс на столбец имени продукта при загрузке 
 - промпт product_selection_agent надо доработать, чтобы он использовал word_similarity вместо ilike
+=======
+Сейчас для сравнения двух продуктов отбирается часть свойств:
+"sql": "SELECT code, name, term, capital_loss_risk, income, liquidity, currency, product_type FROM products WHERE code IN (2858, 2855)"
+Надо, чтобы участвовали все свойства продукта:
+is_active	insurance_type	product_type	term 	capital_loss_risk	product_risk_level	income	contribution_type	payout_type	liquidity	currency	fx_protection	segment	client_goal	taxes	tax_benefits	in_focus	in_focus_condition	input_date	commission
+Почему сейчас так ? Подготовь план что надо сделать для исправления. Править не надо.

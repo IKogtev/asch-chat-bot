@@ -161,6 +161,14 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
     
     # Если ошибка в tool_usage — агент не вызвал execute_sql
     if "tool_usage" in validation_error:
+        if mode == "product_compare":
+            return (
+                "🔍 Не удалось безопасно получить данные для сравнения продуктов.\n\n"
+                "Продукты могли быть распознаны, но параметры для сравнения не были подтверждены запросом к базе данных.\n\n"
+                "Попробуйте повторить запрос или указать два точных кода продуктов.\n\n"
+                f"Ваш запрос: «{_truncate(search_query, 100)}»"
+            )
+
         return (
             "🔍 Я не смог выполнить поиск по продуктам.\n\n"
             "Попробуйте уточнить:\n"
