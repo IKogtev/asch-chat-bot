@@ -163,6 +163,27 @@ async def test_postgres_chat_store_get_last_search_meta_returns_dict() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgres_chat_store_get_latest_search_session_id_returns_value() -> None:
+    conn = _FakeConn(fetchrow_result={"session_id": "user_turn-abc"})
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    result = await store.get_latest_search_session_id("user-uuid")
+
+    assert result == "user_turn-abc"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgres_chat_store_get_latest_search_session_id_returns_none_without_pool() -> None:
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = None
+
+    assert await store.get_latest_search_session_id("user-uuid") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_postgres_chat_store_reset_search_state_executes_two_deletes() -> None:
     conn = _FakeConn()
     store = PostgresChatStore("postgres://dsn")

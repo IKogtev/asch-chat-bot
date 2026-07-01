@@ -465,6 +465,96 @@ def test_clear_state_keys_removes_requested_keys_only() -> None:
 
 
 @pytest.mark.unit
+def test_reset_turn_state_removes_turn_specific_state_keys() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "user_query": "старый вопрос",
+            "search_query": "старый поиск",
+            "product_selection_search_query": "old_selection",
+            "product_selection_intent": "product_card",
+            "dispatcher_user_query": "старый запрос",
+            "_owasp_result_parsed": {"status": "ok"},
+            "_root_final_text": "старый ответ",
+            "persistent": "keep",
+        }
+    )
+
+    agent._reset_turn_state(ctx)
+
+    assert ctx.session.state == {"persistent": "keep"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_resets_turn_state_before_processing_new_message() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="новый вопрос")],
+        session_state={
+            "user_query": "старый вопрос",
+            "search_query": "старый поиск",
+            "product_selection_search_query": "old_selection",
+            "product_selection_intent": "product_card",
+            "dispatcher_user_query": "старый запрос",
+            "_owasp_result_parsed": {"status": "ok"},
+            "_root_final_text": "старый ответ",
+            "persistent": "keep",
+        },
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "kb_answer",
+                "reason": "ok",
+                "search_query": "новый вопрос",
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(ctx_, user_message, search_query, intent):
+        assert user_message == "новый вопрос"
+        assert search_query == "новый вопрос"
+        assert intent == "kb_answer"
+        ctx_.session.state["search_query"] = "новый вопрос"
+        ctx_.session.state["_root_final_text"] = "ответ"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_kb_answer = fake_handle_kb_answer
+    agent.doc_search_orchestrator.run_async = lambda ctx_: ()
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "ответ"
+    assert ctx.session.state["user_query"] == "новый вопрос"
+    assert ctx.session.state["search_query"] == "новый вопрос"
+    assert ctx.session.state["dispatcher_user_query"] == "новый вопрос"
+    assert ctx.session.state.get("product_selection_search_query") is None
+    assert ctx.session.state.get("_root_final_text") == "ответ"
+    assert ctx.session.state["persistent"] == "keep"
+
+
+@pytest.mark.unit
 def test_append_recent_message_keeps_only_bounded_history() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
@@ -1048,6 +1138,24 @@ async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_fa
 
 
 @pytest.mark.unit
+def test_product_compare_tool_usage_fallback_mentions_unconfirmed_sql_data() -> None:
+    message = rootagent_module.generate_agent_fallback(
+        "compare products",
+        error_type="validation_failure",
+        agent_name="product_selection",
+        context={
+            "validation_error": "product_selection_agent validation failed at tool_usage",
+            "mode": "product_compare",
+            "search_query": "compare products 111 and 222",
+        },
+    )
+
+    assert "безопасно получить данные для сравнения продуктов" in message
+    assert "подтверждены запросом к базе данных" in message
+    assert "поиск по продуктам" not in message
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_async_impl_routes_product_selection_to_product_agent_only() -> None:
     agent = _make_agent()
@@ -1120,6 +1228,74 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("user_text", ["Что сейчас в фокусе?", "что в фокусе"])
+async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text: str) -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text=user_text)], session_state={})
+    product_called = False
+    dispatcher_called = False
+    kb_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "kb_answer",
+                "reason": "fallback route before explicit focus short-circuit",
+                "search_query": user_text,
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == user_text
+        assert search_query == "покажи продукты в фокусе"
+        assert intent == "product_filter"
+        ctx.session.state["_root_final_text"] = "focus products"
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(*args, **kwargs):
+        nonlocal kb_called
+        kb_called = True
+        ctx.session.state["_root_final_text"] = "kb answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_kb_answer = fake_handle_kb_answer
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "focus products"
+    assert product_called is True
+    assert dispatcher_called is False
+    assert kb_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_async_impl_routes_attribute_value_followup_to_product_filter() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
@@ -1178,6 +1354,66 @@ async def test_run_async_impl_routes_attribute_value_followup_to_product_filter(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_run_async_impl_routes_product_card_followup_from_product_code_only() -> None:
+    agent = _make_agent()
+    product = {
+        "code": "2867",
+        "name": "Bundle Fort Knox 3+36 months",
+    }
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="2867")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_filter",
+                "products": [product],
+                "selected_product": None,
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "2867"
+        assert search_query == "показать карточку продукта 2867"
+        assert intent == "product_card"
+        product_context = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+        assert product_context["selected_product"] == product
+        ctx.session.state["_root_final_text"] = "product card answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product card answer"
+    assert product_called is True
+    assert dispatcher_called is False
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_async_impl_routes_product_card_followup_from_saved_product_list() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
@@ -1220,6 +1456,69 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
         product_called = True
         assert user_message == "параметры 2867"
         assert search_query == "показать параметры продукта 2867"
+        assert intent == "product_card"
+        ctx.session.state["_root_final_text"] = "product card answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product card answer"
+    assert product_called is True
+    assert dispatcher_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_product_card_followup_from_selected_product() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="покажи карточку")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_card",
+                "products": [
+                    {
+                        "code": "2867",
+                        "name": "Bundle Fort Knox 3+36 месяцев",
+                    }
+                ],
+                "selected_product": {
+                    "code": "2867",
+                    "name": "Bundle Fort Knox 3+36 месяцев",
+                },
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "покажи карточку"
+        assert "2867" in search_query
         assert intent == "product_card"
         ctx.session.state["_root_final_text"] = "product card answer"
         if False:
@@ -1498,6 +1797,139 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
 
     assert events == []
     assert len(ctx.session.state["product_resolutions"]["items"]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_deduplicates_compare_product_resolutions_state() -> None:
+    class FakeProductResolver:
+        async def resolve_product(self, query):
+            raise AssertionError("resolve_product must not be called")
+
+        async def resolve_products(self, query, expected_count=None):
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "items": [
+                        {
+                            "status": "resolved",
+                            "mention": "Product A 111",
+                            "product_code": "111",
+                            "product_name": "Product A",
+                        },
+                        {
+                            "status": "resolved",
+                            "mention": "111",
+                            "product_code": "111",
+                            "product_name": "Product A",
+                        },
+                        {
+                            "status": "resolved",
+                            "mention": "Product B 222",
+                            "product_code": "222",
+                            "product_name": "Product B",
+                        },
+                        {
+                            "status": "resolved",
+                            "mention": "222",
+                            "product_code": "222",
+                            "product_name": "Product B",
+                        },
+                    ],
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        items = ctx.session.state["product_resolutions"]["items"]
+        assert [item["product_code"] for item in items] == ["111", "222"]
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "message": "ok",
+            "mode": "no_data",
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "compare products",
+            "Product A 111 and Product B 222",
+            "product_compare",
+        )
+    ]
+
+    assert events == []
+
+
+@pytest.mark.unit
+def test_product_resolutions_dedup_key_keeps_same_code_with_different_names() -> None:
+    state = RootAgent._product_resolutions_to_state(
+        {
+            "status": "resolved",
+            "items": [
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "product_name": "Unit Linked Активные облигации",
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "product_name": "Unit Linked Стратегия роста",
+                },
+            ],
+        }
+    )
+
+    assert [
+        item["product_name"]
+        for item in state["items"]
+    ] == [
+        "Unit Linked Активные облигации",
+        "Unit Linked Стратегия роста",
+    ]
+
+
+@pytest.mark.unit
+def test_product_resolutions_dedup_key_uses_option_name_fallback() -> None:
+    state = RootAgent._product_resolutions_to_state(
+        {
+            "status": "resolved",
+            "items": [
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "options": [
+                        {"canonical_name": "Unit Linked Активные облигации"},
+                    ],
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "options": [
+                        {"alias": "Unit Linked Активные облигации"},
+                    ],
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "7698",
+                    "options": [
+                        {"canonical_name": "Unit Linked Стратегия роста"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert len(state["items"]) == 2
+    assert state["items"][0]["options"][0]["canonical_name"] == "Unit Linked Активные облигации"
+    assert state["items"][1]["options"][0]["canonical_name"] == "Unit Linked Стратегия роста"
 
 
 @pytest.mark.unit

@@ -17,7 +17,7 @@ kb_storage/bot/upload
 
 data/
 venv*/
-
+*.zip
 *.env
 *.code-workspace
 .env
