@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, ClassVar
 
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
@@ -13,6 +13,7 @@ from .config import (
     DEBUG_EXCEPTIONS,
     FAQ_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
+    DATABASE_URL
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
@@ -24,6 +25,8 @@ from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
+from collections import OrderedDict, deque
+import asyncpg
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -59,7 +62,28 @@ def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
     return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
 
-
+async def is_history_empty_by_global_id(global_user_id: str) -> bool:
+    """Одним запросом находит platform_user_id по UUID в user_accounts 
+    и проверяет, пуста ли его история в chat_history."""
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        # Вложенный запрос: извлекаем platform_user_id по UUID и проверяем историю
+        # cast (::bigint) нужен, чтобы типы точно совпали с числовым user_id в chat_history
+        count = await conn.fetchval("""
+            SELECT COUNT(*) 
+            FROM chat_history 
+            WHERE user_id = (
+                SELECT platform_user_id::bigint 
+                FROM user_accounts 
+                WHERE user_id = $1
+            );
+        """, global_user_id)
+        
+        await conn.close()
+        return count == 0  # Если 0, значит история пуста (был /reset)
+    except Exception as e:
+        logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
+        return False
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
@@ -77,6 +101,11 @@ class RootAgent(BaseAgent):
     kb_collection: str
 
     model_config = {"arbitrary_types_allowed": True}
+    MAX_HISTORY_PER_USER: ClassVar[int] = 3  # Сколько последних запросов хранить для ОДНОГО пользователя
+    # Глобальный кэш для сохранения контекста при 409 Conflict (сплите сессий)
+    # Ключом будет базовый session_id, значением — словарь с контекстом
+    # Глобальное хранилище: { clean_id: deque([state1, state2, ...]) }
+    _CROSS_SESSION_CACHE: ClassVar[OrderedDict] = OrderedDict()
 
     def __init__(
         self,
@@ -203,6 +232,63 @@ class RootAgent(BaseAgent):
         """Формирует финальный ответ и обновляет bounded history текущего диалога."""
         self._append_recent_message(ctx, "user", user_text)
         self._append_recent_message(ctx, "assistant", text)
+        # Достаем результат работы диспетчера из состояния текущего шага
+        dispatch = ctx.session.state.get("_dispatcher_result_parsed")
+        
+        if isinstance(dispatch, dict):
+            ctx.session.state["last_user_query"] = user_text
+            ctx.session.state["last_route"] = dispatch.get("route", "")
+            ctx.session.state["last_intent"] = dispatch.get("intent", "")
+            ctx.session.state["last_search_query"] = dispatch.get("search_query", "")
+            
+            # Автоматически управляем списком документов:
+            # Если роут был doc_search, сохраняем кусок текста ответа, иначе очищаем
+            if dispatch.get("route") == "doc_search":
+                ctx.session.state["last_document_list"] = text[:1500]
+            else:
+                ctx.session.state["last_document_list"] = ""
+    
+            logger.debug(
+                "Context auto-updated inside final event: route=%s, intent=%s, search_query=%s",
+                ctx.session.state["last_route"],
+                ctx.session.state["last_intent"],
+                ctx.session.state["last_search_query"]
+            )
+        # БЛОК СОХРАНЕНИЯ В КЭШ ДЛЯ ПОДСТРАХОВКИ СЛЕДУЮЩИХ ШАГОВ ---
+        sess_id = getattr(ctx.session, "id", "")
+        clean_id = sess_id.split("_")[0] if sess_id else ""
+        if clean_id:
+            # Собираем текущий снимок состояния
+            current_state = {
+                "last_user_query": ctx.session.state.get("last_user_query"),
+                "last_route": ctx.session.state.get("last_route"),
+                "last_intent": ctx.session.state.get("last_intent"),
+                "last_search_query": ctx.session.state.get("last_search_query"),
+                "last_document_list": ctx.session.state.get("last_document_list"),
+                "last_product": ctx.session.state.get("last_product"),
+                "_product_dialog_context": ctx.session.state.get("_product_dialog_context"),
+            }
+
+            # 1. Если пользователя еще нет в кэше — создаем для него личную очередь
+            if clean_id not in self._CROSS_SESSION_CACHE:
+                # Инициализируем деку с жестким редактируемым лимитом размера
+                self._CROSS_SESSION_CACHE[clean_id] = deque(maxlen=self.MAX_HISTORY_PER_USER)
+            
+            # 2. Добавляем текущее состояние в деку пользователя. 
+            # Благодаря maxlen, если там уже было 3 записи, самая старая удалится автоматически!
+            self._CROSS_SESSION_CACHE[clean_id].append(current_state)
+            
+            # 3. Передвигаем пользователя в конец OrderedDict, так как он совершил действие (LRU-логика)
+            self._CROSS_SESSION_CACHE.move_to_end(clean_id)
+            
+            logger.debug(
+                "State saved for user %s. User history size: %d/%d. Total users in cache: %d",
+                clean_id,
+                len(self._CROSS_SESSION_CACHE[clean_id]),
+                self.MAX_HISTORY_PER_USER,
+                len(self._CROSS_SESSION_CACHE)
+            )
+
         return self._build_final_event(ctx, text)
 
     @staticmethod
@@ -285,7 +371,6 @@ class RootAgent(BaseAgent):
                 "owasp_recent_messages_json",
             ],
         )
-
     def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
         """Возвращает сохраненное ограниченное окно недавних сообщений."""
         value = ctx.session.state.get(OWASP_HISTORY_STATE_KEY)
@@ -447,9 +532,7 @@ class RootAgent(BaseAgent):
                 continue
             product: Dict[str, str] = {}
             for key in ("code", "name", "term", "currency", "folder_kit"):
-                logger.debug(f"WHAT ARGS Do WE HAVE HERE IN {product}")
                 text = str(item.get(key) or "").strip()
-                logger.debug(f"INSIDE ITEM? {item}")
                 if text:
                     product[key] = text
             if product.get("code") or product.get("name"):
@@ -462,6 +545,13 @@ class RootAgent(BaseAgent):
 
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
+
+    @classmethod
+    def clear_user_cache(cls, user_id: str) -> None:
+        """Полностью удаляет RAM-историю запросов конкретного пользователя"""
+        if user_id in cls._CROSS_SESSION_CACHE:
+            cls._CROSS_SESSION_CACHE.pop(user_id, None)
+            logger.info(f"Cross-session FIFO cache successfully cleared for user: {user_id}")
 
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
@@ -998,7 +1088,28 @@ class RootAgent(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
-
+        # БЛОК АВТОМАТИЧЕСКОГО ВОССТАНОВЛЕНИЯ КОНТЕКСТА (ЗАЩИТА ОТ 409 CONFLICT) ---
+        sess_id = getattr(ctx.session, "id", "")
+        clean_id = sess_id.split("_")[0] if sess_id else ""
+        if clean_id:
+            # Проверяем существующую БД: если там пусто, значит бот стёр историю через /reset
+            if await is_history_empty_by_global_id(clean_id):  # или is_context_cleared_in_db
+                self._CROSS_SESSION_CACHE.pop(clean_id, None)
+                logger.info(f"🧹 [RAM Cache] Локальная память агента очищена, так как в БД история пуста для {clean_id}")
+            elif clean_id in self._CROSS_SESSION_CACHE:
+                # Если в новой сессии пропали ключевые данные контекста, восстанавливаем их из кэша
+                if not ctx.session.state.get("last_product") and not ctx.session.state.get("_product_dialog_context"):
+                    user_history = self._CROSS_SESSION_CACHE[clean_id]
+                    
+                    if user_history:  # Если у этого юзера есть сохраненные шаги
+                        logger.info(
+                            "Session split (409). Restoring context from the latest request of user: %s", 
+                            clean_id
+                        )
+                        # Элемент [-1] в deque — это самый свежий добавленный запрос этого пользователя
+                        latest_cached_state = user_history[-1]
+                        for key, value in latest_cached_state.items():
+                            ctx.session.state[key] = value
         try:
             await self._trim_dialog_memory(ctx)
 
@@ -1192,11 +1303,6 @@ class RootAgent(BaseAgent):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 # Сохраняем список документов в state для контекста диспетчера
-                if dispatch["intent"] in ("doc_search", "show_more", "show_all"):
-                    # Обрезаем до 1500 символов, чтобы не переполнять контекстное окно LLM
-                    ctx.session.state["last_document_list"] = final_text[:1500]
-                else:
-                    ctx.session.state["last_document_list"] = ""
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
 
@@ -1472,6 +1578,29 @@ class RootAgent(BaseAgent):
         )
         resolved = product_selection.get("resolved_product")
         product_resolution = ctx.session.state.get("product_resolution") or {}
+        # 1. Определяем code продукта (из state резолвера или из ответа LLM)
+        base_code = None
+        if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
+            base_code = product_resolution.get("product_code")
+        elif isinstance(resolved, dict) and resolved.get("code"):
+            base_code = resolved.get("code")
+
+        # 2. Если code есть, идем в БД и забираем folder_kit (Python-фоллбэк, не зависит от LLM)
+        if base_code:
+            full_details = await self.product_resolver.fetch_product_full_details(base_code)
+            if full_details.get("folder_kit"):
+                logger.info(f"Python fallback: успешно получен folder_kit='{full_details['folder_kit']}' для code={base_code}")
+                
+                # Если LLM вообще не вернула resolved_product, создаем базовый словарь
+                if not resolved:
+                    resolved = {
+                        "code": base_code,
+                        "name": product_resolution.get("product_name", "")
+                    }
+                    product_selection["resolved_product"] = resolved
+                    
+                # Жестко инжектим folder_kit в словарь
+                resolved["folder_kit"] = full_details["folder_kit"]
         if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
             if not resolved:
                 # Если агент не вернул resolved_product, но resolver нашел продукт, используем его данные
