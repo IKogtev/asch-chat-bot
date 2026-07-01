@@ -11,6 +11,8 @@ from google.adk.agents import InvocationContext, LlmAgent
 from google.adk.events import Event
 
 from utils.logger import setup_logger
+from .doc_search_kb_context import parse_kb_search_hits
+from .doc_search_validation import DocSearchRetryableValidationError
 from .helpers import extract_json, truncate_for_log
 
 logger = setup_logger("json_leaf_runner", "agent.log")
@@ -134,6 +136,81 @@ def _extract_function_call_summary(part: Any) -> dict[str, str] | None:
     }
 
 
+def _response_to_text(response: Any) -> str:
+    if response is None:
+        return ""
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        for key in ("content", "text", "result"):
+            if key in response:
+                nested = _response_to_text(response.get(key))
+                if nested:
+                    return nested
+        try:
+            return json.dumps(response, ensure_ascii=False, default=str)
+        except Exception:
+            return str(response)
+    return str(response)
+
+
+def _extract_function_response_raw(part: Any) -> tuple[str, Any] | None:
+    function_response = (
+        _get_mapping_or_attr(part, "function_response")
+        or _get_mapping_or_attr(part, "functionResponse")
+    )
+    if not function_response:
+        return None
+
+    name = _get_mapping_or_attr(function_response, "name")
+    if not name:
+        return None
+
+    response = (
+        _get_mapping_or_attr(function_response, "response")
+        or _get_mapping_or_attr(function_response, "result")
+        or {}
+    )
+    return str(name).strip(), response
+
+
+def _extract_kb_search_response_texts_from_event(event: Event) -> list[str]:
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts and isinstance(event, dict):
+        content = event.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+    if not parts:
+        return []
+
+    texts: list[str] = []
+    for part in parts:
+        raw = _extract_function_response_raw(part)
+        if not raw:
+            continue
+        name, response = raw
+        if name != "kb_search":
+            continue
+        text = _response_to_text(response).strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _store_doc_search_kb_hits(ctx: InvocationContext, response_texts: list[str]) -> None:
+    if ctx.session.state.get("doc_search_rerank_only"):
+        return
+
+    if not response_texts:
+        return
+
+    # kb_search уже склеивает чанки в один документ; при нескольких вызовах тула
+    # берём только последний ответ как источник allowed document_id.
+    hits = parse_kb_search_hits(response_texts[-1])
+    if hits:
+        ctx.session.state["_doc_search_kb_hits"] = hits
+
+
 def _extract_function_response_summary(part: Any) -> dict[str, str] | None:
     function_response = (
         _get_mapping_or_attr(part, "function_response")
@@ -207,12 +284,20 @@ async def run_json_leaf_agent(
     _t_llm0 = time.monotonic() if _doc_timing else None
     tool_calls: list[str] = []
     tool_event_summaries: list[dict[str, str]] = []
+    kb_search_response_texts: list[str] = []
     async for event in agent.run_async(ctx):
         tool_calls.extend(_extract_function_call_names(event))
         tool_event_summaries.extend(_extract_tool_event_summaries(event))
+        if _doc_timing:
+            kb_search_response_texts.extend(
+                _extract_kb_search_response_texts_from_event(event)
+            )
         sanitized_event = strip_thought_parts(event)
         if sanitized_event is not None:
             yield sanitized_event
+
+    if _doc_timing:
+        _store_doc_search_kb_hits(ctx, kb_search_response_texts)
 
     _llm_ms: float | None = None
     if _doc_timing and _t_llm0 is not None:
@@ -235,6 +320,8 @@ async def run_json_leaf_agent(
         validator_context["_adk_tool_calls"] = tool_calls
         validator_context["_adk_tool_event_summaries"] = tool_event_summaries
         parsed = validator(extracted, validator_context)
+    except DocSearchRetryableValidationError:
+        raise
     except Exception as exc:
         logger.warning(
             "%s validation/parsing error: %s; user_query=%s; search_query=%s; intent=%s; route=%s; raw=%s",
