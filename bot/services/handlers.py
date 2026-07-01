@@ -1006,6 +1006,13 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                     Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
                     вызываем обработчик отправки файлов.
                     """
+                    logger.info(
+                        "Скачивание по номерам: user_id=%s session_id=%s ranks=%s text=%r",
+                        global_user_id,
+                        session_id,
+                        dl_ranks,
+                        user_text,
+                    )
                     await handle_download_by_ranks(event, store, doc_handler, global_user_id, session_id, dl_ranks, turn_id, start_time, platform)
                     await store.append(user_id, "user", user_text, global_user_id)
                     await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.", global_user_id)
