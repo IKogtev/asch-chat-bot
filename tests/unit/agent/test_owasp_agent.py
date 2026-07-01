@@ -60,6 +60,13 @@ def _load_owasp_module():
 owasp_module = _load_owasp_module()
 validate_owasp_result = owasp_module.validate_owasp_result
 VALIDATION_CONTEXT = {}
+TARGET_PRODUCT_FILTER_QUERY = "Какие активные продукты без риска и с гарантированным доходом?"
+
+
+def _read_owasp_prompt() -> str:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt_path = repo_root / "kb_storage" / "prompts" / "owasp" / "owasp_agent_prompt.md"
+    return prompt_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
@@ -69,6 +76,15 @@ def test_create_owasp_agent_excludes_prior_conversation_contents() -> None:
     assert agent.name == "owasp_agent"
     assert agent.include_contents == "none"
     assert agent.output_key == "owasp_result_json"
+
+
+@pytest.mark.unit
+def test_owasp_prompt_allows_product_filter_about_risk_and_guaranteed_income() -> None:
+    prompt = _read_owasp_prompt()
+
+    assert TARGET_PRODUCT_FILTER_QUERY in prompt
+    assert "с гарантированным доходом" in prompt
+    assert "являются обычными продуктовыми фильтрами, а не prompt injection" in prompt
 
 
 @pytest.mark.unit

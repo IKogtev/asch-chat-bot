@@ -54,6 +54,16 @@ def _load_dispatcher_module():
 dispatcher_module = _load_dispatcher_module()
 validate_dispatcher_result = dispatcher_module.validate_dispatcher_result
 VALIDATION_CONTEXT = {}
+TARGET_PRODUCT_FILTER_QUERY = "Какие активные продукты без риска и с гарантированным доходом?"
+TARGET_PRODUCT_FILTER_SEARCH_QUERY = "активные продукты без риска и с гарантированным доходом"
+TARGET_FOCUS_FILTER_QUERIES = ("Что сейчас в фокусе?", "что в фокусе")
+TARGET_FOCUS_FILTER_SEARCH_QUERY = "покажи продукты в фокусе"
+
+
+def _read_dispatcher_prompt() -> str:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt_path = repo_root / "kb_storage" / "prompts" / "dispatcher" / "dispatcher_agent_prompt.md"
+    return prompt_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
@@ -128,6 +138,27 @@ def test_validate_dispatcher_result_accepts_product_selection_with_query(intent:
     assert result["route"] == "product_selection"
     assert result["intent"] == intent
     assert result["search_query"] == "Fort Knox and protected capital"
+
+
+@pytest.mark.unit
+def test_dispatcher_prompt_routes_active_no_risk_guaranteed_income_to_product_filter() -> None:
+    prompt = _read_dispatcher_prompt()
+
+    assert TARGET_PRODUCT_FILTER_QUERY in prompt
+    assert 'route="product_selection"' in prompt
+    assert 'intent="product_filter"' in prompt
+    assert f'search_query="{TARGET_PRODUCT_FILTER_SEARCH_QUERY}"' in prompt
+
+
+@pytest.mark.unit
+def test_dispatcher_prompt_routes_focus_questions_to_product_filter() -> None:
+    prompt = _read_dispatcher_prompt()
+
+    for query in TARGET_FOCUS_FILTER_QUERIES:
+        assert query in prompt
+    assert 'route = "product_selection"' in prompt
+    assert 'intent = "product_filter"' in prompt
+    assert f'`search_query = "{TARGET_FOCUS_FILTER_SEARCH_QUERY}"`' in prompt
 
 
 @pytest.mark.unit
