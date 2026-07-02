@@ -97,6 +97,7 @@ services:
 
       - KB_TOP_K=${KB_TOP_K:-20}
       - ROOT_TEMPERATURE=0.8
+      - DOC_SEARCH_TEMPERATURE=0.0
       - KB_ANSWER_TEMPERATURE=0.0
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
@@ -466,6 +467,7 @@ services:
 
       - KB_TOP_K=${KB_TOP_K:-20}
       - ROOT_TEMPERATURE=0.8
+      - DOC_SEARCH_TEMPERATURE=0.1
       - KB_ANSWER_TEMPERATURE=0.0
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
