@@ -3,12 +3,13 @@ import asyncio
 import json
 import os
 import re
+from starlette.datastructures import State
 import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Dict, List
+from typing import Annotated, Any, Dict, List
 
 import uvicorn
 from dotenv import load_dotenv
@@ -219,7 +220,7 @@ def get_file_link(file_name: Annotated[str, "Name of source file"], section_list
     return f"{clean_path}"
 
 
-def build_search_prompt(results: list[dict], question: str, top_k: int) -> str:
+def build_search_prompt(results: list[dict], question: str, top_k: int, merge_document_chunks: bool = True) -> str:
     blocks = []
     doc_res = {}
     for item in results:
@@ -228,8 +229,15 @@ def build_search_prompt(results: list[dict], question: str, top_k: int) -> str:
         if doc_id not in doc_res:
             doc_res[doc_id] = item
         else:
-            doc_res[doc_id]["content"] += "\n...\n" + item["content"]
-            doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+            if merge_document_chunks:
+                # если объединяем чанки, то добавляем новый чанк к существующему
+                doc_res[doc_id]["content"] += "\n...\n" + item["content"]
+                doc_res[doc_id]["rank"] = min(doc_res[doc_id]["rank"], item["rank"])
+            else:
+                # если не объединяем чанки, то заменяем существующий чанк на новый, если ранг нового чанка меньше, чем ранг существующего
+                if item['rank'] < doc_res[doc_id]["rank"]:
+                    doc_res[doc_id]["content"] = item["content"]
+                    doc_res[doc_id]["rank"] = item["rank"]
 
     logger.debug("\n%s", json.dumps(doc_res, indent=2, ensure_ascii=False))
     shown = 0
@@ -385,7 +393,7 @@ async def kb_search(
                     "dense_score": item.get("dense_score"),
                     "sparse_score": item.get("sparse_score"),
                     "lexical_score": None,
-                    "content": item["text"],
+                    "content": item["text"][:500] if profile=="doc_search" else item["text"],
                     "metadata": metadata,
                 }
                 results.append(entry)
@@ -394,7 +402,7 @@ async def kb_search(
                 f"Найдено {len(results)} результатов (Qdrant hybrid, mode={profile_cfg.search_mode})"
             )
 
-            prompt = build_search_prompt(results, query, top_k)
+            prompt = build_search_prompt(results, query, top_k, merge_document_chunks=False if profile=="doc_search" else True)
             logger.debug(f"res:\n{prompt}")
             res = ToolResult(
                 content=prompt,
@@ -453,13 +461,13 @@ async def auth_guard(scope, receive, send):
     """
     if scope["type"] == "http":
         # Для HTTP-запросов используем объект Request для удобства
-        request = Request(scope, receive)
+        request = Request[State](scope, receive)
         auth_header = request.headers.get("Authorization", "")
         logger.info(f"=== AUTH CHECK, Path: {scope['path']}")
 
         if API_TOKEN and not auth_header.startswith(f"Bearer {API_TOKEN}"):
             response = JSONResponse({"error": "Unauthorized"}, status_code=401)
-            await response(scope, receive, send)
+            await response[Any, Any, None](scope, receive, send)
             return
     
     # Если аутентификация не требуется или пройдена, передаем управление
