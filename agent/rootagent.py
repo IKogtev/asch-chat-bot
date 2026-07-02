@@ -696,6 +696,26 @@ class RootAgent(BaseAgent):
                 }
             return
 
+    def _is_blind_followup(self, user_text: str) -> bool:
+        """
+        Проверяет, является ли сообщение слепым follow-up (только триггеры/местоимения)
+        или пользователь явно указал продукт (код/название).
+        Возвращает True, если это слепой follow-up (контекст нужен).
+        """
+        explicit_codes = self._extract_product_codes(user_text)
+        if explicit_codes:
+            return False
+            
+        normalized = self._normalize_product_dialog_text(user_text)
+        
+        # Удаляем триггеры, местоимения и предлоги
+        blind_triggers = r"\b(скач\w*|пришл\w*|отправ\w*|дай|дать|комплект\w*|материал\w*|документ\w*|давай|ок|хорошо|ладно|параметр\w*|карточк\w*|свойств\w*|характеристик\w*|подробн\w*|покаж\w*|расскаж\w*|презентац\w*|презентер\w*|памятк\w*|инструкц\w*|регламент\w*|шаблон\w*|пф|полис\w*|договор\w*|буклет\w*|нем|о\s+нем|ней|о\s+ней|этом|об\s+этом|программе|продукт\w*|программа|его|ее|них|покажи|выведи|открой|найди|скинь|кидай|хочу|пакет\s+документов|пакет\s+материалов|комплект\s+документов|полный\s+комплект|нужен|скачать|скинь|пришли|отправь|про|по|для|на|в|во|с|со|к|ко|о|об|и|а|но|да|же|бы|ли)\b"
+        clean_msg = re.sub(blind_triggers, "", normalized)
+        clean_msg = re.sub(r"[^\w\s]", "", clean_msg).strip()
+        
+        # Если после очистки что-то осталось (например, "фн", "зк 2 года") - это явный запрос
+        return len(clean_msg) == 0
+
     def _find_attribute_value_in_dialog_context(
         self,
         ctx: InvocationContext,
@@ -949,6 +969,9 @@ class RootAgent(BaseAgent):
         is_asking_list = bool(re.search(r"\b(какие|что за|список|покажи список|есть ли)\b", normalized))
         
         if is_explicit_kit and not is_asking_list:
+            # ЕСЛИ ПОЛЬЗОВАТЕЛЬ ЯВНО УКАЗАЛ НОВЫЙ ПРОДУКТ, ОТДАЕМ ДИСПЕТЧЕРУ
+            if not self._is_blind_followup(user_text):
+                return None
             # ИСПРАВЛЕНИЕ: Извлекаем продукт из контекста диалога (selected_product)
             product = self._find_product_in_dialog_context(
                 ctx,
@@ -1107,6 +1130,10 @@ class RootAgent(BaseAgent):
                 asks_kit = True
 
         if not asks_kit and not asks_card and not asks_doc:
+            return None
+        # Если это не слепой follow-up (пользователь явно указал продукт),
+        # отдаем запрос диспетчеру, чтобы он не подменял его старым контекстом
+        if not self._is_blind_followup(user_text):
             return None
         # 1. Сначала пытаемся найти продукт стандартным путем через RAM-контекст модулей
         product = None
@@ -1382,9 +1409,10 @@ class RootAgent(BaseAgent):
             logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
 
             if owasp["status"] == "blocked":
-                yield self._build_final_event_with_history(
+                # Используем _build_final_event, чтобы НЕ сохранять заблокированное 
+                # сообщение в историю OWASP и не загрязнять контекст для следующих запросов
+                yield self._build_final_event(
                     ctx,
-                    user_text,
                     format_reject_answer(owasp["user_message"]),
                 )
                 return
