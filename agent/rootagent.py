@@ -523,7 +523,7 @@ class RootAgent(BaseAgent):
                 }
             return
 
-        if mode in {"no_data", "product_compare"}:
+        if mode == "no_data":
             self._clear_product_dialog_context(ctx)
 
     def _find_attribute_value_in_dialog_context(
@@ -733,7 +733,7 @@ class RootAgent(BaseAgent):
         # 1. Явный запрос комплекта/документов (но не "какие документы есть" -> это фильтр)
         is_explicit_kit = bool(
             re.search(
-                r"\b(пакет документов|пакет материалов|комплект документов|полный комплект|комплект|материалы)\b",
+                r"\b(пакет документов|пакет материалов|полный комплект|все материалы|комплект|пакет)\b",
                 normalized,
             )
         )
@@ -816,7 +816,7 @@ class RootAgent(BaseAgent):
 
         asks_kit = bool(
             re.search(
-                r"\b(скач|пришл|отправ|дай|дать|комплект|материал|документ)",
+                r"\b(скач|пришл|отправ|дай|дать|комплект|пакет|материал|документ)",
                 normalized,
             )
         )
@@ -1223,6 +1223,7 @@ class RootAgent(BaseAgent):
         user_message: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
+        self._clear_product_dialog_context(ctx)
         doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
         logger.info(
             "doc_search route: query=%s intent=%s",
@@ -1243,6 +1244,7 @@ class RootAgent(BaseAgent):
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
+        self._clear_product_dialog_context(ctx)
         """
         Запуск kb_answer_agent для FAQ/KB-ответа или smalltalk.
 
