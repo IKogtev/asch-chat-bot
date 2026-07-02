@@ -246,35 +246,49 @@ class RootAgent(BaseAgent):
             if dispatch.get("route") == "doc_search":
                 ctx.session.state["last_document_list"] = text[:1500]
                 if dispatch.get("intent") != "file_download":
-                # Автоматическое сохранение контекста продукта из найденных документов ---
+                    # Автоматическое сохранение контекста продукта из найденных документов ---
                     codes = self._extract_product_codes(text)
-                    if codes:
-                        first_code = codes[0]
-                        name_guess = ""
-                        
-                        # Пытаемся вытащить имя продукта из строки ответа, например: "1. Fort Knox 1 год 12,7% (8914)..."
+                    first_code = codes[0] if codes else ""
+                    name_guess = ""
+                    # 1. Пытаемся вытащить имя продукта из строки ответа, если есть код
+                    if first_code:
                         match_name = re.search(r"(?:^|\d+\.\s*)([^\n()]+)\s*\(" + re.escape(first_code) + r"\)", text)
                         if match_name:
                             name_guess = match_name.group(1).strip()
                             # Очищаем от процентов доходности в хвосте, если они прилипли
                             name_guess = re.sub(r"\s+\d+([.,]\d+)?%\s*$", "", name_guess).strip()
-                        
-                        if not name_guess and user_text:
-                            name_guess = re.sub(r"(?i)^(найди|покажи|документы|по|для|скачать|файл|файлы)\s+", "", user_text).strip()
+                    
+                    # Fallback: если в тексте ответа нет кодов, берем название из search_query или user_text
+                    if not name_guess:
+                        sq = dispatch.get("search_query", "").strip()
+                        # Если search_query содержит что-то осмысленное (не просто общие слова)
+                        if sq and len(sq) > 2 and not re.fullmatch(r"(?i)(документы|файлы|материалы|список)", sq):
+                            name_guess = sq
+                        elif user_text:
+                            name_guess = re.sub(
+                                r"(?i)^(найди|покажи|выведи|открой|документы|доки|по|для|скачать|файл|файлы|материалы|презентацию|презентер|памятку|инструкцию|регламент|шаблон|список)\s+", 
+                                "", 
+                                user_text
+                            ).strip()
+                            name_guess = re.sub(r"(?i)\bпо\b\s*", "", name_guess).strip()
+                    # Если имя удалось определить, сохраняем контекст
+                    if name_guess:
                         # Записываем в плоскую строку для _get_last_product_from_state
-                        ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip()
-                        
+                        if first_code:
+                            ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip()
+                        else:
+                            ctx.session.state["last_product"] = name_guess.strip()
+                            
                         # Записываем в структурированный контекст для _get_selected_product_from_context
                         current_context = self._get_product_dialog_context(ctx) or {}
                         current_context["last_mode"] = "product_card"
-                        current_context["selected_product"] = {
-                            "code": first_code,
-                            "name": name_guess
-                        }
-                        current_context["products"] = [{"code": first_code, "name": name_guess}]
+                        selected_prod = {"name": name_guess}
+                        if first_code:
+                            selected_prod["code"] = first_code
+                        current_context["selected_product"] = selected_prod
+                        current_context["products"] = [selected_prod]
                         ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
-                        logger.info("Auto-saved product context from doc_search results: code=%s, name=%s", first_code, name_guess)
-
+                        logger.info("Auto-saved product context from doc_search: code=%s, name=%s", first_code, name_guess)
             else:
                 ctx.session.state["last_document_list"] = ""
     
@@ -745,8 +759,9 @@ class RootAgent(BaseAgent):
         if codes:
             logger.debug("Extracted code from last_product: %s", codes[0])
             return {"code": codes[0], "name": last_product}
-        
-        return None
+        # Если кода нет, но строка не пустая, возвращаем её как имя продукта
+        logger.debug("Extracted name-only last_product from state: name=%s", last_product)
+        return {"code": "", "name": last_product.strip()}
 
     def _find_product_in_dialog_context(
         self,
@@ -1074,6 +1089,16 @@ class RootAgent(BaseAgent):
                 normalized,
             )
         )
+        asks_doc = bool(
+            re.search(
+                r"\b(презентац|презентер|памятк|инструкц|регламент|шаблон|пф|полис|договор|буклет)\b",
+                normalized,
+            )
+        )
+        # Не перехватываем общие запросы списков ("какие есть презентации", "покажи все документы")
+        is_asking_general_list = bool(re.search(r"\b(какие есть|список|покажи список|все документы|все файлы)\b", normalized))
+        if asks_doc and is_asking_general_list:
+            asks_doc = False
         # Дополнительная подстраховка: если это триггер согласия после просмотра карточки
         last_route = ctx.session.state.get("last_route")
         last_intent = ctx.session.state.get("last_intent")
@@ -1081,7 +1106,7 @@ class RootAgent(BaseAgent):
             if normalized in ["давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо"]:
                 asks_kit = True
 
-        if not asks_kit and not asks_card:
+        if not asks_kit and not asks_card and not asks_doc:
             return None
         # 1. Сначала пытаемся найти продукт стандартным путем через RAM-контекст модулей
         product = None
@@ -1090,7 +1115,7 @@ class RootAgent(BaseAgent):
                 ctx,
                 user_text,
                 allow_selected_product=(
-                    (asks_kit or asks_card)
+                    (asks_kit or asks_card or asks_doc)
                     and not self._extract_product_codes(user_text)
                 ),
             )
@@ -1174,6 +1199,22 @@ class RootAgent(BaseAgent):
             search_target = code if code else name
         # Если в итоге мы смогли определить цель поиска
         if search_target:
+            if asks_doc:
+                query = f"{user_text} по продукту {search_target}".strip()
+                # Убираем дублирование, если пользователь уже написал "по продукту"
+                query = re.sub(r"по продукту\s+по продукту", "по продукту", query, flags=re.IGNORECASE)
+                
+                logger.info(f"Doc search followup short-circuit triggered. Target: {search_target}, Route: doc_search")
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "doc_search",
+                        "intent": "doc_search",
+                        "reason": "product_context_doc_search_followup",
+                        "search_query": query,
+                    },
+                    dict(ctx.session.state),
+                )
             intent = "product_kit" if asks_kit else "product_card"
             if intent == "product_kit":
                 query = f"скачать комплект документов по продукту {search_target}".strip()
@@ -1461,6 +1502,7 @@ class RootAgent(BaseAgent):
                     ctx,
                     user_text,
                     dispatch["intent"],
+                    dispatch.get("search_query", ""),
                 ):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
@@ -1670,6 +1712,7 @@ class RootAgent(BaseAgent):
         ctx: InvocationContext,
         user_message: str,
         intent: str,
+        search_query: str = "",
     ) -> AsyncGenerator[Event, None]:
         
         # Если это скачивание файла, формируем запрос из извлеченных рангов
@@ -1684,10 +1727,14 @@ class RootAgent(BaseAgent):
                 if any(trigger in user_text_lower for trigger in generic_file_triggers):
                     doc_search_query = "1"
                 else:
-                    doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
+                    # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
+                    base_query = search_query if search_query else user_message
+                    doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
         else:
-            doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
-
+            # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
+            base_query = search_query if search_query else user_message
+            doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+            
         logger.info(
             "doc_search route: query=%s intent=%s",
             truncate_for_log(doc_search_query, 300),
