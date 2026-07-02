@@ -260,8 +260,7 @@ class RootAgent(BaseAgent):
                             name_guess = re.sub(r"\s+\d+([.,]\d+)?%\s*$", "", name_guess).strip()
                         
                         if not name_guess and user_text:
-                            name_guess = re.sub(r"^(?i)(найди|покажи|документы|по|для|скачать|файл|файлы)\s+", "", user_text).strip()
-                        
+                            name_guess = re.sub(r"(?i)^(найди|покажи|документы|по|для|скачать|файл|файлы)\s+", "", user_text).strip()
                         # Записываем в плоскую строку для _get_last_product_from_state
                         ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip()
                         
@@ -1112,7 +1111,7 @@ class RootAgent(BaseAgent):
                 if last_user_query:
                     # Чистим запрос от префиксов, чтобы вычленить "Fort Knox 1 год" целиком
                     clean_query = re.sub(
-                        r"^(?i)(найди|покажи|документы|доки|по|для|скачать|файл|файлы|продукт|карточку|информацию|расскажи|про)\s+", 
+                        r"(?i)^(найди|покажи|документы|доки|по|для|скачать|файл|файлы|продукт|карточку|информацию|расскажи|про)\s+", 
                         "", 
                         last_user_query
                     ).strip()
@@ -1397,12 +1396,6 @@ class RootAgent(BaseAgent):
                     )
                     ctx.session.state["_dispatcher_result_parsed"] = dispatch
                     logger.info("Dispatcher pagination override: intent=%s", pin)
-
-                if (
-                    dispatch.get("route") == "doc_search"
-                    and dispatch.get("intent") == "doc_search"
-                ):
-                    dr = self._extract_ranks_with_words(user_text)
             # Сохраняем контекст текущего хода для следующих реплик
             ctx.session.state["last_user_query"] = user_text
             ctx.session.state["last_route"] = dispatch["route"]
@@ -1427,6 +1420,29 @@ class RootAgent(BaseAgent):
             if dispatch["route"] == "product_selection":
                 # СЛОЙ ПЕРЕХВАТА МЕСТОИМЕНИЙ И ОБОГАЩЕНИЯ КОНТЕКСТА ---
                 sq_clean = dispatch.get("search_query", "").strip().lower()
+                # Обогощение запроса для сравнения (product_compare) <<<
+                if dispatch.get("intent") == "product_compare":
+                    context = self._get_product_dialog_context(ctx)
+                    products = self._normalize_dialog_products(context.get("products") or [])
+                    
+                    # Если в контексте есть список продуктов (например, после product_filter)
+                    if len(products) >= 2:
+                        # Проверяем, упомянул ли пользователь конкретные продукты в запросе явно
+                        mentioned = False
+                        for p in products:
+                            code = p.get("code", "")
+                            name = p.get("name", "").lower()
+                            if (code and code in sq_clean) or (name and name in sq_clean):
+                                mentioned = True
+                                break
+                        
+                        # Если продукты не упомянуты явно (например, "сравнить их", "чем они отличаются")
+                        if not mentioned:
+                            names = [p.get("name") or p.get("code") for p in products[:2]]
+                            dispatch["search_query"] = f"сравнить {' и '.join(names)}"
+                            sq_clean = dispatch["search_query"].strip().lower()
+                            ctx.session.state["last_search_query"] = dispatch["search_query"]
+                            logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
                 pronoun_triggers = [
                     "нем", "о нем", "ней", "о ней", "этом", "об этом", 
                     "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
