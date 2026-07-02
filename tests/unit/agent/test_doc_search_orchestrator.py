@@ -80,6 +80,9 @@ def _load_doc_search_orchestrator_module():
     ):
         assert spec is not None and spec.loader is not None
 
+    genai_types_stub = types.ModuleType("google.genai.types")
+    genai_types_stub.GenerateContentConfig = type("GenerateContentConfig", (), {})
+
     adk_agents_stub = types.ModuleType("google.adk.agents")
     adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
 
@@ -120,6 +123,7 @@ def _load_doc_search_orchestrator_module():
     config_doc_search_stub.MCP_TIMEOUT_SEC = 30.0
     config_doc_search_stub.ACTIVE_DOCUMENTS_COLLECTION = "test_collection"
     config_doc_search_stub.DOC_SEARCH_PAGE_SIZE = 5
+    config_doc_search_stub.DOC_SEARCH_TEMPERATURE = -1
 
     helpers_doc_search_stub = types.ModuleType("agent.helpers")
     helpers_doc_search_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -129,6 +133,7 @@ def _load_doc_search_orchestrator_module():
     sys.modules["utils.logger"] = logger_stub
     sys.modules["agent.config"] = config_stub
     sys.modules["agent.helpers"] = helpers_stub
+    sys.modules["google.genai.types"] = genai_types_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.events"] = adk_events_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
@@ -292,6 +297,35 @@ async def test_orchestrator_returns_no_data_after_two_empty_relevant_attempts() 
         await _drain(orchestrator._run_async_impl(ctx))
 
     assert ctx.session.state["_root_final_text"] == DOC_SEARCH_NO_DATA_MESSAGE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_retries_on_invalid_document_id_then_succeeds() -> None:
+    ctx = _make_ctx()
+    orchestrator = _make_orchestrator()
+    calls: list[int] = []
+
+    async def fake_run_json_leaf_agent(*, ctx, parsed_state_key, **kwargs):
+        calls.append(int(ctx.session.state.get("doc_search_attempt") or 0))
+        if len(calls) == 1:
+            raise DocSearchRetryableValidationError(
+                "invalid_document_id",
+                "doc-bad",
+            )
+        ctx.session.state[parsed_state_key] = _document_list_result()
+        return
+        yield  # pragma: no cover
+
+    with patch.object(orchestrator_module, "run_json_leaf_agent", fake_run_json_leaf_agent):
+        with patch.object(orchestrator_module, "_persist_full_list", new=AsyncMock()):
+            await _drain(orchestrator._run_async_impl(ctx))
+
+    assert calls == [1, 2]
+    assert ctx.session.state.get("doc_search_retry_reason", "").startswith(
+        "doc_search retryable validation: invalid_document_id"
+    )
+    assert ctx.session.state["_root_final_text"] == DOC_SEARCH_SUCCESS_HINT
 
 
 @pytest.mark.unit
