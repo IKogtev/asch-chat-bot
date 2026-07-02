@@ -245,6 +245,37 @@ class RootAgent(BaseAgent):
             # Если роут был doc_search, сохраняем кусок текста ответа, иначе очищаем
             if dispatch.get("route") == "doc_search":
                 ctx.session.state["last_document_list"] = text[:1500]
+                if dispatch.get("intent") != "file_download":
+                # Автоматическое сохранение контекста продукта из найденных документов ---
+                    codes = self._extract_product_codes(text)
+                    if codes:
+                        first_code = codes[0]
+                        name_guess = ""
+                        
+                        # Пытаемся вытащить имя продукта из строки ответа, например: "1. Fort Knox 1 год 12,7% (8914)..."
+                        match_name = re.search(r"(?:^|\d+\.\s*)([^\n()]+)\s*\(" + re.escape(first_code) + r"\)", text)
+                        if match_name:
+                            name_guess = match_name.group(1).strip()
+                            # Очищаем от процентов доходности в хвосте, если они прилипли
+                            name_guess = re.sub(r"\s+\d+([.,]\d+)?%\s*$", "", name_guess).strip()
+                        
+                        if not name_guess and user_text:
+                            name_guess = re.sub(r"^(?i)(найди|покажи|документы|по|для|скачать|файл|файлы)\s+", "", user_text).strip()
+                        
+                        # Записываем в плоскую строку для _get_last_product_from_state
+                        ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip()
+                        
+                        # Записываем в структурированный контекст для _get_selected_product_from_context
+                        current_context = self._get_product_dialog_context(ctx) or {}
+                        current_context["last_mode"] = "product_card"
+                        current_context["selected_product"] = {
+                            "code": first_code,
+                            "name": name_guess
+                        }
+                        current_context["products"] = [{"code": first_code, "name": name_guess}]
+                        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
+                        logger.info("Auto-saved product context from doc_search results: code=%s, name=%s", first_code, name_guess)
+
             else:
                 ctx.session.state["last_document_list"] = ""
     
@@ -856,8 +887,13 @@ class RootAgent(BaseAgent):
                 "product_resolution state: %s",
                 ctx.session.state["product_resolution"],
             )
-
     
+    def _is_contextual_product_request(self, text: str) -> bool:
+        """Проверяет, является ли запрос ссылкой на контекстный продукт."""
+        normalized = text.lower().strip()
+        triggers = ["о нем", "про него", "расскажи", "покажи", "параметры", "подробнее", "характеристики"]
+        # Если запрос короткий и содержит маркеры контекста
+        return len(normalized) < 30 and any(t in normalized for t in triggers)
     
     def _get_explicit_intent_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
         """
@@ -925,57 +961,86 @@ class RootAgent(BaseAgent):
                 },
                 dict(ctx.session.state),
             )
+        # 3. Перехват контекстного согласия ("давай", "пришли", "отправь") сразу после показа карточки продукта
+        last_route = ctx.session.state.get("last_route")
+        last_intent = ctx.session.state.get("last_intent")
+        is_confirmation = normalized in [
+            "давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", 
+            "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"
+        ]
+        if last_route == "product_selection" and last_intent == "product_card" and is_confirmation:
+            product = self._find_product_in_dialog_context(ctx, user_text, allow_selected_product=True)
+            if not product:
+                product = self._get_selected_product_from_context(ctx)
+            if not product:
+                product = self._get_last_product_from_state(ctx)
 
-        return None
-
-    def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
-        normalized = self._normalize_product_dialog_text(user_text)
-        if not normalized or not self._get_product_dialog_context(ctx):
-            return None
-
-        attribute_value = self._find_attribute_value_in_dialog_context(ctx, user_text)
-        if attribute_value:
-            context = self._get_product_dialog_context(ctx)
-            attribute_name = str(context.get("attribute_name") or "").strip()
-            attribute_column = str(context.get("attribute_column") or "").strip()
-            attribute_label = attribute_name or attribute_column or "selected attribute"
-            query = f"покажи продукты, у которых {attribute_label}: {attribute_value}"
-            return validate_dispatcher_result(
-                {
-                    "status": "ok",
-                    "route": "product_selection",
-                    "intent": "product_filter",
-                    "reason": "product_attribute_value_followup",
-                    "search_query": query,
-                },
-                dict(ctx.session.state),
-            )
-
-        codes = self._extract_product_codes(user_text)
-        if len(codes) == 1 and normalized == codes[0].lower():
-            product = self._find_product_in_dialog_context(
-                ctx,
-                user_text,
-                allow_selected_product=False,
-            )
             if product:
-                context = self._get_product_dialog_context(ctx)
-                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
-                    **context,
-                    "selected_product": product,
-                }
-                code = product.get("code") or codes[0]
+                code = product.get("code") or ""
+                name = product.get("name") or ""
+                query = f"скачать комплект документов по продукту {code or name}".strip()
+                logger.info("Explicit confirmation kit dispatch short-circuit: found product code=%s name=%s", code, name)
                 return validate_dispatcher_result(
                     {
                         "status": "ok",
                         "route": "product_selection",
-                        "intent": "product_card",
-                        "reason": "product_code_followup",
-                        "search_query": f"показать карточку продукта {code}",
+                        "intent": "product_kit",
+                        "reason": "explicit_confirmation_kit_short_circuit",
+                        "search_query": query, 
                     },
                     dict(ctx.session.state),
                 )
+            
+        return None
 
+    def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized:
+            return None
+        context = self._get_product_dialog_context(ctx)
+        # Блок поиска по атрибутам и кодам (требует обязательного наличия RAM-контекста)
+        if context:
+            attribute_value = self._find_attribute_value_in_dialog_context(ctx, user_text)
+            if attribute_value:
+                attribute_name = str(context.get("attribute_name") or "").strip()
+                attribute_column = str(context.get("attribute_column") or "").strip()
+                attribute_label = attribute_name or attribute_column or "selected attribute"
+                query = f"покажи продукты, у которых {attribute_label}: {attribute_value}"
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "product_selection",
+                        "intent": "product_filter",
+                        "reason": "product_attribute_value_followup",
+                        "search_query": query,
+                    },
+                    dict(ctx.session.state),
+                )
+            
+            codes = self._extract_product_codes(user_text)
+            if len(codes) == 1 and normalized == codes[0].lower():
+                product = self._find_product_in_dialog_context(
+                    ctx,
+                    user_text,
+                    allow_selected_product=False,
+                )
+                if product:
+                    ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                        **context,
+                        "selected_product": product,
+                    }
+                    code = product.get("code") or codes[0]
+                    return validate_dispatcher_result(
+                        {
+                            "status": "ok",
+                            "route": "product_selection",
+                            "intent": "product_card",
+                            "reason": "product_code_followup",
+                            "search_query": f"показать карточку продукта {code}",
+                        },
+                        dict(ctx.session.state),
+                    )
+        # Логика отправки комплекта или открытия карточки (работает в т.ч. по flat-стейту last_product)
         asks_kit = bool(
             re.search(
                 r"\b(скач|пришл|отправ|дай|дать|комплект|материал|документ|давай|ок|хорошо|ладно)\b",
@@ -988,46 +1053,99 @@ class RootAgent(BaseAgent):
                 normalized,
             )
         )
+        # Дополнительная подстраховка: если это триггер согласия после просмотра карточки
+        last_route = ctx.session.state.get("last_route")
+        last_intent = ctx.session.state.get("last_intent")
+        if last_route == "product_selection" and last_intent == "product_card":
+            if normalized in ["давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо"]:
+                asks_kit = True
+
         if not asks_kit and not asks_card:
             return None
-
-        product = self._find_product_in_dialog_context(
-            ctx,
-            user_text,
-            allow_selected_product=(
-                (asks_kit or asks_card)
-                and not self._extract_product_codes(user_text)
-            ),
-        )
-        if not product:
-            product = self._get_selected_product_from_context(ctx)
+        # 1. Сначала пытаемся найти продукт стандартным путем через RAM-контекст модулей
+        product = None
+        if context:
+            product = self._find_product_in_dialog_context(
+                ctx,
+                user_text,
+                allow_selected_product=(
+                    (asks_kit or asks_card)
+                    and not self._extract_product_codes(user_text)
+                ),
+            )
+            if not product:
+                product = self._get_selected_product_from_context(ctx)
+        
         if not product:
             product = self._get_last_product_from_state(ctx)
+        # 2. ФОЛЛБЭК: Если продукт все еще не найден
+        search_target = ""
         if not product:
-            logger.warning("Product followup dispatch: product NOT found in context")
-            return None
+            logger.info("Context is empty after split. Starting cascade history extraction...")
+            # А. Проверяем существующую переменную last_product (строка формата "Имя (код ХХХХ)")
+            last_product_str = ctx.session.state.get("last_product")
+            if last_product_str and isinstance(last_product_str, str):
+                logger.info(f"Fallback stage A: analyzing last_product content: '{last_product_str}'")
+                extracted_codes = self._extract_product_codes(last_product_str)
+                if extracted_codes:
+                    search_target = extracted_codes[0]
+                    logger.info(f"Fallback Stage A: Found explicit code {search_target} in last_product")
+                else:
+                    # Если кода нет, забираем имя до скобок
+                    match_name = re.search(r"^([^(]+)", last_product_str)
+                    if match_name:
+                        search_target = match_name.group(1).strip()
+                        logger.info(f"Fallback Stage A: Found name '{search_target}' in last_product")
 
-        code = product.get("code") or ""
-        name = product.get("name") or ""
-        logger.info("Product followup dispatch: found product code=%s name=%s", code, name)
-        
-        if asks_kit:
-            intent = "product_kit"
-            query = f"скачать комплект документов по продукту {code or name}".strip()
-        else:
-            intent = "product_card"
-            query = f"показать параметры продукта {code or name}".strip()
+            # Шаг Б: Если Шаг А не дал результатов, парсим last_document_list (текст ответа док-серча)
+            if not search_target and last_route == "doc_search":
+                last_doc_list = ctx.session.state.get("last_document_list")
+                if last_doc_list:
+                    extracted_codes = self._extract_product_codes(last_doc_list)
+                    if extracted_codes:
+                        search_target = extracted_codes[0]
+                        logger.info(f"Fallback Stage B: Extracted code {search_target} from last_document_list")
 
-        return validate_dispatcher_result(
-            {
-                "status": "ok",
-                "route": "product_selection",
-                "intent": intent,
-                "reason": "product_dialog_followup",
-                "search_query": query,
-            },
-            dict(ctx.session.state),
-        )
+            # Шаг В: Если кодов нигде нет, вытаскиваем продукт из самого ПРЕДЫДУЩЕГО ЗАПРОСА пользователя
+            if not search_target:
+                last_user_query = ctx.session.state.get("last_user_query")
+                if last_user_query:
+                    # Чистим запрос от префиксов, чтобы вычленить "Fort Knox 1 год" целиком
+                    clean_query = re.sub(
+                        r"^(?i)(найди|покажи|документы|доки|по|для|скачать|файл|файлы|продукт|карточку|информацию|расскажи|про)\s+", 
+                        "", 
+                        last_user_query
+                    ).strip()
+                    if clean_query:
+                        search_target = clean_query
+                        logger.info(f"Fallback Stage C: Extracted clean query target '{search_target}' from last_user_query")
+        else:     
+            code = product.get("code") or ""
+            name = product.get("name") or ""
+            logger.info("Product followup dispatch: found product code=%s name=%s", code, name)
+            search_target = code if code else name
+        # Если в итоге мы смогли определить цель поиска
+        if search_target:
+            intent = "product_kit" if asks_kit else "product_card"
+            if intent == "product_kit":
+                query = f"скачать комплект документов по продукту {search_target}".strip()
+            else:
+                query = f"показать параметры продукта {search_target}".strip()
+
+            logger.info(f"Product followup short-circuit triggered. Target: {search_target}, Route: product_selection, Intent: {intent}")
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": intent,
+                    "reason": "product_dialog_history_cascade_fallback",
+                    "search_query": query,
+                },
+                dict(ctx.session.state),
+            )
+
+        logger.warning("Product followup dispatch: Product target could not be restored from history.")
+        return None
 
     @classmethod
     def _fallback_product_selection_message(cls, raw: str) -> str | None:
@@ -1210,7 +1328,7 @@ class RootAgent(BaseAgent):
                         "route": "doc_search",
                         "intent": "file_download",
                         "reason": "download_by_rank_short_circuit",
-                        "search_query": "",
+                        "search_query": ""
                     },
                     dict(ctx.session.state),
                 )
@@ -1232,7 +1350,7 @@ class RootAgent(BaseAgent):
                                 "route": "doc_search",
                                 "intent": "file_download",
                                 "reason": "generic_file_download_followup",
-                                "search_query": "1", # По умолчанию берем первый файл из списка
+                                "search_query": "",
                             },
                             dict(ctx.session.state),
                         )
@@ -1307,6 +1425,25 @@ class RootAgent(BaseAgent):
                 return
 
             if dispatch["route"] == "product_selection":
+                # СЛОЙ ПЕРЕХВАТА МЕСТОИМЕНИЙ И ОБОГАЩЕНИЯ КОНТЕКСТА ---
+                sq_clean = dispatch.get("search_query", "").strip().lower()
+                pronoun_triggers = [
+                    "нем", "о нем", "ней", "о ней", "этом", "об этом", 
+                    "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
+                ]
+                if sq_clean in pronoun_triggers or not sq_clean:
+                    product = self._get_selected_product_from_context(ctx)
+                    if not product:
+                        product = self._get_last_product_from_state(ctx)
+                    
+                    if product:
+                        code = product.get("code") or ""
+                        name = product.get("name") or ""
+                        # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
+                        dispatch["search_query"] = f"продукт {code or name}".strip()
+                        ctx.session.state["last_search_query"] = dispatch["search_query"]
+                        logger.info("Enriched product_selection pronoun search_query to: %s", dispatch["search_query"])
+                
                 async for event in self._handle_product_selection(
                     ctx,
                     user_text,
@@ -1467,7 +1604,23 @@ class RootAgent(BaseAgent):
         user_message: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
+        
+        # Если это скачивание файла, формируем запрос из извлеченных рангов
+        if intent == "file_download":
+            ranks = self._extract_ranks_with_words(user_message)
+            if ranks:
+                doc_search_query = ", ".join(map(str, ranks))
+            else:
+                # Фоллбэк для общих фраз ("скачай его", "открой файл"), если конкретного номера нет в тексте
+                generic_file_triggers = ["открой файл", "скачай его", "скачай файл", "открой его", "скинь его"]
+                user_text_lower = user_message.lower()
+                if any(trigger in user_text_lower for trigger in generic_file_triggers):
+                    doc_search_query = "1"
+                else:
+                    doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
+        else:
+            doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
+
         logger.info(
             "doc_search route: query=%s intent=%s",
             truncate_for_log(doc_search_query, 300),
