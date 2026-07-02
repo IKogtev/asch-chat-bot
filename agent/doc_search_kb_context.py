@@ -54,3 +54,16 @@ def allowed_document_ids(hits: list[dict[str, Any]]) -> set[str]:
         for item in hits
         if str(item.get("document_id") or "").strip()
     }
+
+
+def format_kb_hits_summary(hits: list[dict[str, Any]], *, max_ids: int = 12) -> str:
+    if not hits:
+        return "count=0"
+    ids = [
+        str(item.get("document_id") or "").strip()
+        for item in hits
+        if str(item.get("document_id") or "").strip()
+    ]
+    if len(ids) <= max_ids:
+        return f"count={len(ids)} ids={ids}"
+    return f"count={len(ids)} ids={ids[:max_ids]}...+{len(ids) - max_ids}"

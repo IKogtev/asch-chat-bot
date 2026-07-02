@@ -11,7 +11,7 @@ from google.adk.agents import InvocationContext, LlmAgent
 from google.adk.events import Event
 
 from utils.logger import setup_logger
-from .doc_search_kb_context import parse_kb_search_hits
+from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
 from .doc_search_validation import DocSearchRetryableValidationError
 from .helpers import extract_json, truncate_for_log
 
@@ -141,7 +141,12 @@ def _response_to_text(response: Any) -> str:
         return ""
     if isinstance(response, str):
         return response
+    if isinstance(response, list):
+        parts = [_response_to_text(item) for item in response]
+        return "\n".join(part for part in parts if part)
     if isinstance(response, dict):
+        if response.get("type") == "text" and "text" in response:
+            return str(response.get("text") or "")
         for key in ("content", "text", "result"):
             if key in response:
                 nested = _response_to_text(response.get(key))
@@ -198,10 +203,23 @@ def _extract_kb_search_response_texts_from_event(event: Event) -> list[str]:
 
 
 def _store_doc_search_kb_hits(ctx: InvocationContext, response_texts: list[str]) -> None:
-    if ctx.session.state.get("doc_search_rerank_only"):
+    attempt = ctx.session.state.get("doc_search_attempt")
+    rerank_only = ctx.session.state.get("doc_search_rerank_only")
+    if rerank_only:
+        existing = ctx.session.state.get("_doc_search_kb_hits")
+        existing_hits = existing if isinstance(existing, list) else []
+        logger.info(
+            "doc_search kb_hits: attempt=%s rerank_only=True keep_existing %s",
+            attempt,
+            format_kb_hits_summary(existing_hits),
+        )
         return
 
     if not response_texts:
+        logger.info(
+            "doc_search kb_hits: attempt=%s no kb_search response to store",
+            attempt,
+        )
         return
 
     # kb_search уже склеивает чанки в один документ; при нескольких вызовах тула
@@ -209,6 +227,16 @@ def _store_doc_search_kb_hits(ctx: InvocationContext, response_texts: list[str])
     hits = parse_kb_search_hits(response_texts[-1])
     if hits:
         ctx.session.state["_doc_search_kb_hits"] = hits
+        logger.info(
+            "doc_search kb_hits: attempt=%s stored_from_kb_search %s",
+            attempt,
+            format_kb_hits_summary(hits),
+        )
+    else:
+        logger.info(
+            "doc_search kb_hits: attempt=%s kb_search response parsed empty",
+            attempt,
+        )
 
 
 def _extract_function_response_summary(part: Any) -> dict[str, str] | None:
@@ -298,6 +326,12 @@ async def run_json_leaf_agent(
 
     if _doc_timing:
         _store_doc_search_kb_hits(ctx, kb_search_response_texts)
+        logger.info(
+            "doc_search_result_json: attempt=%s rerank_only=%s kb_search_calls=%s",
+            ctx.session.state.get("doc_search_attempt"),
+            ctx.session.state.get("doc_search_rerank_only"),
+            tool_calls.count("kb_search"),
+        )
 
     _llm_ms: float | None = None
     if _doc_timing and _t_llm0 is not None:

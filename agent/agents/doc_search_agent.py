@@ -12,7 +12,7 @@ from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
 from ..doc_search_kb_context import allowed_document_ids
-from ..doc_search_validation import DocSearchRetryableValidationError
+from ..doc_search_validation import DOC_SEARCH_MAX_ATTEMPTS, DocSearchRetryableValidationError
 from .validation_utils import build_validation_error
 
 logger = setup_logger("doc_search_agent", "agent.log")
@@ -63,6 +63,7 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - `is_relevant` опционален: если поле отсутствует, элемент считается релевантным;
     - в итоговый список попадают только релевантные, отсортированные по `new_rank`;
     - каждый `document_id` должен быть из `_doc_search_kb_hits`, если kb_search вернул документы;
+      при неверных id на попытке 1 — retry; на финальной попытке — отбрасываются;
     - `snippet` обрезается до 500 символов;
     - `source_path` приводится к строке или `None`.
 
@@ -74,6 +75,7 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     kb_hits = _kb_hits_from_context(context)
     allowed_ids = allowed_document_ids(kb_hits)
     kb_was_nonempty = bool(allowed_ids)
+    attempt = int(context.get("doc_search_attempt") or 1)
     allowed_modes = ("document_list", "no_data", "info", "app_command")
 
     if not isinstance(data, dict):
@@ -147,6 +149,7 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             )
 
         invalid_reasons: list[str] = []
+        invalid_doc_ids: list[str] = []
         relevant_items: list[Dict[str, Any]] = []
         for index, item in enumerate(results_raw):
             if not isinstance(item, dict):
@@ -163,17 +166,13 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             else:
                 is_relevant = True
 
+            if not is_relevant:
+                continue
+
             if "new_rank" not in item:
                 invalid_reasons.append(f"item[{index}] missing new_rank")
                 continue
             new_rank = _parse_new_rank(item.get("new_rank"))
-
-            if not is_relevant:
-                if item.get("new_rank") is not None:
-                    invalid_reasons.append(
-                        f"item[{index}] is_relevant=false requires new_rank=null, got {item.get('new_rank')!r}"
-                    )
-                continue
 
             if new_rank is None:
                 invalid_reasons.append(
@@ -187,9 +186,7 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 invalid_reasons.append(f"item[{index}] missing document_id")
                 continue
             if kb_was_nonempty and document_id not in allowed_ids:
-                invalid_reasons.append(
-                    f"item[{index}] document_id={document_id!r} not in kb_search results"
-                )
+                invalid_doc_ids.append(document_id)
                 continue
             if not source_name:
                 invalid_reasons.append(f"item[{index}] missing source_name")
@@ -205,6 +202,25 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                     "new_rank": new_rank,
                     "_order": index,
                 }
+            )
+
+        unique_invalid_doc_ids = list(dict.fromkeys(invalid_doc_ids))
+        if (
+            unique_invalid_doc_ids
+            and attempt < DOC_SEARCH_MAX_ATTEMPTS
+            and not relevant_items
+        ):
+            raise DocSearchRetryableValidationError(
+                "invalid_document_id",
+                ", ".join(unique_invalid_doc_ids[:8]),
+            )
+
+        if unique_invalid_doc_ids:
+            logger.warning(
+                "doc_search_agent: dropped %s invalid document_id(s) on attempt %s: %s",
+                len(unique_invalid_doc_ids),
+                attempt,
+                ", ".join(unique_invalid_doc_ids[:8]),
             )
 
         if invalid_reasons:

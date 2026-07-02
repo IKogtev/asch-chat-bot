@@ -17,6 +17,7 @@ from ..config import ACTIVE_DOCUMENTS_COLLECTION, DOC_SEARCH_PAGE_SIZE
 from ..helpers import DOC_SEARCH_SUCCESS_HINT, format_text_answer, truncate_for_log
 from ..json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .doc_search_agent import validate_doc_search_result
+from ..doc_search_kb_context import format_kb_hits_summary
 from ..doc_search_validation import (
     DOC_SEARCH_MAX_ATTEMPTS,
     DOC_SEARCH_NO_DATA_MESSAGE,
@@ -230,13 +231,14 @@ class DocSearchOrchestrator(BaseAgent):
             ctx.session.state["doc_search_rerank_only"] = attempt > 1
 
             kb_hits_raw = ctx.session.state.get("_doc_search_kb_hits")
-            kb_hit_count = len(kb_hits_raw) if isinstance(kb_hits_raw, list) else 0
+            kb_hits_list = kb_hits_raw if isinstance(kb_hits_raw, list) else []
+            kb_hit_count = len(kb_hits_list)
             logger.info(
                 "doc_search_orchestrator: attempt %s/%s rerank_only=%s kb_hits=%s retry_reason=%s",
                 attempt,
                 DOC_SEARCH_MAX_ATTEMPTS,
                 ctx.session.state.get("doc_search_rerank_only"),
-                kb_hit_count,
+                format_kb_hits_summary(kb_hits_list),
                 truncate_for_log(ctx.session.state.get("doc_search_retry_reason"), 200),
             )
 
