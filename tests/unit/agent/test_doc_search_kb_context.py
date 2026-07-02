@@ -23,6 +23,7 @@ def _load_kb_context_module():
 kb_context_module = _load_kb_context_module()
 is_kb_search_empty = kb_context_module.is_kb_search_empty
 parse_kb_search_hits = kb_context_module.parse_kb_search_hits
+format_kb_hits_summary = kb_context_module.format_kb_hits_summary
 
 
 SAMPLE_CONTEXT = """Используй только информацию из CONTEXT.
@@ -62,3 +63,14 @@ def test_parse_kb_search_hits_extracts_documents() -> None:
 def test_is_kb_search_empty_detects_empty_response() -> None:
     assert is_kb_search_empty("Ничего не найдено") is True
     assert is_kb_search_empty(SAMPLE_CONTEXT) is False
+
+
+@pytest.mark.unit
+def test_format_kb_hits_summary_truncates_long_lists() -> None:
+    summary = format_kb_hits_summary(
+        [{"document_id": f"doc-{index}"} for index in range(15)],
+        max_ids=3,
+    )
+
+    assert summary.startswith("count=15 ids=['doc-0', 'doc-1', 'doc-2']")
+    assert summary.endswith("...+12")
