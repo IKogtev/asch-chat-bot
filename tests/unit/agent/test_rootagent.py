@@ -1228,6 +1228,74 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("user_text", ["Что сейчас в фокусе?", "что в фокусе"])
+async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text: str) -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text=user_text)], session_state={})
+    product_called = False
+    dispatcher_called = False
+    kb_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            ctx.session.state["_dispatcher_result_parsed"] = {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "kb_answer",
+                "reason": "fallback route before explicit focus short-circuit",
+                "search_query": user_text,
+            }
+            if False:
+                yield None
+            return
+
+        if False:
+            yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == user_text
+        assert search_query == "покажи продукты в фокусе"
+        assert intent == "product_filter"
+        ctx.session.state["_root_final_text"] = "focus products"
+        if False:
+            yield None
+
+    async def fake_handle_kb_answer(*args, **kwargs):
+        nonlocal kb_called
+        kb_called = True
+        ctx.session.state["_root_final_text"] = "kb answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_kb_answer = fake_handle_kb_answer
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "focus products"
+    assert product_called is True
+    assert dispatcher_called is False
+    assert kb_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_async_impl_routes_attribute_value_followup_to_product_filter() -> None:
     agent = _make_agent()
     ctx = _make_ctx(

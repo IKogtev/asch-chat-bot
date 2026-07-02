@@ -156,6 +156,22 @@ class PostgresChatStore:
             row = await conn.fetchrow(query, user_id, session_id)
         return dict(row) if row else None
 
+    async def get_latest_search_session_id(self, user_id: str) -> str | None:
+        """Последний session_id с сохранённым поиском для пользователя."""
+        if not self.pool:
+            return None
+
+        query = """
+        SELECT session_id
+        FROM search_meta
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id)
+        return row["session_id"] if row else None
+
 
     async def get_last_search_results(self, user_id: str, session_id: str) -> list[dict]:
         """Получаем последние результаты поиска"""
