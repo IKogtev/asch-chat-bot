@@ -902,7 +902,15 @@ async def test_handle_product_selection_attribute_values_stores_context_and_adds
 @pytest.mark.asyncio
 async def test_handle_product_selection_sets_bot_action_for_product_kit() -> None:
     agent = _make_agent()
-    ctx = _make_ctx(session_state={})
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_card",
+                "products": [{"code": "2832", "name": "Fort Knox"}],
+                "selected_product": {"code": "2832", "name": "Fort Knox"},
+            }
+        }
+    )
 
     async def fake_run_json_leaf_agent(**kwargs):
         ctx.session.state["_product_selection_result_parsed"] = {
@@ -940,6 +948,62 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
         "product_name": "Fort Knox",
         "folder_kit": "Fort Knox (2832)",
     }
+    assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
+        "last_mode": "product_kit",
+        "products": [{"code": "2832", "name": "Fort Knox"}],
+        "selected_product": {
+            "code": "2832",
+            "name": "Fort Knox",
+            "folder_kit": "Fort Knox (2832)",
+        },
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_product_selection_keeps_context_for_product_compare() -> None:
+    product_dialog_context = {
+        "last_mode": "product_card",
+        "products": [{"code": "2832", "name": "Fort Knox"}],
+        "selected_product": {"code": "2832", "name": "Fort Knox"},
+    }
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: product_dialog_context,
+        }
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_product_selection_result_parsed"] = {
+            "status": "ok",
+            "mode": "product_compare",
+            "message": " Compare answer ",
+            "used_tables": ["products"],
+            "comparison": [],
+            "clarification_options": [],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_selection(
+            ctx,
+            "Compare",
+            "Fort Knox and other product",
+            "product_compare",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "Compare answer"
+    assert (
+        ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+        == product_dialog_context
+    )
 
 
 @pytest.mark.unit
@@ -1538,10 +1602,10 @@ async def test_run_async_impl_routes_product_card_followup_from_selected_product
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_async_impl_routes_product_kit_followup_from_selected_product() -> None:
+async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
-        parts=[types.SimpleNamespace(text="скачать комплект")],
+        parts=[types.SimpleNamespace(text="пакет")],
         session_state={
             rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
                 "last_mode": "product_card",
@@ -1581,7 +1645,70 @@ async def test_run_async_impl_routes_product_kit_followup_from_selected_product(
     async def fake_handle_product_selection(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
-        assert user_message == "скачать комплект"
+        assert user_message == "пакет"
+        assert search_query == "пакет"
+        assert intent == "product_kit"
+        ctx.session.state["_root_final_text"] = "product kit answer"
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent._handle_product_selection = fake_handle_product_selection
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "product kit answer"
+    assert product_called is True
+    assert dispatcher_called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_product_kit_followup_from_selected_product() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="дай документы")],
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_card",
+                "products": [
+                    {
+                        "code": "2867",
+                        "name": "Bundle Fort Knox 3+36 месяцев",
+                    }
+                ],
+                "selected_product": {
+                    "code": "2867",
+                    "name": "Bundle Fort Knox 3+36 месяцев",
+                },
+            }
+        },
+    )
+    product_called = False
+    dispatcher_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+
+        if kwargs["log_label"] == "dispatcher_result_json":
+            dispatcher_called = True
+            if False:
+                yield None
+
+    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+        nonlocal product_called
+        product_called = True
+        assert user_message == "дай документы"
         assert search_query == "скачать комплект документов по продукту 2867"
         assert intent == "product_kit"
         ctx.session.state["_root_final_text"] = "product kit answer"
@@ -1658,6 +1785,42 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
     assert len(events) == 1
     assert events[0].content.parts[0].text == "answer"
     assert kb_called is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_kb_answer_clears_product_dialog_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_card",
+                "products": [{"code": "7725", "name": "Альфа Kids+ 5 лет"}],
+                "selected_product": {"code": "7725", "name": "Альфа Kids+ 5 лет"},
+            }
+        }
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_kb_answer_result_parsed"] = {"message": " ok "}
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_kb_answer(
+            ctx,
+            "Что такое НСЖ?",
+            "Что такое НСЖ?",
+            "kb_answer",
+        )
+    ]
+
+    assert events == []
+    assert ctx.session.state["_root_final_text"] == "ok"
+    assert rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY not in ctx.session.state
 
 
 @pytest.mark.unit

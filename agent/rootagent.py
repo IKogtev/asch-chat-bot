@@ -942,7 +942,7 @@ class RootAgent(BaseAgent):
         # 1. Явный запрос комплекта/документов (но не "какие документы есть" -> это фильтр)
         is_explicit_kit = bool(
             re.search(
-                r"\b(пакет документов|пакет материалов|комплект документов|полный комплект|комплект|материалы)\b",
+                r"\b(пакет документов|пакет материалов|полный комплект|все материалы|комплект|пакет)\b",
                 normalized,
             )
         )
@@ -1079,7 +1079,7 @@ class RootAgent(BaseAgent):
         # Логика отправки комплекта или открытия карточки (работает в т.ч. по flat-стейту last_product)
         asks_kit = bool(
             re.search(
-                r"\b(скач|пришл|отправ|дай|дать|комплект|материал|документ|давай|ок|хорошо|ладно)\b",
+                r"\b(скач|пришл|отправ|дай|дать|комплект|пакет|материал|документ|давай|ок|хорошо|ладно)\b",
                 normalized,
             )
         )
@@ -1752,6 +1752,7 @@ class RootAgent(BaseAgent):
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
+        self._clear_product_dialog_context(ctx)
         """
         Запуск kb_answer_agent для FAQ/KB-ответа или smalltalk.
 
