@@ -13,7 +13,6 @@ from utils.event_logger import EventLogger
 # импортируем конфиг
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
-from utils.doc_search_format import parse_download_ranks
 from bot.services.adk_events import extract_bot_action
 from bot.services.product_kits import get_product_kit
 
@@ -998,25 +997,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         global_user_id
                     )
                     return
-                
-                # --- Обработка запроса на скачивание файлов по номерам из списка ---
-                dl_ranks = parse_download_ranks(user_text)
-                if dl_ranks:
-                    """
-                    Если пользователь ввёл запрос, похожий на "скачать документы под номерами ...",
-                    вызываем обработчик отправки файлов.
-                    """
-                    logger.info(
-                        "Скачивание по номерам: user_id=%s session_id=%s ranks=%s text=%r",
-                        global_user_id,
-                        session_id,
-                        dl_ranks,
-                        user_text,
-                    )
-                    await handle_download_by_ranks(event, store, doc_handler, global_user_id, session_id, dl_ranks, turn_id, start_time, platform)
-                    await store.append(user_id, "user", user_text, global_user_id)
-                    await store.append(user_id, "model", "Запрошена отправка файлов по номерам из списка.", global_user_id)
-                    return
 
                 # Синхронизируем профиль пользователя в ADK перед run()
                 await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
@@ -1089,6 +1069,28 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         start_time=start_time,
                         platform=platform,
                     )
+                    return
+
+                if isinstance(bot_action, dict) and bot_action.get("type") == "download_by_ranks":
+                    ranks = bot_action.get("ranks") or []
+                    if ranks:
+                        logger.info(
+                            "Скачивание по номерам (ADK bot_action): user_id=%s session_id=%s ranks=%s",
+                            global_user_id,
+                            session_id,
+                            ranks,
+                        )
+                        await handle_download_by_ranks(
+                            event,
+                            store,
+                            doc_handler,
+                            global_user_id,
+                            session_id,
+                            ranks,
+                            turn_id,
+                            start_time,
+                            platform,
+                        )
                     return
 
                 # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь

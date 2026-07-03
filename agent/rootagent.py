@@ -1236,6 +1236,39 @@ class RootAgent(BaseAgent):
         logger.warning("Product followup dispatch: Product target could not be restored from history.")
         return None
 
+    def _has_doc_list_followup_context(self, ctx: InvocationContext) -> bool:
+        """True, если предыдущий ход был связан с выдачей списка документов."""
+        if ctx.session.state.get("last_route") != "doc_search":
+            return False
+        return bool(str(ctx.session.state.get("last_document_list") or "").strip())
+
+    def _doc_list_followup_dispatch(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+    ) -> Dict[str, Any] | None:
+        """
+        Follow-up к сохранённому списку документов: скачивание только по номеру
+        (1, 1,3, первый и т.п.). Срабатывает только при активном doc-list контексте.
+        """
+        if not self._has_doc_list_followup_context(ctx):
+            return None
+
+        ranks = self._extract_ranks_with_words(user_text)
+        if not ranks:
+            return None
+
+        return validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "doc_search",
+                "intent": "file_download",
+                "reason": "doc_list_followup_download_by_rank",
+                "search_query": "",
+            },
+            dict(ctx.session.state),
+        )
+
     @classmethod
     def _fallback_product_selection_message(cls, raw: str) -> str | None:
         try:
@@ -1394,83 +1427,48 @@ class RootAgent(BaseAgent):
                 "Glossary terms found: %s",
                 len(ctx.session.state["from_glossary"]),
             )
-            # Извлекаем ранги заранее для безопасного использования в цепочке условий
-            ranks = self._extract_ranks_with_words(user_text)
             # 1. Пытаемся перехватить явные интенты (Комплект, Архивные) без LLM
             dispatch = self._get_explicit_intent_dispatch(ctx, user_text)
-            
-            # 2. Если не явный, проверяем контекст диалога (follow-up)
+
+            # 2. Product follow-up по _product_dialog_context / last_product
             if not dispatch:
                 dispatch = self._product_followup_dispatch(ctx, user_text)
-                
+
+            # 3. Doc list follow-up: скачивание по номеру при last_route=doc_search
+            if not dispatch:
+                dispatch = self._doc_list_followup_dispatch(ctx, user_text)
+
             if dispatch:
                 ctx.session.state["_dispatcher_result_parsed"] = dispatch
                 ctx.session.state.pop("dispatcher_result_json", None)
                 logger.info(
-                    "Dispatcher skipped (product dialog follow-up): intent=%s search_query=%s",
+                    "Dispatcher skipped (short-circuit): reason=%s intent=%s search_query=%s",
+                    dispatch.get("reason"),
                     dispatch["intent"],
                     dispatch["search_query"],
                 )
-
-            elif ranks:
-                dispatch = validate_dispatcher_result(
-                    {
-                        "status": "ok",
-                        "route": "doc_search",
-                        "intent": "file_download",
-                        "reason": "download_by_rank_short_circuit",
-                        "search_query": ""
-                    },
-                    dict(ctx.session.state),
-                )
-                ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                ctx.session.state.pop("dispatcher_result_json", None)
-                logger.info(
-                    "Dispatcher skipped (file_download by rank): ranks=%s",
-                    ranks,
-                )
             else:
-                # Фоллбэк для явных запросов файла без номера после поиска документов
-                if ctx.session.state.get("last_route") == "doc_search" and ctx.session.state.get("last_document_list"):
-                    generic_file_triggers = ["открой файл", "скачай его", "скачай файл", "открой его", "скинь его"]
-                    user_text_lower = user_text.lower()
-                    if any(trigger in user_text_lower for trigger in generic_file_triggers):
-                        dispatch = validate_dispatcher_result(
-                            {
-                                "status": "ok",
-                                "route": "doc_search",
-                                "intent": "file_download",
-                                "reason": "generic_file_download_followup",
-                                "search_query": "",
-                            },
-                            dict(ctx.session.state),
-                        )
-                        ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                        ctx.session.state.pop("dispatcher_result_json", None)
-                        logger.info("Dispatcher skipped (generic file download follow-up)")
-                # Если ни один шорт-кат не сработал — вызываем модель-диспетчер
-                if not dispatch:
-                    ctx.session.state["dispatcher_user_query"] = user_text
-                    ctx.session.state.pop("dispatcher_result_json", None)
-                
-                    async for event in self._run_json_leaf_agent(
-                        ctx=ctx,
-                        agent=self.dispatcher_agent,
-                        output_key="dispatcher_result_json",
-                        parsed_state_key="_dispatcher_result_parsed",
-                        validator=validate_dispatcher_result,
-                        log_label="dispatcher_result_json",
-                        validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-                    ):
-                        yield event
+                ctx.session.state["dispatcher_user_query"] = user_text
+                ctx.session.state.pop("dispatcher_result_json", None)
 
-                    dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
-                    logger.info(
-                        "Dispatcher result: route=%s intent=%s search_query=%s",
-                        dispatch["route"],
-                        dispatch["intent"],
-                        dispatch["search_query"],
-                    )
+                async for event in self._run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=self.dispatcher_agent,
+                    output_key="dispatcher_result_json",
+                    parsed_state_key="_dispatcher_result_parsed",
+                    validator=validate_dispatcher_result,
+                    log_label="dispatcher_result_json",
+                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+                ):
+                    yield event
+
+                dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
+                logger.info(
+                    "Dispatcher result: route=%s intent=%s search_query=%s",
+                    dispatch["route"],
+                    dispatch["intent"],
+                    dispatch["search_query"],
+                )
                 # Переопределение пагинации на основе текста
                 pin = self._pagination_intent_from_message(user_text)
                 if pin and (
@@ -1715,21 +1713,21 @@ class RootAgent(BaseAgent):
         search_query: str = "",
     ) -> AsyncGenerator[Event, None]:
         
-        # Если это скачивание файла, формируем запрос из извлеченных рангов
         if intent == "file_download":
             ranks = self._extract_ranks_with_words(user_message)
             if ranks:
-                doc_search_query = ", ".join(map(str, ranks))
-            else:
-                # Фоллбэк для общих фраз ("скачай его", "открой файл"), если конкретного номера нет в тексте
-                generic_file_triggers = ["открой файл", "скачай его", "скачай файл", "открой его", "скинь его"]
-                user_text_lower = user_message.lower()
-                if any(trigger in user_text_lower for trigger in generic_file_triggers):
-                    doc_search_query = "1"
-                else:
-                    # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
-                    base_query = search_query if search_query else user_message
-                    doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+                ctx.session.state["_bot_action"] = {
+                    "type": "download_by_ranks",
+                    "ranks": ranks,
+                }
+                ctx.session.state["_root_final_text"] = ""
+                logger.info(
+                    "doc_search file_download: bot_action download_by_ranks ranks=%s",
+                    ranks,
+                )
+                return
+            base_query = search_query if search_query else user_message
+            doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
         else:
             # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
             base_query = search_query if search_query else user_message

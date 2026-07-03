@@ -34,6 +34,7 @@ def _load_rootagent_module():
     config_stub.FAQ_DOCUMENTS_COLLECTION = "faq"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
     config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
+    config_stub.DATABASE_URL = "postgresql://test"
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
@@ -2219,3 +2220,125 @@ async def test_run_async_impl_sets_doc_search_query_before_orchestrator() -> Non
     assert len(events) == 1
     assert events[0].content.parts[0].text == "ok"
     assert doc_called is True
+
+
+@pytest.mark.unit
+def test_has_doc_list_followup_context_requires_doc_search_route_and_list() -> None:
+    agent = _make_agent()
+    assert agent._has_doc_list_followup_context(
+        _make_ctx(session_state={"last_route": "doc_search", "last_document_list": "1. Doc"})
+    )
+    assert not agent._has_doc_list_followup_context(
+        _make_ctx(session_state={"last_route": "kb_answer", "last_document_list": "1. Doc"})
+    )
+    assert not agent._has_doc_list_followup_context(
+        _make_ctx(session_state={"last_route": "doc_search", "last_document_list": ""})
+    )
+
+
+@pytest.mark.unit
+def test_doc_list_followup_dispatch_returns_none_without_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={"last_route": "", "last_document_list": ""})
+    assert agent._doc_list_followup_dispatch(ctx, "3") is None
+
+
+@pytest.mark.unit
+def test_doc_list_followup_dispatch_returns_file_download_by_rank_with_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "doc_search",
+            "last_document_list": "1. Document title",
+        }
+    )
+    dispatch = agent._doc_list_followup_dispatch(ctx, "1, 3")
+    assert dispatch is not None
+    assert dispatch["route"] == "doc_search"
+    assert dispatch["intent"] == "file_download"
+    assert dispatch["reason"] == "doc_list_followup_download_by_rank"
+
+
+@pytest.mark.unit
+def test_doc_list_followup_dispatch_ignores_generic_phrase_without_rank() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "doc_search",
+            "last_document_list": "1. Document title",
+        }
+    )
+    assert agent._doc_list_followup_dispatch(ctx, "скачай его") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_doc_search_file_download_sets_download_bot_action() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    events = [
+        event
+        async for event in agent._handle_doc_search(ctx, "3", "file_download")
+    ]
+
+    assert events == []
+    assert ctx.session.state["_bot_action"] == {
+        "type": "download_by_ranks",
+        "ranks": [3],
+    }
+    assert ctx.session.state["_root_final_text"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_doc_list_download_followup_skips_dispatcher() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="3")],
+        session_state={
+            "last_route": "doc_search",
+            "last_document_list": "1. Some document",
+            "last_user_query": "",
+            "last_intent": "",
+            "last_search_query": "",
+            "last_product": "",
+        },
+    )
+    dispatcher_called = False
+    orchestrator_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+        dispatcher_called = True
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal orchestrator_called
+        orchestrator_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert dispatcher_called is False
+    assert orchestrator_called is False
+    assert ctx.session.state["_bot_action"] == {
+        "type": "download_by_ranks",
+        "ranks": [3],
+    }
+    assert len(events) == 1
+    assert events[0].actions.state_delta["_bot_action"]["type"] == "download_by_ranks"
