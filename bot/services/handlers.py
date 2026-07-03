@@ -917,87 +917,6 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 adk_user_id = str(global_user_id) if global_user_id else str(user_id)
                 await adk.ensure_session(user_id=adk_user_id, session_id=adk_user_id)
 
-                # Пагинация и скачивание по номеру — из БД, без вызова ADK
-                """
-                Основной блок обработки пользовательских текстовых сообщений.
-                Здесь происходит разбор запросов на постраничный просмотр/загрузку файлов,
-                поиск по базе знаний (через ADK), а также отправка найденных документов.
-
-                Весь блок обрабатывается внутри try, чтобы корректно залогировать и обработать любые ошибки.
-                """
-                # --- Пагинация: показать следующую порцию сохранённого списка документов ---
-                if Settings.SHOW_MORE_RE.match(user_text):
-                    ok = await handle_show_more(event=event, store=store, user_id=global_user_id, session_id=session_id, turn_id=turn_id, start_time=start_time, platform=platform)
-                    if not ok:
-                        # Сообщение для пользователя, если списка нет
-                        response_time = int((time.time() - start_time) * 1000)
-                        answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                        # await send_answer(event, answer)
-                        if str(global_user_id) in RESET_USERS:
-                            logger.info(
-                                f"Пропускаем ответ после reset user={global_user_id}"
-                            )
-                            return
-                        if not await _skip_if_cancelled(global_user_id):
-                            await bot_res.send(answer)
-                            await eventlogger.log_event(
-                                event_type="response",
-                                user_id=str(global_user_id),
-                                session_id=session_id,
-                                channel=platform,
-                                payload={
-                                    "turn_id": turn_id,
-                                    "text": answer, 
-                                    "response_time_ms": response_time
-                                }    
-                            )
-                    # Логируем пользовательский запрос и результат в историю
-                    await store.append(user_id, "user", user_text, global_user_id)
-                    await store.append(
-                        user_id,
-                        "model",
-                        "Показана следующая порция списка документов."
-                        if ok
-                        else "Список документов не найден.",
-                        global_user_id
-                    )
-                    return
-                # --- Пагинация: показать полный список сохранённых документов ---
-                if Settings.SHOW_ALL_RE.match(user_text) and not Settings.SHOW_MORE_RE.match(user_text):
-                    # Только если это не "показать еще"
-                    ok = await handle_show_all(event, store, global_user_id, session_id, turn_id, start_time, platform)
-                    if not ok:
-                        response_time = int((time.time() - start_time) * 1000)
-                        answer = "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
-                        if str(global_user_id) in RESET_USERS:
-                            logger.info(
-                                f"Пропускаем ответ после reset user={global_user_id}"
-                            )
-                            return
-                        if not await _skip_if_cancelled(global_user_id):
-                            await bot_res.send(answer)
-                            await eventlogger.log_event(
-                                event_type="response",
-                                user_id=str(global_user_id),
-                                session_id=session_id,
-                                channel=platform,
-                                payload={
-                                    "turn_id": turn_id,
-                                    "text": answer, 
-                                    "response_time_ms": response_time
-                                }    
-                            )
-                    await store.append(user_id, "user", user_text, global_user_id)
-                    await store.append(
-                        user_id,
-                        "model",
-                        "Показан полный список документов."
-                        if ok
-                        else "Список документов не найден.",
-                        global_user_id
-                    )
-                    return
-
                 # Синхронизируем профиль пользователя в ADK перед run()
                 await sync_user_profile_to_adk(adk, subscriber_store, int(user_id), session_id, global_user_id)
                 
@@ -1091,6 +1010,49 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                             start_time,
                             platform,
                         )
+                    return
+
+                if isinstance(bot_action, dict) and bot_action.get("type") in (
+                    "show_doc_list_more",
+                    "show_doc_list_all",
+                ):
+                    no_list_answer = (
+                        "Нет сохранённого списка документов. Сначала найдите файлы по запросу."
+                    )
+                    if bot_action["type"] == "show_doc_list_more":
+                        ok = await handle_show_more(
+                            event=event,
+                            store=store,
+                            user_id=global_user_id,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            start_time=start_time,
+                            platform=platform,
+                        )
+                    else:
+                        ok = await handle_show_all(
+                            event,
+                            store,
+                            global_user_id,
+                            session_id,
+                            turn_id,
+                            start_time,
+                            platform,
+                        )
+                    if not ok:
+                        if str(global_user_id) not in RESET_USERS and not await _skip_if_cancelled(global_user_id):
+                            await bot_res.send(no_list_answer)
+                            await eventlogger.log_event(
+                                event_type="response",
+                                user_id=str(global_user_id),
+                                session_id=session_id,
+                                channel=platform,
+                                payload={
+                                    "turn_id": turn_id,
+                                    "text": no_list_answer,
+                                    "response_time_ms": response_time,
+                                },
+                            )
                     return
 
                 # Новый поиск документов: список в БД — признак смены search_id, первая порция рендерится здесь
