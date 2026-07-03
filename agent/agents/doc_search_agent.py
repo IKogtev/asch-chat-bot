@@ -11,6 +11,8 @@ from ..config import KBSEARCH_MCP_URL, MCP_TIMEOUT_SEC, MCP_TOKEN, DOC_SEARCH_TE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
+from ..doc_search_kb_context import allowed_document_ids
+from ..doc_search_validation import DOC_SEARCH_MAX_ATTEMPTS, DocSearchRetryableValidationError
 from .validation_utils import build_validation_error
 
 logger = setup_logger("doc_search_agent", "agent.log")
@@ -38,6 +40,13 @@ def _parse_new_rank(value: Any) -> int | None:
     return parsed if parsed >= 1 else None
 
 
+def _kb_hits_from_context(context: Dict[str, Any]) -> list[Dict[str, Any]]:
+    raw = context.get("_doc_search_kb_hits")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
 def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
     Проверяет и нормализует результат `doc_search_agent`.
@@ -45,22 +54,28 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     Ожидаемый контракт:
     - `status="ok"`;
     - `mode` один из `document_list`, `no_data`, `info`, `app_command`;
-    - для `document_list` обязателен непустой массив `results`;
+    - для `document_list` обязателен непустой массив `results` с релевантными документами;
     - для остальных режимов обязателен непустой `message`, а `results` должен отсутствовать или быть пустым.
 
     Нормализация для `document_list`:
     - отбрасываются элементы не-`dict`;
-    - обязательны `document_id`, `source_name`, `is_relevant`, `new_rank`;
-    - для `is_relevant=true` — `new_rank` целое >= 1; для `is_relevant=false` — `new_rank` должен быть `null`;
-    - в итоговый список попадают только `is_relevant=true`, отсортированные по `new_rank`;
+    - обязательны `document_id`, `source_name`, `new_rank` (для релевантных);
+    - `is_relevant` опционален: если поле отсутствует, элемент считается релевантным;
+    - в итоговый список попадают только релевантные, отсортированные по `new_rank`;
+    - каждый `document_id` должен быть из `_doc_search_kb_hits`, если kb_search вернул документы;
+      при неверных id на попытке 1 — retry; на финальной попытке — отбрасываются;
     - `snippet` обрезается до 500 символов;
     - `source_path` приводится к строке или `None`.
 
     При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
     пригодным для логирования и локализации сбоя на этапе отладки.
+    При пустом итоге при непустом kb_search — `DocSearchRetryableValidationError`.
     """
     agent_name = "doc_search_agent"
-    _ = context
+    kb_hits = _kb_hits_from_context(context)
+    allowed_ids = allowed_document_ids(kb_hits)
+    kb_was_nonempty = bool(allowed_ids)
+    attempt = int(context.get("doc_search_attempt") or 1)
     allowed_modes = ("document_list", "no_data", "info", "app_command")
 
     if not isinstance(data, dict):
@@ -117,6 +132,12 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             fields=("mode", "results"),
         )
 
+    if mode == "no_data" and kb_was_nonempty:
+        raise DocSearchRetryableValidationError(
+            "empty_relevant",
+            "kb_search returned documents but mode=no_data",
+        )
+
     if mode == "document_list":
         if not isinstance(results_raw, list) or not results_raw:
             raise build_validation_error(
@@ -128,31 +149,30 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             )
 
         invalid_reasons: list[str] = []
+        invalid_doc_ids: list[str] = []
         relevant_items: list[Dict[str, Any]] = []
         for index, item in enumerate(results_raw):
             if not isinstance(item, dict):
                 invalid_reasons.append(f"item[{index}] is {type(item).__name__}, expected dict")
                 continue
 
-            if "is_relevant" not in item:
-                invalid_reasons.append(f"item[{index}] missing is_relevant")
-                continue
-            is_relevant = _parse_is_relevant(item.get("is_relevant"))
-            if is_relevant is None:
-                invalid_reasons.append(f"item[{index}] invalid is_relevant={item.get('is_relevant')!r}")
+            if "is_relevant" in item:
+                is_relevant = _parse_is_relevant(item.get("is_relevant"))
+                if is_relevant is None:
+                    invalid_reasons.append(
+                        f"item[{index}] invalid is_relevant={item.get('is_relevant')!r}"
+                    )
+                    continue
+            else:
+                is_relevant = True
+
+            if not is_relevant:
                 continue
 
             if "new_rank" not in item:
                 invalid_reasons.append(f"item[{index}] missing new_rank")
                 continue
             new_rank = _parse_new_rank(item.get("new_rank"))
-
-            if not is_relevant:
-                if item.get("new_rank") is not None:
-                    invalid_reasons.append(
-                        f"item[{index}] is_relevant=false requires new_rank=null, got {item.get('new_rank')!r}"
-                    )
-                continue
 
             if new_rank is None:
                 invalid_reasons.append(
@@ -164,6 +184,9 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             source_name = str(item.get("source_name") or "").strip()
             if not document_id:
                 invalid_reasons.append(f"item[{index}] missing document_id")
+                continue
+            if kb_was_nonempty and document_id not in allowed_ids:
+                invalid_doc_ids.append(document_id)
                 continue
             if not source_name:
                 invalid_reasons.append(f"item[{index}] missing source_name")
@@ -181,6 +204,25 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 }
             )
 
+        unique_invalid_doc_ids = list(dict.fromkeys(invalid_doc_ids))
+        if (
+            unique_invalid_doc_ids
+            and attempt < DOC_SEARCH_MAX_ATTEMPTS
+            and not relevant_items
+        ):
+            raise DocSearchRetryableValidationError(
+                "invalid_document_id",
+                ", ".join(unique_invalid_doc_ids[:8]),
+            )
+
+        if unique_invalid_doc_ids:
+            logger.warning(
+                "doc_search_agent: dropped %s invalid document_id(s) on attempt %s: %s",
+                len(unique_invalid_doc_ids),
+                attempt,
+                ", ".join(unique_invalid_doc_ids[:8]),
+            )
+
         if invalid_reasons:
             raise build_validation_error(
                 agent=agent_name,
@@ -191,6 +233,11 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             )
 
         if not relevant_items:
+            if kb_was_nonempty:
+                raise DocSearchRetryableValidationError(
+                    "empty_relevant",
+                    "document_list has no relevant items after filtering",
+                )
             raise build_validation_error(
                 agent=agent_name,
                 stage="results_normalization",
@@ -278,9 +325,10 @@ For document search, glossary context must not erase document type, product name
 4. Не отвечай по памяти.
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
-7. В results — каждый документ из CONTEXT kb_search; отсев только через is_relevant: false, не укорачивай список.
-8. У каждого элемента results обязательны is_relevant и new_rank: для релевантных new_rank — целое ≥ 1 (одинаковые new_rank допустимы); для нерелевантных new_rank: null.
-9. Если пользователь указал тип материала (презентер, сториз, ПФ и т.д.), is_relevant=true только при совпадении типа в FILE_NAME; сториз/сторис при запросе презентеров — is_relevant=false.
+7. В results включай только релевантные документы из CONTEXT kb_search; document_id должен совпадать с DOCUMENT_ID из CONTEXT.
+8. У каждого элемента results обязательны new_rank (целое ≥ 1) и snippet; is_relevant можно опустить.
+9. Если пользователь указал тип материала (презентер, сториз, ПФ и т.д.), в results только файлы с совпадением типа в FILE_NAME.
+10. Если {doc_search_rerank_only}=true — kb_search не вызывай, переранжируй по CONTEXT из предыдущего вызова. Причина повтора: {doc_search_retry_reason}.
 
 Формат ответа:
 {
