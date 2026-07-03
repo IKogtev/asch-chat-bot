@@ -26,7 +26,8 @@ agent/agent/
 agent/.adk/
 filebrowser_data/database.db
 filebrowser_data/settings.json
-filegator_data
+# FileGator private data (users.json with credentials — created by filegator_init.sh)
+filegator_data/
 # Test cases for ui
 node_modules/
 package-lock.json
@@ -66,5 +67,3 @@ setup-assistant-env.ps1
 AGENTS.md
 
 deployment/kubernetes/overlays/local
-filegator_data/users.json
-filegator_data/users.json
