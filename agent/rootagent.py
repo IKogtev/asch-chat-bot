@@ -56,6 +56,8 @@ PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
 )
 PRODUCT_CARD_KIT_OFFER = "\n\n📂 Могу также прислать комплект документов по этому продукту. Напишите «комплект», если нужно."
+DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
+DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
@@ -241,11 +243,13 @@ class RootAgent(BaseAgent):
             ctx.session.state["last_intent"] = dispatch.get("intent", "")
             ctx.session.state["last_search_query"] = dispatch.get("search_query", "")
             
-            # Автоматически управляем списком документов:
-            # Если роут был doc_search, сохраняем кусок текста ответа, иначе очищаем
+            # Автоматически управляем списком документов
             if dispatch.get("route") == "doc_search":
-                ctx.session.state["last_document_list"] = text[:1500]
-                if dispatch.get("intent") != "file_download":
+                intent = str(dispatch.get("intent") or "")
+                if intent in DOC_LIST_FOLLOWUP_INTENTS:
+                    pass
+                elif intent == "doc_search" and text.strip():
+                    ctx.session.state["last_document_list"] = text[:1500]
                     # Автоматическое сохранение контекста продукта из найденных документов ---
                     codes = self._extract_product_codes(text)
                     first_code = codes[0] if codes else ""
@@ -289,6 +293,8 @@ class RootAgent(BaseAgent):
                         current_context["products"] = [selected_prod]
                         ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
                         logger.info("Auto-saved product context from doc_search: code=%s, name=%s", first_code, name_guess)
+                else:
+                    ctx.session.state["last_document_list"] = ""
             else:
                 ctx.session.state["last_document_list"] = ""
     
@@ -1248,11 +1254,24 @@ class RootAgent(BaseAgent):
         user_text: str,
     ) -> Dict[str, Any] | None:
         """
-        Follow-up к сохранённому списку документов: скачивание только по номеру
-        (1, 1,3, первый и т.п.). Срабатывает только при активном doc-list контексте.
+        Follow-up к сохранённому списку документов: пагинация (ещё / все) или
+        скачивание по номеру (1, 1,3, первый и т.п.).
         """
         if not self._has_doc_list_followup_context(ctx):
             return None
+
+        pin = self._pagination_intent_from_message(user_text)
+        if pin:
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "doc_search",
+                    "intent": pin,
+                    "reason": f"doc_list_followup_{pin}",
+                    "search_query": "",
+                },
+                dict(ctx.session.state),
+            )
 
         ranks = self._extract_ranks_with_words(user_text)
         if not ranks:
@@ -1434,7 +1453,7 @@ class RootAgent(BaseAgent):
             if not dispatch:
                 dispatch = self._product_followup_dispatch(ctx, user_text)
 
-            # 3. Doc list follow-up: скачивание по номеру при last_route=doc_search
+            # 3. Doc list follow-up: пагинация и скачивание при last_route=doc_search
             if not dispatch:
                 dispatch = self._doc_list_followup_dispatch(ctx, user_text)
 
@@ -1469,23 +1488,6 @@ class RootAgent(BaseAgent):
                     dispatch["intent"],
                     dispatch["search_query"],
                 )
-                # Переопределение пагинации на основе текста
-                pin = self._pagination_intent_from_message(user_text)
-                if pin and (
-                    dispatch.get("route") != "doc_search" or dispatch.get("intent") != pin
-                ):
-                    dispatch = validate_dispatcher_result(
-                        {
-                            "status": "ok",
-                            "route": "doc_search",
-                            "intent": pin,
-                            "reason": "pagination_override_saved_doc_list",
-                            "search_query": "",
-                        },
-                        dict(ctx.session.state),
-                    )
-                    ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                    logger.info("Dispatcher pagination override: intent=%s", pin)
             # Сохраняем контекст текущего хода для следующих реплик
             ctx.session.state["last_user_query"] = user_text
             ctx.session.state["last_route"] = dispatch["route"]
@@ -1728,6 +1730,13 @@ class RootAgent(BaseAgent):
                 return
             base_query = search_query if search_query else user_message
             doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+        elif intent in ("show_more", "show_all"):
+            ctx.session.state["_bot_action"] = {
+                "type": "show_doc_list_more" if intent == "show_more" else "show_doc_list_all",
+            }
+            ctx.session.state["_root_final_text"] = ""
+            logger.info("doc_search %s: bot_action %s", intent, ctx.session.state["_bot_action"]["type"])
+            return
         else:
             # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
             base_query = search_query if search_query else user_message

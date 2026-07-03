@@ -2423,6 +2423,43 @@ def test_doc_list_followup_dispatch_returns_file_download_by_rank_with_context()
 
 
 @pytest.mark.unit
+def test_doc_list_followup_dispatch_returns_show_more_with_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "doc_search",
+            "last_document_list": "1. Document title",
+        }
+    )
+    dispatch = agent._doc_list_followup_dispatch(ctx, "еще")
+    assert dispatch is not None
+    assert dispatch["intent"] == "show_more"
+    assert dispatch["reason"] == "doc_list_followup_show_more"
+
+
+@pytest.mark.unit
+def test_doc_list_followup_dispatch_returns_show_all_with_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "doc_search",
+            "last_document_list": "1. Document title",
+        }
+    )
+    dispatch = agent._doc_list_followup_dispatch(ctx, "покажи все")
+    assert dispatch is not None
+    assert dispatch["intent"] == "show_all"
+    assert dispatch["reason"] == "doc_list_followup_show_all"
+
+
+@pytest.mark.unit
+def test_doc_list_followup_dispatch_ignores_pagination_without_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={"last_route": "", "last_document_list": ""})
+    assert agent._doc_list_followup_dispatch(ctx, "еще") is None
+
+
+@pytest.mark.unit
 def test_doc_list_followup_dispatch_ignores_generic_phrase_without_rank() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
@@ -2450,6 +2487,22 @@ async def test_handle_doc_search_file_download_sets_download_bot_action() -> Non
         "type": "download_by_ranks",
         "ranks": [3],
     }
+    assert ctx.session.state["_root_final_text"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_doc_search_show_more_sets_pagination_bot_action() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    events = [
+        event
+        async for event in agent._handle_doc_search(ctx, "еще", "show_more")
+    ]
+
+    assert events == []
+    assert ctx.session.state["_bot_action"] == {"type": "show_doc_list_more"}
     assert ctx.session.state["_root_final_text"] == ""
 
 
@@ -2505,3 +2558,55 @@ async def test_run_async_impl_routes_doc_list_download_followup_skips_dispatcher
     }
     assert len(events) == 1
     assert events[0].actions.state_delta["_bot_action"]["type"] == "download_by_ranks"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_routes_doc_list_show_more_followup_skips_dispatcher() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        parts=[types.SimpleNamespace(text="еще")],
+        session_state={
+            "last_route": "doc_search",
+            "last_document_list": "1. Some document",
+            "last_user_query": "",
+            "last_intent": "",
+            "last_search_query": "",
+            "last_product": "",
+        },
+    )
+    dispatcher_called = False
+    orchestrator_called = False
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal dispatcher_called
+        if kwargs["log_label"] == "owasp_result_json":
+            ctx.session.state["_owasp_result_parsed"] = {
+                "status": "ok",
+                "route": "continue",
+                "reason": "ok",
+            }
+            if False:
+                yield None
+            return
+        dispatcher_called = True
+        if False:
+            yield None
+
+    async def fake_doc_run_async(ctx):
+        nonlocal orchestrator_called
+        orchestrator_called = True
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    agent.doc_search_orchestrator.run_async = fake_doc_run_async
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert dispatcher_called is False
+    assert orchestrator_called is False
+    assert ctx.session.state["_bot_action"] == {"type": "show_doc_list_more"}
+    assert ctx.session.state["last_document_list"] == "1. Some document"
+    assert len(events) == 1
+    assert events[0].actions.state_delta["_bot_action"]["type"] == "show_doc_list_more"
