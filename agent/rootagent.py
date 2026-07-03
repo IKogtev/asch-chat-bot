@@ -1557,13 +1557,22 @@ class RootAgent(BaseAgent):
                                 mentioned = True
                                 break
                         
-                        # Если продукты не упомянуты явно (например, "сравнить их", "чем они отличаются")
+                        # Если продукты из контекста не упомянуты, проверяем, не является ли это запросом на сравнение НОВЫХ продуктов
                         if not mentioned:
-                            names = [p.get("name") or p.get("code") for p in products[:2]]
-                            dispatch["search_query"] = f"сравнить {' и '.join(names)}"
-                            sq_clean = dispatch["search_query"].strip().lower()
-                            ctx.session.state["last_search_query"] = dispatch["search_query"]
-                            logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
+                            has_explicit_codes = bool(self._extract_product_codes(user_text))
+                            # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
+                            blind_pattern = r"^(?i)(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*$"
+                            is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip())) or (not has_explicit_codes and len(user_text.split()) <= 3)
+                            
+                            if not is_blind_followup:
+                                # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
+                                logger.info("Skipping product_compare enrichment: user specified new products.")
+                            else:
+                                names = [p.get("name") or p.get("code") for p in products[:2]]
+                                dispatch["search_query"] = f"сравнить {' и '.join(names)}"
+                                sq_clean = dispatch["search_query"].strip().lower()
+                                ctx.session.state["last_search_query"] = dispatch["search_query"]
+                                logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
                 pronoun_triggers = [
                     "нем", "о нем", "ней", "о ней", "этом", "об этом", 
                     "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
