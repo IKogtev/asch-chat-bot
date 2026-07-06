@@ -13,7 +13,9 @@ from .config import (
     DEBUG_EXCEPTIONS,
     FAQ_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
-    DATABASE_URL
+    DATABASE_URL,
+    COMPARE_FRAZE,
+    PRODUCT_CARD_KIT_OFFER
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
@@ -55,10 +57,8 @@ PRODUCT_FILTER_FOLLOWUP_QUESTION = (
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
 )
-PRODUCT_CARD_KIT_OFFER = "\n\n📂 Могу также прислать комплект документов по этому продукту. Напишите «комплект», если нужно."
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
-
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
@@ -545,9 +545,8 @@ class RootAgent(BaseAgent):
             # Добавляем предложение, только если агент сам его ещё не добавил
             message_lower = message.lower()
             if "комплект документов" not in message_lower and "скачать комплект" not in message_lower:
-                message = message + PRODUCT_CARD_KIT_OFFER
+                message = message + f"\n\n {PRODUCT_CARD_KIT_OFFER}"
             return message
-
         if mode == "needs_clarification":
             
             options = [
@@ -558,7 +557,11 @@ class RootAgent(BaseAgent):
             if not options:
                 return message
 
-            return "\n".join([message, *options])
+            return_message = "\n".join([message, *options])
+            # if COMPARE_FRAZE not in return_message:
+            #     return_message += f"\n\n {COMPARE_FRAZE}"
+            return return_message
+
         return message
 
 
