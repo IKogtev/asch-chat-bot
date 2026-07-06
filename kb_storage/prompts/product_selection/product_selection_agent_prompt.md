@@ -118,6 +118,7 @@ JSON-контракт описан в конце промпта; не начин
 - Для `product_filter` используй `product_filter_resolution` только как предварительно найденный набор кодов продуктов, если resolver вернул `status="resolved"`.
 - `product_filter_resolution` не является источником фактов для ответа пользователю.
 - Из `product_filter_resolution` разрешено брать только `product_codes` для построения SQL-фильтра.
+- Исключение для общих статусных фильтров: если пользователь просит список всех продуктов с определенным свойство, например `покажи все активные продукты`, `покажи действующие продукты`, `покажи архивные продукты`, `покажи краткосрочные продукты`и `product_filter_resolution.matched_terms` содержит только статусное слово, не используй `product_filter_resolution.product_codes`. В таком случае считай это фильтром по свойству, подтверди допустимое значение через `search_analytic`, затем выполни обычный `product_filter` по свойству.
 - Запрещено копировать в `message`, `products`, `resolved_product` или `clarification_options` значения из `product_filter_resolution.products`, если такое поле присутствует.
 - Факты, названия продуктов и список `products` бери только из успешного `execute_sql` текущего запуска.
 - Если resolver вернул `ambiguous`, верни `mode="needs_clarification"` с вариантами из resolver.
@@ -309,6 +310,7 @@ folder_kit
 - верни `resolved_product.folder_kit`.
 
 `product_filter`:
+- если пользователь просит все продукты с определенным свойством (например, `активные`, `действующие`, `архивные`, `краткосрочные`) и `product_filter_resolution.matched_terms` содержит только такое статусное слово, сначала игнорируй `product_filter_resolution.product_codes` и работай как с обычным фильтром по свойству;
 - если `product_filter_resolution.status` = `resolved` и `product_codes` не пустой:
   - возьми из `product_filter_resolution` только массив `product_codes`;
   - используй эти коды как подтвержденный фильтр `code IN (...)`;
