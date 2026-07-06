@@ -99,6 +99,9 @@ services:
       - ROOT_TEMPERATURE=0.8
       - DOC_SEARCH_TEMPERATURE=0.0
       - KB_ANSWER_TEMPERATURE=0.0
+      # FALLBACK FRAZE
+      - COMPARE_FRAZE=❗Начните свой запрос со слова СРАВНИ❗
+      - PRODUCT_CARD_KIT_OFFER=Могу также выдать комплект документов, для этого напишите номер продукта и комплект
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
