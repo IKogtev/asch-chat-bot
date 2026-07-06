@@ -1561,9 +1561,9 @@ class RootAgent(BaseAgent):
                         if not mentioned:
                             has_explicit_codes = bool(self._extract_product_codes(user_text))
                             # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
-                            blind_pattern = r"^(?i)(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*$"
-                            is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip())) or (not has_explicit_codes and len(user_text.split()) <= 3)
-                            
+                            blind_pattern = r"(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*"
+                            # Передаем flags=re.IGNORECASE
+                            is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip(), flags=re.IGNORECASE)) or (not has_explicit_codes and len(user_text.split()) <= 3)
                             if not is_blind_followup:
                                 # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
                                 logger.info("Skipping product_compare enrichment: user specified new products.")
