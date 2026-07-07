@@ -13,6 +13,7 @@ from utils.logger import setup_logger
 logger = setup_logger("product_resolver_service", "agent.log")
 
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
+PRODUCT_TABLE = "products"
 DEFAULT_DATABASE_URL = "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 
 CYR_TO_LAT = {
@@ -847,3 +848,31 @@ class ProductResolverService:
             cls.normalize_product_text(key): cls.normalize_product_text(value)
             for key, value in COMMON_PRODUCT_WORDS.items()
         }
+    
+    async def fetch_product_full_details(self, product_code: str) -> dict[str, str | None]:
+        """
+        получение деталей уточнения из таблицы products по product_code.
+        """
+        if not product_code:
+            return {}
+            
+        pool = await self._get_pool()
+        try:
+            # Идем в главную таблицу products и забираем folder_kit если понадобяться ещё поля сможем взять отсюда
+            row = await pool.fetchrow(
+                f"""
+                SELECT folder_kit 
+                FROM {PRODUCT_TABLE} 
+                WHERE code = $1 
+                LIMIT 1
+                """,
+                str(product_code).strip()
+            )
+            if row:
+                return {
+                    "folder_kit": str(row.get("folder_kit") or "").strip() or None
+                }
+        except Exception as exc:
+            logger.warning("Не удалось получить детали для code=%s: %s", product_code, exc)
+            
+        return {}
