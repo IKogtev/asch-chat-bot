@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, ClassVar
 
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
@@ -13,6 +13,7 @@ from .config import (
     DEBUG_EXCEPTIONS,
     FAQ_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
+    DATABASE_URL,
     COMPARE_FRAZE,
     PRODUCT_CARD_KIT_OFFER
 )
@@ -26,6 +27,8 @@ from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
+from collections import OrderedDict, deque
+import asyncpg
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -54,13 +57,35 @@ PRODUCT_FILTER_FOLLOWUP_QUESTION = (
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
 )
-# PRODUCT_CARD_KIT_OFFER = "\n\n📂 Могу также прислать комплект документов по этому продукту. Напишите «комплект», если нужно."
+DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
+DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
     return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
 
-
+async def is_history_empty_by_global_id(global_user_id: str) -> bool:
+    """Одним запросом находит platform_user_id по UUID в user_accounts 
+    и проверяет, пуста ли его история в chat_history."""
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        # Вложенный запрос: извлекаем platform_user_id по UUID и проверяем историю
+        # cast (::bigint) нужен, чтобы типы точно совпали с числовым user_id в chat_history
+        count = await conn.fetchval("""
+            SELECT COUNT(*) 
+            FROM chat_history 
+            WHERE user_id = (
+                SELECT platform_user_id::bigint 
+                FROM user_accounts 
+                WHERE user_id = $1
+            );
+        """, global_user_id)
+        
+        await conn.close()
+        return count == 0  # Если 0, значит история пуста (был /reset)
+    except Exception as e:
+        logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
+        return False
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
@@ -78,6 +103,11 @@ class RootAgent(BaseAgent):
     kb_collection: str
 
     model_config = {"arbitrary_types_allowed": True}
+    MAX_HISTORY_PER_USER: ClassVar[int] = 3  # Сколько последних запросов хранить для ОДНОГО пользователя
+    # Глобальный кэш для сохранения контекста при 409 Conflict (сплите сессий)
+    # Ключом будет базовый session_id, значением — словарь с контекстом
+    # Глобальное хранилище: { clean_id: deque([state1, state2, ...]) }
+    _CROSS_SESSION_CACHE: ClassVar[OrderedDict] = OrderedDict()
 
     def __init__(
         self,
@@ -170,6 +200,18 @@ class RootAgent(BaseAgent):
         if isinstance(product_dialog_context, dict):
             state_delta[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = product_dialog_context
 
+        # Сохраняем last_* ключи для контекста между сессиями
+        for key in [
+            "last_user_query",
+            "last_route",
+            "last_intent",
+            "last_search_query",
+            "last_product",
+            "last_document_list",
+        ]:
+            value = session_state.get(key)
+            if value is not None:
+                state_delta[key] = value
         actions = EventActions(end_of_agent=True)
         actions.state_delta = state_delta
 
@@ -192,6 +234,111 @@ class RootAgent(BaseAgent):
         """Формирует финальный ответ и обновляет bounded history текущего диалога."""
         self._append_recent_message(ctx, "user", user_text)
         self._append_recent_message(ctx, "assistant", text)
+        # Достаем результат работы диспетчера из состояния текущего шага
+        dispatch = ctx.session.state.get("_dispatcher_result_parsed")
+        
+        if isinstance(dispatch, dict):
+            ctx.session.state["last_user_query"] = user_text
+            ctx.session.state["last_route"] = dispatch.get("route", "")
+            ctx.session.state["last_intent"] = dispatch.get("intent", "")
+            ctx.session.state["last_search_query"] = dispatch.get("search_query", "")
+            
+            # Автоматически управляем списком документов
+            if dispatch.get("route") == "doc_search":
+                intent = str(dispatch.get("intent") or "")
+                if intent in DOC_LIST_FOLLOWUP_INTENTS:
+                    pass
+                elif intent == "doc_search" and text.strip():
+                    ctx.session.state["last_document_list"] = text[:1500]
+                    # Автоматическое сохранение контекста продукта из найденных документов ---
+                    codes = self._extract_product_codes(text)
+                    first_code = codes[0] if codes else ""
+                    name_guess = ""
+                    # 1. Пытаемся вытащить имя продукта из строки ответа, если есть код
+                    if first_code:
+                        match_name = re.search(r"(?:^|\d+\.\s*)([^\n()]+)\s*\(" + re.escape(first_code) + r"\)", text)
+                        if match_name:
+                            name_guess = match_name.group(1).strip()
+                            # Очищаем от процентов доходности в хвосте, если они прилипли
+                            name_guess = re.sub(r"\s+\d+([.,]\d+)?%\s*$", "", name_guess).strip()
+                    
+                    # Fallback: если в тексте ответа нет кодов, берем название из search_query или user_text
+                    if not name_guess:
+                        sq = dispatch.get("search_query", "").strip()
+                        # Если search_query содержит что-то осмысленное (не просто общие слова)
+                        if sq and len(sq) > 2 and not re.fullmatch(r"(?i)(документы|файлы|материалы|список)", sq):
+                            name_guess = sq
+                        elif user_text:
+                            name_guess = re.sub(
+                                r"(?i)^(найди|покажи|выведи|открой|документы|доки|по|для|скачать|файл|файлы|материалы|презентацию|презентер|памятку|инструкцию|регламент|шаблон|список)\s+", 
+                                "", 
+                                user_text
+                            ).strip()
+                            name_guess = re.sub(r"(?i)\bпо\b\s*", "", name_guess).strip()
+                    # Если имя удалось определить, сохраняем контекст
+                    if name_guess:
+                        # Записываем в плоскую строку для _get_last_product_from_state
+                        if first_code:
+                            ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip()
+                        else:
+                            ctx.session.state["last_product"] = name_guess.strip()
+                            
+                        # Записываем в структурированный контекст для _get_selected_product_from_context
+                        current_context = self._get_product_dialog_context(ctx) or {}
+                        current_context["last_mode"] = "product_card"
+                        selected_prod = {"name": name_guess}
+                        if first_code:
+                            selected_prod["code"] = first_code
+                        current_context["selected_product"] = selected_prod
+                        current_context["products"] = [selected_prod]
+                        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
+                        logger.info("Auto-saved product context from doc_search: code=%s, name=%s", first_code, name_guess)
+                else:
+                    ctx.session.state["last_document_list"] = ""
+            else:
+                ctx.session.state["last_document_list"] = ""
+    
+            logger.debug(
+                "Context auto-updated inside final event: route=%s, intent=%s, search_query=%s",
+                ctx.session.state["last_route"],
+                ctx.session.state["last_intent"],
+                ctx.session.state["last_search_query"]
+            )
+        # БЛОК СОХРАНЕНИЯ В КЭШ ДЛЯ ПОДСТРАХОВКИ СЛЕДУЮЩИХ ШАГОВ ---
+        sess_id = getattr(ctx.session, "id", "")
+        clean_id = sess_id.split("_")[0] if sess_id else ""
+        if clean_id:
+            # Собираем текущий снимок состояния
+            current_state = {
+                "last_user_query": ctx.session.state.get("last_user_query"),
+                "last_route": ctx.session.state.get("last_route"),
+                "last_intent": ctx.session.state.get("last_intent"),
+                "last_search_query": ctx.session.state.get("last_search_query"),
+                "last_document_list": ctx.session.state.get("last_document_list"),
+                "last_product": ctx.session.state.get("last_product"),
+                "_product_dialog_context": ctx.session.state.get("_product_dialog_context"),
+            }
+
+            # 1. Если пользователя еще нет в кэше — создаем для него личную очередь
+            if clean_id not in self._CROSS_SESSION_CACHE:
+                # Инициализируем деку с жестким редактируемым лимитом размера
+                self._CROSS_SESSION_CACHE[clean_id] = deque(maxlen=self.MAX_HISTORY_PER_USER)
+            
+            # 2. Добавляем текущее состояние в деку пользователя. 
+            # Благодаря maxlen, если там уже было 3 записи, самая старая удалится автоматически!
+            self._CROSS_SESSION_CACHE[clean_id].append(current_state)
+            
+            # 3. Передвигаем пользователя в конец OrderedDict, так как он совершил действие (LRU-логика)
+            self._CROSS_SESSION_CACHE.move_to_end(clean_id)
+            
+            logger.debug(
+                "State saved for user %s. User history size: %d/%d. Total users in cache: %d",
+                clean_id,
+                len(self._CROSS_SESSION_CACHE[clean_id]),
+                self.MAX_HISTORY_PER_USER,
+                len(self._CROSS_SESSION_CACHE)
+            )
+
         return self._build_final_event(ctx, text)
 
     @staticmethod
@@ -274,7 +421,6 @@ class RootAgent(BaseAgent):
                 "owasp_recent_messages_json",
             ],
         )
-
     def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
         """Возвращает сохраненное ограниченное окно недавних сообщений."""
         value = ctx.session.state.get(OWASP_HISTORY_STATE_KEY)
@@ -412,8 +558,8 @@ class RootAgent(BaseAgent):
                 return message
 
             return_message = "\n".join([message, *options])
-            if COMPARE_FRAZE not in return_message:
-                return_message += f"\n\n {COMPARE_FRAZE}"
+            # if COMPARE_FRAZE not in return_message:
+            #     return_message += f"\n\n {COMPARE_FRAZE}"
             return return_message
 
         return message
@@ -452,6 +598,13 @@ class RootAgent(BaseAgent):
 
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
+
+    @classmethod
+    def clear_user_cache(cls, user_id: str) -> None:
+        """Полностью удаляет RAM-историю запросов конкретного пользователя"""
+        if user_id in cls._CROSS_SESSION_CACHE:
+            cls._CROSS_SESSION_CACHE.pop(user_id, None)
+            logger.info(f"Cross-session FIFO cache successfully cleared for user: {user_id}")
 
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
@@ -529,6 +682,48 @@ class RootAgent(BaseAgent):
 
         if mode == "no_data":
             self._clear_product_dialog_context(ctx)
+            return
+            
+        if mode == "product_compare":
+            resolved_product = product_selection.get("resolved_product")
+            products = self._normalize_dialog_products(product_selection.get("products") or [])
+            previous = self._get_product_dialog_context(ctx)
+            
+            # Если агент явно выбрал один продукт (например, ответил на вопрос "где меньше рисков")
+            if resolved_product and (resolved_product.get("code") or resolved_product.get("name")):
+                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                    "last_mode": "product_compare",
+                    "products": products or previous.get("products") or [],
+                    "selected_product": resolved_product,
+                }
+            else:
+                # Иначе просто сохраняем список продуктов для дальнейшего сравнения
+                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                    "last_mode": "product_compare",
+                    "products": products or previous.get("products") or [],
+                    "selected_product": previous.get("selected_product"),
+                }
+            return
+
+    def _is_blind_followup(self, user_text: str) -> bool:
+        """
+        Проверяет, является ли сообщение слепым follow-up (только триггеры/местоимения)
+        или пользователь явно указал продукт (код/название).
+        Возвращает True, если это слепой follow-up (контекст нужен).
+        """
+        explicit_codes = self._extract_product_codes(user_text)
+        if explicit_codes:
+            return False
+            
+        normalized = self._normalize_product_dialog_text(user_text)
+        
+        # Удаляем триггеры, местоимения и предлоги
+        blind_triggers = r"\b(скач\w*|пришл\w*|отправ\w*|дай|дать|комплект\w*|материал\w*|документ\w*|давай|ок|хорошо|ладно|параметр\w*|карточк\w*|свойств\w*|характеристик\w*|подробн\w*|покаж\w*|расскаж\w*|презентац\w*|презентер\w*|памятк\w*|инструкц\w*|регламент\w*|шаблон\w*|пф|полис\w*|договор\w*|буклет\w*|нем|о\s+нем|ней|о\s+ней|этом|об\s+этом|программе|продукт\w*|программа|его|ее|них|покажи|выведи|открой|найди|скинь|кидай|хочу|пакет\s+документов|пакет\s+материалов|комплект\s+документов|полный\s+комплект|нужен|скачать|скинь|пришли|отправь|про|по|для|на|в|во|с|со|к|ко|о|об|и|а|но|да|же|бы|ли)\b"
+        clean_msg = re.sub(blind_triggers, "", normalized)
+        clean_msg = re.sub(r"[^\w\s]", "", clean_msg).strip()
+        
+        # Если после очистки что-то осталось (например, "фн", "зк 2 года") - это явный запрос
+        return len(clean_msg) == 0
 
     def _find_attribute_value_in_dialog_context(
         self,
@@ -562,6 +757,40 @@ class RootAgent(BaseAgent):
             return contained_matches[0]
 
         return None
+
+    def _get_selected_product_from_context(self, ctx: InvocationContext) -> Dict[str, str] | None:
+        """Надёжно извлекает selected_product из контекста диалога."""
+        context = self._get_product_dialog_context(ctx)
+        selected = context.get("selected_product")
+        if isinstance(selected, dict) and (selected.get("code") or selected.get("name")):
+            logger.debug("Fallback to selected_product from context: %s", selected)
+            return selected
+        return None
+    
+    def _get_last_product_from_state(self, ctx: InvocationContext) -> Dict[str, str] | None:
+        """Извлекает последний продукт из state (last_product)."""
+        last_product = ctx.session.state.get("last_product")
+        logger.debug("DEBUG _get_last_product_from_state: last_product=%r", last_product)
+        if not last_product:
+            logger.debug("DEBUG: last_product is empty or None")
+            return None
+        
+        # last_product имеет формат "Fort Knox 1 год (код 8914)"
+        match = re.search(r"\(код (\d+)\)", last_product)
+        if match:
+            code = match.group(1)
+            name = last_product.split("(код")[0].strip()
+            logger.debug("Extracted last_product from state: code=%s name=%s", code, name)
+            return {"code": code, "name": name}
+        
+        # Если формат другой, пробуем извлечь код
+        codes = self._extract_product_codes(last_product)
+        if codes:
+            logger.debug("Extracted code from last_product: %s", codes[0])
+            return {"code": codes[0], "name": last_product}
+        # Если кода нет, но строка не пустая, возвращаем её как имя продукта
+        logger.debug("Extracted name-only last_product from state: name=%s", last_product)
+        return {"code": "", "name": last_product.strip()}
 
     def _find_product_in_dialog_context(
         self,
@@ -723,8 +952,13 @@ class RootAgent(BaseAgent):
                 "product_resolution state: %s",
                 ctx.session.state["product_resolution"],
             )
-
     
+    def _is_contextual_product_request(self, text: str) -> bool:
+        """Проверяет, является ли запрос ссылкой на контекстный продукт."""
+        normalized = text.lower().strip()
+        triggers = ["о нем", "про него", "расскажи", "покажи", "параметры", "подробнее", "характеристики"]
+        # Если запрос короткий и содержит маркеры контекста
+        return len(normalized) < 30 and any(t in normalized for t in triggers)
     
     def _get_explicit_intent_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
         """
@@ -744,13 +978,41 @@ class RootAgent(BaseAgent):
         is_asking_list = bool(re.search(r"\b(какие|что за|список|покажи список|есть ли)\b", normalized))
         
         if is_explicit_kit and not is_asking_list:
+            # ЕСЛИ ПОЛЬЗОВАТЕЛЬ ЯВНО УКАЗАЛ НОВЫЙ ПРОДУКТ, ОТДАЕМ ДИСПЕТЧЕРУ
+            if not self._is_blind_followup(user_text):
+                return None
+            # ИСПРАВЛЕНИЕ: Извлекаем продукт из контекста диалога (selected_product)
+            product = self._find_product_in_dialog_context(
+                ctx,
+                user_text,
+                allow_selected_product=True,
+            )
+            logger.debug("DEBUG: _find_product_in_dialog_context returned: %s", product)
+            
+            if not product:
+                product = self._get_selected_product_from_context(ctx)
+                logger.debug("DEBUG: _get_selected_product_from_context returned: %s", product)
+            
+            if not product:
+              product = self._get_last_product_from_state(ctx)
+              logger.debug("DEBUG: _get_last_product_from_state returned: %s", product)
+
+            if product:
+                code = product.get("code") or ""
+                name = product.get("name") or ""
+                query = f"скачать комплект документов по продукту {code or name}".strip()
+                logger.info("Explicit kit dispatch: found product code=%s name=%s", code, name)
+            else:
+                logger.warning("Explicit kit dispatch: product NOT found in context, using raw query")
+                query = user_text
+
             return validate_dispatcher_result(
                 {
                     "status": "ok",
                     "route": "product_selection",
                     "intent": "product_kit",
                     "reason": "explicit_kit_short_circuit",
-                    "search_query": user_text,
+                    "search_query": query, 
                 },
                 dict(ctx.session.state),
             )
@@ -767,99 +1029,291 @@ class RootAgent(BaseAgent):
                 },
                 dict(ctx.session.state),
             )
+        # 3. Перехват контекстного согласия ("давай", "пришли", "отправь") сразу после показа карточки продукта
+        last_route = ctx.session.state.get("last_route")
+        last_intent = ctx.session.state.get("last_intent")
+        is_confirmation = normalized in [
+            "давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", 
+            "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"
+        ]
+        if last_route == "product_selection" and last_intent == "product_card" and is_confirmation:
+            product = self._find_product_in_dialog_context(ctx, user_text, allow_selected_product=True)
+            if not product:
+                product = self._get_selected_product_from_context(ctx)
+            if not product:
+                product = self._get_last_product_from_state(ctx)
 
-        return None
-
-    def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
-        normalized = self._normalize_product_dialog_text(user_text)
-        if not normalized or not self._get_product_dialog_context(ctx):
-            return None
-
-        attribute_value = self._find_attribute_value_in_dialog_context(ctx, user_text)
-        if attribute_value:
-            context = self._get_product_dialog_context(ctx)
-            attribute_name = str(context.get("attribute_name") or "").strip()
-            attribute_column = str(context.get("attribute_column") or "").strip()
-            attribute_label = attribute_name or attribute_column or "selected attribute"
-            query = f"покажи продукты, у которых {attribute_label}: {attribute_value}"
-            return validate_dispatcher_result(
-                {
-                    "status": "ok",
-                    "route": "product_selection",
-                    "intent": "product_filter",
-                    "reason": "product_attribute_value_followup",
-                    "search_query": query,
-                },
-                dict(ctx.session.state),
-            )
-
-        codes = self._extract_product_codes(user_text)
-        if len(codes) == 1 and normalized == codes[0].lower():
-            product = self._find_product_in_dialog_context(
-                ctx,
-                user_text,
-                allow_selected_product=False,
-            )
             if product:
-                context = self._get_product_dialog_context(ctx)
-                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
-                    **context,
-                    "selected_product": product,
-                }
-                code = product.get("code") or codes[0]
+                code = product.get("code") or ""
+                name = product.get("name") or ""
+                query = f"скачать комплект документов по продукту {code or name}".strip()
+                logger.info("Explicit confirmation kit dispatch short-circuit: found product code=%s name=%s", code, name)
                 return validate_dispatcher_result(
                     {
                         "status": "ok",
                         "route": "product_selection",
-                        "intent": "product_card",
-                        "reason": "product_code_followup",
-                        "search_query": f"показать карточку продукта {code}",
+                        "intent": "product_kit",
+                        "reason": "explicit_confirmation_kit_short_circuit",
+                        "search_query": query, 
                     },
                     dict(ctx.session.state),
                 )
+            
+        return None
 
+    def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized:
+            return None
+        context = self._get_product_dialog_context(ctx)
+        # Блок поиска по атрибутам и кодам (требует обязательного наличия RAM-контекста)
+        if context:
+            attribute_value = self._find_attribute_value_in_dialog_context(ctx, user_text)
+            if attribute_value:
+                attribute_name = str(context.get("attribute_name") or "").strip()
+                attribute_column = str(context.get("attribute_column") or "").strip()
+                attribute_label = attribute_name or attribute_column or "selected attribute"
+                query = f"покажи продукты, у которых {attribute_label}: {attribute_value}"
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "product_selection",
+                        "intent": "product_filter",
+                        "reason": "product_attribute_value_followup",
+                        "search_query": query,
+                    },
+                    dict(ctx.session.state),
+                )
+            
+            codes = self._extract_product_codes(user_text)
+            if len(codes) == 1 and normalized == codes[0].lower():
+                product = self._find_product_in_dialog_context(
+                    ctx,
+                    user_text,
+                    allow_selected_product=False,
+                )
+                if product:
+                    ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                        **context,
+                        "selected_product": product,
+                    }
+                    code = product.get("code") or codes[0]
+                    return validate_dispatcher_result(
+                        {
+                            "status": "ok",
+                            "route": "product_selection",
+                            "intent": "product_card",
+                            "reason": "product_code_followup",
+                            "search_query": f"показать карточку продукта {code}",
+                        },
+                        dict(ctx.session.state),
+                    )
+        # Логика отправки комплекта или открытия карточки (работает в т.ч. по flat-стейту last_product)
         asks_kit = bool(
             re.search(
-                r"\b(скач|пришл|отправ|дай|дать|комплект|пакет|материал|документ)",
+                r"\b(скач|пришл|отправ|дай|дать|комплект|пакет|материал|документ|давай|ок|хорошо|ладно)\b",
                 normalized,
             )
         )
         asks_card = bool(
             re.search(
-                r"\b(параметр|карточк|свойств|характеристик|подробн|покаж|расскаж)",
+                r"\b(параметр|карточк|свойств|характеристик|подробн|покаж|расскаж)\b",
                 normalized,
             )
         )
-        if not asks_kit and not asks_card:
-            return None
-
-        product = self._find_product_in_dialog_context(
-            ctx,
-            user_text,
-            allow_selected_product=(
-                (asks_kit or asks_card)
-                and not self._extract_product_codes(user_text)
-            ),
+        asks_doc = bool(
+            re.search(
+                r"\b(презентац|презентер|памятк|инструкц|регламент|шаблон|пф|полис|договор|буклет)\b",
+                normalized,
+            )
         )
+        # Не перехватываем общие запросы списков ("какие есть презентации", "покажи все документы")
+        is_asking_general_list = bool(re.search(r"\b(какие есть|список|покажи список|все документы|все файлы)\b", normalized))
+        if asks_doc and is_asking_general_list:
+            asks_doc = False
+        # Дополнительная подстраховка: если это триггер согласия после просмотра карточки
+        last_route = ctx.session.state.get("last_route")
+        last_intent = ctx.session.state.get("last_intent")
+        if last_route == "product_selection" and last_intent == "product_card":
+            if normalized in ["давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо"]:
+                asks_kit = True
+
+        if not asks_kit and not asks_card and not asks_doc:
+            return None
+        # Если это не слепой follow-up (пользователь явно указал продукт),
+        # отдаем запрос диспетчеру, чтобы он не подменял его старым контекстом
+        if not self._is_blind_followup(user_text):
+            return None
+        # 1. Сначала пытаемся найти продукт стандартным путем через RAM-контекст модулей
+        product = None
+        if context:
+            product = self._find_product_in_dialog_context(
+                ctx,
+                user_text,
+                allow_selected_product=(
+                    (asks_kit or asks_card or asks_doc)
+                    and not self._extract_product_codes(user_text)
+                ),
+            )
+            if not product:
+                product = self._get_selected_product_from_context(ctx)
+        
         if not product:
+            product = self._get_last_product_from_state(ctx)
+        # 2. ФОЛЛБЭК: Если продукт все еще не найден
+        search_target = ""
+        if not product:
+            logger.info("Context is empty after split. Starting cascade history extraction...")
+            # Если пользователь явно назвал продукт в текущем сообщении, мы должны использовать его,
+            # а не падать в историю. Чистим текущий запрос от триггеров запроса документов/комплекта.
+            current_query_clean = re.sub(
+                r"(?i)^(дай|дать|покажи|скачать|скинь|пришли|отправь|найди)\s+",
+                "",
+                user_text
+            ).strip()
+            current_query_clean = re.sub(
+                r"(?i)\b(документы|доки|комплект|материалы|файлы|пакет|полный)\b",
+                "",
+                current_query_clean
+            ).strip()
+            current_query_clean = re.sub(r"^\s*(по|для)\s+", "", current_query_clean).strip()
+            
+            # Проверяем, что после очистки не осталось просто местоимение или пустота
+            pronouns_and_empty = {"", "нем", "нём", "ней", "них", "это", "этот", "о нем", "о нём", "о ней", "про него"}
+            if current_query_clean.lower() not in pronouns_and_empty and len(current_query_clean) > 1:
+                search_target = current_query_clean
+                logger.info(f"Fallback Stage 1 (Current Query Priority): Extracted target '{search_target}' from current user_text")
+            # А. Проверяем существующую переменную last_product (строка формата "Имя (код ХХХХ)")
+            if not search_target:
+                last_product_str = ctx.session.state.get("last_product")
+                if last_product_str and isinstance(last_product_str, str):
+                    logger.info(f"Fallback stage A: analyzing last_product content: '{last_product_str}'")
+                    extracted_codes = self._extract_product_codes(last_product_str)
+                    if extracted_codes:
+                        search_target = extracted_codes[0]
+                        logger.info(f"Fallback Stage A: Found explicit code {search_target} in last_product")
+                    else:
+                        match_name = re.search(r"^([^(]+)", last_product_str)
+                        if match_name:
+                            search_target = match_name.group(1).strip()
+                            logger.info(f"Fallback Stage A: Found name '{search_target}' in last_product")
+               
+            # Шаг Б: Если Шаг А не дал результатов, парсим last_document_list (текст ответа док-серча)
+            if not search_target and last_route == "doc_search":
+                last_doc_list = ctx.session.state.get("last_document_list")
+                if last_doc_list:
+                    extracted_codes = self._extract_product_codes(last_doc_list)
+                    if extracted_codes:
+                        search_target = extracted_codes[0]
+                        logger.info(f"Fallback Stage B: Extracted code {search_target} from last_document_list")
+                        
+            # Шаг В: Если кодов нигде нет, вытаскиваем продукт из самого ПРЕДЫДУЩЕГО ЗАПРОСА пользователя
+            if not search_target:
+                last_user_query = ctx.session.state.get("last_user_query")
+                if last_user_query:
+                    # Чистим запрос от префиксов, чтобы вычленить "Fort Knox 1 год" целиком
+                    clean_query = re.sub(
+                        r"(?i)^(найди|покажи|документы|доки|по|для|скачать|файл|файлы|продукт|карточку|информацию|расскажи|про)\s+", 
+                        "", 
+                        last_user_query
+                    ).strip()
+                    # Фильтр вопросов: не позволяем извлекать вопросы и сравнения как название продукта
+                    question_markers = [
+                        "отличаются", "сравнить", "сравни", "какой", "что", "как", 
+                        "почему", "где", "когда", "чем", "них", "него", "они"
+                    ]
+                    if not any(marker in clean_query.lower() for marker in question_markers):
+                        if clean_query:
+                            search_target = clean_query
+                            logger.info(f"Fallback Stage C (Last User Query): Extracted clean query target '{search_target}' from last_user_query")
+                    else:
+                        logger.info(f"Fallback Stage C: Skipped question/comparison query '{clean_query}'")
+        else:     
+            code = product.get("code") or ""
+            name = product.get("name") or ""
+            logger.info("Product followup dispatch: found product code=%s name=%s", code, name)
+            search_target = code if code else name
+        # Если в итоге мы смогли определить цель поиска
+        if search_target:
+            if asks_doc:
+                query = f"{user_text} по продукту {search_target}".strip()
+                # Убираем дублирование, если пользователь уже написал "по продукту"
+                query = re.sub(r"по продукту\s+по продукту", "по продукту", query, flags=re.IGNORECASE)
+                
+                logger.info(f"Doc search followup short-circuit triggered. Target: {search_target}, Route: doc_search")
+                return validate_dispatcher_result(
+                    {
+                        "status": "ok",
+                        "route": "doc_search",
+                        "intent": "doc_search",
+                        "reason": "product_context_doc_search_followup",
+                        "search_query": query,
+                    },
+                    dict(ctx.session.state),
+                )
+            intent = "product_kit" if asks_kit else "product_card"
+            if intent == "product_kit":
+                query = f"скачать комплект документов по продукту {search_target}".strip()
+            else:
+                query = f"показать параметры продукта {search_target}".strip()
+
+            logger.info(f"Product followup short-circuit triggered. Target: {search_target}, Route: product_selection, Intent: {intent}")
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": intent,
+                    "reason": "product_dialog_history_cascade_fallback",
+                    "search_query": query,
+                },
+                dict(ctx.session.state),
+            )
+
+        logger.warning("Product followup dispatch: Product target could not be restored from history.")
+        return None
+
+    def _has_doc_list_followup_context(self, ctx: InvocationContext) -> bool:
+        """True, если предыдущий ход был связан с выдачей списка документов."""
+        if ctx.session.state.get("last_route") != "doc_search":
+            return False
+        return bool(str(ctx.session.state.get("last_document_list") or "").strip())
+
+    def _doc_list_followup_dispatch(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+    ) -> Dict[str, Any] | None:
+        """
+        Follow-up к сохранённому списку документов: пагинация (ещё / все) или
+        скачивание по номеру (1, 1,3, первый и т.п.).
+        """
+        if not self._has_doc_list_followup_context(ctx):
             return None
 
-        code = product.get("code") or ""
-        name = product.get("name") or ""
-        if asks_kit:
-            intent = "product_kit"
-            query = f"скачать комплект документов по продукту {code or name}".strip()
-        else:
-            intent = "product_card"
-            query = f"показать параметры продукта {code or name}".strip()
+        pin = self._pagination_intent_from_message(user_text)
+        if pin:
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "doc_search",
+                    "intent": pin,
+                    "reason": f"doc_list_followup_{pin}",
+                    "search_query": "",
+                },
+                dict(ctx.session.state),
+            )
+
+        ranks = self._extract_ranks_with_words(user_text)
+        if not ranks:
+            return None
 
         return validate_dispatcher_result(
             {
                 "status": "ok",
-                "route": "product_selection",
-                "intent": intent,
-                "reason": "product_dialog_followup",
-                "search_query": query,
+                "route": "doc_search",
+                "intent": "file_download",
+                "reason": "doc_list_followup_download_by_rank",
+                "search_query": "",
             },
             dict(ctx.session.state),
         )
@@ -882,6 +1336,21 @@ class RootAgent(BaseAgent):
                 "clarification_options": payload.get("clarification_options") or [],
             }
         )
+
+    def _extract_ranks_with_words(self, text: str) -> List[int]:
+        ranks = extract_download_ranks(text)
+        if ranks:
+            return ranks
+        text_lower = text.lower()
+        mapping = {
+            "первый": 1, "первую": 1, "первым": 1, "первого": 1,
+            "второй": 2, "вторую": 2, "вторым": 2, "второго": 2,
+            "третий": 3, "третью": 3, "третьим": 3, "третьего": 3,
+        }
+        for word, rank in mapping.items():
+            if re.search(rf"\b{word}\b", text_lower):
+                return [rank]
+        return []
 
     async def _run_json_leaf_agent(
         self,
@@ -908,7 +1377,28 @@ class RootAgent(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
-
+        # БЛОК АВТОМАТИЧЕСКОГО ВОССТАНОВЛЕНИЯ КОНТЕКСТА (ЗАЩИТА ОТ 409 CONFLICT) ---
+        sess_id = getattr(ctx.session, "id", "")
+        clean_id = sess_id.split("_")[0] if sess_id else ""
+        if clean_id:
+            # Проверяем существующую БД: если там пусто, значит бот стёр историю через /reset
+            if await is_history_empty_by_global_id(clean_id):  # или is_context_cleared_in_db
+                self._CROSS_SESSION_CACHE.pop(clean_id, None)
+                logger.info(f"🧹 [RAM Cache] Локальная память агента очищена, так как в БД история пуста для {clean_id}")
+            elif clean_id in self._CROSS_SESSION_CACHE:
+                # Если в новой сессии пропали ключевые данные контекста, восстанавливаем их из кэша
+                if not ctx.session.state.get("last_product") and not ctx.session.state.get("_product_dialog_context"):
+                    user_history = self._CROSS_SESSION_CACHE[clean_id]
+                    
+                    if user_history:  # Если у этого юзера есть сохраненные шаги
+                        logger.info(
+                            "Session split (409). Restoring context from the latest request of user: %s", 
+                            clean_id
+                        )
+                        # Элемент [-1] в deque — это самый свежий добавленный запрос этого пользователя
+                        latest_cached_state = user_history[-1]
+                        for key, value in latest_cached_state.items():
+                            ctx.session.state[key] = value
         try:
             await self._trim_dialog_memory(ctx)
 
@@ -926,7 +1416,18 @@ class RootAgent(BaseAgent):
                 logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
                 yield self._build_final_event(ctx, "")
                 return
-
+            # Инициализируем переменные контекста, если их нет в state
+            for key in [
+                "last_user_query", 
+                "last_route", 
+                "last_intent", 
+                "last_search_query",
+                "last_product",
+                "last_document_list"
+            ]:
+                if key not in ctx.session.state:
+                    ctx.session.state[key] = ""
+            # Сбрасываем служебное состояние текущего шага
             self._reset_turn_state(ctx)
             ctx.session.state["user_query"] = user_text
             self._prepare_owasp_input(ctx, user_text)
@@ -947,7 +1448,7 @@ class RootAgent(BaseAgent):
                     "product_filter_resolution",
                 ],
             )
-
+            # Проверка безопасности (OWASP)
             async for event in self._run_json_leaf_agent(
                 ctx=ctx,
                 agent=self.owasp_agent,
@@ -963,9 +1464,10 @@ class RootAgent(BaseAgent):
             logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
 
             if owasp["status"] == "blocked":
-                yield self._build_final_event_with_history(
+                # Используем _build_final_event, чтобы НЕ сохранять заблокированное 
+                # сообщение в историю OWASP и не загрязнять контекст для следующих запросов
+                yield self._build_final_event(
                     ctx,
-                    user_text,
                     format_reject_answer(owasp["user_message"]),
                 )
                 return
@@ -977,42 +1479,28 @@ class RootAgent(BaseAgent):
             )
             # 1. Пытаемся перехватить явные интенты (Комплект, Архивные) без LLM
             dispatch = self._get_explicit_intent_dispatch(ctx, user_text)
-            
-            # 2. Если не явный, проверяем контекст диалога (follow-up)
+
+            # 2. Product follow-up по _product_dialog_context / last_product
             if not dispatch:
                 dispatch = self._product_followup_dispatch(ctx, user_text)
-                
+
+            # 3. Doc list follow-up: пагинация и скачивание при last_route=doc_search
+            if not dispatch:
+                dispatch = self._doc_list_followup_dispatch(ctx, user_text)
+
             if dispatch:
                 ctx.session.state["_dispatcher_result_parsed"] = dispatch
                 ctx.session.state.pop("dispatcher_result_json", None)
                 logger.info(
-                    "Dispatcher skipped (product dialog follow-up): intent=%s search_query=%s",
+                    "Dispatcher skipped (short-circuit): reason=%s intent=%s search_query=%s",
+                    dispatch.get("reason"),
                     dispatch["intent"],
                     dispatch["search_query"],
                 )
             else:
-                ranks = extract_download_ranks(user_text)
-            if not dispatch and ranks:
-                dispatch = validate_dispatcher_result(
-                    {
-                        "status": "ok",
-                        "route": "doc_search",
-                        "intent": "file_download",
-                        "reason": "download_by_rank_short_circuit",
-                        "search_query": "",
-                    },
-                    dict(ctx.session.state),
-                )
-                ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                ctx.session.state.pop("dispatcher_result_json", None)
-                logger.info(
-                    "Dispatcher skipped (file_download by rank): ranks=%s",
-                    ranks,
-                )
-            elif not dispatch:
                 ctx.session.state["dispatcher_user_query"] = user_text
                 ctx.session.state.pop("dispatcher_result_json", None)
-                
+
                 async for event in self._run_json_leaf_agent(
                     ctx=ctx,
                     agent=self.dispatcher_agent,
@@ -1031,42 +1519,80 @@ class RootAgent(BaseAgent):
                     dispatch["intent"],
                     dispatch["search_query"],
                 )
-
-                pin = self._pagination_intent_from_message(user_text)
-                if pin and (
-                    dispatch.get("route") != "doc_search" or dispatch.get("intent") != pin
-                ):
-                    dispatch = validate_dispatcher_result(
-                        {
-                            "status": "ok",
-                            "route": "doc_search",
-                            "intent": pin,
-                            "reason": "pagination_override_saved_doc_list",
-                            "search_query": "",
-                        },
-                        dict(ctx.session.state),
-                    )
-                    ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                    logger.info("Dispatcher pagination override: intent=%s", pin)
-
-                if (
-                    dispatch.get("route") == "doc_search"
-                    and dispatch.get("intent") == "doc_search"
-                ):
-                    dr = extract_download_ranks(user_text)
+            # Сохраняем контекст текущего хода для следующих реплик
+            ctx.session.state["last_user_query"] = user_text
+            ctx.session.state["last_route"] = dispatch["route"]
+            ctx.session.state["last_intent"] = dispatch["intent"]
+            # не затираем last_search_query пустой строкой при follow-up
+            new_search_query = dispatch.get("search_query", "")
+            if new_search_query:
+                ctx.session.state["last_search_query"] = new_search_query
 
             if dispatch["route"] == "doc_search":
                 async for event in self._handle_doc_search(
                     ctx,
                     user_text,
                     dispatch["intent"],
+                    dispatch.get("search_query", ""),
                 ):
                     yield event
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
+                # Сохраняем список документов в state для контекста диспетчера
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
 
             if dispatch["route"] == "product_selection":
+                # СЛОЙ ПЕРЕХВАТА МЕСТОИМЕНИЙ И ОБОГАЩЕНИЯ КОНТЕКСТА ---
+                sq_clean = dispatch.get("search_query", "").strip().lower()
+                # Обогощение запроса для сравнения (product_compare) <<<
+                if dispatch.get("intent") == "product_compare":
+                    context = self._get_product_dialog_context(ctx)
+                    products = self._normalize_dialog_products(context.get("products") or [])
+                    
+                    # Если в контексте есть список продуктов (например, после product_filter)
+                    if len(products) >= 2:
+                        # Проверяем, упомянул ли пользователь конкретные продукты в запросе явно
+                        mentioned = False
+                        for p in products:
+                            code = p.get("code", "")
+                            name = p.get("name", "").lower()
+                            if (code and code in sq_clean) or (name and name in sq_clean):
+                                mentioned = True
+                                break
+                        
+                        # Если продукты из контекста не упомянуты, проверяем, не является ли это запросом на сравнение НОВЫХ продуктов
+                        if not mentioned:
+                            has_explicit_codes = bool(self._extract_product_codes(user_text))
+                            # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
+                            blind_pattern = r"(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*"
+                            # Передаем flags=re.IGNORECASE
+                            is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip(), flags=re.IGNORECASE)) or (not has_explicit_codes and len(user_text.split()) <= 3)
+                            if not is_blind_followup:
+                                # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
+                                logger.info("Skipping product_compare enrichment: user specified new products.")
+                            else:
+                                names = [p.get("name") or p.get("code") for p in products[:2]]
+                                dispatch["search_query"] = f"сравнить {' и '.join(names)}"
+                                sq_clean = dispatch["search_query"].strip().lower()
+                                ctx.session.state["last_search_query"] = dispatch["search_query"]
+                                logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
+                pronoun_triggers = [
+                    "нем", "о нем", "ней", "о ней", "этом", "об этом", 
+                    "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
+                ]
+                if sq_clean in pronoun_triggers or not sq_clean:
+                    product = self._get_selected_product_from_context(ctx)
+                    if not product:
+                        product = self._get_last_product_from_state(ctx)
+                    
+                    if product:
+                        code = product.get("code") or ""
+                        name = product.get("name") or ""
+                        # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
+                        dispatch["search_query"] = f"продукт {code or name}".strip()
+                        ctx.session.state["last_search_query"] = dispatch["search_query"]
+                        logger.info("Enriched product_selection pronoun search_query to: %s", dispatch["search_query"])
+                
                 async for event in self._handle_product_selection(
                     ctx,
                     user_text,
@@ -1077,7 +1603,7 @@ class RootAgent(BaseAgent):
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
-
+            # По умолчанию уходим в базу знаний (kb_answer)
             async for event in self._handle_kb_answer(
                 ctx,
                 user_text,
@@ -1226,9 +1752,36 @@ class RootAgent(BaseAgent):
         ctx: InvocationContext,
         user_message: str,
         intent: str,
+        search_query: str = "",
     ) -> AsyncGenerator[Event, None]:
-        self._clear_product_dialog_context(ctx)
-        doc_search_query = await self.glossary_lookup.build_doc_search_query(user_message)
+        
+        if intent == "file_download":
+            ranks = self._extract_ranks_with_words(user_message)
+            if ranks:
+                ctx.session.state["_bot_action"] = {
+                    "type": "download_by_ranks",
+                    "ranks": ranks,
+                }
+                ctx.session.state["_root_final_text"] = ""
+                logger.info(
+                    "doc_search file_download: bot_action download_by_ranks ranks=%s",
+                    ranks,
+                )
+                return
+            base_query = search_query if search_query else user_message
+            doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+        elif intent in ("show_more", "show_all"):
+            ctx.session.state["_bot_action"] = {
+                "type": "show_doc_list_more" if intent == "show_more" else "show_doc_list_all",
+            }
+            ctx.session.state["_root_final_text"] = ""
+            logger.info("doc_search %s: bot_action %s", intent, ctx.session.state["_bot_action"]["type"])
+            return
+        else:
+            # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
+            base_query = search_query if search_query else user_message
+            doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+            
         logger.info(
             "doc_search route: query=%s intent=%s",
             truncate_for_log(doc_search_query, 300),
@@ -1315,7 +1868,6 @@ class RootAgent(BaseAgent):
         ctx.session.state["product_selection_intent"] = intent
         ctx.session.state["product_selection_search_query"] = effective_search_query
         await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
-
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
             agent=self.product_selection_agent,
@@ -1339,6 +1891,129 @@ class RootAgent(BaseAgent):
             len(product_selection.get("clarification_options") or []),
             product_selection.get("used_tables"),
         )
+        # Если агент не вернул resolved_product, но в тексте ответа явно выделил один продукт 
+        if product_selection.get("mode") == "product_compare" and not product_selection.get("resolved_product"):
+            context = self._get_product_dialog_context(ctx)
+            products = self._normalize_dialog_products(context.get("products") or [])
+            message_text = str(product_selection.get("message") or "").lower()
+            
+            if products and message_text:
+                found_products = []
+                for p in products:
+                    name = p.get("name", "").lower()
+                    if name and name in message_text:
+                        found_products.append(p)
+                
+                if len(found_products) == 1:
+                    product_selection["resolved_product"] = found_products[0]
+                    logger.info(f"Super-fallback for product_compare: extracted resolved_product from message text: {found_products[0]}")
+                elif len(found_products) > 1:
+                    # Ищем маркер выбора ("меньше", "лучше", "выгоднее") и берем продукт, который идет после него
+                    choice_markers = ["меньше", "ниже", "лучше", "выгоднее", "оптимальн", "рекомендую", "выбираем"]
+                    marker_pos = -1
+                    for marker in choice_markers:
+                        pos = message_text.find(marker)
+                        if pos != -1 and (marker_pos == -1 or pos < marker_pos):
+                            marker_pos = pos
+                    
+                    if marker_pos != -1:
+                        text_after_marker = message_text[marker_pos:]
+                        for p in found_products:
+                            name = p.get("name", "").lower()
+                            if name in text_after_marker:
+                                product_selection["resolved_product"] = p
+                                logger.info(f"Super-fallback for product_compare: extracted resolved_product after marker: {p}")
+                                break
+        resolved = product_selection.get("resolved_product")
+        product_resolution = ctx.session.state.get("product_resolution") or {}
+        # 1. Определяем code продукта (из state резолвера или из ответа LLM)
+        base_code = None
+        if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
+            base_code = product_resolution.get("product_code")
+        elif isinstance(resolved, dict) and resolved.get("code"):
+            base_code = resolved.get("code")
+
+        # 2. Если code есть, идем в БД и забираем folder_kit (Python-фоллбэк, не зависит от LLM)
+        if base_code:
+            full_details = await self.product_resolver.fetch_product_full_details(base_code)
+            if full_details.get("folder_kit"):
+                logger.info(f"Python fallback: успешно получен folder_kit='{full_details['folder_kit']}' для code={base_code}")
+                
+                # Если LLM вообще не вернула resolved_product, создаем базовый словарь
+                if not resolved:
+                    resolved = {
+                        "code": base_code,
+                        "name": product_resolution.get("product_name", "")
+                    }
+                    product_selection["resolved_product"] = resolved
+                    
+                # Жестко инжектим folder_kit в словарь
+                resolved["folder_kit"] = full_details["folder_kit"]
+        if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
+            if not resolved:
+                # Если агент не вернул resolved_product, но resolver нашел продукт, используем его данные
+                resolved = {
+                    "code": product_resolution.get("product_code"),
+                    "name": product_resolution.get("product_name"),
+                    "folder_kit": product_resolution.get("folder_kit") # Может быть None или строка
+                }
+                product_selection["resolved_product"] = resolved
+            else:
+                # Если агент вернул resolved_product, но у него нет folder_kit, но resolver его нашел, добавим его
+                if not resolved.get("folder_kit") and product_resolution.get("folder_kit"):
+                    resolved["folder_kit"] = product_resolution.get("folder_kit")
+                    product_selection["resolved_product"] = resolved # Обновляем словарь в product_selection
+        
+        if resolved and (resolved.get("name") or resolved.get("code")):
+            # Получаем текущий контекст
+            current_context = self._get_product_dialog_context(ctx)
+            # Обновляем selected_product
+            current_context["selected_product"] = {
+                "code": resolved.get("code", ""),
+                "name": resolved.get("name", ""),
+                "folder_kit": resolved.get("folder_kit") # Добавляем folder_kit в selected_product
+            }
+            # Сохраняем обновлённый контекст
+            ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
+            logger.debug("Updated _product_dialog_context.selected_product: %s", current_context["selected_product"])
+        if product_selection.get("mode") == "no_data" and intent == "product_kit":
+            # Берем resolved_product, который мы только что обогатили через Python fallback
+            resolved_product = product_selection.get("resolved_product") or {}
+            folder_kit = str(resolved_product.get("folder_kit") or "").strip()
+            
+            # Если folder_kit нашелся (значит, в БД он есть, но LLM-агент его проигнорировал из-за нечеткого SQL-поиска)
+            if folder_kit and folder_kit.lower() != "none":
+                logger.info("Agent returned no_data, but folder_kit found in resolved_product. Forcing product_kit.")
+                product_code = str(resolved_product.get("code") or "").strip()
+                product_name = str(resolved_product.get("name") or "").strip()
+                
+                # Формируем action для бота
+                ctx.session.state["_bot_action"] = {
+                    "type": "send_product_kit",
+                    "product_code": product_code,
+                    "product_name": product_name,
+                    "folder_kit": folder_kit,
+                }
+                ctx.session.state["_root_final_text"] = f"📂 Отправляю комплект документов для продукта **{product_name}**."
+                
+                # Подменяем ответ агента, чтобы контекст диалога сохранился корректно
+                product_selection["mode"] = "product_kit"
+                product_selection["resolved_product"] = resolved_product
+                product_selection["message"] = ctx.session.state["_root_final_text"]
+                
+                # Сохраняем контекст и выходим, пропуская стандартную логику
+                self._store_product_dialog_context(ctx, product_selection)
+                return
+        # Сохраняем последний продукт для контекста
+        resolved = product_selection.get("resolved_product")
+        logger.debug(f"RESOLVED PRODUCT_SELECTION: {resolved}")
+        if product_selection.get("mode") in ("product_card", "product_kit") and resolved:
+            name = resolved.get('name', '')
+            code = resolved.get('code', '')
+            if name or code:
+                ctx.session.state["last_product"] = f"{name} (код {code})".strip()
+                logger.debug("Saved last_product='%s' to state", ctx.session.state["last_product"])
+        # Не делаем ничего для 'no_data', 'needs_clarification' и т.д., чтобы не потерять предыдущее значен
         ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
             product_selection
         )
