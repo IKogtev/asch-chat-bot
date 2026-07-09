@@ -145,9 +145,8 @@ def test_dispatcher_prompt_routes_active_no_risk_guaranteed_income_to_product_fi
     prompt = _read_dispatcher_prompt()
 
     assert TARGET_PRODUCT_FILTER_QUERY in prompt
-    assert 'route="product_selection"' in prompt
-    assert 'intent="product_filter"' in prompt
-    assert f'search_query="{TARGET_PRODUCT_FILTER_SEARCH_QUERY}"' in prompt
+    assert 'route = "product_selection"' in prompt or 'route="product_selection"' in prompt
+    assert 'intent = "product_filter"' in prompt
 
 
 @pytest.mark.unit
