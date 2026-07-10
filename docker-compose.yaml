@@ -160,7 +160,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.9
+      - PLATFORM_VERSION=0.7.10
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -202,7 +202,7 @@ services:
       - ADK_API_BASE=http://adk-agent:8000
       - ADK_APP_NAME=agent
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.9
+      - PLATFORM_VERSION=0.7.10
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -258,7 +258,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
-      - PLATFORM_VERSION=0.7.9
+      - PLATFORM_VERSION=0.7.10
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
