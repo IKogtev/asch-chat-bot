@@ -333,6 +333,42 @@ def test_read_glossary_sheet_skips_second_description_row(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.unit
+def test_normalize_products_dataframe_trims_strings_and_coerces_numeric_columns(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    import pandas as real_pandas
+
+    module.pd = real_pandas
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    df = real_pandas.DataFrame(
+        {
+            "code": real_pandas.Series([8958, " 001 "], dtype=object),
+            "name": real_pandas.Series([" Bundle Fort Knox ", " Product "], dtype=object),
+            "commission": real_pandas.Series([0.35, 1], dtype=object),
+            "numeric_attribute": real_pandas.Series([" 10 ", "20.5"], dtype=object),
+            "text_attribute": real_pandas.Series([" 10 years ", "20 years"], dtype=object),
+            "empty_attribute": real_pandas.Series([" ", None], dtype=object),
+            "empty_float_attribute": real_pandas.Series([float("nan"), float("nan")], dtype="float64"),
+            "commission_condition": real_pandas.Series([" condition ", None], dtype=object),
+        }
+    )
+
+    result = service._normalize_products_dataframe(df)
+
+    assert result["name"].tolist() == ["Bundle Fort Knox", "Product"]
+    assert result["commission_condition"].tolist()[0] == "condition"
+    assert real_pandas.isna(result["commission_condition"].tolist()[1])
+    assert result["code"].tolist() == [8958, "001"]
+    assert real_pandas.api.types.is_float_dtype(result["commission"].dtype)
+    assert real_pandas.api.types.is_float_dtype(result["numeric_attribute"].dtype)
+    assert service._sql_type(result["commission"].dtype) == "NUMERIC"
+    assert service._sql_type(result["numeric_attribute"].dtype) == "NUMERIC"
+    assert service._sql_type(result["code"].dtype) == "TEXT"
+    assert service._sql_type(result["text_attribute"].dtype) == "TEXT"
+    assert service._sql_type(result["empty_attribute"].dtype) == "TEXT"
+    assert service._sql_type(result["empty_float_attribute"].dtype) == "TEXT"
+
+
 class DateFakeAt:
     def __init__(self, frame):
         self.frame = frame

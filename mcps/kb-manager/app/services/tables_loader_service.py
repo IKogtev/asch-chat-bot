@@ -28,6 +28,7 @@ GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
 PRODUCT_KIT_STATUS_COLUMN = "folder_kit_status"
 PRODUCT_INPUT_DATE_COLUMN = "input_date"
+PRODUCT_CODE_COLUMN = "code"
 PRODUCT_INPUT_DATE_COLUMN_CANDIDATES = (
     PRODUCT_INPUT_DATE_COLUMN,
     "\u0434\u0430\u0442\u0430_\u0432\u0432\u043e\u0434\u0430_\u043f\u0440\u043e\u0434\u0443\u043a\u0442\u0430",
@@ -515,6 +516,7 @@ class TablesLoaderService:
                 table_name = self._regular_table_name(file_path, sheet_name, workbook.sheet_names)
                 product_search_df = None
                 if table_name == PRODUCTS_TABLE_NAME:
+                    df = self._normalize_products_dataframe(df)
                     df = self._enrich_products_with_kit_folders(df)
                     product_search_df = self._build_product_search_dictionary(df)
                 await self._replace_table(conn, table_name, df)
@@ -887,6 +889,50 @@ class TablesLoaderService:
         df = df.dropna(how="all")
         df.columns = self._normalize_columns(df.columns)
         return df
+
+    def _normalize_products_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        for column in df.columns:
+            df[column] = df[column].map(self._strip_cell_value)
+
+        for column in df.columns:
+            if column == PRODUCT_CODE_COLUMN:
+                continue
+            df[column] = self._coerce_numeric_series(df[column])
+
+        return df
+
+    @staticmethod
+    def _strip_cell_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @staticmethod
+    def _is_meaningful_value(value: Any) -> bool:
+        if value is None:
+            return False
+        try:
+            if pd.isna(value):
+                return False
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, str) and not value.strip():
+            return False
+        return True
+
+    def _coerce_numeric_series(self, series: pd.Series) -> pd.Series:
+        meaningful_mask = series.map(self._is_meaningful_value)
+        if not meaningful_mask.any():
+            return series.astype("object")
+        try:
+            converted = pd.to_numeric(series, errors="coerce")
+        except (TypeError, ValueError):
+            return series
+        invalid_mask = converted.isna() & meaningful_mask
+        if invalid_mask.any():
+            return series
+        return converted.astype("float64")
 
     def _enrich_products_with_kit_folders(self, df: pd.DataFrame) -> pd.DataFrame:
         """Добавляет к таблице продуктов сведения о папках продуктовых китов.
