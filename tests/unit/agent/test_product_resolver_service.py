@@ -167,6 +167,55 @@ async def test_resolve_product_filter_returns_multiple_candidates() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_product_filter_unions_multiple_product_mentions() -> None:
+    resolver = FakeProductResolver(
+        tokens={
+            "fort knox": [
+                candidate("8914", "Fort Knox 1 год"),
+                candidate("8837", "Fort Knox 3 года"),
+            ],
+            "защищенный капитал": [
+                candidate("8885", "Защищенный капитал 5 лет"),
+                candidate("8916", "Защищенный капитал 2 года"),
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("Fort Knox и Защищенный капитал")
+
+    assert result.status == "resolved"
+    assert result.product_codes == ["8914", "8837", "8885", "8916"]
+    assert result.matched_terms == ["fort knox", "защищенный капитал"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_does_not_stop_on_combined_fuzzy_match() -> None:
+    resolver = FakeProductResolver(
+        fuzzy={
+            "fort knox защищенный капитал": [
+                candidate("8885", "Защищенный капитал 5 лет", score=0.54),
+            ],
+        },
+        tokens={
+            "fort knox": [
+                candidate("8914", "Fort Knox 1 год"),
+            ],
+            "защищенный капитал": [
+                candidate("8885", "Защищенный капитал 5 лет"),
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("Fort Knox и Защищенный капитал")
+
+    assert result.status == "resolved"
+    assert result.product_codes == ["8914", "8885"]
+    assert result.matched_terms == ["fort knox", "защищенный капитал"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_filter_returns_not_found_for_empty_matches() -> None:
     resolver = FakeProductResolver()
 
