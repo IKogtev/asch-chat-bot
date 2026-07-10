@@ -1339,7 +1339,7 @@ class RootAgent(BaseAgent):
 
     def _extract_ranks_with_words(self, text: str) -> List[int]:
         ranks = extract_download_ranks(text)
-        if ranks:
+        if ranks: 
             return ranks
         text_lower = text.lower()
         mapping = {
