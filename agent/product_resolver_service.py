@@ -263,7 +263,7 @@ PRODUCT_QUERY_STOPWORDS = frozenset(
 )
 
 COMPARE_SPLIT_RE = re.compile(
-    r"\s+(?:and|vs|versus|и|с)\s+|[,;/]+",
+    r"\s+(?:and|vs|versus|и|с|или)\s+|[,;/]+",
     flags=re.IGNORECASE,
 )
 
@@ -566,32 +566,73 @@ class ProductResolverService:
             )
 
     async def _resolve_product_filter_safe(self, query: str) -> ProductFilterResolveResult:
-        """Выполняет каскад поиска для product_filter и возвращает первый непустой набор."""
+        """Выполняет каскад поиска для product_filter и возвращает набор кандидатов."""
+        mentions = self.extract_product_mentions(query)
+        if len(mentions) > 1:
+            return await self._resolve_product_filter_multi(query, mentions)
+
         candidate_queries = self._candidate_queries(query)
         logger.debug("resolve_product_filter candidate_queries=%s", candidate_queries)
         for candidate_query in candidate_queries:
-            for stage, candidates in (
-                ("exact", await self._search_exact(candidate_query)),
-                ("tokens", await self._search_tokens(candidate_query)),
-                ("fuzzy", await self._search_fuzzy(candidate_query)),
-            ):
-                products = self._unique_products(candidates)
-                logger.debug(
-                    "resolve_product_filter stage=%s query=%r count=%s candidates=%s",
-                    stage,
-                    candidate_query,
-                    len(products),
-                    self._candidate_summary(products),
-                )
-                if products:
-                    return ProductFilterResolveResult(
-                        status="resolved",
-                        query=query,
-                        product_codes=[candidate.product_code for candidate in products],
-                        products=products,
-                        matched_terms=[candidate_query],
-                    )
+            result = await self._resolve_product_filter_for_query(query, candidate_query)
+            if result is not None:
+                return result
         return ProductFilterResolveResult(status="not_found", query=query)
+
+    async def _resolve_product_filter_multi(
+        self,
+        query: str,
+        mentions: list[str],
+    ) -> ProductFilterResolveResult:
+        """Разрешает каждое упоминание отдельно и объединяет наборы кандидатов."""
+        logger.debug("resolve_product_filter multi_mentions=%s", mentions)
+        all_products: list[ProductCandidate] = []
+        matched_terms: list[str] = []
+        for mention in mentions:
+            mention_result = await self._resolve_product_filter_safe(mention)
+            if mention_result.products:
+                all_products.extend(mention_result.products)
+                matched_terms.extend(mention_result.matched_terms or [mention])
+
+        products = self._unique_products(all_products)
+        if products:
+            return ProductFilterResolveResult(
+                status="resolved",
+                query=query,
+                product_codes=[candidate.product_code for candidate in products],
+                products=products,
+                matched_terms=matched_terms,
+            )
+        return ProductFilterResolveResult(status="not_found", query=query)
+
+    async def _resolve_product_filter_for_query(
+        self,
+        original_query: str,
+        candidate_query: str,
+    ) -> ProductFilterResolveResult | None:
+        """Ищет кандидатов для одной поисковой строки; None, если совпадений нет."""
+        for stage, candidates in (
+            ("exact", await self._search_exact(candidate_query)),
+            ("tokens", await self._search_tokens(candidate_query)),
+            ("fuzzy", await self._search_fuzzy(candidate_query)),
+        ):
+            products = self._unique_products(candidates)
+            logger.debug(
+                "resolve_product_filter stage=%s query=%r count=%s candidates=%s",
+                stage,
+                candidate_query,
+                len(products),
+                self._candidate_summary(products),
+            )
+            if products:
+                return ProductFilterResolveResult(
+                    status="resolved",
+                    query=original_query,
+                    product_codes=[candidate.product_code for candidate in products],
+                    products=products,
+                    matched_terms=[candidate_query],
+                )
+        return None
 
     @staticmethod
     def _candidate_summary(candidates: list[ProductCandidate]) -> list[dict[str, object]]:
