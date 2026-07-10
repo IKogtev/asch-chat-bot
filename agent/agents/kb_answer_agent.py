@@ -1,7 +1,8 @@
-from typing import Any, Dict
+from typing import Any, Dict, Literal
+from pydantic import BaseModel, Field
 
 from google.adk.agents import LlmAgent
-from google.genai.types import GenerateContentConfig
+from google.genai.types import GenerateContentConfig, Type, Schema
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -25,6 +26,12 @@ logger = setup_logger("kb_answer_agent", "agent.log")
 
 ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и помогать продавать продукты АСЖ."
 
+# 1. Объявляем схему как Pydantic-класс
+class KbAnswerResponseSchema(BaseModel):
+    status: Literal["ok"] = Field(description="Всегда 'ok'")
+    mode: Literal["text_answer", "no_data"] = Field(description="Режим ответа")
+    message: str = Field(description="Текст ответа на русском языке")
+    source: Literal["faq_search", "kb_search", "faq_search+kb_search", "none"] = Field(description="Источник данных")
 
 
 def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -204,7 +211,6 @@ def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
         logger.warning(
             "FAQSEARCH_MCP_URL не задан - MCP faqsearch не подключён к kb_answer_agent"
         )
-
     fallback = f"""
 Use state variable {{from_glossary}} as a dictionary of terms already found by code.
 Do not search for or invent additional expansions.
@@ -278,26 +284,22 @@ If multiple definitions are present and context does not disambiguate them, do n
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "kb_answer_agent"
+    # Конфигурация генерации с принудительным JSON Output и схемой данных
+    config_params = {}
     if KB_ANSWER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            tools=tools,
-            output_key="kb_answer_result_json",
-            generate_content_config=GenerateContentConfig(
-                temperature=KB_ANSWER_TEMPERATURE,
-            )
-        )
-    else: 
+        config_params["temperature"] = KB_ANSWER_TEMPERATURE
+    else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            tools=tools,
-            output_key="kb_answer_result_json"
-        ) 
+
+    agent = LlmAgent(
+        name=name,
+        model=model,
+        instruction=instruction,
+        tools=tools,
+        output_key="kb_answer_result_json",
+        output_schema=KbAnswerResponseSchema,
+        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+    )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
