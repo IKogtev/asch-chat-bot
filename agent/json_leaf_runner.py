@@ -5,7 +5,8 @@
 import copy
 import json
 import time
-from typing import Any, AsyncGenerator, Callable, Dict
+import ast
+from typing import Any, AsyncGenerator, Callable, Dict, Mapping
 
 from google.adk.agents import InvocationContext, LlmAgent
 from google.adk.events import Event
@@ -336,19 +337,38 @@ async def run_json_leaf_agent(
     _llm_ms: float | None = None
     if _doc_timing and _t_llm0 is not None:
         _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
-
-    raw = str(ctx.session.state.get(output_key) or "").strip()
+        
+    # Достаем сырой результат без жесткого каста к str на первом шаге
+    raw_payload = ctx.session.state.get(output_key)
     logger.debug(
         "%s tool diagnostics: calls=%s events=%s",
         log_label,
         tool_calls,
         json.dumps(tool_event_summaries, ensure_ascii=False),
     )
-    logger.debug("%s raw: %s", log_label, truncate_for_log(raw, 500))
+    logger.debug("%s raw: %s", log_label, truncate_for_log(raw_payload, 500))
 
     _t_parse0 = time.monotonic() if _doc_timing else None
     try:
-        extracted = extract_json(raw)
+        if isinstance(raw_payload, (dict, Mapping)):
+            # Ветка 1: Если новый агент с output_schema уже вернул готовый Python-словарь
+            extracted = dict(raw_payload)
+        elif hasattr(raw_payload, "model_dump"):
+            # Ветка 2: Если вернулся Pydantic объект напрямую
+            extracted = raw_payload.model_dump()
+        else:
+            # Ветка 3: Если вернулась строка (старый формат из промпта)
+            raw_str = str(raw_payload or "").strip()
+            try:
+                # Шаг А: Стандартный строгий JSON (для двойных кавычек)
+                extracted = extract_json(raw_str)
+            except Exception:
+                # Шаг Б: Если упал, пробуем безопасно распарсить одинарные кавычки 
+                parsed_literal = ast.literal_eval(raw_str)
+                if isinstance(parsed_literal, (dict, Mapping)):
+                    extracted = dict(parsed_literal)
+                else:
+                    raise ValueError("Parsed literal from string is not a dictionary")
         logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
         validator_context = dict(getattr(ctx.session, "state", {}) or {})
         validator_context["_adk_tool_calls"] = tool_calls
@@ -365,12 +385,12 @@ async def run_json_leaf_agent(
             truncate_for_log(ctx.session.state.get("search_query"), 200),
             truncate_for_log(ctx.session.state.get("intent"), 100),
             truncate_for_log(ctx.session.state.get("route"), 100),
-            truncate_for_log(raw, 500),
+            truncate_for_log(str(raw_payload), 500),
         )
         raise AgentValidationFailure(
             log_label=log_label,
             validation_error=str(exc),
-            raw=raw,
+            raw=str(raw_payload),
             user_message=validation_error_user_message,
         ) from exc
 
