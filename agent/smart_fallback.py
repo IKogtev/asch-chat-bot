@@ -54,7 +54,7 @@ def _generate_validation_fallback(
     
     # === Общее ===
     return (
-        "😔 Извините, я не совсем понял ваш запрос.\n\n"
+        "😔 Извините, я не совсем поняла ваш запрос.\n\n"
         "Попробуйте:\n"
         "• Переформулировать вопрос конкретнее\n"
         "• Указать название продукта или тему\n"
@@ -70,7 +70,7 @@ def _dispatcher_validation_fallback(user_text: str, context: Dict) -> str:
     # Если ошибка в том, что не заполнен search_query
     if "search_query" in validation_error.lower():
         return (
-            "🔍 Я не понял, что именно вы хотите сделать.\n\n"
+            "🔍 Я не поняла, что именно вы хотите сделать.\n\n"
             "Попробуйте конкретнее:\n"
             "• «Покажи документы по продукту Fort Knox» — для поиска документов\n"
             "• «Какие условия у продукта 8837?» — для ответа по базе знаний\n"
@@ -90,7 +90,7 @@ def _dispatcher_validation_fallback(user_text: str, context: Dict) -> str:
         )
     
     return (
-        "🤔 Я не смог определить, как обработать ваш запрос.\n\n"
+        "🤔 Я не смогла определить, как обработать ваш запрос.\n\n"
         "Попробуйте переформулировать:\n"
         "• Укажите конкретный продукт или тему\n"
         "• Используйте простые формулировки\n\n"
@@ -170,7 +170,7 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
             )
 
         return (
-            "🔍 Я не смог выполнить поиск по продуктам.\n\n"
+            "🔍 Я не смогла выполнить поиск по продуктам.\n\n"
             "Попробуйте уточнить:\n"
             "• Укажите точное название продукта (например, «Fort Knox»)\n"
             "• Или его код (например, «8837»)\n"
@@ -185,7 +185,7 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
     # Если ошибка в clarification_options
     if "clarification_options" in validation_error:
         return (
-            "🤔 Я нашёл несколько похожих продуктов, но не могу их корректно отобразить.\n\n"
+            "🤔 Я нашла несколько похожих продуктов, но не могу их корректно отобразить.\n\n"
             "Попробуйте:\n"
             "• Указать точный код продукта (например, 8837)\n"
             "• Или полное название продукта\n\n"
@@ -203,7 +203,7 @@ def _product_not_found_fallback(search_query: str, used_tables: List[str]) -> st
         tables_hint = f" (проверены таблицы: {', '.join(used_tables[:2])})"
     
     return (
-        f"🤔 Я не нашёл продукт по вашему запросу{tables_hint}.\n\n"
+        f"🤔 Я не нашла продукт по вашему запросу{tables_hint}.\n\n"
         "Попробуйте уточнить:\n"
         "• Укажите точное название продукта (например, «Fort Knox»)\n"
         "• Или его код (например, «8837»)\n"
@@ -243,7 +243,7 @@ def _generate_no_data_fallback(
         return _product_not_found_fallback(search_query, context.get("used_tables") or [])
     
     return (
-        "❓ К сожалению, я не нашёл данных по вашему запросу.\n\n"
+        "❓ К сожалению, я не нашла данных по вашему запросу.\n\n"
         f"Ваш запрос: «{_truncate(search_query, 100)}»"
     )
 
@@ -251,7 +251,7 @@ def _generate_no_data_fallback(
 def _generate_empty_response_fallback(user_text: str, agent_name: Optional[str]) -> str:
     """Fallback при пустом ответе."""
     return (
-        "😔 Извините, я не смог сформировать ответ на ваш запрос.\n\n"
+        "😔 Извините, я не смогла сформировать ответ на ваш запрос.\n\n"
         "Попробуйте:\n"
         "• Переформулировать вопрос проще\n"
         "• Разбить сложный запрос на несколько вопросов\n"

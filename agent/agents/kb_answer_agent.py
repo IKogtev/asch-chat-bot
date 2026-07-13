@@ -2,7 +2,7 @@ from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
 
 from google.adk.agents import LlmAgent
-from google.genai.types import GenerateContentConfig, Type, Schema
+from google.genai.types import GenerateContentConfig
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
