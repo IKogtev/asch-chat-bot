@@ -25,6 +25,8 @@ def _load_rootagent_module():
     agent_pkg.__path__ = [str(repo_root / "agent")]
     agents_pkg = types.ModuleType("agent.agents")
     agents_pkg.__path__ = [str(repo_root / "agent" / "agents")]
+    sys.modules["agent"] = agent_pkg
+    sys.modules["agent.agents"] = agents_pkg
 
     logger_stub = types.ModuleType("utils.logger")
     logger_stub.setup_logger = lambda *args, **kwargs: _build_logger()
@@ -35,6 +37,45 @@ def _load_rootagent_module():
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
     config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
     config_stub.DATABASE_URL = "postgresql://test"
+    config_stub.COMPARE_FRAZE = "сравни"
+    config_stub.PRODUCT_CARD_KIT_OFFER = "комплект"
+
+    stage_metrics_spec = importlib.util.spec_from_file_location(
+        "agent.stage_metrics",
+        repo_root / "agent" / "stage_metrics.py",
+    )
+    stage_metrics_module = importlib.util.module_from_spec(stage_metrics_spec)
+    assert stage_metrics_spec is not None and stage_metrics_spec.loader is not None
+    sys.modules["agent.stage_metrics"] = stage_metrics_module
+    stage_metrics_spec.loader.exec_module(stage_metrics_module)
+
+    glossary_stub = types.ModuleType("agent.glossary")
+
+    class GlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def expand_search_query(self, query):
+            return query
+
+    glossary_stub.GlossaryLookup = GlossaryLookup
+
+    smart_fallback_stub = types.ModuleType("agent.smart_fallback")
+
+    async def generate_agent_fallback(**kwargs):
+        return "fallback"
+
+    smart_fallback_stub.generate_agent_fallback = generate_agent_fallback
+
+    doc_search_format_stub = types.ModuleType("utils.doc_search_format")
+    doc_search_format_stub.extract_download_ranks = lambda text: []
+
+    asyncpg_stub = types.ModuleType("asyncpg")
+
+    async def _asyncpg_connect(*args, **kwargs):
+        raise RuntimeError("asyncpg stub")
+
+    asyncpg_stub.connect = _asyncpg_connect
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
@@ -149,15 +190,20 @@ def _load_rootagent_module():
     sys.modules["agent"] = agent_pkg
     sys.modules["agent.agents"] = agents_pkg
     sys.modules["utils.logger"] = logger_stub
+    sys.modules["utils.doc_search_format"] = doc_search_format_stub
     sys.modules["agent.config"] = config_stub
     sys.modules["agent.helpers"] = helpers_stub
     sys.modules["agent.json_leaf_runner"] = json_leaf_runner_stub
+    sys.modules["agent.stage_metrics"] = stage_metrics_module
+    sys.modules["agent.glossary"] = glossary_stub
+    sys.modules["agent.smart_fallback"] = smart_fallback_stub
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
     sys.modules["agent.agents.product_selection_agent"] = product_selection_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
     sys.modules["agent.product_resolver_service"] = product_resolver_stub
+    sys.modules["asyncpg"] = asyncpg_stub
     sys.modules["google"] = google_pkg
     sys.modules["google.genai"] = genai_pkg
     sys.modules["google.genai.types"] = genai_types_stub
@@ -431,6 +477,57 @@ def test_build_final_event_includes_bot_action_state_delta() -> None:
             "type": "send_product_kit",
             "product_code": "2832",
         }
+    }
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_flat_stage_timing() -> None:
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            rootagent_module.STAGE_METRICS_STATE_KEY: {
+                "owasp": {
+                    "ms": 120,
+                    "ttft_ms": 40,
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "tool_calls": 0,
+                    "model_turns": 1,
+                },
+                "kb_answer": {
+                    "ms": 800,
+                    "ttft_ms": 200,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "tool_calls": 3,
+                    "model_turns": 2,
+                },
+            },
+            "_dispatcher_result_parsed": {
+                "route": "kb_answer",
+                "intent": "faq",
+                "search_query": "test",
+            },
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta[rootagent_module.TIMING_STATE_DELTA_KEY] == {
+        "owasp_ms": 120,
+        "owasp_ttft_ms": 40,
+        "owasp_input_tokens": 10,
+        "owasp_output_tokens": 5,
+        "owasp_tool_calls": 0,
+        "owasp_model_turns": 1,
+        "kb_answer_ms": 800,
+        "kb_answer_ttft_ms": 200,
+        "kb_answer_input_tokens": 100,
+        "kb_answer_output_tokens": 50,
+        "kb_answer_tool_calls": 3,
+        "kb_answer_model_turns": 2,
+        "route": "kb_answer",
+        "intent": "faq",
     }
 
 

@@ -27,6 +27,11 @@ from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
+from .stage_metrics import (
+    STAGE_METRICS_STATE_KEY,
+    TIMING_STATE_DELTA_KEY,
+    build_timing_payload,
+)
 from collections import OrderedDict, deque
 import asyncpg
 
@@ -199,6 +204,10 @@ class RootAgent(BaseAgent):
         product_dialog_context = session_state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY)
         if isinstance(product_dialog_context, dict):
             state_delta[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = product_dialog_context
+
+        timing = build_timing_payload(session_state)
+        if timing:
+            state_delta[TIMING_STATE_DELTA_KEY] = timing
 
         # Сохраняем last_* ключи для контекста между сессиями
         for key in [
@@ -419,6 +428,7 @@ class RootAgent(BaseAgent):
                 "product_filter_resolution",
                 "owasp_current_user_message",
                 "owasp_recent_messages_json",
+                STAGE_METRICS_STATE_KEY,
             ],
         )
     def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
@@ -1446,6 +1456,7 @@ class RootAgent(BaseAgent):
                     "product_resolution",
                     "product_resolutions",
                     "product_filter_resolution",
+                    STAGE_METRICS_STATE_KEY,
                 ],
             )
             # Проверка безопасности (OWASP)
