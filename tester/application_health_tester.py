@@ -24,7 +24,6 @@ from adk_agent_tester import (
     ADK_API_BASE,
     ADK_APP_NAME,
     ADK_TIMEOUT_SEC,
-    ASK_QUESTIONS,
     DEFAULT_ADK_TEST_USER_ID,
     LLM_API_KEY,
     LLM_API_MODEL,
@@ -444,11 +443,6 @@ def main() -> int:
         "--fake-first-name",
         default=os.getenv("ADK_TEST_FIRST_NAME"),
     )
-    parser.add_argument(
-        "--run-initial-question",
-        action="store_false",
-        help="Перед тестовыми вопросами отправить дополнительный инициализирующий вопрос ADK.",
-    )
     args = parser.parse_args()
 
     if not ADK_API_BASE:
@@ -495,15 +489,15 @@ def main() -> int:
         profile_state_delta=profile,
     )
 
-    answers_file_path = SCRIPT_DIR / f"health_check_answers_{excel_path.stem}.parquet"
     tc_df = interrogate_agent(
         client,
         user_id=user_id,
         session_id=session_id,
         tc_df=tc_df,
-        answers_file_path=answers_file_path,
-        ask_questions=ASK_QUESTIONS,
-        run_initial_question=args.run_initial_question,
+        answers_file_path=None,
+        ask_questions=True,
+        run_initial_question=False,
+        save_answers=False,
     )
 
     tc_df = check_all_triggers(tc_df, triggers_df)
