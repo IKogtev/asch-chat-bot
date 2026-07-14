@@ -384,10 +384,6 @@ async def run_json_leaf_agent(
             ctx.session.state.get("doc_search_rerank_only"),
             tool_calls.count("kb_search"),
         )
-
-    _llm_ms: float | None = None
-    if _doc_timing and _t_llm0 is not None:
-        _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
         
     # Достаем сырой результат без жесткого каста к str на первом шаге
     raw_payload = ctx.session.state.get(output_key)
