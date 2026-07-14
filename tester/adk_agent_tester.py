@@ -351,8 +351,8 @@ class AdkApiClient:
         return cleaned, raw
 
 
-def load_test_cases(file_name: Path):
-    df = pd.read_excel(file_name)
+def load_test_cases(file_name: Path, sheet_name: Any = 0):
+    df = pd.read_excel(file_name, sheet_name=sheet_name)
     if "Use case" in df.columns:
         df["Use case"] = df["Use case"].ffill()
     if "Dialog tag" in df.columns:
