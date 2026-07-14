@@ -412,6 +412,26 @@ def save_health_check_report(
     return report_path
 
 
+def save_trigger_alert(tc_df: pd.DataFrame, output_dir: Path) -> Path:
+    trigger_hits = tc_df[tc_df["trigger_matched"] == True]
+    alert_path = output_dir / "HEALTH_CHECK_ALERT.txt"
+    blocks = ["Application health check detected trigger matches."]
+
+    for _, row in trigger_hits.iterrows():
+        blocks.append(
+            "\n".join(
+                [
+                    f"Question: {str(row.get('Вопросы', '') or '')}",
+                    f"Answer: {str(row.get('answer', '') or '')}",
+                    f"Trigger: {str(row.get('trigger_cause', '') or '')}",
+                ]
+            )
+        )
+
+    alert_path.write_text("\n\n---\n\n".join(blocks) + "\n", encoding="utf-8")
+    return alert_path
+
+
 def main() -> int:
     env_local = SCRIPT_DIR / ".env"
     if env_local.exists():
@@ -531,6 +551,8 @@ def main() -> int:
 
     trigger_count = int(tc_df["trigger_matched"].sum())
     if trigger_count > 0:
+        alert_path = save_trigger_alert(tc_df, output_dir)
+        logger.error("Детали срабатываний триггеров сохранены: %s", alert_path)
         logger.error("Тест завершен с ошибкой: %s срабатываний триггеров", trigger_count)
         return 1
 
