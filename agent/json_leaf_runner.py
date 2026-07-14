@@ -15,6 +15,7 @@ from utils.logger import setup_logger
 from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
 from .doc_search_validation import DocSearchRetryableValidationError
 from .helpers import extract_json, truncate_for_log
+from .langfuse_logger import langfuse_logger
 
 logger = setup_logger("json_leaf_runner", "agent.log")
 
@@ -309,98 +310,128 @@ async def run_json_leaf_agent(
     log_label: str,
     validation_error_user_message: str,
 ) -> AsyncGenerator[Event, None]:
-    _doc_timing = log_label == "doc_search_result_json"
-    _t_llm0 = time.monotonic() if _doc_timing else None
-    tool_calls: list[str] = []
-    tool_event_summaries: list[dict[str, str]] = []
-    kb_search_response_texts: list[str] = []
-    async for event in agent.run_async(ctx):
-        tool_calls.extend(_extract_function_call_names(event))
-        tool_event_summaries.extend(_extract_tool_event_summaries(event))
-        if _doc_timing:
-            kb_search_response_texts.extend(
-                _extract_kb_search_response_texts_from_event(event)
+    # LANGFUSE: СОЗДАНИЕ СПАНА ДЛЯ АГЕНТА
+    trace = ctx.session.state.get("_langfuse_trace")
+    span = None
+    if trace:
+        try:
+            span = langfuse_logger.create_span(
+                trace=trace,
+                name=log_label,
+                input={
+                    "user_query": ctx.session.state.get("user_query"),
+                    "search_query": ctx.session.state.get("search_query"),
+                }
             )
-        sanitized_event = strip_thought_parts(event)
-        if sanitized_event is not None:
-            yield sanitized_event
-
-    if _doc_timing:
-        _store_doc_search_kb_hits(ctx, kb_search_response_texts)
-        logger.info(
-            "doc_search_result_json: attempt=%s rerank_only=%s kb_search_calls=%s",
-            ctx.session.state.get("doc_search_attempt"),
-            ctx.session.state.get("doc_search_rerank_only"),
-            tool_calls.count("kb_search"),
-        )
-
-    _llm_ms: float | None = None
-    if _doc_timing and _t_llm0 is not None:
-        _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
-        
-    # Достаем сырой результат без жесткого каста к str на первом шаге
-    raw_payload = ctx.session.state.get(output_key)
-    logger.debug(
-        "%s tool diagnostics: calls=%s events=%s",
-        log_label,
-        tool_calls,
-        json.dumps(tool_event_summaries, ensure_ascii=False),
-    )
-    logger.debug("%s raw: %s", log_label, truncate_for_log(raw_payload, 500))
-
-    _t_parse0 = time.monotonic() if _doc_timing else None
+        except Exception as e:
+            logger.warning(f"Failed to create Langfuse span: {e}")
     try:
-        if isinstance(raw_payload, (dict, Mapping)):
-            # Ветка 1: Если новый агент с output_schema уже вернул готовый Python-словарь
-            extracted = dict(raw_payload)
-        elif hasattr(raw_payload, "model_dump"):
-            # Ветка 2: Если вернулся Pydantic объект напрямую
-            extracted = raw_payload.model_dump()
-        else:
-            # Ветка 3: Если вернулась строка (старый формат из промпта)
-            raw_str = str(raw_payload or "").strip()
-            try:
-                # Шаг А: Стандартный строгий JSON (для двойных кавычек)
-                extracted = extract_json(raw_str)
-            except Exception:
-                # Шаг Б: Если упал, пробуем безопасно распарсить одинарные кавычки 
-                parsed_literal = ast.literal_eval(raw_str)
-                if isinstance(parsed_literal, (dict, Mapping)):
-                    extracted = dict(parsed_literal)
-                else:
-                    raise ValueError("Parsed literal from string is not a dictionary")
-        logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
-        validator_context = dict(getattr(ctx.session, "state", {}) or {})
-        validator_context["_adk_tool_calls"] = tool_calls
-        validator_context["_adk_tool_event_summaries"] = tool_event_summaries
-        parsed = validator(extracted, validator_context)
-    except DocSearchRetryableValidationError:
-        raise
-    except Exception as exc:
-        logger.warning(
-            "%s validation/parsing error: %s; user_query=%s; search_query=%s; intent=%s; route=%s; raw=%s",
-            log_label,
-            exc,
-            truncate_for_log(ctx.session.state.get("user_query"), 200),
-            truncate_for_log(ctx.session.state.get("search_query"), 200),
-            truncate_for_log(ctx.session.state.get("intent"), 100),
-            truncate_for_log(ctx.session.state.get("route"), 100),
-            truncate_for_log(str(raw_payload), 500),
-        )
-        raise AgentValidationFailure(
-            log_label=log_label,
-            validation_error=str(exc),
-            raw=str(raw_payload),
-            user_message=validation_error_user_message,
-        ) from exc
+        _doc_timing = log_label == "doc_search_result_json"
+        _t_llm0 = time.monotonic() if _doc_timing else None
+        tool_calls: list[str] = []
+        tool_event_summaries: list[dict[str, str]] = []
+        kb_search_response_texts: list[str] = []
+        async for event in agent.run_async(ctx):
+            tool_calls.extend(_extract_function_call_names(event))
+            tool_event_summaries.extend(_extract_tool_event_summaries(event))
+            if _doc_timing:
+                kb_search_response_texts.extend(
+                    _extract_kb_search_response_texts_from_event(event)
+                )
+            sanitized_event = strip_thought_parts(event)
+            if sanitized_event is not None:
+                yield sanitized_event
 
-    if _doc_timing and _t_parse0 is not None and _llm_ms is not None:
-        _parse_ms = (time.monotonic() - _t_parse0) * 1000.0
+        if _doc_timing:
+            _store_doc_search_kb_hits(ctx, kb_search_response_texts)
+            logger.info(
+                "doc_search_result_json: attempt=%s rerank_only=%s kb_search_calls=%s",
+                ctx.session.state.get("doc_search_attempt"),
+                ctx.session.state.get("doc_search_rerank_only"),
+                tool_calls.count("kb_search"),
+            )
+
+        _llm_ms: float | None = None
+        if _doc_timing and _t_llm0 is not None:
+            _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
+            
+        # Достаем сырой результат без жесткого каста к str на первом шаге
+        raw_payload = ctx.session.state.get(output_key)
         logger.debug(
-            "doc_search LLM timing: agent.run_async wall_ms=%.1f; json_extract+validate wall_ms=%.1f",
-            _llm_ms,
-            _parse_ms,
+            "%s tool diagnostics: calls=%s events=%s",
+            log_label,
+            tool_calls,
+            json.dumps(tool_event_summaries, ensure_ascii=False),
         )
+        logger.debug("%s raw: %s", log_label, truncate_for_log(raw_payload, 500))
 
-    ctx.session.state[parsed_state_key] = parsed
-    logger.debug("%s parsed: %s", log_label, json.dumps(parsed, ensure_ascii=False))
+        _t_parse0 = time.monotonic() if _doc_timing else None
+        try:
+            if isinstance(raw_payload, (dict, Mapping)):
+                # Ветка 1: Если новый агент с output_schema уже вернул готовый Python-словарь
+                extracted = dict(raw_payload)
+            elif hasattr(raw_payload, "model_dump"):
+                # Ветка 2: Если вернулся Pydantic объект напрямую
+                extracted = raw_payload.model_dump()
+            else:
+                # Ветка 3: Если вернулась строка (старый формат из промпта)
+                raw_str = str(raw_payload or "").strip()
+                try:
+                    # Шаг А: Стандартный строгий JSON (для двойных кавычек)
+                    extracted = extract_json(raw_str)
+                except Exception:
+                    # Шаг Б: Если упал, пробуем безопасно распарсить одинарные кавычки 
+                    parsed_literal = ast.literal_eval(raw_str)
+                    if isinstance(parsed_literal, (dict, Mapping)):
+                        extracted = dict(parsed_literal)
+                    else:
+                        raise ValueError("Parsed literal from string is not a dictionary")
+            logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
+            validator_context = dict(getattr(ctx.session, "state", {}) or {})
+            validator_context["_adk_tool_calls"] = tool_calls
+            validator_context["_adk_tool_event_summaries"] = tool_event_summaries
+            parsed = validator(extracted, validator_context)
+        except DocSearchRetryableValidationError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "%s validation/parsing error: %s; user_query=%s; search_query=%s; intent=%s; route=%s; raw=%s",
+                log_label,
+                exc,
+                truncate_for_log(ctx.session.state.get("user_query"), 200),
+                truncate_for_log(ctx.session.state.get("search_query"), 200),
+                truncate_for_log(ctx.session.state.get("intent"), 100),
+                truncate_for_log(ctx.session.state.get("route"), 100),
+                truncate_for_log(str(raw_payload), 500),
+            )
+            raise AgentValidationFailure(
+                log_label=log_label,
+                validation_error=str(exc),
+                raw=str(raw_payload),
+                user_message=validation_error_user_message,
+            ) from exc
+
+        if _doc_timing and _t_parse0 is not None and _llm_ms is not None:
+            _parse_ms = (time.monotonic() - _t_parse0) * 1000.0
+            logger.debug(
+                "doc_search LLM timing: agent.run_async wall_ms=%.1f; json_extract+validate wall_ms=%.1f",
+                _llm_ms,
+                _parse_ms,
+            )
+
+        ctx.session.state[parsed_state_key] = parsed
+        logger.debug("%s parsed: %s", log_label, json.dumps(parsed, ensure_ascii=False))
+        # --- LANGFUSE: УСПЕШНОЕ ЗАВЕРШЕНИЕ СПАНА ---
+        if span:
+            try:
+                span.end(output=parsed)
+            except Exception as e:
+                logger.warning(f"Failed to end Langfuse span: {e}")
+    except Exception as exc:
+        # --- LANGFUSE: ЗАВЕРШЕНИЕ СПАНА С ОШИБКОЙ ---
+        if span:
+            try:
+                span.end(output={"error": str(exc), "type": type(exc).__name__})
+            except Exception as e:
+                logger.warning(f"Failed to end Langfuse span with error: {e}")
+        raise

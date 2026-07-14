@@ -55,6 +55,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - LOG_LEVEL=${AGENT_LOG_LEVEL:-DEBUG}
       - LLM_API_KEY=${LLM_API_KEY}
@@ -102,6 +104,9 @@ services:
       # FALLBACK FRAZE
       # - COMPARE_FRAZE=👉Начните запрос со слова СРАВНИ 
       # - PRODUCT_CARD_KIT_OFFER=👉 Чтобы получить комплект документов напиши "комплект 1234"
+      - LANGFUSE_BASE_URL=http://host.docker.internal:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:

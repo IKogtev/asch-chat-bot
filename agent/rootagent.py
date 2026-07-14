@@ -29,6 +29,7 @@ from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
 from collections import OrderedDict, deque
 import asyncpg
+from .langfuse_logger import langfuse_logger
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -191,6 +192,8 @@ class RootAgent(BaseAgent):
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
         """Финальное событие root-агента."""
+        # --- LANGFUSE: Сохраняем финальный ответ для трейса ---
+        ctx.session.state["_langfuse_final_output"] = text
         state_delta: Dict[str, Any] = {}
         session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
         bot_action = session_state.get("_bot_action")
@@ -1399,6 +1402,14 @@ class RootAgent(BaseAgent):
                         latest_cached_state = user_history[-1]
                         for key, value in latest_cached_state.items():
                             ctx.session.state[key] = value
+        # --- LANGFUSE: СТАРТ ГЛОБАЛЬНОГО ТРЕЙСА ---
+        trace = langfuse_logger.start_trace(
+            name="root_agent_processing",
+            user_id=ctx.session.id,
+            input_text=user_text,
+            metadata={"session_id": ctx.session.id}
+        )
+        ctx.session.state["_langfuse_trace"] = trace
         try:
             await self._trim_dialog_memory(ctx)
 
@@ -1738,6 +1749,8 @@ class RootAgent(BaseAgent):
             )
 
         except Exception as exc:
+            # --- LANGFUSE: ЛОГИРУЕМ КРИТИЧЕСКУЮ ОШИБКУ В ТРЕЙС ---
+            langfuse_logger.error(trace, exc)
             logger.error("RootAgent failure: %s", exc, exc_info=True)
             message = (
                 f"DEBUG: {type(exc).__name__}: {exc}"
@@ -1746,6 +1759,11 @@ class RootAgent(BaseAgent):
                 else RECOVERY_MESSAGE
             )
             yield self._build_final_event_with_history(ctx, user_text, message)
+        
+        finally: 
+            # --- LANGFUSE: ЗАВЕРШЕНИЕ ТРЕЙСА ---
+            final_output = ctx.session.state.get("_langfuse_final_output", "No output captured")
+            langfuse_logger.end_trace(trace, output=final_output)
 
     async def _handle_doc_search(
         self,
