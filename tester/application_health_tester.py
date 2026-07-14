@@ -444,6 +444,11 @@ def main() -> int:
         "--fake-first-name",
         default=os.getenv("ADK_TEST_FIRST_NAME"),
     )
+    parser.add_argument(
+        "--run-initial-question",
+        action="store_false",
+        help="Перед тестовыми вопросами отправить дополнительный инициализирующий вопрос ADK.",
+    )
     args = parser.parse_args()
 
     if not ADK_API_BASE:
@@ -498,6 +503,7 @@ def main() -> int:
         tc_df=tc_df,
         answers_file_path=answers_file_path,
         ask_questions=ASK_QUESTIONS,
+        run_initial_question=args.run_initial_question,
     )
 
     tc_df = check_all_triggers(tc_df, triggers_df)
