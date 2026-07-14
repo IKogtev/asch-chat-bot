@@ -1,5 +1,5 @@
 """
-LLM warmup health tester: two-sheet Excel (questions + triggers) -> ADK -> trigger check + LLM eval -> report.
+Application health tester: two-sheet Excel (questions + triggers) -> ADK -> trigger check + LLM eval -> report.
 
 Reuses interrogation and evaluation from adk_agent_tester.py; adds deterministic trigger matching
 against the Triggers sheet (malfunction / error replies from the Telegram bot).
@@ -420,7 +420,7 @@ def main() -> int:
     load_dotenv(override=True)
 
     parser = argparse.ArgumentParser(
-        description="LLM warmup health tester (Excel questions + triggers -> ADK -> trigger check + LLM eval -> report)."
+        description="Application health tester (Excel questions + triggers -> ADK -> trigger check + LLM eval -> report)."
     )
     parser.add_argument(
         "--excel",
