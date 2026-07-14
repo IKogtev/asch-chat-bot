@@ -418,11 +418,14 @@ def interrogate_agent(
     user_id: str,
     session_id: Optional[str],
     tc_df,
-    answers_file_path: Path,
+    answers_file_path: Optional[Path],
     ask_questions: bool,
     run_initial_question: bool = True,
+    save_answers: bool = True,
 ):
     if not ask_questions:
+        if answers_file_path is None:
+            raise RuntimeError("Файл с ответами не задан при отключенном запуске вопросов")
         if answers_file_path.exists():
             logger.info(f"Загружаем данные из файла: {answers_file_path}")
             if answers_file_path.suffix.lower() == ".parquet":
@@ -509,6 +512,13 @@ def interrogate_agent(
                 else f"Ответ: {tc_df.loc[i, 'answer']}"
             )
             logger.info(f"⏱️ Время ответа: {tc_df.loc[i, 'response_time']} сек.")
+
+    if not save_answers:
+        logger.info("Сохранение файла с ответами отключено")
+        return tc_df
+
+    if answers_file_path is None:
+        raise RuntimeError("Нельзя сохранить ответы: путь к файлу не задан")
 
     # cache answers similar to prompt-manager (parquet), with CSV fallback
     try:
@@ -995,11 +1005,6 @@ def main() -> None:
         default=os.getenv("ADK_TEST_FIRST_NAME"),  # None → build_adk_profile_state_delta uses default "Jenkins"
         help="Имя для stateDelta (плейсхолдер {first_name} в промптах ADK). По умолчанию ADK_TEST_FIRST_NAME или Jenkins.",
     )
-    parser.add_argument(
-        "--skip-initial-question",
-        action="store_true",
-        help="Создать ADK-сессию без дополнительного инициализирующего вопроса.",
-    )
     args = parser.parse_args()
     user_id = str(args.user_id)
     session_id = (args.session_id or "").strip() or None
@@ -1031,7 +1036,7 @@ def main() -> None:
         tc_df=tc_df,
         answers_file_path=answers_file_path,
         ask_questions=ASK_QUESTIONS,
-        run_initial_question=not args.skip_initial_question,
+        run_initial_question=True,
     )
 
     evaluator_model, evaluation_prompt, _ = init_evaluator(
