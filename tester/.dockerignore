@@ -9,7 +9,7 @@ __pycache__/
 
 # Reports / outputs
 *.xlsx
-!ping_nstya_bot.xlsx
+!ping_nastya_bot.xlsx
 *.png
 *.html
 *.parquet

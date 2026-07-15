@@ -15,7 +15,7 @@ RUN apt-get update -qq && \
 WORKDIR /app
 
 # Copy tester scripts + requirements (build context should be repo root: `asch-chat-bot/`)
-COPY adk_agent_tester.py application_health_tester.py send_health_alert_telegram.py requirements.txt ping_nstya_bot.xlsx ./
+COPY adk_agent_tester.py application_health_tester.py send_health_alert_telegram.py requirements.txt ping_nastya_bot.xlsx ./
 
 # Install Python dependencies
 RUN python -m pip install --upgrade pip && \
