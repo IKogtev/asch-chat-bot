@@ -20,7 +20,7 @@ def build_message(
     adk_api_base: str,
 ) -> str:
     text = (
-        f"[ALERT] chatbot-{env_name} is malfunctioning\n\n"
+        f"[ALERT] {env_name} is malfunctioning!\n\n"
         f"{alert_text.strip()}\n\n"
         f"Build URL: {build_url}\n"
         f"ADK_API_BASE: {adk_api_base}"
