@@ -79,7 +79,7 @@ H */4 * * *
                 *x*) was_x=1 ;;
               esac
               set +x
-              excel_file="/app/ping_nstya_bot.xlsx"
+              excel_file="/app/ping_nastya_bot.xlsx"
               if [ -n "${TC_TASK_FILE_LOCAL:-}" ] && [ "${TC_TASK_FILE_LOCAL}" != "null" ]; then
                 excel_file="/app/${TC_TASK_FILE_LOCAL_FILENAME}"
                 printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "$excel_file"
