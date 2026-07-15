@@ -1,0 +1,156 @@
+pipeline {
+  agent none
+
+  parameters {
+    base64File(
+      name: 'TC_TASK_FILE_LOCAL',
+      description: 'Upload the application health test Excel file'
+    )
+    hidden(
+      name: 'LLM_API_URL',
+      defaultValue: 'https://api.llm.nstcloud.ru/v1',
+      description: 'LLM API URL'
+    )
+    choice(
+      choices: [
+        'Qwen/Qwen3-30B-A3B',
+        'openai/gpt-oss-20b',
+      ],
+      name: 'LLM_API_MODEL',
+      description: 'LLM model name'
+    )
+    choice(
+      name: 'ADK_API_BASE',
+      choices: [
+        'chatbot-dev',
+        'chatbot-test1',
+      ],
+      description: 'Google ADK Agent API URL'
+    )
+    string(
+      name: 'ADK_TIMEOUT_SEC',
+      defaultValue: '180',
+      description: 'Optional ADK API timeout in seconds (default: 180 seconds)'
+    )
+  }
+
+  options {
+    skipDefaultCheckout(true)
+  }
+
+  stages {
+    stage('Run application health tester') {
+      agent {
+        kubernetes {
+          yaml """
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                app: application-health-tester
+            spec:
+              restartPolicy: Never
+              imagePullPolicy: IfNotPresent
+              containers:
+                - name: application-health-tester
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.7-amd64
+                  command:
+                    - cat
+                  tty: true
+            """
+          defaultContainer 'application-health-tester'
+        }
+      }
+
+      environment {
+        ADK_API_BASE = "http://adk-agent.${params.ADK_API_BASE}:8000"
+        ADK_ENV_NAME = "${params.ADK_API_BASE}"
+        ADK_APP_NAME = "agent"
+        ADK_TEST_FIRST_NAME = "Jenkins"
+        ADK_TIMEOUT_SEC = "${params.ADK_TIMEOUT_SEC}"
+        LLM_API_URL = "${params.LLM_API_URL}"
+        LLM_API_MODEL = "${params.LLM_API_MODEL}"
+        TC_TASK_FILE_LOCAL = "${params.TC_TASK_FILE_LOCAL}"
+      }
+
+      steps {
+        withCredentials([
+          string(credentialsId: 'LLM_API_KEY_GOOGLE_ADK_AGENT', variable: 'LLM_API_KEY')
+        ]) {
+          container('application-health-tester') {
+            sh '''
+              set -euo pipefail
+
+              was_x=0
+              case "$-" in
+                *x*) was_x=1 ;;
+              esac
+              set +x
+              if [ -z "${TC_TASK_FILE_LOCAL:-}" ]; then
+                echo "ERROR: TC_TASK_FILE_LOCAL is empty. Please upload an Excel file in job parameters."
+                exit 2
+              fi
+
+              printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "/app/${TC_TASK_FILE_LOCAL_FILENAME}"
+              echo "Using uploaded file: /app/${TC_TASK_FILE_LOCAL_FILENAME}"
+              if [ "$was_x" -eq 1 ]; then
+                set -x
+              fi
+
+              set +e
+              python3 /app/application_health_tester.py \
+                --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" \
+                --out /app
+              tester_status=$?
+              set -e
+
+              mkdir -p "${WORKSPACE}/tester"
+              for f in /app/HEALTH_CHECK_REPORT_*.xlsx /app/HEALTH_CHECK_ALERT.txt; do
+                if [ -e "$f" ]; then
+                  cp -v "$f" "${WORKSPACE}/tester/"
+                fi
+              done
+              exit "$tester_status"
+            '''
+          }
+        }
+      }
+
+      post {
+        always {
+          archiveArtifacts artifacts: 'tester/HEALTH_CHECK_REPORT_*.xlsx, tester/HEALTH_CHECK_ALERT.txt', allowEmptyArchive: true
+        }
+        success {
+          emailext(
+            subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Application health report",
+            mimeType: 'text/html',
+            body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
+                     Build URL: ${env.BUILD_URL}<br/>
+                     ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>""",
+            attachmentsPattern: 'tester/HEALTH_CHECK_REPORT_*.xlsx',
+            recipientProviders: [[$class: 'RequesterRecipientProvider']]
+          )
+        }
+        failure {
+          script {
+            if (fileExists('tester/HEALTH_CHECK_ALERT.txt')) {
+              emailext(
+                subject: "[ALERT] chatbot-${env.ADK_ENV_NAME} is malfunctioning",
+                mimeType: 'text/plain',
+                body: """Application health check detected trigger matches.
+
+${readFile('tester/HEALTH_CHECK_ALERT.txt')}
+
+Build URL: ${env.BUILD_URL}
+ADK_API_BASE: ${env.ADK_API_BASE}
+""",
+                attachmentsPattern: 'tester/HEALTH_CHECK_REPORT_*.xlsx',
+                recipientProviders: [[$class: 'RequesterRecipientProvider']]
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
