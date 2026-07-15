@@ -149,8 +149,8 @@ ADK_API_BASE: ${env.ADK_API_BASE}
                 recipientProviders: [[$class: 'RequesterRecipientProvider']]
               )
               withCredentials([
-                string(credentialsId: 'TELEGRAM_HEALTH_ALERT_BOT_TOKEN', variable: 'TELEGRAM_BOT_TOKEN'),
-                string(credentialsId: 'TELEGRAM_HEALTH_ALERT_CHAT_ID', variable: 'TELEGRAM_CHAT_ID'),
+                string(credentialsId: 'TELEGRAM_ALERT_BOT_TOKEN', variable: 'TELEGRAM_BOT_TOKEN'),
+                string(credentialsId: 'TELEGRAM_ALERT_CHAT_ID', variable: 'TELEGRAM_CHAT_ID'),
               ]) {
                 container('application-health-tester') {
                   sh '''
