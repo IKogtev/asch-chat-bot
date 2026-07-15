@@ -18,6 +18,10 @@ pipeline {
     )
   }
 
+  triggers {
+    cron('H */4 * * *')
+  }
+
   options {
     skipDefaultCheckout(true)
   }
@@ -37,7 +41,8 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: application-health-tester
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.7-amd64
+                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.7-amd64
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:102346bde3ef1099d7385430a1647b9cd0670a0a78b871ea7b2416742f79acfc
                   command:
                     - cat
                   tty: true
@@ -70,16 +75,19 @@ pipeline {
                 *x*) was_x=1 ;;
               esac
               set +x
-              if [ -z "${TC_TASK_FILE_LOCAL:-}" ]; then
-                echo "ERROR: TC_TASK_FILE_LOCAL is empty. Please upload an Excel file in job parameters."
-                exit 2
+              excel_file="/app/ping_nstya_bot.xlsx"
+              if [ -n "${TC_TASK_FILE_LOCAL:-}" ] && [ "${TC_TASK_FILE_LOCAL}" != "null" ]; then
+                excel_file="/app/${TC_TASK_FILE_LOCAL_FILENAME}"
+                printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "$excel_file"
+                echo "Using uploaded file: $excel_file"
+              else
+                echo "Using scheduled health-check file: $excel_file"
               fi
-              printf "%s" "${TC_TASK_FILE_LOCAL}" | base64 -d > "/app/${TC_TASK_FILE_LOCAL_FILENAME}"
               if [ "$was_x" -eq 1 ]; then
                 set -x
               fi
               set +e
-              python3 /app/application_health_tester.py --excel "/app/${TC_TASK_FILE_LOCAL_FILENAME}" --out /app
+              python3 /app/application_health_tester.py --excel "$excel_file" --out /app
               tester_status=$?
               set -e
               mkdir -p "${WORKSPACE}/tester"
