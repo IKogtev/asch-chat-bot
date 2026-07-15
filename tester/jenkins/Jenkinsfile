@@ -129,15 +129,25 @@ pipeline {
       post {
         success {
           archiveArtifacts artifacts: 'tester/REPORT_*.xlsx, tester/REPORT_*.png, tester/REPORT_*.html, tester/answers_*.parquet, tester/answers_*.csv', allowEmptyArchive: true
-          emailext(
-            subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Artifacts",
-            mimeType: 'text/html',
-            body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
-                     Build URL: ${env.BUILD_URL}<br/>
-                     ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>""",
-            attachmentsPattern: 'tester/REPORT_*.xlsx, tester/REPORT_*.png, tester/REPORT_*.html',
-            recipientProviders: [[$class: 'RequesterRecipientProvider']]
-          )
+          wrap([$class: 'BuildUser']) {
+            script {
+              def requesterEmail = env.BUILD_USER_EMAIL?.trim()
+              if (!requesterEmail) {
+                echo 'Skipping email: the build requester has no Jenkins email address.'
+              } else {
+                echo "Sending report only to build requester: ${env.BUILD_USER_ID}"
+                mail(
+                  to: requesterEmail,
+                  subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Artifacts",
+                  mimeType: 'text/html',
+                  body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
+                           Build URL: ${env.BUILD_URL}<br/>
+                           ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>
+                           Download reports: <a href="${env.BUILD_URL}artifact/tester/">${env.BUILD_URL}artifact/tester/</a>"""
+                )
+              }
+            }
+          }
         }
       }
     }
