@@ -32,6 +32,11 @@ pipeline {
       defaultValue: '180',
       description: 'Optional ADK API timeout in seconds (default: 180 seconds)'
     )
+    string(
+      name: 'HEALTH_CHECK_EMAIL_TO',
+      defaultValue: 'it@nstdata.ru',
+      description: 'Comma-separated recipients for health-check email notifications'
+    )
   }
 
   options {
@@ -122,32 +127,44 @@ pipeline {
           archiveArtifacts artifacts: 'tester/HEALTH_CHECK_REPORT_*.xlsx, tester/HEALTH_CHECK_ALERT.txt', allowEmptyArchive: true
         }
         success {
-          emailext(
-            subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Application health report",
-            mimeType: 'text/html',
-            body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
-                     Build URL: ${env.BUILD_URL}<br/>
-                     ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>""",
-            attachmentsPattern: 'tester/HEALTH_CHECK_REPORT_*.xlsx',
-            recipientProviders: [[$class: 'RequesterRecipientProvider']]
-          )
+          script {
+            def recipients = params.HEALTH_CHECK_EMAIL_TO?.trim()
+            if (!recipients) {
+              echo 'Skipping email: HEALTH_CHECK_EMAIL_TO is empty.'
+            } else {
+              mail(
+                to: recipients,
+                subject: "[JENKINS] ${env.JOB_NAME} #${env.BUILD_NUMBER} - Application health report",
+                mimeType: 'text/html',
+                body: """Build ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.<br/>
+                         Build URL: ${env.BUILD_URL}<br/>
+                         ADK_API_BASE: ${env.ADK_API_BASE}<br/><br/>
+                         Download report: <a href="${env.BUILD_URL}artifact/tester/">${env.BUILD_URL}artifact/tester/</a>"""
+              )
+            }
+          }
         }
         failure {
           script {
             if (fileExists('tester/HEALTH_CHECK_ALERT.txt')) {
-              emailext(
-                subject: "[ALERT] chatbot-${env.ADK_ENV_NAME} is malfunctioning",
-                mimeType: 'text/plain',
-                body: """Application health check detected trigger matches.
+              def recipients = params.HEALTH_CHECK_EMAIL_TO?.trim()
+              if (recipients) {
+                mail(
+                  to: recipients,
+                  subject: "[ALERT] chatbot-${env.ADK_ENV_NAME} is malfunctioning",
+                  mimeType: 'text/plain',
+                  body: """Application health check detected trigger matches.
 
 ${readFile('tester/HEALTH_CHECK_ALERT.txt')}
 
 Build URL: ${env.BUILD_URL}
 ADK_API_BASE: ${env.ADK_API_BASE}
-""",
-                attachmentsPattern: 'tester/HEALTH_CHECK_REPORT_*.xlsx',
-                recipientProviders: [[$class: 'RequesterRecipientProvider']]
-              )
+Download report: ${env.BUILD_URL}artifact/tester/
+"""
+                )
+              } else {
+                echo 'Skipping alert email: HEALTH_CHECK_EMAIL_TO is empty.'
+              }
               withCredentials([
                 string(credentialsId: 'TELEGRAM_ALERT_BOT_TOKEN', variable: 'TELEGRAM_BOT_TOKEN'),
                 string(credentialsId: 'TELEGRAM_ALERT_CHAT_ID', variable: 'TELEGRAM_CHAT_ID'),
