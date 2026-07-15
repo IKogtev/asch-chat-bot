@@ -294,24 +294,60 @@ def apply_trigger_override_to_evaluation(tc_df: pd.DataFrame) -> pd.DataFrame:
     return tc_df
 
 
+def set_execution_status(tc_df: pd.DataFrame) -> pd.DataFrame:
+    tc_df = tc_df.copy()
+    errors = tc_df.get("adk_error", pd.Series("", index=tc_df.index)).fillna("").astype(str)
+    tc_df["execution_status"] = "completed"
+    tc_df.loc[errors.str.strip() != "", "execution_status"] = "failed"
+    tc_df.loc[errors == "Пустой вопрос", "execution_status"] = "not executed"
+    return tc_df
+
+
+def build_adk_outage_results(tc_df: pd.DataFrame, error_message: str) -> pd.DataFrame:
+    tc_df = tc_df.copy()
+    tc_df["answer"] = ""
+    tc_df["answer_raw"] = ""
+    tc_df["response_time"] = 0.0
+    tc_df["adk_error"] = error_message
+    tc_df["adk_session_id"] = ""
+    tc_df["execution_status"] = "not executed"
+    tc_df["trigger_matched"] = False
+    tc_df["trigger_cause"] = ""
+    tc_df["trigger_matched_text"] = ""
+    tc_df["accuracy"] = 0
+    tc_df["completeness"] = 0
+    tc_df["relevance"] = 0
+    tc_df["meets_criteria"] = False
+    tc_df["overall_score"] = 0
+    tc_df["explanation"] = "Проверка не выполнена: ADK недоступен"
+    return tc_df
+
+
 def save_health_check_report(
     tc_df: pd.DataFrame,
     *,
     base_filename: str,
     output_dir: Path,
     adk_api_base: str,
+    run_status: str = "completed",
+    run_error: str = "",
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     trigger_hits = tc_df[tc_df["trigger_matched"] == True]  # noqa: E712
+    processed_count = int(tc_df.get("execution_status", pd.Series("completed", index=tc_df.index)).isin(("completed", "failed")).sum())
+    not_executed_count = len(tc_df) - processed_count
 
     summary_rows = []
     if "Use case" in tc_df.columns:
         for use_case, group in tc_df.groupby("Use case"):
+            group_status = group.get("execution_status", pd.Series("completed", index=group.index))
             summary_rows.append(
                 {
                     "Код use case": use_case,
                     "Всего вопросов": len(group),
+                    "Обработано вопросов": int(group_status.isin(("completed", "failed")).sum()),
+                    "Не выполнено вопросов": int((group_status == "not executed").sum()),
                     "Срабатываний триггеров": int(group["trigger_matched"].sum()),
                     "Соответствие критериям (LLM)": int(group.get("meets_criteria", pd.Series(dtype=bool)).sum()),
                     "Общая оценка (сред)": round(float(group.get("overall_score", pd.Series(dtype=float)).mean() or 0), 2),
@@ -322,6 +358,8 @@ def save_health_check_report(
             {
                 "Код use case": "all",
                 "Всего вопросов": len(tc_df),
+                "Обработано вопросов": processed_count,
+                "Не выполнено вопросов": not_executed_count,
                 "Срабатываний триггеров": int(tc_df["trigger_matched"].sum()),
                 "Соответствие критериям (LLM)": int(tc_df.get("meets_criteria", pd.Series(dtype=bool)).sum()),
                 "Общая оценка (сред)": round(float(tc_df.get("overall_score", pd.Series(dtype=float)).mean() or 0), 2),
@@ -346,6 +384,8 @@ def save_health_check_report(
         "answer_raw": "Ответ ADK Agent (raw)",
         "adk_session_id": "ADK session id",
         "response_time": "Время ответа (сек)",
+        "execution_status": "Статус выполнения",
+        "adk_error": "Ошибка ADK",
         "trigger_matched": "Срабатывание триггера",
         "trigger_cause": "Причина (триггер)",
         "trigger_matched_text": "Совпавший фрагмент",
@@ -369,6 +409,8 @@ def save_health_check_report(
         "Ответ ADK Agent",
         "Ответ ADK Agent (raw)",
         "Время ответа (сек)",
+        "Статус выполнения",
+        "Ошибка ADK",
         "Срабатывание триггера",
         "Причина (триггер)",
         "Совпавший фрагмент",
@@ -390,7 +432,11 @@ def save_health_check_report(
                 {"Параметр": "Файл", "Значение": base_filename},
                 {"Параметр": "ADK environment", "Значение": adk_environment_display},
                 {"Параметр": "Сгенерировано", "Значение": report_datetime_display},
+                {"Параметр": "Статус запуска", "Значение": run_status},
+                {"Параметр": "Ошибка запуска", "Значение": run_error},
                 {"Параметр": "Всего вопросов", "Значение": len(tc_df)},
+                {"Параметр": "Обработано вопросов", "Значение": processed_count},
+                {"Параметр": "Не выполнено вопросов", "Значение": not_executed_count},
                 {"Параметр": "Срабатываний триггеров", "Значение": len(trigger_report_df)},
             ]
         )
@@ -429,6 +475,35 @@ def save_trigger_alert(tc_df: pd.DataFrame, output_dir: Path) -> Path:
         )
 
     alert_path.write_text("\n\n---\n\n".join(blocks) + "\n", encoding="utf-8")
+    return alert_path
+
+
+def save_operational_alert(
+    *,
+    output_dir: Path,
+    adk_api_base: str,
+    error_message: str,
+    total_questions: int,
+    processed_questions: int,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    alert_path = output_dir / "HEALTH_CHECK_ALERT.txt"
+    alert_path.write_text(
+        "\n".join(
+            [
+                "Application health check failed before question processing.",
+                "",
+                "Failure type: ADK_UNREACHABLE",
+                f"Reason: {error_message}",
+                f"ADK_API_BASE: {adk_api_base}",
+                f"Questions total: {total_questions}",
+                f"Questions processed: {processed_questions}",
+                f"Questions not executed: {total_questions - processed_questions}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return alert_path
 
 
@@ -489,14 +564,34 @@ def main() -> int:
     if not excel_path.exists():
         raise FileNotFoundError(f"Excel не найден: {excel_path}")
 
-    if not check_adk_health(ADK_API_BASE, timeout_sec=5):
-        raise RuntimeError("ADK agent недоступен по ADK_API_BASE (проверьте Ingress/Firewall/DNS).")
-
     tc_df, triggers_df = load_test_workbook(
         excel_path,
         questions_sheet=args.questions_sheet,
         triggers_sheet=args.triggers_sheet,
     )
+
+    if not check_adk_health(ADK_API_BASE, timeout_sec=5):
+        error_message = "ADK agent недоступен по ADK_API_BASE (проверьте Ingress/Firewall/DNS)."
+        tc_df = build_adk_outage_results(tc_df, error_message)
+        report_path = save_health_check_report(
+            tc_df,
+            base_filename=excel_path.stem,
+            output_dir=output_dir,
+            adk_api_base=ADK_API_BASE,
+            run_status="failed: ADK unreachable",
+            run_error=error_message,
+        )
+        alert_path = save_operational_alert(
+            output_dir=output_dir,
+            adk_api_base=ADK_API_BASE,
+            error_message=error_message,
+            total_questions=len(tc_df),
+            processed_questions=0,
+        )
+        logger.error("ADK недоступен; вопросы не обрабатывались")
+        logger.error("Отчет сохранен: %s", report_path)
+        logger.error("Оповещение сохранено: %s", alert_path)
+        return 1
 
     profile = build_adk_profile_state_delta(
         first_name=args.fake_first_name.strip() if args.fake_first_name else None
@@ -519,6 +614,7 @@ def main() -> int:
         run_initial_question=False,
         save_answers=False,
     )
+    tc_df = set_execution_status(tc_df)
 
     tc_df = check_all_triggers(tc_df, triggers_df)
 
