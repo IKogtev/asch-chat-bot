@@ -1,6 +1,9 @@
 import asyncio
 import json
 import uuid
+import os
+import requests
+import base64
 from typing import Dict, Any
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from langfuse import Langfuse
@@ -12,7 +15,10 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.events import Event
 from google.genai import types as genai_types
-from .config import experiment_trace_var
+from .config import webhook_mode_var 
+from utils.logger import setup_logger
+
+logger = setup_logger("webhoock_server")
 
 app_fastapi = FastAPI(title="Langfuse Experiment Webhook")
 langfuse = Langfuse()
@@ -43,7 +49,7 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
         )
     except Exception as e:
         if "already exist" in str(e).lower():
-            print(f"⚠️ Session {session_id} already exists (likely created by Runner). Continuing...")
+            logger.info(f"⚠️ Session {session_id} already exists (likely created by Runner). Continuing...")
         else:
             raise e
     
@@ -55,21 +61,33 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
     )
     
     final_text, route, intent, status = "", "", "", "ok"
-    async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=user_event.content):
-        if event.author == "root_agent" and event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    final_text += part.text
-        if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
-            delta = event.actions.state_delta
-            if '_dispatcher_result_parsed' in delta:
-                route = delta['_dispatcher_result_parsed'].get('route', '')
-                intent = delta['_dispatcher_result_parsed'].get('intent', '')
-                
+    tracer = trace.get_tracer("webhook_server")
+    adk_trace_id = None
+    with tracer.start_as_current_span("webhook_experiment_run") as root_span:
+        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=user_event.content):
+            if event.author == "root_agent" and event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        final_text += part.text
+            if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
+                delta = event.actions.state_delta
+                if '_dispatcher_result_parsed' in delta:
+                    route = delta['_dispatcher_result_parsed'].get('route', '')
+                    intent = delta['_dispatcher_result_parsed'].get('intent', '')
+        span_context = root_span.get_span_context()
+        if span_context.is_valid:
+            # Конвертируем 128-битный trace_id в 32-значную hex-строку, которую требует Langfuse
+            adk_trace_id = format(span_context.trace_id, '032x')
+
     if "не может быть обработан" in final_text.lower() or "переформулируйте" in final_text.lower():
         status, route = "blocked", "blocked"
-        
-    return {"final_text": final_text, "route": route, "intent": intent, "status": status}
+    return {
+        "final_text": final_text, 
+        "route": route, 
+        "intent": intent, 
+        "status": status,
+        "adk_trace_id": adk_trace_id # Возвращаем вызывающей стороне
+    }
 
 def _parse_dataset_input(raw_input: Any) -> Dict[str, Any]:
     """
@@ -91,60 +109,37 @@ def _parse_dataset_input(raw_input: Any) -> Dict[str, Any]:
 async def process_dataset_background(dataset_name: str, run_name: str):
     """Фоновая задача для запуска эксперимента по всему датасету."""
     try:
-        print(f"🚀 Starting experiment '{run_name}' for dataset '{dataset_name}'...")
+        logger.info(f"🚀 Запуск эксперимента '{run_name}' для датасета '{dataset_name}'...")
         dataset = langfuse.get_dataset(dataset_name)
         total_items = len(dataset.items)
-        print(f"Found {total_items} items in dataset.")
+        logger.info(f"Найдено {total_items} в датасете.")
         
         for idx, item in enumerate(dataset.items):
-            print(f"Processing item {idx + 1}/{total_items}...")
+            logger.info(f"Обработка элемента {idx + 1}/{total_items}...")
             input_data = _parse_dataset_input(item.input)
-            
-            # ИСПРАВЛЕНИЕ 3: Используем langfuse.trace() для гарантированно корректного создания корневого трейса
-            trace = langfuse.start_observation(
-                name="webhook_experiment_run",
-                as_type="span",
-                input=input_data,
-                metadata={"dataset_item_id": item.id}
-            )
-            
-            token = experiment_trace_var.set(trace)
+
+             # Включаем режим Webhook, чтобы rootagent.py НЕ создавал ручной трейс
+            token = webhook_mode_var.set(True)
             try:
-                # 4. Запускаем асинхронную логику агента
                 result = await run_agent_logic(input_data, idx)
+                adk_trace_id = result.pop("adk_trace_id", None)
                 
-                # 5. Обновляем трейс фактическим результатом
-                trace.update(output=result)
-                
-                # ИСПРАВЛЕНИЕ 2: Используем низкоуровневое API для связывания трейса с dataset run
-                langfuse.api.dataset_run_items.create(
-                    run_name=run_name,
-                    dataset_item_id=item.id,
-                    trace_id=trace.id
-                )
-            except Exception as e:
-                print(f"❌ Item {idx + 1} failed: {e}")
-                trace.update(output={"error": str(e)}, level="ERROR")
-                
-                # Связываем даже при ошибке, чтобы видеть упавшие кейсы в UI
-                langfuse.api.dataset_run_items.create(
-                    run_name=run_name,
-                    dataset_item_id=item.id,
-                    trace_id=trace.id
-                )
+                if adk_trace_id:
+                    # 2. Привязываем к Dataset Run (этот метод у вас уже сработал в логах!)
+                    langfuse.api.dataset_run_items.create(
+                        run_name=run_name,
+                        dataset_item_id=item.id,
+                        trace_id=adk_trace_id
+                    )
+                    logger.info(f"✅ Item {idx + 1} bound to ADK trace: {adk_trace_id}")
+                else:
+                    logger.info(f"⚠️ Item {idx + 1} failed to capture ADK trace_id.")
             finally:
-                # 7. Очищаем контекст и завершаем трейс
-                experiment_trace_var.reset(token)
-                trace.end()
-                # ИСПРАВЛЕНИЕ: Принудительно отправляем данные в Langfuse СРАЗУ после завершения каждого кейса.
-                # Это гарантирует, что в UI трейс появится в реальном времени, а не в конце всего прогона.
-                langfuse.flush()
+                webhook_mode_var.reset(token)
                 
-        # Отправляем все накопленные данные в Langfuse
-        langfuse.flush()
-        print(f"✅ Experiment '{run_name}' finished successfully!")
+        logger.info(f"✅ Experiment '{run_name}' finished successfully!")
     except Exception as e:
-        print(f"❌ Error processing dataset {dataset_name}: {e}")
+        logger.info(f"❌ Error processing dataset {dataset_name}: {e}")
 
 @app_fastapi.post("/webhook/langfuse-experiment")
 async def handle_langfuse_webhook(request: Request, background_tasks: BackgroundTasks):

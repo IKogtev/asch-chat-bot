@@ -51,6 +51,34 @@ class LangfuseLogger:
         
         return trace
 
+    def update_current_span(
+        self,
+        *,
+        input=None,
+        output=None,
+        metadata=None,
+        level=None,
+    ):
+        updates = {}
+
+        if input is not None:
+            updates["input"] = input
+
+        if output is not None:
+            updates["output"] = output
+
+        if metadata is not None:
+            updates["metadata"] = metadata
+
+        if level is not None:
+            updates["level"] = level
+
+        self.client.update_current_span(**updates)
+
+    def update_current_generation(self,):
+
+        self.client.update_current_generation()
+
     def end_trace(self, trace, output: Any = None):
         """Корректно завершает трейс."""
         if output is not None:

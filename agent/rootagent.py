@@ -16,7 +16,8 @@ from .config import (
     DATABASE_URL,
     COMPARE_FRAZE,
     PRODUCT_CARD_KIT_OFFER,
-    experiment_trace_var
+    experiment_trace_var,
+    webhook_mode_var
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
@@ -31,6 +32,8 @@ from .smart_fallback import generate_agent_fallback
 from collections import OrderedDict, deque
 import asyncpg
 from .langfuse_logger import langfuse_logger
+import json
+from opentelemetry import trace as otel_trace
 
 logger = setup_logger("root_agent", "agent.log")
 
@@ -195,6 +198,14 @@ class RootAgent(BaseAgent):
         """Финальное событие root-агента."""
         # --- LANGFUSE: Сохраняем финальный ответ для трейса ---
         ctx.session.state["_langfuse_final_output"] = text
+        # --- OPENTELEMETRY: Запись output в текущий активный спан ---
+        current_span = otel_trace.get_current_span()
+        if current_span and current_span.is_recording():
+            # Вариант А: Если вы хотите передать чистый текст ответа (рекомендуется для большинства UI)
+            current_span.set_attribute("langfuse.trace.output", text)
+            current_span.set_attribute("langfuse.observation.output", text)
+            current_span.set_attribute("output.value", text)
+            current_span.set_attribute("output.mime_type", "text/plain")
         state_delta: Dict[str, Any] = {}
         session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
         bot_action = session_state.get("_bot_action")
@@ -1356,6 +1367,42 @@ class RootAgent(BaseAgent):
                 return [rank]
         return []
 
+    def _extract_clean_state(self, state) -> dict:
+        """Безопасно извлекает только JSON-сериализуемые примитивы из стейта сессии."""
+        if state is None:
+            return {}
+        
+        # Обрабатываем кастомные объекты стейта (например, Pydantic-модели или ADK State)
+        if hasattr(state, "to_dict") and callable(getattr(state, "to_dict")):
+            try:
+                state_dict = state.to_dict()
+            except Exception:
+                state_dict = {}
+        elif hasattr(state, "__dict__"):
+            state_dict = state.__dict__
+        elif isinstance(state, dict):
+            state_dict = state
+        else:
+            try:
+                state_dict = dict(state)
+            except Exception:
+                state_dict = {}
+
+        clean = {}
+        for k, v in state_dict.items():
+            if k.startswith("_"):  # Пропускаем служебные приватные переменные
+                continue
+            # Оставляем только плоские типы или простые структуры для логов
+            if isinstance(v, (str, int, float, bool, type(None))):
+                clean[k] = v
+            elif isinstance(v, (list, dict)):
+                try:
+                    json.dumps(v, ensure_ascii=False)
+                    clean[k] = v
+                except Exception:
+                    pass
+        return clean
+
     async def _run_json_leaf_agent(
         self,
         ctx: InvocationContext,
@@ -1367,16 +1414,57 @@ class RootAgent(BaseAgent):
         validation_error_user_message: str,
     ) -> AsyncGenerator[Event, None]:
         """Запускает leaf-агента с JSON-валидацией через `json_leaf_runner`."""
-        async for event in run_json_leaf_agent(
-            ctx=ctx,
-            agent=agent,
-            output_key=output_key,
-            parsed_state_key=parsed_state_key,
-            validator=validator,
-            log_label=log_label,
-            validation_error_user_message=validation_error_user_message,
-        ):
-            yield event
+        # Получаем трассировщик для суб-агентов
+        sub_tracer = otel_trace.get_tracer("gcp.vertex.agent")
+        # Создаем дочерний спан. Он автоматически станет дочерним для активного спана рут-агента
+        with sub_tracer.start_as_current_span(f"agent_run:{agent.name}") as span:
+            state_input = self._extract_clean_state(ctx.session.state)
+            agent_input = {
+                "agent_name": agent.name,
+                "target_keys": {"output": output_key, "parsed": parsed_state_key},
+                "session_state_before": state_input
+            }
+            agent_input_str = json.dumps(agent_input, ensure_ascii=False)
+            
+            # Пишем вход в наш ручной спан
+            if span.is_recording():
+                span.set_attribute("input.value", agent_input_str)
+                span.set_attribute("langfuse.observation.input", agent_input_str)
+                span.set_attribute("input.mime_type", "application/json")
+                
+            try:
+                # Запускаем оригинальный генератор
+                async for event in run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=agent,
+                    output_key=output_key,
+                    parsed_state_key=parsed_state_key,
+                    validator=validator,
+                    log_label=log_label,
+                    validation_error_user_message=validation_error_user_message,
+                ):        
+                    yield event
+            except Exception as exc:
+                if span.is_recording():
+                    span.record_exception(exc)
+                    span.set_status(otel_trace.StatusCode.ERROR, str(exc))
+                raise exc
+            finally:
+                # Этот блок гарантированно выполнится при успехе, ошибке и GeneratorExit (при break снаружи)
+                if span.is_recording():
+                    raw_output = ctx.session.state.get(output_key)
+                    parsed_output = ctx.session.state.get(parsed_state_key)
+                    state_output = self._extract_clean_state(ctx.session.state)
+                    
+                    agent_output = {
+                        "raw_output": raw_output,
+                        "parsed_output": parsed_output,
+                        "session_state_after": state_output
+                    }
+                    agent_output_str = json.dumps(agent_output, ensure_ascii=False)
+                    span.set_attribute("output.value", agent_output_str)
+                    span.set_attribute("langfuse.observation.output", agent_output_str)
+                    span.set_attribute("output.mime_type", "application/json")
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
@@ -1403,15 +1491,15 @@ class RootAgent(BaseAgent):
                         latest_cached_state = user_history[-1]
                         for key, value in latest_cached_state.items():
                             ctx.session.state[key] = value
-        # --- LANGFUSE: СТАРТ ГЛОБАЛЬНОГО ТРЕЙСА ---
-        is_webhook_experiment = experiment_trace_var.get() is not None
-        trace = langfuse_logger.start_trace(
-            name="root_agent_processing",
-            user_id=ctx.session.id,
-            input_text=user_text,
-            metadata={"session_id": ctx.session.id}
-        )
-        ctx.session.state["_langfuse_trace"] = trace
+        # Перехватываем автоматически созданный корневой спан от SDK
+        root_span = otel_trace.get_current_span()
+        if root_span and root_span.is_recording():
+            root_span.set_attribute("langfuse.trace.name", "root_agent")
+            # Записываем вход во всех возможных конвенциях для 100% совместимости
+            root_span.set_attribute("langfuse.trace.input", user_text)
+            root_span.set_attribute("langfuse.observation.input", user_text)
+            root_span.set_attribute("input.value", user_text)
+            root_span.set_attribute("input.mime_type", "text/plain")
         try:
             await self._trim_dialog_memory(ctx)
 
@@ -1752,7 +1840,6 @@ class RootAgent(BaseAgent):
 
         except Exception as exc:
             # --- LANGFUSE: ЛОГИРУЕМ КРИТИЧЕСКУЮ ОШИБКУ В ТРЕЙС ---
-            langfuse_logger.error(trace, exc)
             logger.error("RootAgent failure: %s", exc, exc_info=True)
             message = (
                 f"DEBUG: {type(exc).__name__}: {exc}"
@@ -1763,14 +1850,22 @@ class RootAgent(BaseAgent):
             yield self._build_final_event_with_history(ctx, user_text, message)
         
         finally: 
-            # --- LANGFUSE: ЗАВЕРШЕНИЕ ТРЕЙСА ---
-            final_output = ctx.session.state.get("_langfuse_final_output", "No output captured")
-            # Трейс принадлежит вебхуку, и он сам его корректно закроет в своем цикле.
-            if is_webhook_experiment:
-                trace.update(output=final_output)
-            else:
-                # Для обычного режима (Telegram бот) закрываем как раньше
-                langfuse_logger.end_trace(trace, output=final_output)
+            if root_span and root_span.is_recording():
+                final_text = ctx.session.state.get("_root_final_text") or ""
+                bot_action = ctx.session.state.get("_bot_action") or {}
+                
+                root_span.set_attribute("output.value", json.dumps({
+                    "final_text": final_text,
+                    "bot_action": bot_action
+                }, ensure_ascii=False))
+                root_span.set_attribute("output.mime_type", "application/json")
+            # # Трейс принадлежит вебхуку, и он сам его корректно закроет в своем цикле.
+            # if is_webhook_experiment:
+            #     trace.update(output=final_output)
+            # else:
+            #     # Для обычного режима (Telegram бот) закрываем как раньше
+            #     langfuse_logger.end_trace(trace, output=final_output)
+            pass
 
     async def _handle_doc_search(
         self,
@@ -1779,45 +1874,78 @@ class RootAgent(BaseAgent):
         intent: str,
         search_query: str = "",
     ) -> AsyncGenerator[Event, None]:
+        sub_tracer = otel_trace.get_tracer("gcp.vertex.agent")
         
-        if intent == "file_download":
-            ranks = self._extract_ranks_with_words(user_message)
-            if ranks:
-                ctx.session.state["_bot_action"] = {
-                    "type": "download_by_ranks",
-                    "ranks": ranks,
-                }
-                ctx.session.state["_root_final_text"] = ""
+        with sub_tracer.start_as_current_span("agent_run:doc_search_orchestrator") as span:
+            if span.is_recording():
+                state_input = self._extract_clean_state(ctx.session.state)
+                span.set_attribute("input.value", json.dumps({
+                    "user_message": user_message,
+                    "intent": intent,
+                    "search_query": search_query,
+                    "session_state_before": state_input
+                }, ensure_ascii=False))
+                span.set_attribute("input.mime_type", "application/json")
+                
+            try:
+
+                if intent == "file_download":
+                    ranks = self._extract_ranks_with_words(user_message)
+                    if ranks:
+                        ctx.session.state["_bot_action"] = {
+                            "type": "download_by_ranks",
+                            "ranks": ranks,
+                        }
+                        ctx.session.state["_root_final_text"] = ""
+                        logger.info(
+                            "doc_search file_download: bot_action download_by_ranks ranks=%s",
+                            ranks,
+                        )
+                        return
+                    base_query = search_query if search_query else user_message
+                    doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+                elif intent in ("show_more", "show_all"):
+                    ctx.session.state["_bot_action"] = {
+                        "type": "show_doc_list_more" if intent == "show_more" else "show_doc_list_all",
+                    }
+                    ctx.session.state["_root_final_text"] = ""
+                    logger.info("doc_search %s: bot_action %s", intent, ctx.session.state["_bot_action"]["type"])
+                    return
+                else:
+                    # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
+                    base_query = search_query if search_query else user_message
+                    doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
+                    
                 logger.info(
-                    "doc_search file_download: bot_action download_by_ranks ranks=%s",
-                    ranks,
+                    "doc_search route: query=%s intent=%s",
+                    truncate_for_log(doc_search_query, 300),
+                    intent,
                 )
-                return
-            base_query = search_query if search_query else user_message
-            doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
-        elif intent in ("show_more", "show_all"):
-            ctx.session.state["_bot_action"] = {
-                "type": "show_doc_list_more" if intent == "show_more" else "show_doc_list_all",
-            }
-            ctx.session.state["_root_final_text"] = ""
-            logger.info("doc_search %s: bot_action %s", intent, ctx.session.state["_bot_action"]["type"])
-            return
-        else:
-            # ИСПОЛЬЗУЕМ search_query от диспетчера/follow-up, если он есть, иначе fallback на user_message
-            base_query = search_query if search_query else user_message
-            doc_search_query = await self.glossary_lookup.build_doc_search_query(base_query)
-            
-        logger.info(
-            "doc_search route: query=%s intent=%s",
-            truncate_for_log(doc_search_query, 300),
-            intent,
-        )
 
-        ctx.session.state["doc_search_intent"] = intent
-        ctx.session.state["doc_search_query"] = doc_search_query
+                ctx.session.state["doc_search_intent"] = intent
+                ctx.session.state["doc_search_query"] = doc_search_query
 
-        async for event in self.doc_search_orchestrator.run_async(ctx):
-            yield event
+                async for event in self.doc_search_orchestrator.run_async(ctx):
+                    yield event
+
+            except Exception as exc:
+                if span.is_recording():
+                    span.record_exception(exc)
+                    span.set_status(otel_trace.StatusCode.ERROR, str(exc))
+                raise exc
+            finally:
+                if span.is_recording():
+                    final_text = ctx.session.state.get("_root_final_text")
+                    bot_action = ctx.session.state.get("_bot_action")
+                    state_output = self._extract_clean_state(ctx.session.state)
+                    
+                    span.set_attribute("output.value", json.dumps({
+                        "final_text": final_text,
+                        "bot_action": bot_action,
+                        "session_state_after": state_output
+                    }, ensure_ascii=False))
+                    span.set_attribute("output.mime_type", "application/json")
+                
 
     async def _handle_kb_answer(
         self,

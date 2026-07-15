@@ -3,9 +3,11 @@ import os
 import warnings
 from dotenv import load_dotenv
 from utils.logger import setup_logger
-import contextvars
+from contextvars import ContextVar
 # переменная для запуска экспериментов внутри langfuse
-experiment_trace_var = contextvars.ContextVar('experiment_trace', default=None)
+experiment_trace_var = ContextVar('experiment_trace', default=None)
+# Флаг, указывающий, что мы сейчас в режиме Webhook-эксперимента
+webhook_mode_var = ContextVar('webhook_mode_var', default=False)
 
 load_dotenv(override=True)
 

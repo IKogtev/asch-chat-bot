@@ -16,6 +16,9 @@ from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
 from .doc_search_validation import DocSearchRetryableValidationError
 from .helpers import extract_json, truncate_for_log
 from .langfuse_logger import langfuse_logger
+from opentelemetry import context
+from opentelemetry import trace as otel_trace
+from opentelemetry.trace import Status, StatusCode
 
 logger = setup_logger("json_leaf_runner", "agent.log")
 
@@ -300,6 +303,99 @@ def _extract_function_call_names(event: Event) -> list[str]:
             names.append(name)
     return names
 
+def _extract_clean_state(state: Any) -> dict:
+    """Безопасно извлекает только JSON-сериализуемые примитивы из стейта сессии."""
+    if state is None:
+        return {}
+    
+    if hasattr(state, "to_dict") and callable(getattr(state, "to_dict")):
+        try:
+            state_dict = state.to_dict()
+        except Exception:
+            state_dict = {}
+    elif hasattr(state, "__dict__"):
+        state_dict = state.__dict__
+    elif isinstance(state, dict):
+        state_dict = state
+    else:
+        try:
+            state_dict = dict(state)
+        except Exception:
+            state_dict = {}
+
+    clean = {}
+    for k, v in state_dict.items():
+        if k.startswith("_"):  # Пропускаем служебные приватные переменные
+            continue
+        # Оставляем только плоские типы или простые структуры для логов
+        if isinstance(v, (str, int, float, bool, type(None))):
+            clean[k] = v
+        elif isinstance(v, (list, dict)):
+            try:
+                json.dumps(v, ensure_ascii=False)
+                clean[k] = v
+            except Exception:
+                pass
+    return clean
+
+def _extract_text_from_event(event: Any) -> str:
+    """Безопасно извлекает текстовое содержимое из событий Google ADK."""
+    if not event:
+        return ""
+    
+    # 1. Проверяем стандартную структуру ADK (event.content.parts)
+    if hasattr(event, "content") and event.content:
+        content = event.content
+        if hasattr(content, "parts") and content.parts:
+            parts_text = []
+            for part in content.parts:
+                if hasattr(part, "text") and part.text:
+                    parts_text.append(part.text)
+                elif isinstance(part, str):
+                    parts_text.append(part)
+            return "".join(parts_text)
+        elif isinstance(content, str):
+            return content
+            
+    # 2. Фолбек на плоский текст события
+    if hasattr(event, "text") and event.text:
+        return event.text
+        
+    return ""
+
+async def instrumented_agent_run(agent: Any, ctx: Any, input_data: Any) -> AsyncGenerator[Any, None]:
+    """
+    Обертка над генератором ADK, которая перехватывает активный спан 
+    и обогащает его входными/выходными данными для Langfuse.
+    """
+    full_output = ""
+    span_enriched = False
+    
+    # Запускаем оригинальный генератор ADK
+    async for event in agent.run_async(ctx):
+        # Получаем текущий активный спан ADK (например, "invoke_agent owasp_agent")
+        current_span = otel_trace.get_current_span()
+        
+        if current_span and current_span.is_recording():
+            # Записываем Input на первой итерации
+            if not span_enriched:
+                input_str = input_data if isinstance(input_data, str) else json.dumps(input_data, ensure_ascii=False)
+                
+                # Записываем как в стандартном OpenInference, так и в специфичных для Langfuse ключах
+                current_span.set_attribute("input.value", input_str)
+                current_span.set_attribute("langfuse.observation.input", input_str)
+                span_enriched = True
+            
+            # Собираем чанки выходного текста
+            chunk_text = _extract_text_from_event(event)
+            if chunk_text:
+                full_output += chunk_text
+                
+                # Обновляем Output на лету (безопасно при стриминге и раннем выходе)
+                current_span.set_attribute("output.value", full_output)
+                current_span.set_attribute("langfuse.observation.output", full_output)
+        
+        yield event
 
 async def run_json_leaf_agent(
     ctx: InvocationContext,
@@ -310,28 +406,47 @@ async def run_json_leaf_agent(
     log_label: str,
     validation_error_user_message: str,
 ) -> AsyncGenerator[Event, None]:
-    # LANGFUSE: СОЗДАНИЕ СПАНА ДЛЯ АГЕНТА
-    trace = ctx.session.state.get("_langfuse_trace")
-    span = None
-    if trace:
-        try:
-            span = langfuse_logger.create_span(
-                trace=trace,
-                name=log_label,
-                input={
-                    "user_query": ctx.session.state.get("user_query"),
-                    "search_query": ctx.session.state.get("search_query"),
-                }
-            )
-        except Exception as e:
-            logger.warning(f"Failed to create Langfuse span: {e}")
+    # OPENTELEMETRY: СОЗДАНИЕ ВЛОЖЕННОГО СПАНА
+    tracer = otel_trace.get_tracer("json_leaf_runner")
+    
+    # Создаем спан. Благодаря OTel он автоматически станет "ребенком" активного агента ADK
+    span = tracer.start_span(log_label)
+    
+    # Динамически собираем актуальные параметры сессии перед запуском агента
+    state_input = _extract_clean_state(ctx.session.state)
+
+    # Записываем входящие параметры в семантический атрибут 'input'
+    span.set_attribute(
+        "input.value",
+        json.dumps({
+            "agent_name": agent.name,
+            "log_label": log_label,
+            "session_state_before": state_input,
+            # Оставляем корневые ключи для обратной совместимости
+            "user_query": ctx.session.state.get("user_query"),
+            "search_query": ctx.session.state.get("search_query"),
+        }, ensure_ascii=False)
+    )
+    span.set_attribute("input.mime_type", "application/json")
+
+    # Делаем спан активным в OTel-контексте для текущей корутины/генератора
+    token = context.attach(otel_trace.set_span_in_context(span))
     try:
         _doc_timing = log_label == "doc_search_result_json"
         _t_llm0 = time.monotonic() if _doc_timing else None
         tool_calls: list[str] = []
         tool_event_summaries: list[dict[str, str]] = []
         kb_search_response_texts: list[str] = []
-        async for event in agent.run_async(ctx):
+        # 1. Достаем входящий запрос для обогащения внутреннего спана ADK
+        agent_input = (
+            ctx.session.state.get("user_query") 
+            or ctx.session.state.get("search_query") 
+            or ""
+        )
+
+        # 2. ЗАМЕНЯЕМ оригинальный `agent.run_async(ctx)` на нашу обертку:
+        async for event in instrumented_agent_run(agent, ctx, input_data=agent_input):
+        # async for event in agent.run_async(ctx):
             tool_calls.extend(_extract_function_call_names(event))
             tool_event_summaries.extend(_extract_tool_event_summaries(event))
             if _doc_timing:
@@ -421,27 +536,35 @@ async def run_json_leaf_agent(
 
         ctx.session.state[parsed_state_key] = parsed
         logger.debug("%s parsed: %s", log_label, json.dumps(parsed, ensure_ascii=False))
-        # --- LANGFUSE: УСПЕШНОЕ ЗАВЕРШЕНИЕ СПАНА ---
-        if span:
-            try:
-                # 1. Сначала обновляем спан данными (и сырым ответом LLM, и распарсенным JSON)
-                # Это критически важно для отладки: вы увидите, что именно вернула модель до парсинга
-                span.update(
-                    output={
-                        "raw_llm_response": str(raw_payload)[:2000], # Ограничиваем длину для безопасности
-                        "parsed_result": parsed
-                    }
-                )
-                # 2. Только потом завершаем спан
-                span.end()
-            except Exception as e:
-                logger.warning(f"Failed to update/end Langfuse span: {e}")
+        # --- OPENTELEMETRY: ЗАПИСЬ УСПЕШНОГО РЕЗУЛЬТАТА ---
+        # Делаем финальный слепок состояния сессии
+        state_output = _extract_clean_state(ctx.session.state)
+        span.set_attribute(
+            "output.value",
+            json.dumps({
+                "raw_llm_response": str(raw_payload)[:2000],
+                "parsed_result": parsed,
+                "session_state_after": state_output
+            }, ensure_ascii=False)
+        )
+        span.set_attribute("output.mime_type", "application/json")
+        span.set_status(Status(StatusCode.OK))
     except Exception as exc:
         # --- LANGFUSE: ЗАВЕРШЕНИЕ СПАНА С ОШИБКОЙ ---
-        if span:
-            try:
-                span.update(output={"error": str(exc), "type": type(exc).__name__})
-                span.end()
-            except Exception as e:
-                logger.warning(f"Failed to end Langfuse span with error: {e}")
+        span.record_exception(exc)
+        span.set_status(Status(StatusCode.ERROR, description=str(exc)))
+        state_output = _extract_clean_state(ctx.session.state)
+        span.set_attribute(
+            "output.value",
+            json.dumps({
+                "error": str(exc),
+                "type": type(exc).__name__,
+                "session_state_after": state_output
+            }, ensure_ascii=False)
+        )
+        span.set_attribute("output.mime_type", "application/json")
         raise
+    finally:
+        # Очищаем контекст через context.detach и закрываем спан
+        context.detach(token)
+        span.end()
