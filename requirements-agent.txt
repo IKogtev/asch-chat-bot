@@ -5,3 +5,5 @@ litellm==1.81.15
 python-dotenv==1.0.1
 asyncpg==0.31.0
 langfuse
+google-adk[otel-gcp]>=0.1.0
+opentelemetry-exporter-otlp>=1.20.0

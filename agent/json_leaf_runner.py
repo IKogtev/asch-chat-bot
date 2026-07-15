@@ -424,14 +424,24 @@ async def run_json_leaf_agent(
         # --- LANGFUSE: УСПЕШНОЕ ЗАВЕРШЕНИЕ СПАНА ---
         if span:
             try:
-                span.end(output=parsed)
+                # 1. Сначала обновляем спан данными (и сырым ответом LLM, и распарсенным JSON)
+                # Это критически важно для отладки: вы увидите, что именно вернула модель до парсинга
+                span.update(
+                    output={
+                        "raw_llm_response": str(raw_payload)[:2000], # Ограничиваем длину для безопасности
+                        "parsed_result": parsed
+                    }
+                )
+                # 2. Только потом завершаем спан
+                span.end()
             except Exception as e:
-                logger.warning(f"Failed to end Langfuse span: {e}")
+                logger.warning(f"Failed to update/end Langfuse span: {e}")
     except Exception as exc:
         # --- LANGFUSE: ЗАВЕРШЕНИЕ СПАНА С ОШИБКОЙ ---
         if span:
             try:
-                span.end(output={"error": str(exc), "type": type(exc).__name__})
+                span.update(output={"error": str(exc), "type": type(exc).__name__})
+                span.end()
             except Exception as e:
                 logger.warning(f"Failed to end Langfuse span with error: {e}")
         raise

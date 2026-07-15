@@ -15,7 +15,8 @@ from .config import (
     KB_DOCUMENTS_COLLECTION,
     DATABASE_URL,
     COMPARE_FRAZE,
-    PRODUCT_CARD_KIT_OFFER
+    PRODUCT_CARD_KIT_OFFER,
+    experiment_trace_var
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
@@ -1403,6 +1404,7 @@ class RootAgent(BaseAgent):
                         for key, value in latest_cached_state.items():
                             ctx.session.state[key] = value
         # --- LANGFUSE: СТАРТ ГЛОБАЛЬНОГО ТРЕЙСА ---
+        is_webhook_experiment = experiment_trace_var.get() is not None
         trace = langfuse_logger.start_trace(
             name="root_agent_processing",
             user_id=ctx.session.id,
@@ -1763,7 +1765,12 @@ class RootAgent(BaseAgent):
         finally: 
             # --- LANGFUSE: ЗАВЕРШЕНИЕ ТРЕЙСА ---
             final_output = ctx.session.state.get("_langfuse_final_output", "No output captured")
-            langfuse_logger.end_trace(trace, output=final_output)
+            # Трейс принадлежит вебхуку, и он сам его корректно закроет в своем цикле.
+            if is_webhook_experiment:
+                trace.update(output=final_output)
+            else:
+                # Для обычного режима (Telegram бот) закрываем как раньше
+                langfuse_logger.end_trace(trace, output=final_output)
 
     async def _handle_doc_search(
         self,

@@ -107,6 +107,8 @@ services:
       - LANGFUSE_BASE_URL=http://host.docker.internal:3000
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - GOOGLE_ADK_TRACING_ENABLED=false
+      - OTEL_SERVICE_NAME="Nastya" 
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
@@ -114,6 +116,69 @@ services:
     depends_on:
       migration:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      kbsearch:
+        condition: service_healthy
+      faq:
+        condition: service_healthy
+# сервис для запуска webhook тестирования внутри langfuse
+# после запуска важно на локальном хосте выполнить команду: lt --port 8003
+  webhook-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent 
+    container_name: aszh-langfuse-webhook
+    restart: unless-stopped
+    command: >
+      sh -c "cd /app && uvicorn agent.webhook_server:app_fastapi --host 0.0.0.0 --port 80"
+    ports:
+      # Маппим порт 80 контейнера на порт 8003 хоста. 
+      # Именно этот порт (8003) мы укажем в Langfuse UI.
+      - "8003:80"
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=${AGENT_LOG_LEVEL:-DEBUG}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL}
+      - LLM_API_MODEL=${LLM_API_MODEL}
+      - NSTYA_DATA_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data
+      - PORT=80
+      - HOST=0.0.0.0
+      - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      
+      # MCP URLs (внутри Docker-сети используем имена сервисов)
+      - KBSEARCH_MCP_URL=http://kbsearch:7001/kbsearch/mcp
+      - MCP_TOKEN=${MCP_TOKEN}
+      - FAQSEARCH_MCP_URL=http://faq:7000/faq_rag/mcp
+      - FAQSEARCH_MCP_TOKEN=${FAQSEARCH_MCP_TOKEN:-${MCP_TOKEN:-REDACTED_EXAMPLE}}
+      - DBHUB_MCP_URL=${DBHUB_MCP_URL:-http://dbhub:8080/mcp}
+      - DBHUB_MCP_TOKEN=${DBHUB_MCP_TOKEN:-${MCP_TOKEN}}
+      
+      # Langfuse конфигурация для SDK внутри вебхука
+      - LANGFUSE_BASE_URL=http://host.docker.internal:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      
+      # Настройки агента
+      - ACTIVE_DOCUMENTS_PATH=manager/kb
+      - ACTIVE_DOCUMENTS_COLLECTION=kb_collection
+      - KB_DOCUMENTS_PATH=knowledge_base
+      - KB_DOCUMENTS_COLLECTION=knowledge_base_collection
+      - FAQ_DOCUMENTS_PATH=manager/faq
+      - FAQ_DOCUMENTS_COLLECTION=faq_collection
+      - AGENT_DIALOG_MEMORY_MAX_TURNS=${AGENT_DIALOG_MEMORY_MAX_TURNS:-3}
+      - KB_TOP_K=${KB_TOP_K:-20}
+      - ROOT_TEMPERATURE=0.8
+      - DOC_SEARCH_TEMPERATURE=0.0
+      - KB_ANSWER_TEMPERATURE=0.0
+    volumes:
+      - ./kb_storage/prompts:/app/agent/prompts
+    networks:
+      - aszh-bot-network
+    depends_on:
       postgres:
         condition: service_healthy
       kbsearch:

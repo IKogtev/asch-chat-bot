@@ -3,6 +3,9 @@ import os
 import warnings
 from dotenv import load_dotenv
 from utils.logger import setup_logger
+import contextvars
+# переменная для запуска экспериментов внутри langfuse
+experiment_trace_var = contextvars.ContextVar('experiment_trace', default=None)
 
 load_dotenv(override=True)
 
