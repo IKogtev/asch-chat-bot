@@ -50,6 +50,7 @@ pipeline {
         LLM_API_URL = "${params.LLM_API_URL}"
         LLM_API_MODEL = "${params.LLM_API_MODEL}"
         TC_TASK_FILE_LOCAL = "${params.TC_TASK_FILE_LOCAL}"
+        TELEGRAM_PROXY = "socks5://10.1.1.12:1080"
       }
 
       steps {
@@ -119,6 +120,21 @@ ADK_API_BASE: ${env.ADK_API_BASE}
                 attachmentsPattern: 'tester/HEALTH_CHECK_REPORT_*.xlsx',
                 recipientProviders: [[$class: 'RequesterRecipientProvider']]
               )
+              withCredentials([
+                string(credentialsId: 'TELEGRAM_HEALTH_ALERT_BOT_TOKEN', variable: 'TELEGRAM_BOT_TOKEN'),
+                string(credentialsId: 'TELEGRAM_HEALTH_ALERT_CHAT_ID', variable: 'TELEGRAM_CHAT_ID'),
+              ]) {
+                container('application-health-tester') {
+                  sh '''
+                    python3 /app/send_health_alert_telegram.py \
+                      --alert-file "${WORKSPACE}/tester/HEALTH_CHECK_ALERT.txt" \
+                      --env-name "${ADK_ENV_NAME}" \
+                      --build-url "${BUILD_URL}" \
+                      --adk-api-base "${ADK_API_BASE}" \
+                      || echo "WARNING: failed to send Telegram alert"
+                  '''
+                }
+              }
             }
           }
         }
