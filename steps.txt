@@ -829,3 +829,6 @@ Please add to plan:
 =========
 correct plan:
 - we do not planning separatly test this changes and moving to qwen36
+- prompts shuild be in russian
+==========
+Now we are splitting product_selection_agent into 2 agents. Maybe we should split it into 5 agents instead of 2 ? Analize this version and write short list pros and cons for this approach.

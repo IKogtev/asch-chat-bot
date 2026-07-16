@@ -11,7 +11,7 @@
 2. **`GlossaryLookup`** в начале каждого turn находит термины в сообщении пользователя и, по маршруту, **расширяет поисковые запросы в коде** (не только через LLM).
 3. В state попадают **два параллельных канала**:
    - `from_glossary` — справочник `[term, definition, category]` для промптов;
-   - расширенные строки запроса — `search_query`, `product_selection_search_query`, `doc_search_query`.
+   - расширенные строки запроса — `search_query`, `product_info_search_query`, `product_filter_search_query`, `doc_search_query`.
 4. Категории **`продукт`**, **`сокращение`**, **`термин`** задают разное поведение: замена, дополнение или только контекст для агента.
 
 ---
@@ -96,9 +96,9 @@ flowchart TD
 
     E --> H[expand_search_query]
     H --> I["search_query в state → kb_answer"]
-    H --> J["product_selection_search_query в state"]
+    H --> J["product_info_search_query и product_filter_search_query в state"]
 
-    C --> K[dispatcher / kb_answer / product_selection / doc_search]
+    C --> K[dispatcher / kb_answer / product_info / product_filter / doc_search]
     I --> K
     J --> K
     G --> L[doc_search_agent → kb_search]
@@ -118,9 +118,10 @@ flowchart TD
 |---------|---------------------|------------|-------|
 | `doc_search` | `user_message` | `doc_search_query` | `build_doc_search_query(user_message)` |
 | `kb_answer` | `dispatcher.search_query` или `user_message` | `search_query` | `expand_search_query(...)` |
-| `product_selection` | `dispatcher.search_query` или `user_message` | `product_selection_search_query` | `expand_search_query(...)` |
+| `product_info` | `dispatcher.search_query` или `user_message` | `product_info_search_query` | `expand_search_query(...)` |
+| `product_filter` | `dispatcher.search_query` или `user_message` | `product_filter_search_query` | `expand_search_query(...)` |
 
-**Важно:** для `doc_search` расширение делается из **исходного сообщения**, а не из `search_query` dispatcher'а. Для `kb_answer` и `product_selection` — из нормализованного `search_query` dispatcher'а (если пуст — fallback на `user_message`).
+**Важно:** для `doc_search` расширение делается из **исходного сообщения**, а не из `search_query` dispatcher'а. Для `kb_answer`, `product_info` и `product_filter` — из нормализованного `search_query` dispatcher'а (если пуст — fallback на `user_message`).
 
 ---
 
@@ -132,7 +133,8 @@ flowchart TD
 |-------|--------------|------------------------|-----------------|
 | dispatcher | `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md` | формирует `search_query` (без expand в коде) | справочник при выборе route/intent |
 | kb_answer | `kb_storage/prompts/kb_answer/kb_answer_agent_prompt.md` | `search_query` (уже расширен) | `термин` → интерпретация `user_query` |
-| product_selection | `kb_storage/prompts/product_selection/product_selection_agent_prompt.md` | `product_selection_search_query` (уже расширен) | `термин` → фильтры и формулировки |
+| product_info | `kb_storage/prompts/product_info/product_info_agent_prompt.md` | `product_info_search_query` (уже расширен) | `термин` → поиск карточки и комплекта |
+| product_filter | `kb_storage/prompts/product_filter/product_filter_agent_prompt.md` | `product_filter_search_query` (уже расширен) | `термин` → фильтры и формулировки |
 | doc_search | `kb_storage/prompts/doc_search/doc_search_agent_prompt.md` | `doc_search_query` (уже расширен) | `термин` → релевантность; не подставлять в query |
 
 Fallback-инструкции в коде агентов (`agent/agents/*_agent.py`) дублируют те же правила по категориям на случай недоступности файла промпта.

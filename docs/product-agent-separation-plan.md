@@ -139,7 +139,7 @@ Update the card-confirmation gate that currently checks `last_route == "product_
 
 ## Prompt division
 
-Create self-contained UTF-8 prompts instead of composing fragments: the current watcher reloads one file per agent, so one complete file per agent is safer.
+Create self-contained UTF-8 prompts instead of composing fragments: the current watcher reloads one file per agent, so one complete file per agent is safer. Live prompt files must be written in Russian; in-code fallback prompts remain in English, matching the existing agent convention. Keep field names, JSON keys, SQL, tool names, and code identifiers unchanged.
 
 Both prompts retain the applicable common safeguards: glossary handling, tool-first catalog workflow, read-only SQL, facts only from the current run, and `word_similarity` rules whenever a product name is searched.
 
@@ -168,28 +168,30 @@ It must not mention kit delivery or use `product_resolution` as a fact source. P
 
 The repository already has a broader Qwen 3.6 migration plan that calls for a
 baseline, prompt adaptation, per-agent temperature decisions, and a decision on
-whether follow-up code is still needed. This product split must be tested as a
-separate variable within that migration: first establish a Qwen 3.6 baseline
-for the unchanged product agent, then compare it with the two-agent branch.
+whether follow-up code is still needed. The product split and the Qwen 3.6 move
+are one combined change: do not create, deploy, or test a separately split
+Qwen 3 branch. All model-level validation for the new agents is performed on
+the Qwen 3.6 target environment as part of the migration.
 
-The split should make three transition-oriented changes:
+The combined change should make three transition-oriented changes:
 
 1. Use the Pydantic `output_schema` contracts above. `kb_answer_agent` already
    uses this pattern, and `json_leaf_runner` already accepts a dictionary or a
    Pydantic `model_dump()` result. No parser rewrite is required for typed
    output.
 2. Reduce prompt scope by splitting the current large, cross-scenario prompt;
-   retain only the applicable SQL and safety rules in each prompt. Keep the
-   final instruction short and exact: return one JSON object that matches the
-   response schema, with no Markdown fences or prose outside it.
+   retain only the applicable SQL and safety rules in each Russian live prompt
+   and English fallback prompt. Keep the final instruction short and exact:
+   return one JSON object that matches the response schema, with no Markdown
+   fences or prose outside it.
 3. Do not add Qwen-specific chat-template syntax, XML tool-call tags, or
    `<think>` instructions to application prompts. Tool parsing is a model-server
    integration concern. The existing `json_leaf_runner.strip_thought_parts`
    already removes ADK `thought` parts from user-visible events; verify that the
    chosen Qwen 3.6 server marks reasoning in that supported representation.
 
-Before enabling the split on Qwen 3.6, run an integration matrix against the
-actual LLM endpoint and its configured tool-call parser:
+Before enabling the combined split-and-Qwen-3.6 change, run an integration
+matrix against the actual LLM endpoint and its configured tool-call parser:
 
 | Check | Required evidence |
 | --- | --- |
@@ -244,11 +246,11 @@ Update `docs/agents-chain.md` and `docs/release_notes_glossary.md` when implemen
 
 Implement in this order:
 
-1. Add response schemas, modules, validators, prompts, settings, and isolated unit tests.
+1. Add response schemas, modules, validators, Russian live prompts, English fallback prompts, settings, and isolated unit tests.
 2. Change dispatcher contracts and RootAgent routing in the same change.
 3. Update fixtures and architecture documentation.
 4. Delete the old module, prompt, setting, and all references only after a repository-wide search is clean.
-5. Run the Qwen 3.6 integration matrix only after the unit suite is green; compare it to the pre-split Qwen 3.6 baseline before changing any follow-up logic.
+5. Run the Qwen 3.6 integration matrix only after the unit suite is green. Evaluate the new agents and any follow-up simplification together as the combined migration change; do not add a separate split-only model-validation stage.
 
 Run the focused suite with the project interpreter:
 

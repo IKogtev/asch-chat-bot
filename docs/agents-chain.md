@@ -1,5 +1,24 @@
 ﻿# Актуализация на 2026-04-15
 
+## Обновление продуктовой ветки на 2026-07-14
+
+Продуктовая ветка разделена на два leaf-агента:
+
+- `product_info_agent` обрабатывает `product_card` и `product_kit` по маршруту `product_info`;
+- `product_filter_agent` обрабатывает `product_filter`, `product_compare` и `product_attribute_values` по маршруту `product_filter`.
+
+Оба агента имеют независимые Pydantic JSON-контракты, output keys и валидаторы:
+`product_info_result_json` / `_product_info_result_parsed` и
+`product_filter_result_json` / `_product_filter_result_parsed`. `RootAgent`
+сохраняет общий `_product_dialog_context`; отправка комплекта и Python fallback
+для `folder_kit` выполняются только в ветке `product_info`.
+
+Live prompts находятся в `kb_storage/prompts/product_info/` и
+`kb_storage/prompts/product_filter/` и написаны на русском; fallback prompts в
+коде остаются на английском.
+
+---
+
 Для текущей реализации нужно считать актуальными следующие правила:
 
 - `kb_answer_agent` использует два MCP-инструмента: `faq_search` и `kb_search`.

@@ -23,7 +23,8 @@ from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
-from .agents.product_selection_agent import validate_product_selection_result
+from .agents.product_filter_agent import validate_product_filter_result
+from .agents.product_info_agent import validate_product_info_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
@@ -96,7 +97,8 @@ class RootAgent(BaseAgent):
     dispatcher_agent: LlmAgent
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
-    product_selection_agent: LlmAgent
+    product_info_agent: LlmAgent
+    product_filter_agent: LlmAgent
     glossary_lookup: GlossaryLookup
     product_resolver: ProductResolverService
     faq_collection: str
@@ -116,7 +118,8 @@ class RootAgent(BaseAgent):
         dispatcher_agent: LlmAgent,
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
-        product_selection_agent: LlmAgent,
+        product_info_agent: LlmAgent,
+        product_filter_agent: LlmAgent,
         glossary_lookup: GlossaryLookup | None = None,
         product_resolver: ProductResolverService | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
@@ -128,7 +131,8 @@ class RootAgent(BaseAgent):
             dispatcher_agent=dispatcher_agent,
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
-            product_selection_agent=product_selection_agent,
+            product_info_agent=product_info_agent,
+            product_filter_agent=product_filter_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             product_resolver=product_resolver or ProductResolverService(),
             faq_collection=faq_collection,
@@ -138,7 +142,8 @@ class RootAgent(BaseAgent):
                 dispatcher_agent,
                 doc_search_orchestrator,
                 kb_answer_agent,
-                product_selection_agent,
+                product_info_agent,
+                product_filter_agent,
             ],
         )
 
@@ -404,14 +409,19 @@ class RootAgent(BaseAgent):
                 "dispatcher_user_query",
                 "doc_search_query",
                 "doc_search_intent",
-                "product_selection_search_query",
-                "product_selection_intent",
+                "product_info_search_query",
+                "product_info_intent",
+                "product_filter_search_query",
+                "product_filter_intent",
                 "from_glossary",
                 "_owasp_result_parsed",
                 "_dispatcher_result_parsed",
                 "_doc_search_result_parsed",
                 "_kb_answer_result_parsed",
-                "_product_selection_result_parsed",
+                "_product_info_result_parsed",
+                "_product_filter_result_parsed",
+                "product_info_result_json",
+                "product_filter_result_json",
                 "_root_final_text",
                 "_bot_action",
                 "product_resolution",
@@ -1009,7 +1019,7 @@ class RootAgent(BaseAgent):
             return validate_dispatcher_result(
                 {
                     "status": "ok",
-                    "route": "product_selection",
+                    "route": "product_info",
                     "intent": "product_kit",
                     "reason": "explicit_kit_short_circuit",
                     "search_query": query, 
@@ -1022,7 +1032,7 @@ class RootAgent(BaseAgent):
             return validate_dispatcher_result(
                 {
                     "status": "ok",
-                    "route": "product_selection",
+                    "route": "product_filter",
                     "intent": "product_filter",
                     "reason": "explicit_filter_short_circuit",
                     "search_query": user_text,
@@ -1036,7 +1046,7 @@ class RootAgent(BaseAgent):
             "давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", 
             "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"
         ]
-        if last_route == "product_selection" and last_intent == "product_card" and is_confirmation:
+        if last_route == "product_info" and last_intent == "product_card" and is_confirmation:
             product = self._find_product_in_dialog_context(ctx, user_text, allow_selected_product=True)
             if not product:
                 product = self._get_selected_product_from_context(ctx)
@@ -1051,7 +1061,7 @@ class RootAgent(BaseAgent):
                 return validate_dispatcher_result(
                     {
                         "status": "ok",
-                        "route": "product_selection",
+                        "route": "product_info",
                         "intent": "product_kit",
                         "reason": "explicit_confirmation_kit_short_circuit",
                         "search_query": query, 
@@ -1077,7 +1087,7 @@ class RootAgent(BaseAgent):
                 return validate_dispatcher_result(
                     {
                         "status": "ok",
-                        "route": "product_selection",
+                        "route": "product_filter",
                         "intent": "product_filter",
                         "reason": "product_attribute_value_followup",
                         "search_query": query,
@@ -1101,7 +1111,7 @@ class RootAgent(BaseAgent):
                     return validate_dispatcher_result(
                         {
                             "status": "ok",
-                            "route": "product_selection",
+                            "route": "product_info",
                             "intent": "product_card",
                             "reason": "product_code_followup",
                             "search_query": f"показать карточку продукта {code}",
@@ -1134,7 +1144,7 @@ class RootAgent(BaseAgent):
         # Дополнительная подстраховка: если это триггер согласия после просмотра карточки
         last_route = ctx.session.state.get("last_route")
         last_intent = ctx.session.state.get("last_intent")
-        if last_route == "product_selection" and last_intent == "product_card":
+        if last_route == "product_info" and last_intent == "product_card":
             if normalized in ["давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо"]:
                 asks_kit = True
 
@@ -1257,11 +1267,11 @@ class RootAgent(BaseAgent):
             else:
                 query = f"показать параметры продукта {search_target}".strip()
 
-            logger.info(f"Product followup short-circuit triggered. Target: {search_target}, Route: product_selection, Intent: {intent}")
+            logger.info(f"Product followup short-circuit triggered. Target: {search_target}, Route: product_info, Intent: {intent}")
             return validate_dispatcher_result(
                 {
                     "status": "ok",
-                    "route": "product_selection",
+                    "route": "product_info",
                     "intent": intent,
                     "reason": "product_dialog_history_cascade_fallback",
                     "search_query": query,
@@ -1438,7 +1448,10 @@ class RootAgent(BaseAgent):
                     "_dispatcher_result_parsed",
                     "_doc_search_result_parsed",
                     "_kb_answer_result_parsed",
-                    "_product_selection_result_parsed",
+                    "_product_info_result_parsed",
+                    "_product_filter_result_parsed",
+                    "product_info_result_json",
+                    "product_filter_result_json",
                     "_root_final_text",
                     "_bot_action",
                     "_from_glossary",
@@ -1541,7 +1554,7 @@ class RootAgent(BaseAgent):
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
 
-            if dispatch["route"] == "product_selection":
+            if dispatch["route"] in {"product_info", "product_filter"}:
                 # СЛОЙ ПЕРЕХВАТА МЕСТОИМЕНИЙ И ОБОГАЩЕНИЯ КОНТЕКСТА ---
                 sq_clean = dispatch.get("search_query", "").strip().lower()
                 # Обогощение запроса для сравнения (product_compare) <<<
@@ -1593,7 +1606,12 @@ class RootAgent(BaseAgent):
                         ctx.session.state["last_search_query"] = dispatch["search_query"]
                         logger.info("Enriched product_selection pronoun search_query to: %s", dispatch["search_query"])
                 
-                async for event in self._handle_product_selection(
+                handler = (
+                    self._handle_product_info
+                    if dispatch["route"] == "product_info"
+                    else self._handle_product_filter
+                )
+                async for event in handler(
                     ctx,
                     user_text,
                     dispatch["search_query"],
@@ -1623,8 +1641,10 @@ class RootAgent(BaseAgent):
             )
             # Определяем, какой агент работал
             agent_name = None
-            if "product_selection" in exc.log_label:
-                agent_name = "product_selection"
+            if "product_info" in exc.log_label:
+                agent_name = "product_info"
+            elif "product_filter" in exc.log_label:
+                agent_name = "product_filter"
             elif "kb_answer" in exc.log_label:
                 agent_name = "kb_answer"
             elif "dispatcher" in exc.log_label:
@@ -1639,15 +1659,21 @@ class RootAgent(BaseAgent):
             
             # Поисковый запрос — в разных ключах для разных агентов
             context["search_query"] = (
-                ctx.session.state.get("product_selection_search_query")
+                ctx.session.state.get("product_info_search_query")
+                or ctx.session.state.get("product_filter_search_query")
                 or ctx.session.state.get("doc_search_query")
                 or ctx.session.state.get("search_query")
                 or ctx.session.state.get("dispatcher_user_query")
                 or ""
             )
             # Специфичные данные для каждого агента
-            if agent_name == "product_selection":
-                parsed = ctx.session.state.get("_product_selection_result_parsed") or {}
+            if agent_name in {"product_info", "product_filter"}:
+                parsed_key = (
+                    "_product_info_result_parsed"
+                    if agent_name == "product_info"
+                    else "_product_filter_result_parsed"
+                )
+                parsed = ctx.session.state.get(parsed_key) or {}
                 context["used_tables"] = parsed.get("used_tables") or []
                 context["mode"] = parsed.get("mode", "")
                 context["resolved_product"] = parsed.get("resolved_product")
@@ -1672,7 +1698,7 @@ class RootAgent(BaseAgent):
 
             # Пытаемся извлечь данные из сырого ответа
             payload = {}
-            if exc.log_label == "product_selection_result_json":
+            if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
                 try:
                     payload = extract_json(exc.raw)
                     # Дополняем контекст данными из payload (они могут быть свежее state)
@@ -1687,15 +1713,15 @@ class RootAgent(BaseAgent):
                     pass
             
             # Пытаемся извлечь сообщение из сырого ответа 
-            product_selection_tool_usage_failure = (
-                exc.log_label == "product_selection_result_json"
+            product_tool_usage_failure = (
+                exc.log_label in {"product_info_result_json", "product_filter_result_json"}
                 and "tool_usage" in exc.validation_error
             )
             legacy_message = (
                 self._fallback_product_selection_message(exc.raw)
                 if (
-                    exc.log_label == "product_selection_result_json"
-                    and not product_selection_tool_usage_failure
+                    exc.log_label in {"product_info_result_json", "product_filter_result_json"}
+                    and not product_tool_usage_failure
                 )
                 else None
             )
@@ -1709,14 +1735,14 @@ class RootAgent(BaseAgent):
                     context=context,
                 )
             final_fallback_message = legacy_message or smart_message or exc.user_message
-            if exc.log_label == "product_selection_result_json":
+            if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
                 logger.debug(
                     "product_selection fallback diagnostics: legacy_used=%s smart_used=%s "
                     "blocked_by_tool_usage=%s mode=%s resolved_product=%s "
                     "clarification_options_count=%s message_preview=%s",
                     bool(legacy_message),
                     bool(smart_message),
-                    product_selection_tool_usage_failure,
+                    product_tool_usage_failure,
                     payload.get("mode"),
                     payload.get("resolved_product"),
                     len(payload.get("clarification_options") or []),
@@ -1845,191 +1871,120 @@ class RootAgent(BaseAgent):
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
 
-    async def _handle_product_selection(
+    async def _handle_product_filter(
         self,
         ctx: InvocationContext,
         user_message: str,
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        base_search_query = (search_query or user_message).strip()
+        if intent not in {"product_filter", "product_compare", "product_attribute_values"}:
+            raise ValueError(f"product_filter route does not support intent {intent!r}")
+
         effective_search_query = await self.glossary_lookup.expand_search_query(
-            base_search_query,
+            (search_query or user_message).strip(),
         )
         logger.info(
-            "product_selection route: query=%s intent=%s",
+            "product_filter route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
             intent,
         )
 
-        user_profile = self._get_user_profile(ctx)
-        for key, value in user_profile.items():
+        for key, value in self._get_user_profile(ctx).items():
             ctx.session.state[key] = value
-        ctx.session.state["product_selection_intent"] = intent
-        ctx.session.state["product_selection_search_query"] = effective_search_query
+        ctx.session.state["product_filter_intent"] = intent
+        ctx.session.state["product_filter_search_query"] = effective_search_query
         await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
+
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
-            agent=self.product_selection_agent,
-            output_key="product_selection_result_json",
-            parsed_state_key="_product_selection_result_parsed",
-            validator=validate_product_selection_result,
-            log_label="product_selection_result_json",
+            agent=self.product_filter_agent,
+            output_key="product_filter_result_json",
+            parsed_state_key="_product_filter_result_parsed",
+            validator=validate_product_filter_result,
+            log_label="product_filter_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
         ):
             yield event
 
-        product_selection = self._get_required_state_dict(ctx, "_product_selection_result_parsed")
-        logger.debug(
-            "product_selection parsed summary: user_query=%s search_query=%s intent=%s "
-            "mode=%s resolved_product=%s clarification_options_count=%s used_tables=%s",
-            truncate_for_log(user_message, 300),
-            truncate_for_log(effective_search_query, 300),
-            intent,
-            product_selection.get("mode"),
-            product_selection.get("resolved_product"),
-            len(product_selection.get("clarification_options") or []),
-            product_selection.get("used_tables"),
-        )
-        # Если агент не вернул resolved_product, но в тексте ответа явно выделил один продукт 
-        if product_selection.get("mode") == "product_compare" and not product_selection.get("resolved_product"):
-            context = self._get_product_dialog_context(ctx)
-            products = self._normalize_dialog_products(context.get("products") or [])
-            message_text = str(product_selection.get("message") or "").lower()
-            
-            if products and message_text:
-                found_products = []
-                for p in products:
-                    name = p.get("name", "").lower()
-                    if name and name in message_text:
-                        found_products.append(p)
-                
-                if len(found_products) == 1:
-                    product_selection["resolved_product"] = found_products[0]
-                    logger.info(f"Super-fallback for product_compare: extracted resolved_product from message text: {found_products[0]}")
-                elif len(found_products) > 1:
-                    # Ищем маркер выбора ("меньше", "лучше", "выгоднее") и берем продукт, который идет после него
-                    choice_markers = ["меньше", "ниже", "лучше", "выгоднее", "оптимальн", "рекомендую", "выбираем"]
-                    marker_pos = -1
-                    for marker in choice_markers:
-                        pos = message_text.find(marker)
-                        if pos != -1 and (marker_pos == -1 or pos < marker_pos):
-                            marker_pos = pos
-                    
-                    if marker_pos != -1:
-                        text_after_marker = message_text[marker_pos:]
-                        for p in found_products:
-                            name = p.get("name", "").lower()
-                            if name in text_after_marker:
-                                product_selection["resolved_product"] = p
-                                logger.info(f"Super-fallback for product_compare: extracted resolved_product after marker: {p}")
-                                break
-        resolved = product_selection.get("resolved_product")
-        product_resolution = ctx.session.state.get("product_resolution") or {}
-        # 1. Определяем code продукта (из state резолвера или из ответа LLM)
-        base_code = None
-        if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
-            base_code = product_resolution.get("product_code")
-        elif isinstance(resolved, dict) and resolved.get("code"):
-            base_code = resolved.get("code")
-
-        # 2. Если code есть, идем в БД и забираем folder_kit (Python-фоллбэк, не зависит от LLM)
-        if base_code:
-            full_details = await self.product_resolver.fetch_product_full_details(base_code)
-            if full_details.get("folder_kit"):
-                logger.info(f"Python fallback: успешно получен folder_kit='{full_details['folder_kit']}' для code={base_code}")
-                
-                # Если LLM вообще не вернула resolved_product, создаем базовый словарь
-                if not resolved:
-                    resolved = {
-                        "code": base_code,
-                        "name": product_resolution.get("product_name", "")
-                    }
-                    product_selection["resolved_product"] = resolved
-                    
-                # Жестко инжектим folder_kit в словарь
-                resolved["folder_kit"] = full_details["folder_kit"]
-        if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
-            if not resolved:
-                # Если агент не вернул resolved_product, но resolver нашел продукт, используем его данные
-                resolved = {
-                    "code": product_resolution.get("product_code"),
-                    "name": product_resolution.get("product_name"),
-                    "folder_kit": product_resolution.get("folder_kit") # Может быть None или строка
-                }
-                product_selection["resolved_product"] = resolved
-            else:
-                # Если агент вернул resolved_product, но у него нет folder_kit, но resolver его нашел, добавим его
-                if not resolved.get("folder_kit") and product_resolution.get("folder_kit"):
-                    resolved["folder_kit"] = product_resolution.get("folder_kit")
-                    product_selection["resolved_product"] = resolved # Обновляем словарь в product_selection
-        
+        product_result = self._get_required_state_dict(ctx, "_product_filter_result_parsed")
+        resolved = product_result.get("resolved_product")
         if resolved and (resolved.get("name") or resolved.get("code")):
-            # Получаем текущий контекст
             current_context = self._get_product_dialog_context(ctx)
-            # Обновляем selected_product
             current_context["selected_product"] = {
                 "code": resolved.get("code", ""),
                 "name": resolved.get("name", ""),
-                "folder_kit": resolved.get("folder_kit") # Добавляем folder_kit в selected_product
+                "folder_kit": resolved.get("folder_kit"),
             }
-            # Сохраняем обновлённый контекст
             ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
-            logger.debug("Updated _product_dialog_context.selected_product: %s", current_context["selected_product"])
-        if product_selection.get("mode") == "no_data" and intent == "product_kit":
-            # Берем resolved_product, который мы только что обогатили через Python fallback
-            resolved_product = product_selection.get("resolved_product") or {}
-            folder_kit = str(resolved_product.get("folder_kit") or "").strip()
-            
-            # Если folder_kit нашелся (значит, в БД он есть, но LLM-агент его проигнорировал из-за нечеткого SQL-поиска)
-            if folder_kit and folder_kit.lower() != "none":
-                logger.info("Agent returned no_data, but folder_kit found in resolved_product. Forcing product_kit.")
-                product_code = str(resolved_product.get("code") or "").strip()
-                product_name = str(resolved_product.get("name") or "").strip()
-                
-                # Формируем action для бота
-                ctx.session.state["_bot_action"] = {
-                    "type": "send_product_kit",
-                    "product_code": product_code,
-                    "product_name": product_name,
-                    "folder_kit": folder_kit,
-                }
-                ctx.session.state["_root_final_text"] = f"📂 Отправляю комплект документов для продукта **{product_name}**."
-                
-                # Подменяем ответ агента, чтобы контекст диалога сохранился корректно
-                product_selection["mode"] = "product_kit"
-                product_selection["resolved_product"] = resolved_product
-                product_selection["message"] = ctx.session.state["_root_final_text"]
-                
-                # Сохраняем контекст и выходим, пропуская стандартную логику
-                self._store_product_dialog_context(ctx, product_selection)
-                return
-        # Сохраняем последний продукт для контекста
-        resolved = product_selection.get("resolved_product")
-        logger.debug(f"RESOLVED PRODUCT_SELECTION: {resolved}")
-        if product_selection.get("mode") in ("product_card", "product_kit") and resolved:
-            name = resolved.get('name', '')
-            code = resolved.get('code', '')
-            if name or code:
-                ctx.session.state["last_product"] = f"{name} (код {code})".strip()
-                logger.debug("Saved last_product='%s' to state", ctx.session.state["last_product"])
-        # Не делаем ничего для 'no_data', 'needs_clarification' и т.д., чтобы не потерять предыдущее значен
-        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
-            product_selection
-        )
-        self._store_product_dialog_context(ctx, product_selection)
 
-        if product_selection["mode"] == "product_kit":
-            resolved_product = product_selection.get("resolved_product") or {}
+        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
+            product_result
+        )
+        self._store_product_dialog_context(ctx, product_result)
+        ctx.session.state.pop("_bot_action", None)
+
+    async def _handle_product_info(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        search_query: str,
+        intent: str,
+    ) -> AsyncGenerator[Event, None]:
+        if intent not in {"product_card", "product_kit"}:
+            raise ValueError(f"product_info route does not support intent {intent!r}")
+
+        effective_search_query = await self.glossary_lookup.expand_search_query(
+            (search_query or user_message).strip(),
+        )
+        logger.info(
+            "product_info route: query=%s intent=%s",
+            truncate_for_log(effective_search_query, 300),
+            intent,
+        )
+
+        for key, value in self._get_user_profile(ctx).items():
+            ctx.session.state[key] = value
+        ctx.session.state["product_info_intent"] = intent
+        ctx.session.state["product_info_search_query"] = effective_search_query
+        await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.product_info_agent,
+            output_key="product_info_result_json",
+            parsed_state_key="_product_info_result_parsed",
+            validator=validate_product_info_result,
+            log_label="product_info_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+        ):
+            yield event
+
+        product_result = self._get_required_state_dict(ctx, "_product_info_result_parsed")
+        resolved = product_result.get("resolved_product")
+        if resolved and (resolved.get("name") or resolved.get("code")):
+            current_context = self._get_product_dialog_context(ctx)
+            current_context["selected_product"] = {
+                "code": resolved.get("code", ""),
+                "name": resolved.get("name", ""),
+                "folder_kit": resolved.get("folder_kit"),
+            }
+            ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
+
+        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
+            product_result
+        )
+        self._store_product_dialog_context(ctx, product_result)
+
+        if product_result["mode"] == "product_kit":
+            resolved_product = product_result.get("resolved_product") or {}
             product_code = str(resolved_product.get("code") or "").strip()
-            product_name = str(resolved_product.get("name") or "").strip()
-            folder_kit = str(resolved_product.get("folder_kit") or "").strip()
             if product_code:
                 ctx.session.state["_bot_action"] = {
                     "type": "send_product_kit",
                     "product_code": product_code,
-                    "product_name": product_name,
-                    "folder_kit": folder_kit,
+                    "product_name": str(resolved_product.get("name") or "").strip(),
+                    "folder_kit": str(resolved_product.get("folder_kit") or "").strip(),
                 }
                 return
 
