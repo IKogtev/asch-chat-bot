@@ -19,7 +19,10 @@ pipeline {
   }
 
   triggers {
-    cron('H */2 * * *')
+    cron('''
+TZ=Europe/Moscow
+0 */2 * * *
+''')
   }
 
   options {
@@ -41,8 +44,8 @@ pipeline {
               imagePullPolicy: IfNotPresent
               containers:
                 - name: application-health-tester
-                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.7-amd64
-                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:f6657628056be206ae6a4ec22b52c96edb2711f8c25f58850ad2925457e0ef7b
+                  image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester:v0.7-amd64
+                  # image: cr.yandex/crp4m4ne3bkrq9l2ffbi/aszh-chatbot/adk-agent-tester@sha256:f6657628056be206ae6a4ec22b52c96edb2711f8c25f58850ad2925457e0ef7b
                   command:
                     - cat
                   tty: true
