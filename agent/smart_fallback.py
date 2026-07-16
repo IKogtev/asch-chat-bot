@@ -48,8 +48,8 @@ def _generate_validation_fallback(
     if agent_name == "kb_answer":
         return _kb_answer_validation_fallback(user_text, context)
     
-    # === PRODUCT_SELECTION ===
-    if agent_name == "product_selection":
+    # === PRODUCT AGENTS ===
+    if agent_name in {"product_info", "product_filter"}:
         return _product_selection_validation_fallback(user_text, context)
     
     # === Общее ===
@@ -239,7 +239,7 @@ def _generate_no_data_fallback(
             f"Ваш запрос: «{_truncate(search_query, 100)}»"
         )
     
-    if agent_name == "product_selection":
+    if agent_name in {"product_info", "product_filter"}:
         return _product_not_found_fallback(search_query, context.get("used_tables") or [])
     
     return (

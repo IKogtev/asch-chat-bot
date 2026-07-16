@@ -31,7 +31,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Ожидаемый контракт:
     - `status="ok"`;
-    - `route` один из `doc_search`, `kb_answer`, `product_selection`;
+    - `route` один из `doc_search`, `kb_answer`, `product_info`, `product_filter`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
       `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
       `product_compare`, `product_attribute_values`;
@@ -57,16 +57,16 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     """
     agent_name = "dispatcher_agent"
     _ = context
-    allowed_routes = {"doc_search", "kb_answer", "product_selection"}
+    allowed_routes = {"doc_search", "kb_answer", "product_info", "product_filter"}
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
     kb_route_intents = {"kb_answer", "smalltalk"}
-    product_route_intents = {
-        "product_card",
-        "product_kit",
+    product_info_intents = {"product_card", "product_kit"}
+    product_filter_intents = {
         "product_filter",
         "product_compare",
         "product_attribute_values",
     }
+    product_route_intents = product_info_intents | product_filter_intents
     allowed_intents = doc_route_intents | kb_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}
 
@@ -142,11 +142,20 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 fields=("route", "intent"),
             )
 
-        if intent in product_route_intents and route != "product_selection":
+        if intent in product_info_intents and route != "product_info":
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
-                problem="product intents must use route='product_selection'",
+                problem="product card and kit intents must use route='product_info'",
+                data=payload,
+                fields=("route", "intent"),
+            )
+
+        if intent in product_filter_intents and route != "product_filter":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="product filter intents must use route='product_filter'",
                 data=payload,
                 fields=("route", "intent"),
             )
@@ -200,8 +209,8 @@ Use state variable {from_glossary} as a dictionary of terms already found by cod
 Do not call tools and do not invent additional expansions.
 If a user term is present in {from_glossary}, use its definition when choosing route and intent.
 Do not substitute definitions into search_query and do not replace abbreviations with full names — downstream code expands the query.
-High-priority product-card rule: if the latest user message asks to show, open, display, describe, or provide parameters/card/details for a numeric product code, return route="product_selection", intent="product_card", reason="product_card". Examples: "покажи 8914", "параметры 8914", "карточка 8914". Do not route these messages to kb_answer as applicability or explanation questions.
-High-priority product-focus rule: if the latest user message is "Что сейчас в фокусе?" or "что в фокусе", return route="product_selection", intent="product_filter", reason="product_filter", search_query="покажи продукты в фокусе". Do not route these messages to kb_answer.
+High-priority product-card rule: if the latest user message asks to show, open, display, describe, or provide parameters/card/details for a numeric product code, return route="product_info", intent="product_card", reason="product_card". Examples: "покажи 8914", "параметры 8914", "карточка 8914". Do not route these messages to kb_answer as applicability or explanation questions.
+High-priority product-focus rule: if the latest user message is "Что сейчас в фокусе?" or "что в фокусе", return route="product_filter", intent="product_filter", reason="product_filter", search_query="покажи продукты в фокусе". Do not route these messages to kb_answer.
 
 Ты dispatcher_agent.
 Верни только JSON без markdown и без пояснений.
@@ -209,7 +218,7 @@ High-priority product-focus rule: if the latest user message is "Что сейч
 Формат:
 {
   "status": "ok",
-  "route": "doc_search",
+  "route": "product_info",
   "intent": "doc_search",
   "reason": "user asks to find documents",
   "search_query": "нормализованный поисковый запрос"
@@ -218,12 +227,14 @@ High-priority product-focus rule: if the latest user message is "Что сейч
 Разрешённые route:
 - doc_search
 - kb_answer
-- product_selection
+- product_info
+- product_filter
 
 Разрешённые intent:
 - doc_search, show_more, show_all, file_download (только с route=doc_search)
 - kb_answer, smalltalk (только с route=kb_answer)
-- product_card, product_kit, product_filter, product_compare (только с route=product_selection)
+- product_card, product_kit (только с route=product_info)
+- product_filter, product_compare, product_attribute_values (только с route=product_filter)
 
 Правила:
 - smalltalk идёт в route=kb_answer
