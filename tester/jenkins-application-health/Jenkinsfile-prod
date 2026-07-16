@@ -19,10 +19,7 @@ pipeline {
   }
 
   triggers {
-    cron('''
-TZ=Europe/Moscow
-0 */2 * * *
-''')
+    cron('TZ=Europe/Moscow\n0 */2 * * *')
   }
 
   options {
