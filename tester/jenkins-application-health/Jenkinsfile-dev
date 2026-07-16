@@ -18,13 +18,13 @@ pipeline {
     )
   }
 
-  triggers {
-    cron('''
-TZ=Europe/Moscow
-H */4 * * *
-0 10 * * *
-''')
-  }
+//   triggers {
+//     cron('''
+// TZ=Europe/Moscow
+// 0 */4 * * *
+// 0 10 * * *
+// ''')
+//   }
 
   options {
     skipDefaultCheckout(true)
