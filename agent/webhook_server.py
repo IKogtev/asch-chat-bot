@@ -1,9 +1,5 @@
-import asyncio
 import json
 import uuid
-import os
-import requests
-import base64
 from typing import Dict, Any
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from langfuse import Langfuse
@@ -29,7 +25,7 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
     user_query = input_data.get("user_query", "")
     runner = Runner(app=app, session_service=global_session_service)
     session_id = f"test_item_{item_idx}_{uuid.uuid4().hex[:8]}"
-    user_id = "test_user"
+    user_id = "webhook_user"
      # ИСПРАВЛЕНИЕ: Создаем сессию с предустановленными тестовыми данными профиля,
     # чтобы агент не падал с KeyError при попытке их прочитать из промптов или логики.
     try:
@@ -38,18 +34,18 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
             user_id=user_id, 
             session_id=session_id,
             state={
-                "first_name": "Тестовый",
-                "last_name": "Пользователь",
-                "full_name": "Тестовый Пользователь",
-                "username": "test_webhook_user",
+                "first_name": "Алексей",
+                "last_name": "Винников",
+                "full_name": "Алексей Винников",
+                "username": "webhook_user",
                 "region": "Москва",
-                "manager_group": "Тестовая группа",
-                "coach_group": "Тестовая группа"
+                "manager_group": "True",
+                "coach_group": "True"
             }
         )
     except Exception as e:
-        if "already exist" in str(e).lower():
-            logger.info(f"⚠️ Session {session_id} already exists (likely created by Runner). Continuing...")
+        if "Уже существует" in str(e).lower():
+            logger.info(f"⚠️ Сессия {session_id} уже существует (похоже создана Runner). Продолжаем...")
         else:
             raise e
     
@@ -131,15 +127,15 @@ async def process_dataset_background(dataset_name: str, run_name: str):
                         dataset_item_id=item.id,
                         trace_id=adk_trace_id
                     )
-                    logger.info(f"✅ Item {idx + 1} bound to ADK trace: {adk_trace_id}")
+                    logger.info(f"✅ элемент {idx + 1} привязан к ADK трассировке: {adk_trace_id}")
                 else:
-                    logger.info(f"⚠️ Item {idx + 1} failed to capture ADK trace_id.")
+                    logger.info(f"⚠️ элемент {idx + 1} не удалось привязать к ADK trace_id.")
             finally:
                 webhook_mode_var.reset(token)
                 
-        logger.info(f"✅ Experiment '{run_name}' finished successfully!")
+        logger.info(f"✅ Эксперимент '{run_name}' завершен успешно!")
     except Exception as e:
-        logger.info(f"❌ Error processing dataset {dataset_name}: {e}")
+        logger.info(f"❌ Ошибка обработки датасета {dataset_name}: {e}")
 
 @app_fastapi.post("/webhook/langfuse-experiment")
 async def handle_langfuse_webhook(request: Request, background_tasks: BackgroundTasks):
