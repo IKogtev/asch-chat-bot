@@ -42,6 +42,7 @@ __pycache__
 
 # Adk agent tester
 *.xlsx
+!tester/ping_nastya_bot.xlsx
 *.csv
 *.parquet
 *.html
