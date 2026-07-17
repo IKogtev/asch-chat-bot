@@ -101,6 +101,7 @@ services:
       - ROOT_TEMPERATURE=0.8
       - DOC_SEARCH_TEMPERATURE=0.0
       - KB_ANSWER_TEMPERATURE=0.0
+      - PRODUCT_SELECTION_TEMPERATURE=0.2
       # FALLBACK FRAZE
       # - COMPARE_FRAZE=👉Начните запрос со слова СРАВНИ 
       # - PRODUCT_CARD_KIT_OFFER=👉 Чтобы получить комплект документов напиши "комплект 1234"
@@ -542,6 +543,7 @@ services:
       - ROOT_TEMPERATURE=0.8
       - DOC_SEARCH_TEMPERATURE=0.0
       - KB_ANSWER_TEMPERATURE=0.0
+      - PRODUCT_SELECTION_TEMPERATURE=0.2
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
