@@ -351,8 +351,8 @@ class AdkApiClient:
         return cleaned, raw
 
 
-def load_test_cases(file_name: Path):
-    df = pd.read_excel(file_name)
+def load_test_cases(file_name: Path, sheet_name: Any = 0):
+    df = pd.read_excel(file_name, sheet_name=sheet_name)
     if "Use case" in df.columns:
         df["Use case"] = df["Use case"].ffill()
     if "Dialog tag" in df.columns:
@@ -394,9 +394,17 @@ def _iter_dialog_blocks(df) -> Iterable[Tuple[Any, List[Any]]]:
         yield current_key, current_indices
 
 
-def initialize_session(client: AdkApiClient, user_id: str, session_id: str) -> str:
+def initialize_session(
+    client: AdkApiClient,
+    user_id: str,
+    session_id: str,
+    *,
+    run_initial_question: bool = True,
+) -> str:
     logger.info("🚀 Инициализация сессии с ADK агентом...")
     client.ensure_session(user_id=user_id, session_id=session_id)
+    if not run_initial_question:
+        return session_id
     init_q = "Привет! Ты готов отвечать на вопросы ?"
     logger.info(f"ADK warmup /run: {init_q}")
     ans, _raw, _events = client.run(user_id=user_id, session_id=session_id, text=init_q)
@@ -410,10 +418,14 @@ def interrogate_agent(
     user_id: str,
     session_id: Optional[str],
     tc_df,
-    answers_file_path: Path,
+    answers_file_path: Optional[Path],
     ask_questions: bool,
+    run_initial_question: bool = True,
+    save_answers: bool = True,
 ):
     if not ask_questions:
+        if answers_file_path is None:
+            raise RuntimeError("Файл с ответами не задан при отключенном запуске вопросов")
         if answers_file_path.exists():
             logger.info(f"Загружаем данные из файла: {answers_file_path}")
             if answers_file_path.suffix.lower() == ".parquet":
@@ -457,7 +469,12 @@ def interrogate_agent(
             if first_block:
                 logger.info(f"\n=== ADK session для всего файла: {block_session_id} ===")
 
-        initialize_session(client, user_id=user_id, session_id=block_session_id)
+        initialize_session(
+            client,
+            user_id=user_id,
+            session_id=block_session_id,
+            run_initial_question=run_initial_question,
+        )
         first_block = False
 
         for i in row_indices:
@@ -495,6 +512,13 @@ def interrogate_agent(
                 else f"Ответ: {tc_df.loc[i, 'answer']}"
             )
             logger.info(f"⏱️ Время ответа: {tc_df.loc[i, 'response_time']} сек.")
+
+    if not save_answers:
+        logger.info("Сохранение файла с ответами отключено")
+        return tc_df
+
+    if answers_file_path is None:
+        raise RuntimeError("Нельзя сохранить ответы: путь к файлу не задан")
 
     # cache answers similar to prompt-manager (parquet), with CSV fallback
     try:
@@ -1012,6 +1036,7 @@ def main() -> None:
         tc_df=tc_df,
         answers_file_path=answers_file_path,
         ask_questions=ASK_QUESTIONS,
+        run_initial_question=True,
     )
 
     evaluator_model, evaluation_prompt, _ = init_evaluator(
