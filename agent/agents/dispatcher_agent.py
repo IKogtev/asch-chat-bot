@@ -1,5 +1,5 @@
 from typing import Any, Dict, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
@@ -40,9 +40,7 @@ class DispatcherResponseSchema(BaseModel):
         "product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values",
         "smalltalk_greeting", "smalltalk_thanks", "smalltalk_other"
     ] = Field(description="Обоснование выбора")
-    search_query: str = Field(description="Поисковый запрос. Пустая строка для smalltalk, show_more, show_all, file_download")
-
-
+    search_query: str = Field(description="Поисковый запрос. СТРОГО пустая строка '' для smalltalk, show_more, show_all, file_download. Для остальных - краткий нормализованный запрос.")
 
 def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """

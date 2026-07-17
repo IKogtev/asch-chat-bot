@@ -1,6 +1,7 @@
+import asyncio
 import json
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from langfuse import Langfuse
 # Импортируем opentelemetry, чтобы получить автоматически сгенерированный ADK Trace ID
@@ -20,12 +21,29 @@ app_fastapi = FastAPI(title="Langfuse Experiment Webhook")
 langfuse = Langfuse()
 # чтобы избежать проблем с внутренним кэшем ADK.
 global_session_service = InMemorySessionService()
+
+async def _collect_runner_events(runner, user_id: str, session_id: str, content: Any) -> Tuple[str, str, str]:
+    """Вспомогательная функция для безопасного сбора событий из асинхронного генератора."""
+    final_text, route, intent = "", "", ""
+    async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
+        if event.author == "root_agent" and event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.text:
+                    final_text += part.text
+        if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
+            delta = event.actions.state_delta
+            if '_dispatcher_result_parsed' in delta:
+                route = delta['_dispatcher_result_parsed'].get('route', '')
+                intent = delta['_dispatcher_result_parsed'].get('intent', '')
+    return final_text, route, intent
+
 async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str, Any]:
     """Асинхронная логика запуска вашего мультиагента."""
     user_query = input_data.get("user_query", "")
     runner = Runner(app=app, session_service=global_session_service)
-    session_id = f"test_item_{item_idx}_{uuid.uuid4().hex[:8]}"
-    user_id = "webhook_user"
+    # session_id = f"test_item_{item_idx}_{uuid.uuid4().hex[:8]}"
+    session_id = str(uuid.uuid4())
+    user_id = "00000000-0000-0000-0000-000000000001"
      # ИСПРАВЛЕНИЕ: Создаем сессию с предустановленными тестовыми данными профиля,
     # чтобы агент не падал с KeyError при попытке их прочитать из промптов или логики.
     try:
@@ -60,20 +78,35 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
     tracer = trace.get_tracer("webhook_server")
     adk_trace_id = None
     with tracer.start_as_current_span("webhook_experiment_run") as root_span:
-        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=user_event.content):
-            if event.author == "root_agent" and event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        final_text += part.text
-            if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
-                delta = event.actions.state_delta
-                if '_dispatcher_result_parsed' in delta:
-                    route = delta['_dispatcher_result_parsed'].get('route', '')
-                    intent = delta['_dispatcher_result_parsed'].get('intent', '')
-        span_context = root_span.get_span_context()
-        if span_context.is_valid:
-            # Конвертируем 128-битный trace_id в 32-значную hex-строку, которую требует Langfuse
-            adk_trace_id = format(span_context.trace_id, '032x')
+        try:
+            final_text, route, intent = await asyncio.wait_for(
+                _collect_runner_events(runner, user_id, session_id, user_event.content),
+                timeout=200.0
+            )
+                
+        # async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=user_event.content):
+                # if event.author == "root_agent" and event.content and event.content.parts:
+                #     for part in event.content.parts:
+                #         if part.text:
+                #             final_text += part.text
+                # if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
+                #     delta = event.actions.state_delta
+                #     if '_dispatcher_result_parsed' in delta:
+                #         route = delta['_dispatcher_result_parsed'].get('route', '')
+                #         intent = delta['_dispatcher_result_parsed'].get('intent', '')
+            span_context = root_span.get_span_context()
+            if span_context.is_valid:
+                # Конвертируем 128-битный trace_id в 32-значную hex-строку, которую требует Langfuse
+                adk_trace_id = format(span_context.trace_id, '032x')
+        
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Таймаут при обработке элемента {item_idx}. Query: {user_query[:50]}...")
+            status, route, intent = "timeout", "blocked", "blocked"
+            final_text = "Извините, обработка запроса заняла слишком много времени."
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке элемента {item_idx}: {e}", exc_info=True)
+            status, route, intent = "error", "blocked", "blocked"
+            final_text = "Произошла внутренняя ошибка при обработке запроса."
 
     if "не может быть обработан" in final_text.lower() or "переформулируйте" in final_text.lower():
         status, route = "blocked", "blocked"
