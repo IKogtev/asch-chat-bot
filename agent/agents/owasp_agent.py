@@ -3,6 +3,7 @@ from typing import Any, Dict
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
+from ..config import ROOT_TEMPERATURE, build_generate_content_config
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -148,6 +149,7 @@ def create_owasp_agent(model: LiteLlm) -> LlmAgent:
         instruction=instruction,
         include_contents="none",
         output_key="owasp_result_json",
+        generate_content_config=build_generate_content_config(ROOT_TEMPERATURE),
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

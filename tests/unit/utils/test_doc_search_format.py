@@ -73,11 +73,10 @@ def test_render_doc_list_html_for_empty_items() -> None:
 
 
 @pytest.mark.unit
-def test_render_doc_list_html_escapes_and_truncates_items() -> None:
+def test_render_doc_list_html_escapes_titles() -> None:
     items = [
         {
             "source_name": "<script>alert(1)</script>",
-            "snippet": "x" * 181 + "\nsecond line",
         }
     ]
 
@@ -85,18 +84,18 @@ def test_render_doc_list_html_escapes_and_truncates_items() -> None:
 
     assert "<script>" not in result
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in result
-    assert "x" * 177 + "..." in result
     assert "Напишите номер документа" in result
 
 
 @pytest.mark.unit
 def test_render_doc_list_html_contains_pagination_hint_when_not_all_items_shown() -> None:
-    items = [{"source_name": "Doc 1", "snippet": "Snippet"}]
+    items = [{"source_name": "Doc 1"}]
 
     result = render_doc_list_html(items, total=3, offset=0)
 
     assert "Показано 1 из 3" in result
     assert "<b>ещё</b>" in result
+    assert "<b>1. Doc 1</b>" in result
 
 
 @pytest.mark.unit
@@ -134,18 +133,18 @@ def test_render_doc_list_html_marks_archive_documents(monkeypatch: pytest.Monkey
         {
             "source_name": "Fort_Knox.pdf",
             "source_path": "6 Архив/Fort Knox/Fort_Knox.pdf",
-            "snippet": "Архивный файл",
         },
         {
             "source_name": "Active.pdf",
             "source_path": "Маркетинговые материалы/Fort Knox/Active.pdf",
-            "snippet": "Актуальный файл",
         },
     ]
 
     result = render_doc_list_html(items, total=2)
 
-    assert "<b>1. (архивный) Fort_Knox.pdf</b>" in result
+    assert "<b>1. (Архивный) Fort_Knox.pdf</b>" in result
     assert "<b>2. Active.pdf</b>" in result
-    assert result.count("(архивный)") == 1
+    assert result.count("(Архивный)") == 1
+    assert "Архивный файл" not in result
+    assert "Актуальный файл" not in result
 

@@ -2,7 +2,6 @@ from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
 
 from google.adk.agents import LlmAgent
-from google.genai.types import GenerateContentConfig
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -16,6 +15,7 @@ from ..config import (
     MCP_TIMEOUT_SEC,
     MCP_TOKEN,
     KB_ANSWER_TEMPERATURE,
+    build_generate_content_config,
 )
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
@@ -28,7 +28,8 @@ ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и 
 
 # 1. Объявляем схему как Pydantic-класс
 class KbAnswerResponseSchema(BaseModel):
-    status: Literal["ok"] = Field(description="Всегда 'ok'")
+    # ADK set_model_response не принимает Literal['ok'] (JSON Schema const).
+    status: str = Field(description="Всегда 'ok'")
     mode: Literal["text_answer", "no_data"] = Field(description="Режим ответа")
     message: str = Field(description="Текст ответа на русском языке")
     source: Literal["faq_search", "kb_search", "faq_search+kb_search", "none"] = Field(description="Источник данных")
@@ -284,11 +285,8 @@ If multiple definitions are present and context does not disambiguate them, do n
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "kb_answer_agent"
-    # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params = {}
     if KB_ANSWER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
-        config_params["temperature"] = KB_ANSWER_TEMPERATURE
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
 
@@ -299,7 +297,7 @@ If multiple definitions are present and context does not disambiguate them, do n
         tools=tools,
         output_key="kb_answer_result_json",
         output_schema=KbAnswerResponseSchema,
-        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+        generate_content_config=build_generate_content_config(KB_ANSWER_TEMPERATURE),
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

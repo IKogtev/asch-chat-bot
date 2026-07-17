@@ -80,6 +80,55 @@ async def test_resolve_product_returns_ambiguous_for_multiple_token_matches() ->
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_product_disambiguates_by_currency_symbol_in_query() -> None:
+    """$ / ¥ вырезаются нормализацией, но сырой mention должен выбрать валютный вариант."""
+    usd = candidate("8957", "Защищенный капитал $ 3 года")
+    cny = candidate("8962", "Защищенный капитал ¥ 3 года")
+    mention = "Защищенный капитал $ 3 года"
+    cleaned = ProductResolverService._remove_query_noise(mention)
+    resolver = FakeProductResolver(
+        tokens={cleaned: [usd, cny]},
+    )
+
+    result = await resolver.resolve_product(mention)
+
+    assert result.status == "resolved"
+    assert result.product_code == "8957"
+    assert result.product_name == "Защищенный капитал $ 3 года"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_disambiguates_by_currency_word_in_query() -> None:
+    usd = candidate("8957", "Защищенный капитал $ 3 года")
+    cny = candidate("8962", "Защищенный капитал ¥ 3 года")
+    mention = "Защищенный капитал 3 года в юанях"
+    cleaned = ProductResolverService._remove_query_noise(mention)
+    resolver = FakeProductResolver(
+        tokens={cleaned: [usd, cny]},
+    )
+
+    result = await resolver.resolve_product(mention)
+
+    assert result.status == "resolved"
+    assert result.product_code == "8962"
+
+
+@pytest.mark.unit
+def test_filter_candidates_by_currency_hint_keeps_matching_symbol() -> None:
+    usd = candidate("8957", "Защищенный капитал $ 3 года")
+    cny = candidate("8962", "Защищенный капитал ¥ 3 года")
+
+    filtered = ProductResolverService._filter_candidates_by_currency_hint(
+        "Дай комплект по Защищенному капиталу $ 3 года",
+        [usd, cny],
+    )
+
+    assert [item.product_code for item in filtered] == ["8957"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_uses_clear_fuzzy_top_match() -> None:
     resolver = FakeProductResolver(
         fuzzy={

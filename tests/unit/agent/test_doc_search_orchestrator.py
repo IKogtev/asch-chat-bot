@@ -216,7 +216,6 @@ def _document_list_result() -> dict:
                 "document_id": "doc-1",
                 "source_name": "a.pdf",
                 "source_path": "/a.pdf",
-                "snippet": "snippet",
             }
         ],
     }

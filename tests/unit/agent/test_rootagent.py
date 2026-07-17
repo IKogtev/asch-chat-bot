@@ -111,6 +111,21 @@ def _load_rootagent_module():
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.validate_product_selection_result = lambda data, context: data
 
+    def _select_product_selection_agent(intent, agents=None, **kwargs):
+        if agents is not None:
+            if intent in {"product_card", "product_kit"}:
+                return agents.card_kit
+            if intent == "product_compare":
+                return agents.compare
+            return agents.filter
+        if intent in {"product_card", "product_kit"}:
+            return kwargs["card_kit"]
+        if intent == "product_compare":
+            return kwargs["compare"]
+        return kwargs["filter_agent"]
+
+    product_selection_stub.select_product_selection_agent = _select_product_selection_agent
+
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
 
     class ProductResolverService:
@@ -251,6 +266,9 @@ def _make_agent(**kwargs) -> RootAgent:
                 to_dict=lambda: {"status": "not_found", "query": query, "product_codes": [], "products": []}
             )
 
+        async def fetch_product_full_details(self, product_code):
+            return {}
+
     kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
     kwargs.setdefault("product_resolver", EmptyProductResolver())
     fake_subagent = object()
@@ -260,7 +278,9 @@ def _make_agent(**kwargs) -> RootAgent:
         dispatcher_agent=fake_subagent,
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
-        product_selection_agent=fake_subagent,
+        product_selection_card_kit_agent=fake_subagent,
+        product_selection_filter_agent=fake_subagent,
+        product_selection_compare_agent=fake_subagent,
         **kwargs,
     )
 
@@ -812,7 +832,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
     )
 
     async def fake_run_json_leaf_agent(**kwargs):
-        assert kwargs["agent"] is agent.product_selection_agent
+        assert kwargs["agent"] is agent.product_selection_card_kit_agent
         assert kwargs["output_key"] == "product_selection_result_json"
         assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
         ctx.session.state["_product_selection_result_parsed"] = {
@@ -846,7 +866,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
     assert ctx.session.state["first_name"] == "Ivan"
     assert ctx.session.state["product_selection_search_query"] == "Original question"
     assert ctx.session.state["product_selection_intent"] == "product_card"
-    assert ctx.session.state["_root_final_text"] == "Product selection answer"
+    assert ctx.session.state["_root_final_text"].startswith("Product selection answer")
     assert "_bot_action" not in ctx.session.state
 
 
@@ -1097,10 +1117,9 @@ async def test_handle_product_selection_keeps_context_for_product_compare() -> N
 
     assert events == []
     assert ctx.session.state["_root_final_text"] == "Compare answer"
-    assert (
-        ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
-        == product_dialog_context
-    )
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["last_mode"] == "product_compare"
+    assert stored["selected_product"] == product_dialog_context["selected_product"]
 
 
 @pytest.mark.unit
@@ -1983,6 +2002,9 @@ async def test_handle_product_selection_sets_single_product_resolution_state() -
         async def resolve_product_filter(self, query):
             raise AssertionError("resolve_product_filter must not be called")
 
+        async def fetch_product_full_details(self, product_code):
+            return {}
+
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
 
@@ -2030,6 +2052,12 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
                     ],
                 }
             )
+
+        async def resolve_product_filter(self, query):
+            raise AssertionError("resolve_product_filter must not be called")
+
+        async def fetch_product_full_details(self, product_code):
+            return {}
 
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
@@ -2099,6 +2127,12 @@ async def test_handle_product_selection_deduplicates_compare_product_resolutions
                     ],
                 }
             )
+
+        async def resolve_product_filter(self, query):
+            raise AssertionError("resolve_product_filter must not be called")
+
+        async def fetch_product_full_details(self, product_code):
+            return {}
 
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
@@ -2217,6 +2251,9 @@ async def test_handle_product_selection_resolves_product_filter() -> None:
                     "error": None,
                 }
             )
+
+        async def fetch_product_full_details(self, product_code):
+            return {}
 
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})

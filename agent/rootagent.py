@@ -23,7 +23,10 @@ from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
-from .agents.product_selection_agent import validate_product_selection_result
+from .agents.product_selection_agent import (
+    select_product_selection_agent,
+    validate_product_selection_result,
+)
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
@@ -101,7 +104,9 @@ class RootAgent(BaseAgent):
     dispatcher_agent: LlmAgent
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
-    product_selection_agent: LlmAgent
+    product_selection_card_kit_agent: LlmAgent
+    product_selection_filter_agent: LlmAgent
+    product_selection_compare_agent: LlmAgent
     glossary_lookup: GlossaryLookup
     product_resolver: ProductResolverService
     faq_collection: str
@@ -121,7 +126,9 @@ class RootAgent(BaseAgent):
         dispatcher_agent: LlmAgent,
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
-        product_selection_agent: LlmAgent,
+        product_selection_card_kit_agent: LlmAgent,
+        product_selection_filter_agent: LlmAgent,
+        product_selection_compare_agent: LlmAgent,
         glossary_lookup: GlossaryLookup | None = None,
         product_resolver: ProductResolverService | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
@@ -133,7 +140,9 @@ class RootAgent(BaseAgent):
             dispatcher_agent=dispatcher_agent,
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
-            product_selection_agent=product_selection_agent,
+            product_selection_card_kit_agent=product_selection_card_kit_agent,
+            product_selection_filter_agent=product_selection_filter_agent,
+            product_selection_compare_agent=product_selection_compare_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             product_resolver=product_resolver or ProductResolverService(),
             faq_collection=faq_collection,
@@ -143,7 +152,9 @@ class RootAgent(BaseAgent):
                 dispatcher_agent,
                 doc_search_orchestrator,
                 kb_answer_agent,
-                product_selection_agent,
+                product_selection_card_kit_agent,
+                product_selection_filter_agent,
+                product_selection_compare_agent,
             ],
         )
 
@@ -1879,9 +1890,20 @@ class RootAgent(BaseAgent):
         ctx.session.state["product_selection_intent"] = intent
         ctx.session.state["product_selection_search_query"] = effective_search_query
         await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
+        leaf_agent = select_product_selection_agent(
+            intent,
+            card_kit=self.product_selection_card_kit_agent,
+            filter_agent=self.product_selection_filter_agent,
+            compare=self.product_selection_compare_agent,
+        )
+        logger.info(
+            "product_selection leaf agent: intent=%s agent=%s",
+            intent,
+            getattr(leaf_agent, "name", type(leaf_agent).__name__),
+        )
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
-            agent=self.product_selection_agent,
+            agent=leaf_agent,
             output_key="product_selection_result_json",
             parsed_state_key="_product_selection_result_parsed",
             validator=validate_product_selection_result,

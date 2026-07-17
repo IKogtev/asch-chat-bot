@@ -267,6 +267,51 @@ COMPARE_SPLIT_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Символы валюты вырезаются normalize_product_text ([^a-zа-я0-9]),
+# поэтому $ / ¥ варианты иначе схлопываются в один ambiguous-набор.
+CURRENCY_HINT_MARKERS: dict[str, tuple[str, ...]] = {
+    "usd": (
+        "$",
+        "usd",
+        "dollar",
+        "dollars",
+        "доллар",
+        "доллара",
+        "доллары",
+        "долларов",
+        "долларах",
+    ),
+    "cny": (
+        "¥",
+        "￥",
+        "cny",
+        "cnh",
+        "yuan",
+        "юань",
+        "юаня",
+        "юани",
+        "юаней",
+        "юанях",
+    ),
+    "eur": (
+        "€",
+        "eur",
+        "euro",
+        "евро",
+    ),
+    "rub": (
+        "₽",
+        "rub",
+        "rur",
+        "руб",
+        "рубль",
+        "рубля",
+        "рубли",
+        "рублей",
+        "рублях",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class ProductCandidate:
@@ -691,6 +736,7 @@ class ProductResolverService:
         allow_clear_top: bool,
     ) -> ProductResolveResult:
         """Определяет итоговый статус по найденным кандидатам."""
+        candidates = self._filter_candidates_by_currency_hint(mention, candidates)
         if not candidates:
             return ProductResolveResult(status="not_found", mention=mention)
         if len(candidates) == 1:
@@ -702,6 +748,49 @@ class ProductResolverService:
             mention=mention,
             options=candidates,
         )
+
+    @classmethod
+    def _detect_currency_hints(cls, value: str) -> set[str]:
+        """Достаёт ключи валют из сырого текста (до вырезания символов нормализацией)."""
+        text = str(value or "")
+        if not text:
+            return set()
+        lowered = text.casefold()
+        found: set[str] = set()
+        for key, markers in CURRENCY_HINT_MARKERS.items():
+            for marker in markers:
+                if marker.isascii() and marker.isalpha():
+                    needle = marker.casefold()
+                    if needle in lowered:
+                        found.add(key)
+                        break
+                elif marker in text or marker.casefold() in lowered:
+                    found.add(key)
+                    break
+        return found
+
+    @classmethod
+    def _filter_candidates_by_currency_hint(
+        cls,
+        mention: str,
+        candidates: list[ProductCandidate],
+    ) -> list[ProductCandidate]:
+        """Сужает ambiguous-набор, если в запросе явно указана валюта ($ / ¥ / доллары)."""
+        if len(candidates) < 2:
+            return candidates
+        query_hints = cls._detect_currency_hints(mention)
+        if not query_hints:
+            return candidates
+
+        filtered = [
+            candidate
+            for candidate in candidates
+            if query_hints
+            & cls._detect_currency_hints(
+                f"{candidate.canonical_name} {candidate.alias}"
+            )
+        ]
+        return filtered or candidates
 
     def _has_clear_top_candidate(self, candidates: list[ProductCandidate]) -> bool:
         """Проверяет, достаточно ли top fuzzy-кандидат оторвался от следующего."""

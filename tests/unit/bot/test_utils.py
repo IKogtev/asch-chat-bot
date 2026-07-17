@@ -76,7 +76,7 @@ def test_render_results_delegates_to_shared_doc_list_renderer() -> None:
     result = render_results(items, total=1, offset=0)
 
     assert "<b>1. Doc 1</b>" in result
-    assert "Snippet" in result
+    assert "Snippet" not in result
 
 
 @pytest.mark.unit

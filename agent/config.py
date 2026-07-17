@@ -27,11 +27,14 @@ PROMPTS_DIR = Path(os.getenv("AGENT_PROMPTS_DIR", str(SCRIPT_DIR / "prompts")))
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_API_URL = os.getenv("LLM_API_URL", "").strip()
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
+LITELLM_REQUEST_TIMEOUT = float(os.getenv("LITELLM_REQUEST_TIMEOUT", "90"))
+LITELLM_NUM_RETRIES = int(os.getenv("LITELLM_NUM_RETRIES", "1"))
+LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", 4096))
 
 # =============================================================================
 # AGENT TEMPERATURES
 # =============================================================================
-ROOT_TEMPERATURE = float(os.getenv("ROOT_TEMPERATURE", 0.0))
+ROOT_TEMPERATURE = float(os.getenv("ROOT_TEMPERATURE", 0.2))
 DISPATCHER_TEMPERATURE = float(os.getenv("DISPATCHER_TEMPERATURE", ROOT_TEMPERATURE))
 DOC_SEARCH_TEMPERATURE = float(os.getenv("DOC_SEARCH_TEMPERATURE", ROOT_TEMPERATURE))
 KB_ANSWER_TEMPERATURE = float(os.getenv("KB_ANSWER_TEMPERATURE", ROOT_TEMPERATURE))
@@ -93,7 +96,10 @@ logger = setup_logger("agent_chain", "agent.log")
 # =============================================================================
 # MODEL FACTORY
 # =============================================================================
+from typing import Any, Dict, List, Optional, Protocol
+
 from google.adk.models.lite_llm import LiteLlm
+from google.genai.types import GenerateContentConfig
 
 
 def build_common_model() -> LiteLlm:
@@ -104,12 +110,28 @@ def build_common_model() -> LiteLlm:
         model=LLM_API_MODEL,
         api_key=LLM_API_KEY,
         api_base=LLM_API_URL,
+        timeout=LITELLM_REQUEST_TIMEOUT,
+        num_retries=LITELLM_NUM_RETRIES,
+        extra_body={
+        "chat_template_kwargs": {"enable_thinking": True},
+        "thinking_token_budget": 2048,
+    }
     )
+
+
+def build_generate_content_config(temperature: float) -> GenerateContentConfig:
+    """
+    Общий GenerateContentConfig: max_output_tokens всегда,
+    temperature — только если != -1 (иначе решает ADK).
+    """
+    params: dict = {"max_output_tokens": LLM_MAX_OUTPUT_TOKENS}
+    if temperature != -1:
+        params["temperature"] = temperature
+    return GenerateContentConfig(**params)
 
 # =============================================================================
 # KB BACKEND PROTOCOL & STUB
 # =============================================================================
-from typing import Protocol, Any, Dict, List, Optional
 
 class KbSearchBackend(Protocol):
     """

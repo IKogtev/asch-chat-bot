@@ -28,6 +28,7 @@ def _load_product_selection_module():
     config_stub.DBHUB_MCP_TOKEN = ""
     config_stub.DBHUB_MCP_URL = ""
     config_stub.PRODUCT_SELECTION_TEMPERATURE = 0.0
+    config_stub.build_generate_content_config = lambda temperature: None
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -45,6 +46,8 @@ def _load_product_selection_module():
             self.instruction = kwargs.get("instruction")
             self.tools = kwargs.get("tools")
             self.output_key = kwargs.get("output_key")
+            self.output_schema = kwargs.get("output_schema")
+            self.generate_content_config = kwargs.get("generate_content_config")
 
     adk_agents_stub.LlmAgent = _FakeLlmAgent
 
@@ -137,25 +140,48 @@ def test_product_compare_prompt_requires_all_product_columns() -> None:
         / "kb_storage"
         / "prompts"
         / "product_selection"
-        / "product_selection_agent_prompt.md"
+        / "product_selection_agent_compare_prompt.md"
     )
     prompt = prompt_path.read_text(encoding="utf-8")
 
-    compare_section = prompt.split("### `product_compare`:", maxsplit=1)[1].split(
-        "### `needs_clarification`:",
-        maxsplit=1,
-    )[0]
-
     for column in PRODUCT_COMPARE_COLUMNS:
-        assert f"`{column}`" in compare_section
+        assert f"`{column}`" in prompt
 
-    assert "не ограничивай состав `SELECT` через `display_columns`" in compare_section
-    assert "не ограничивай состав `SELECT` через `display_columns`" in prompt
-    assert "полный список свойств из раздела `product_compare`" in prompt
-    assert "`product_resolutions` только как источник кодов продуктов" in prompt
-    assert "Не используй `product_resolutions` как источник фактов" in prompt
-    assert "Если уникальных `product_code` не ровно 2" in prompt
-    assert "обязательно выполни `execute_sql`" in prompt
+    assert "не короткий `display_columns`" in prompt
+    assert "product_resolutions" in prompt
+    assert "execute_sql" in prompt
+    assert "code IN" in prompt
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_accepts_resolver_style_clarification_options() -> None:
+    result = validate_product_selection_result(
+        {
+            "status": "needs_clarification",
+            "mode": "product_compare",
+            "message": "Уточните продукт Альфа Kids",
+            "used_tables": "products",
+            "resolved_product_code": "7725",
+            "resolved_product_name": "Альфа Kids+ 5 лет",
+            "clarification_options_json": (
+                '[{"product_code": "3821", "canonical_name": "Альфа Kids 5 лет"},'
+                ' {"product_code": "7725", "canonical_name": "Альфа Kids+ 5 лет"}]'
+            ),
+            "products_json": "[]",
+        },
+        {},
+    )
+
+    assert result["status"] == "ok"
+    assert result["mode"] == "needs_clarification"
+    assert result["clarification_options"] == [
+        {"code": "3821", "name": "Альфа Kids 5 лет"},
+        {"code": "7725", "name": "Альфа Kids+ 5 лет"},
+    ]
+    assert result["resolved_product"] == {
+        "code": "7725",
+        "name": "Альфа Kids+ 5 лет",
+    }
 
 
 @pytest.mark.unit
@@ -284,6 +310,40 @@ def test_validate_product_selection_result_accepts_product_kit_with_product_code
     assert result["mode"] == "product_kit"
     assert result["resolved_product"]["code"] == "2832"
     assert result["resolved_product"]["folder_kit"] == "Fort Knox (2832)"
+
+
+@pytest.mark.unit
+def test_validate_product_selection_result_unwraps_double_encoded_set_model_response() -> None:
+    """ADK set_model_response иногда отдаёт строки как JSON-литералы: '\"8957\"', '\"[]\"'."""
+    result = validate_product_selection_result(
+        {
+            "status": "ok",
+            "mode": "product_kit",
+            "message": "Комплект документов для продукта 'Защищенный капитал $ 3 года' найден.",
+            "used_tables": "products",
+            "resolved_product_code": '"8957"',
+            "resolved_product_name": '"Защищенный капитал $ 3 года"',
+            "resolved_product_folder_kit": '"НСЖ/ЗК $ 3 года 5,1% (8957) 22.05.26"',
+            "clarification_options_json": '"[]"',
+            "products_json": '"[]"',
+            "attribute_name": '""',
+            "attribute_column": '""',
+            "attribute_values": '""',
+        },
+        SQL_CONTEXT,
+    )
+
+    assert result["mode"] == "product_kit"
+    assert result["resolved_product"] == {
+        "code": "8957",
+        "name": "Защищенный капитал $ 3 года",
+        "folder_kit": "НСЖ/ЗК $ 3 года 5,1% (8957) 22.05.26",
+    }
+    assert result["clarification_options"] == []
+    assert result["products"] == []
+    assert result["attribute_name"] == ""
+    assert result["attribute_column"] == ""
+    assert result["attribute_values"] == []
 
 
 @pytest.mark.unit
@@ -539,7 +599,7 @@ def test_validate_product_selection_result_requires_options_for_needs_clarificat
 
 
 @pytest.mark.unit
-def test_create_product_selection_agent_uses_refreshing_toolset_for_dbhub() -> None:
+def test_create_product_selection_agents_use_refreshing_toolset_and_schemas() -> None:
     original_url = product_selection_module.DBHUB_MCP_URL
     original_token = product_selection_module.DBHUB_MCP_TOKEN
     original_timeout = product_selection_module.DBHUB_MCP_TIMEOUT_SEC
@@ -549,16 +609,49 @@ def test_create_product_selection_agent_uses_refreshing_toolset_for_dbhub() -> N
     product_selection_module.DBHUB_MCP_TIMEOUT_SEC = 45.0
 
     try:
-        agent = product_selection_module.create_product_selection_agent(model="model")
+        agents = product_selection_module.create_product_selection_agents(model="model")
     finally:
         product_selection_module.DBHUB_MCP_URL = original_url
         product_selection_module.DBHUB_MCP_TOKEN = original_token
         product_selection_module.DBHUB_MCP_TIMEOUT_SEC = original_timeout
 
-    assert len(agent.tools) == 1
-    toolset = agent.tools[0]
+    assert agents.card_kit.name == "product_selection_card_kit_agent"
+    assert agents.filter.name == "product_selection_filter_agent"
+    assert agents.compare.name == "product_selection_compare_agent"
+
+    assert agents.card_kit.output_schema is product_selection_module.ProductSelectionCardKitResponseSchema
+    assert agents.filter.output_schema is product_selection_module.ProductSelectionFilterResponseSchema
+    assert agents.compare.output_schema is product_selection_module.ProductSelectionCompareResponseSchema
+
+    assert agents.card_kit.tools[0].tool_filter == product_selection_module.CARD_KIT_TOOL_FILTER
+    assert agents.filter.tools[0].tool_filter == product_selection_module.FILTER_TOOL_FILTER
+    assert agents.compare.tools[0].tool_filter == product_selection_module.COMPARE_TOOL_FILTER
+
+    toolset = agents.filter.tools[0]
     assert type(toolset).__name__ == "_FakeRefreshingMcpToolset"
-    assert toolset.tool_filter == product_selection_module.PRODUCT_SELECTION_TOOL_FILTER
     assert toolset.connection_params.url == "http://dbhub:8080/mcp"
     assert toolset.connection_params.headers == {"Authorization": "Bearer token"}
     assert toolset.connection_params.timeout == 45.0
+
+    assert (
+        product_selection_module.select_product_selection_agent("product_card", agents)
+        is agents.card_kit
+    )
+    assert (
+        product_selection_module.select_product_selection_agent("product_kit", agents)
+        is agents.card_kit
+    )
+    assert (
+        product_selection_module.select_product_selection_agent("product_filter", agents)
+        is agents.filter
+    )
+    assert (
+        product_selection_module.select_product_selection_agent(
+            "product_attribute_values", agents
+        )
+        is agents.filter
+    )
+    assert (
+        product_selection_module.select_product_selection_agent("product_compare", agents)
+        is agents.compare
+    )

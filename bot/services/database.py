@@ -179,7 +179,7 @@ class PostgresChatStore:
             return []
 
         query = """
-        SELECT rank, document_id, source_name, source_path, score, snippet
+        SELECT rank, document_id, source_name, source_path, score
         FROM search_results
         WHERE user_id = $1 AND session_id = $2
         ORDER BY rank ASC
@@ -195,7 +195,7 @@ class PostgresChatStore:
             return None
 
         query = """
-        SELECT rank, document_id, source_name, source_path, score, snippet
+        SELECT rank, document_id, source_name, source_path, score
         FROM search_results
         WHERE user_id = $1 AND session_id = $2 AND rank = $3
         """
@@ -502,20 +502,25 @@ class NewsStore:
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
 
-    def __init__(self, base_url: str, app_name: str):
+    def __init__(self, base_url: str, app_name: str, timeout_sec: Optional[int] = None):
         self.base_url = base_url.rstrip('/')
         self.app_name = app_name
+        self.timeout_sec = int(timeout_sec if timeout_sec is not None else Settings.ADK_TIMEOUT_SEC)
         self.http: Optional[aiohttp.ClientSession] = None
 
         # Буфер stateDelta до ближайшего run()
         # ключ: (user_id, session_id)
         self._pending_state_delta: dict[tuple[str, str], dict] = {}
-        logger.info(f"Инициализация ADK клиента: {base_url}, app={app_name}")
+        logger.info(
+            f"Инициализация ADK клиента: {base_url}, app={app_name}, "
+            f"timeout_sec={self.timeout_sec}"
+        )
 
     async def open(self) -> None:
         """Открытие HTTP сессии"""
-        self.http = aiohttp.ClientSession()
-        logger.info("HTTP сессия ADK клиента открыта")
+        timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
+        self.http = aiohttp.ClientSession(timeout=timeout)
+        logger.info(f"HTTP сессия ADK клиента открыта (timeout={self.timeout_sec}s)")
 
     async def close(self) -> None:
         """Закрытие HTTP сессии"""

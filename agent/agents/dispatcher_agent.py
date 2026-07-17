@@ -2,8 +2,7 @@ from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.genai.types import GenerateContentConfig
-from ..config import DISPATCHER_TEMPERATURE
+from ..config import DISPATCHER_TEMPERATURE, build_generate_content_config
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -239,25 +238,16 @@ High-priority product-focus rule: if the latest user message is "Что сейч
     instruction = load_prompt(prompt_file, fallback)
     name = "dispatcher_agent"
     if DISPATCHER_TEMPERATURE != -1:
-        logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")    
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            include_contents="none",
-            output_key="dispatcher_result_json",
-            generate_content_config=GenerateContentConfig(
-                temperature=DISPATCHER_TEMPERATURE,
-            )
-        )
+        logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            include_contents="none",
-            output_key="dispatcher_result_json"
-        )
+    agent = LlmAgent(
+        name=name,
+        model=model,
+        instruction=instruction,
+        include_contents="none",
+        output_key="dispatcher_result_json",
+        generate_content_config=build_generate_content_config(DISPATCHER_TEMPERATURE),
+    )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

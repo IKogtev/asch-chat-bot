@@ -59,7 +59,15 @@ def _load_start_agent_module(monkeypatch):
     kb_answer_stub.create_kb_answer_agent = _agent_factory("kb_answer_agent")
 
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
-    product_selection_stub.create_product_selection_agent = _agent_factory("product_selection_agent")
+
+    def _create_product_selection_agents(model):
+        return types.SimpleNamespace(
+            card_kit=types.SimpleNamespace(name="product_selection_card_kit_agent", model=model),
+            filter=types.SimpleNamespace(name="product_selection_filter_agent", model=model),
+            compare=types.SimpleNamespace(name="product_selection_compare_agent", model=model),
+        )
+
+    product_selection_stub.create_product_selection_agents = _create_product_selection_agents
 
     for name, module in {
         "agent": agent_pkg,
@@ -89,4 +97,6 @@ def test_start_agent_exports_app(monkeypatch) -> None:
     assert module.app.name == "agent"
     assert module.app.root_agent is module.root_agent
     assert not hasattr(module.app, "events_compaction_config")
-    assert module.root_agent.product_selection_agent.name == "product_selection_agent"
+    assert module.root_agent.product_selection_card_kit_agent.name == "product_selection_card_kit_agent"
+    assert module.root_agent.product_selection_filter_agent.name == "product_selection_filter_agent"
+    assert module.root_agent.product_selection_compare_agent.name == "product_selection_compare_agent"
