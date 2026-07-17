@@ -196,15 +196,34 @@ class RootAgent(BaseAgent):
     @staticmethod
     def _build_final_event(ctx: InvocationContext, text: str) -> Event:
         """Финальное событие root-агента."""
+        # ====================================================================
+        # 🚀 LANGFUSE / TRACING: Обогащаем output ТОЛЬКО для трейсинга
+        # ====================================================================
+        langfuse_output_text = text  # По умолчанию равен чистому тексту
+        dispatch = ctx.session.state.get("_dispatcher_result_parsed") or {}
+        
+        # Если это был поиск документов, забираем результат из памяти (Source of Truth)
+        if dispatch.get("route") == "doc_search":
+            parsed_doc_search = ctx.session.state.get("_doc_search_result_parsed") or {}
+            if parsed_doc_search.get("mode") == "document_list" and isinstance(parsed_doc_search.get("results"), list):
+                docs_list = parsed_doc_search["results"]
+                formatted_docs = []
+                for doc in docs_list:
+                    if isinstance(doc, dict):
+                        name = doc.get("source_name") or doc.get("name") or doc.get("title") or "Неизвестный документ"
+                        formatted_docs.append(f"- {name}")
+                if formatted_docs:
+                    # Формируем обогащенный текст для Langfuse
+                    langfuse_output_text = f"{text}\n\n--- НАЙДЕННЫЕ ДОКУМЕНТЫ ---\n" + "\n".join(formatted_docs)
+        
         # --- LANGFUSE: Сохраняем финальный ответ для трейса ---
-        ctx.session.state["_langfuse_final_output"] = text
+        ctx.session.state["_langfuse_final_output"] = langfuse_output_text
         # --- OPENTELEMETRY: Запись output в текущий активный спан ---
         current_span = otel_trace.get_current_span()
         if current_span and current_span.is_recording():
-            # Вариант А: Если вы хотите передать чистый текст ответа (рекомендуется для большинства UI)
-            current_span.set_attribute("langfuse.trace.output", text)
-            current_span.set_attribute("langfuse.observation.output", text)
-            current_span.set_attribute("output.value", text)
+            current_span.set_attribute("langfuse.trace.output", langfuse_output_text)
+            current_span.set_attribute("langfuse.observation.output", langfuse_output_text)
+            current_span.set_attribute("output.value", langfuse_output_text)
             current_span.set_attribute("output.mime_type", "text/plain")
         state_delta: Dict[str, Any] = {}
         session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
@@ -227,6 +246,8 @@ class RootAgent(BaseAgent):
             value = session_state.get(key)
             if value is not None:
                 state_delta[key] = value
+        if langfuse_output_text != text:
+            state_delta["_langfuse_final_output"] = langfuse_output_text
         actions = EventActions(end_of_agent=True)
         actions.state_delta = state_delta
 

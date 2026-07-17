@@ -24,14 +24,18 @@ global_session_service = InMemorySessionService()
 
 async def _collect_runner_events(runner, user_id: str, session_id: str, content: Any) -> Tuple[str, str, str]:
     """Вспомогательная функция для безопасного сбора событий из асинхронного генератора."""
+    # Вспомогательная функция для извлечения документов из распарсенного JSON
     final_text, route, intent = "", "", ""
     async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
+        # Собираем финальный текст от root_agent
         if event.author == "root_agent" and event.content and event.content.parts:
             for part in event.content.parts:
                 if part.text:
                     final_text += part.text
+        # Анализируем state_delta для поиска служебных данных
         if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
             delta = event.actions.state_delta
+            # Диспетчер
             if '_dispatcher_result_parsed' in delta:
                 route = delta['_dispatcher_result_parsed'].get('route', '')
                 intent = delta['_dispatcher_result_parsed'].get('intent', '')
@@ -41,10 +45,9 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
     """Асинхронная логика запуска вашего мультиагента."""
     user_query = input_data.get("user_query", "")
     runner = Runner(app=app, session_service=global_session_service)
-    # session_id = f"test_item_{item_idx}_{uuid.uuid4().hex[:8]}"
     session_id = str(uuid.uuid4())
     user_id = "00000000-0000-0000-0000-000000000001"
-     # ИСПРАВЛЕНИЕ: Создаем сессию с предустановленными тестовыми данными профиля,
+    # Создаем сессию с предустановленными тестовыми данными профиля,
     # чтобы агент не падал с KeyError при попытке их прочитать из промптов или логики.
     try:
         await global_session_service.create_session(
@@ -67,7 +70,6 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
         else:
             raise e
     
-    # ИСПРАВЛЕНИЕ 1: Добавлено обязательное поле author="user"
     user_event = Event(
         author="user",
         invocation_id=f"inv_{uuid.uuid4().hex[:8]}",
@@ -84,16 +86,6 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
                 timeout=200.0
             )
                 
-        # async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=user_event.content):
-                # if event.author == "root_agent" and event.content and event.content.parts:
-                #     for part in event.content.parts:
-                #         if part.text:
-                #             final_text += part.text
-                # if hasattr(event, 'actions') and event.actions and getattr(event.actions, 'state_delta', None):
-                #     delta = event.actions.state_delta
-                #     if '_dispatcher_result_parsed' in delta:
-                #         route = delta['_dispatcher_result_parsed'].get('route', '')
-                #         intent = delta['_dispatcher_result_parsed'].get('intent', '')
             span_context = root_span.get_span_context()
             if span_context.is_valid:
                 # Конвертируем 128-битный trace_id в 32-значную hex-строку, которую требует Langfuse
@@ -115,7 +107,7 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
         "route": route, 
         "intent": intent, 
         "status": status,
-        "adk_trace_id": adk_trace_id # Возвращаем вызывающей стороне
+        "adk_trace_id": adk_trace_id, # Возвращаем вызывающей стороне
     }
 
 def _parse_dataset_input(raw_input: Any) -> Dict[str, Any]:
@@ -184,6 +176,7 @@ async def handle_langfuse_webhook(request: Request, background_tasks: Background
         
         return {"status": "accepted", "dataset": dataset_name, "run_name": run_name}
     except Exception as e:
+        logger.error(f"Ошибка webhook: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
