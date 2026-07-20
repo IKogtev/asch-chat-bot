@@ -1593,6 +1593,97 @@ async def test_run_async_impl_routes_product_card_followup_from_product_code_onl
     assert product_called is True
     assert dispatcher_called is False
 
+
+@pytest.mark.unit
+def test_store_needs_clarification_keeps_pending_compare_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "product_selection_intent": "product_compare",
+            "product_selection_search_query": "сравни ФД 3 года и ФД 1 год",
+            "product_resolutions": {
+                "status": "ambiguous",
+                "items": [
+                    {
+                        "status": "resolved",
+                        "product_code": "8941",
+                        "product_name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    },
+                    {
+                        "status": "ambiguous",
+                        "product_code": None,
+                        "product_name": None,
+                        "options": [],
+                    },
+                ],
+            },
+        }
+    )
+
+    agent._store_product_dialog_context(
+        ctx,
+        {
+            "mode": "needs_clarification",
+            "clarification_options": [
+                {"code": "8914", "name": "Фиксированный доход 1 год"},
+                {"code": "8959", "name": "Фиксированный доход 1 год + Альфа-Вклад Актив"},
+            ],
+        },
+    )
+
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["last_mode"] == "needs_clarification"
+    assert stored["pending_intent"] == "product_compare"
+    assert stored["compare_resolved_products"] == [
+        {
+            "code": "8941",
+            "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        }
+    ]
+    assert [item["code"] for item in stored["clarification_options"]] == ["8914", "8959"]
+
+
+@pytest.mark.unit
+def test_product_followup_dispatch_resumes_compare_after_clarification_code() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_intent": "product_compare",
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "needs_clarification",
+                "pending_intent": "product_compare",
+                "products": [
+                    {"code": "8914", "name": "Фиксированный доход 1 год"},
+                    {"code": "8959", "name": "Фиксированный доход 1 год + Альфа-Вклад Актив"},
+                ],
+                "clarification_options": [
+                    {"code": "8914", "name": "Фиксированный доход 1 год"},
+                    {"code": "8959", "name": "Фиксированный доход 1 год + Альфа-Вклад Актив"},
+                ],
+                "compare_resolved_products": [
+                    {
+                        "code": "8941",
+                        "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    }
+                ],
+                "original_search_query": "сравни ФД 3 года и ФД 1 год",
+                "selected_product": None,
+            },
+        }
+    )
+
+    dispatch = agent._product_followup_dispatch(
+        ctx,
+        "8914 Фиксированный доход 1 год",
+    )
+
+    assert dispatch is not None
+    assert dispatch["route"] == "product_selection"
+    assert dispatch["intent"] == "product_compare"
+    assert dispatch["reason"] == "product_compare_clarification_followup"
+    assert dispatch["search_query"] == "сравни продукты 8941 и 8914"
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_async_impl_routes_product_card_followup_from_saved_product_list() -> None:

@@ -131,4 +131,3 @@ def test_flatten_and_build_timing_payload() -> None:
     assert payload["dispatcher_model_turns"] == 1
     assert payload["route"] == "doc_search"
     assert payload["intent"] == "doc_search"
-
