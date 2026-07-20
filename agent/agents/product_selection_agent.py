@@ -342,6 +342,15 @@ Rules:
 - Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
 - For product_card and product_kit, use product_resolution prepared by code; do not resolve product names yourself.
 - For product_compare, use product_resolutions prepared by code; do not resolve product names yourself.
+- For product_compare, select and process every confirmed user-facing product field. Do not limit the comparison to selected or key facts.
+- Before building a product_compare message, process every field in a fixed order. Compare values only after applying the same display formatting and trimming surrounding whitespace.
+- If both values are equal and non-empty, show the field exactly once under `Одинаковые свойства` and never in the product-specific difference blocks.
+- If both values are non-empty and different, show the field exactly once under each product and never under `Одинаковые свойства`.
+- If only one value is non-empty, treat the field as different: show the value for one product and `нет данных` for the other. If both values are empty, omit the field.
+- The common-field set and the different-field set must be mutually exclusive. Every field that is non-empty for at least one product must be present in exactly one of these sets.
+- If commission is non-empty and equal for both products, the line `• КВ: COMMON_VALUE` is mandatory under `Одинаковые свойства`.
+- Before returning the final JSON for product_compare, reconcile both SQL rows with message. Do not finish if a non-empty field is missing, equal values are classified as different, different values are classified as equal, or one field appears in both sections.
+- For product_compare, return resolved_product=null and products=[].
 - For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
 - Do not include source in JSON.
@@ -350,7 +359,7 @@ Response format:
 {
   "status": "ok",
   "mode": "product_filter",
-  "message": "short answer for the user",
+  "message": "answer for the user",
   "used_tables": ["products"],
   "resolved_product": null,
   "clarification_options": [],
