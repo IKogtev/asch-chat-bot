@@ -3250,6 +3250,11 @@ async function openUserDialogs(userId, userName) {
     };
     renderUserDialogs(dialogs);
     document.getElementById("dialogs-modal").style.display = "block";
+    // Прокрутить список вниз
+    const list = document.getElementById("dialogs-list");
+    requestAnimationFrame(() => {
+        list.scrollTop = list.scrollHeight;
+    });
 }
 // отрисовка диалога пользователя 
 function renderUserDialogs(dialogs) {
