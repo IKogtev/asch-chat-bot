@@ -342,14 +342,15 @@ Rules:
 - Each clarification option must use only code, name, term, and currency fields; do not return options as strings.
 - For product_card and product_kit, use product_resolution prepared by code; do not resolve product names yourself.
 - For product_compare, use product_resolutions prepared by code; do not resolve product names yourself.
-- For product_compare, select and process every confirmed user-facing product field. Do not limit the comparison to selected or key facts.
-- Before building a product_compare message, process every field in a fixed order. Compare values only after applying the same display formatting and trimming surrounding whitespace.
-- If both values are equal and non-empty, show the field exactly once under `Одинаковые свойства` and never in the product-specific difference blocks.
-- If both values are non-empty and different, show the field exactly once under each product and never under `Одинаковые свойства`.
-- If only one value is non-empty, treat the field as different: show the value for one product and `нет данных` for the other. If both values are empty, omit the field.
-- The common-field set and the different-field set must be mutually exclusive. Every field that is non-empty for at least one product must be present in exactly one of these sets.
-- If commission is non-empty and equal for both products, the line `• КВ: COMMON_VALUE` is mandatory under `Одинаковые свойства`.
-- Before returning the final JSON for product_compare, reconcile both SQL rows with message. Do not finish if a non-empty field is missing, equal values are classified as different, different values are classified as equal, or one field appears in both sections.
+- For product_card and product_compare, include every confirmed user-facing field in SELECT and render it in this exact order: code, name, is_active, insurance_type, product_type, term, capital_loss_risk, product_risk_level, income, commission, commission_condition, input_date, contribution_type, payout_type, liquidity, currency, fx_protection, segment, client_goal, taxes, tax_benefits, in_focus, in_focus_condition.
+- Render differences only in product-first order: first the first product heading and all its different fields, then the second product heading and all its different fields. Never group differences by property, number properties, or put product names inside a property description.
+- Compare all fields in the specified order except code and name. Show equal non-empty values once under `Одинаковые свойства`; show different non-empty values under both products; for one empty value show `нет данных` on that side; omit a field only when both values are empty.
+- Required positive format example; the values are synthetic and must not be copied as answer data:
+  `У двух продуктов отличаются следующие свойства:\n\n1001 - Продукт А\n• Доход: Отсутствует\n\n1002 - Продукт Б\n• Доход: Гарантированный\n\nОдинаковые свойства:\n• Тип страхования: НСЖ\n• КВ: 12,5%`
+- Forbidden negative format example:
+  `1. Доход:\n   Продукт А - Отсутствует\n   Продукт Б - Гарантированный`
+- Apply this single canonical `commission` rule everywhere `КВ` is rendered. Before comparing or rendering, normalize each non-empty value: it is already expressed as a percentage, so do not multiply or divide by 100; accept a number or string; for a string trim surrounding whitespace and one trailing `%`; round to at most two decimal places; remove insignificant zeroes; replace the decimal point with a comma; append exactly one `%`. Examples: `2.35` -> `2,35%`; `"2.35"` -> `2,35%`; `"2.35%"` -> `2,35%`; `7.0` -> `7%`; `"2,35%"` -> `2,35%`. For product_compare, compare only normalized values. `commission != null` makes the `КВ` line mandatory: equal values go under `Одинаковые свойства`; different values go under both products. A decimal point between digits in a final `КВ` value is forbidden: `КВ: 2,35%` is correct; `КВ: 2.35%` is forbidden.
+- A product_compare final JSON is allowed only when the number of distinct listed fields that are non-empty for at least one SQL row, excluding code and name, equals the number of distinct user-facing property names shown in message. Do not add fields to the JSON contract for this check.
 - For product_compare, return resolved_product=null and products=[].
 - For product_kit, include resolved_product.folder_kit when the SQL result has a folder_kit column.
 - Write message in Russian.
