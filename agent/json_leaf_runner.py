@@ -15,6 +15,13 @@ from utils.logger import setup_logger
 from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
 from .doc_search_validation import DocSearchRetryableValidationError
 from .helpers import extract_json, truncate_for_log
+from .stage_metrics import (
+    event_has_model_output,
+    event_is_model_turn,
+    extract_usage_tokens,
+    record_stage_metrics,
+    stage_name_from_log_label,
+)
 
 logger = setup_logger("json_leaf_runner", "agent.log")
 
@@ -310,7 +317,14 @@ async def run_json_leaf_agent(
     validation_error_user_message: str,
 ) -> AsyncGenerator[Event, None]:
     _doc_timing = log_label == "doc_search_result_json"
-    _t_llm0 = time.monotonic() if _doc_timing else None
+    stage_name = stage_name_from_log_label(log_label)
+    _t_llm0 = time.monotonic()
+    ttft_ms: int | None = None
+    input_tokens = 0
+    output_tokens = 0
+    model_turns = 0
+    usage_model_turns = 0
+    output_model_turns = 0
     tool_calls: list[str] = []
     tool_event_summaries: list[dict[str, str]] = []
     kb_search_response_texts: list[str] = []
@@ -321,9 +335,46 @@ async def run_json_leaf_agent(
             kb_search_response_texts.extend(
                 _extract_kb_search_response_texts_from_event(event)
             )
+        if ttft_ms is None and event_has_model_output(event):
+            ttft_ms = int((time.monotonic() - _t_llm0) * 1000.0)
+        usage = getattr(event, "usage_metadata", None)
+        if usage is None and isinstance(event, dict):
+            usage = event.get("usage_metadata") or event.get("usageMetadata")
+        if usage is not None:
+            usage_model_turns += 1
+        elif event_is_model_turn(event):
+            output_model_turns += 1
+        in_tok, out_tok = extract_usage_tokens(usage)
+        input_tokens += in_tok
+        output_tokens += out_tok
         sanitized_event = strip_thought_parts(event)
         if sanitized_event is not None:
             yield sanitized_event
+
+    model_turns = usage_model_turns if usage_model_turns > 0 else output_model_turns
+    llm_ms = int((time.monotonic() - _t_llm0) * 1000.0)
+    if stage_name:
+        record_stage_metrics(
+            ctx.session.state,
+            stage_name,
+            ms=llm_ms,
+            ttft_ms=ttft_ms if ttft_ms is not None else llm_ms,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            tool_calls=len(tool_calls),
+            model_turns=model_turns,
+        )
+        logger.info(
+            "stage_metrics: stage=%s ms=%s ttft_ms=%s input_tokens=%s output_tokens=%s "
+            "tool_calls=%s model_turns=%s",
+            stage_name,
+            llm_ms,
+            ttft_ms if ttft_ms is not None else llm_ms,
+            input_tokens,
+            output_tokens,
+            len(tool_calls),
+            model_turns,
+        )
 
     if _doc_timing:
         _store_doc_search_kb_hits(ctx, kb_search_response_texts)
@@ -333,10 +384,6 @@ async def run_json_leaf_agent(
             ctx.session.state.get("doc_search_rerank_only"),
             tool_calls.count("kb_search"),
         )
-
-    _llm_ms: float | None = None
-    if _doc_timing and _t_llm0 is not None:
-        _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
         
     # Достаем сырой результат без жесткого каста к str на первом шаге
     raw_payload = ctx.session.state.get(output_key)
@@ -394,11 +441,11 @@ async def run_json_leaf_agent(
             user_message=validation_error_user_message,
         ) from exc
 
-    if _doc_timing and _t_parse0 is not None and _llm_ms is not None:
+    if _doc_timing and _t_parse0 is not None:
         _parse_ms = (time.monotonic() - _t_parse0) * 1000.0
         logger.debug(
-            "doc_search LLM timing: agent.run_async wall_ms=%.1f; json_extract+validate wall_ms=%.1f",
-            _llm_ms,
+            "doc_search LLM timing: agent.run_async wall_ms=%s; json_extract+validate wall_ms=%.1f",
+            llm_ms,
             _parse_ms,
         )
 

@@ -23,6 +23,8 @@ class Settings():
     )
     # Пауза между попытками подключиться а API telegram
     RECONNECT_DELAY_SEC: int = int(os.getenv("RECONNECT_DELAY_SEC", 60))
+    # Таймаут HTTP-запросов бота к ADK /run (секунды)
+    ADK_TIMEOUT_SEC: int = int(os.getenv("ADK_TIMEOUT_SEC", "180"))
     SHOW_MAX: int = int(os.getenv("SHOW_LIST_SIZE",5))
     SHOW_BY_PAGE: bool = os.getenv("SHOW_BY_PAGE", "False").lower() == "true"
 

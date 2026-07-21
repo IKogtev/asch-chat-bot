@@ -267,6 +267,51 @@ COMPARE_SPLIT_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Символы валюты вырезаются normalize_product_text ([^a-zа-я0-9]),
+# поэтому $ / ¥ варианты иначе схлопываются в один ambiguous-набор.
+CURRENCY_HINT_MARKERS: dict[str, tuple[str, ...]] = {
+    "usd": (
+        "$",
+        "usd",
+        "dollar",
+        "dollars",
+        "доллар",
+        "доллара",
+        "доллары",
+        "долларов",
+        "долларах",
+    ),
+    "cny": (
+        "¥",
+        "￥",
+        "cny",
+        "cnh",
+        "yuan",
+        "юань",
+        "юаня",
+        "юани",
+        "юаней",
+        "юанях",
+    ),
+    "eur": (
+        "€",
+        "eur",
+        "euro",
+        "евро",
+    ),
+    "rub": (
+        "₽",
+        "rub",
+        "rur",
+        "руб",
+        "рубль",
+        "рубля",
+        "рубли",
+        "рублей",
+        "рублях",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class ProductCandidate:
@@ -565,18 +610,15 @@ class ProductResolverService:
                 error=type(exc).__name__,
             )
 
-    async def _resolve_product_filter_safe(self, query: str) -> ProductFilterResolveResult:
+    async def _resolve_product_filter_safe(
+        self,
+        query: str,
+        *,
+        allow_multi: bool = True,
+    ) -> ProductFilterResolveResult:
         """Выполняет каскад поиска для product_filter и возвращает набор кандидатов."""
-        normalized = self.normalize_product_text(query)
-
-        if re.search(r"\b\d{3,}\s+plus\s+\d{3,}\b", normalized):
-            mentions = re.findall(
-                r"\d{3,}\s+plus\s+\d{3,}",
-                normalized,
-            )
-        else:
-            mentions = self.extract_product_mentions(query)
-        if len(mentions) > 1:
+        mentions = self.extract_product_mentions(query)
+        if allow_multi and len(mentions) > 1:
             return await self._resolve_product_filter_multi(query, mentions)
 
         candidate_queries = self._candidate_queries(query)
@@ -592,44 +634,31 @@ class ProductResolverService:
         query: str,
         mentions: list[str],
     ) -> ProductFilterResolveResult:
-        """Разрешает каждое упоминание отдельно и объединяет найденные продукты."""
+        """Разрешает каждое упоминание отдельно и объединяет наборы кандидатов."""
         logger.debug("resolve_product_filter multi_mentions=%s", mentions)
-
         all_products: list[ProductCandidate] = []
         matched_terms: list[str] = []
-
         for mention in mentions:
-            for candidate_query in self._candidate_queries(mention):
-                result = await self._resolve_product_filter_for_query(
-                    mention,
-                    candidate_query,
-                )
-
-                if result is None:
-                    continue
-
-                if result.products:
-                    all_products.extend(result.products)
-                    matched_terms.extend(result.matched_terms or [mention])
-
-                    # нашли продукт для этого mention — дальше его искать не нужно
-                    break
+            # Не даём mention снова уйти в multi: иначе фраза с кодами
+            # (например «бандлы 8965 7698») рекурсивно извлекает саму себя.
+            mention_result = await self._resolve_product_filter_safe(
+                mention,
+                allow_multi=False,
+            )
+            if mention_result.products:
+                all_products.extend(mention_result.products)
+                matched_terms.extend(mention_result.matched_terms or [mention])
 
         products = self._unique_products(all_products)
-
         if products:
             return ProductFilterResolveResult(
                 status="resolved",
                 query=query,
-                product_codes=[p.product_code for p in products],
+                product_codes=[candidate.product_code for candidate in products],
                 products=products,
                 matched_terms=matched_terms,
             )
-
-        return ProductFilterResolveResult(
-            status="not_found",
-            query=query,
-        )
+        return ProductFilterResolveResult(status="not_found", query=query)
 
     async def _resolve_product_filter_for_query(
         self,
@@ -681,27 +710,28 @@ class ProductResolverService:
         text = str(query or "").strip()
         if not text:
             return []
-        # сначала ищем составные коды
-        bundle_codes = re.findall(
-            r"\b\d{3,}\s*(?:\+|plus)\s*\d{3,}\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        # затем одиночные
-        code_mentions = re.findall(
-            r"\b\d{3,}\b",
-            text,
-        )
+
+        code_mentions = re.findall(r"\b\d{3,}(?:\+\d{3,})?\b", text)
         parts = [
             cls._remove_query_noise(part)
             for part in COMPARE_SPLIT_RE.split(text)
         ]
-        mentions = [part for part in parts if part]
-        mentions.extend(bundle_codes)
-        for code in code_mentions:
-            if any(code in bundle for bundle in bundle_codes):
+        mentions: list[str] = []
+        for part in parts:
+            if not part:
                 continue
-            mentions.append(code)
+            # Коды уже идут отдельными mentions — убираем их из текстовой части,
+            # иначе остаётся исходная фраза и multi рекурсивно зацикливается.
+            if code_mentions:
+                part_without_codes = re.sub(
+                    r"\b\d{3,}(?:\+\d{3,})?\b",
+                    " ",
+                    part,
+                )
+                part = " ".join(part_without_codes.split()).strip()
+            if part:
+                mentions.append(part)
+        mentions.extend(code_mentions)
         return cls._deduplicate_mentions(mentions)
 
     @staticmethod
@@ -730,6 +760,7 @@ class ProductResolverService:
         allow_clear_top: bool,
     ) -> ProductResolveResult:
         """Определяет итоговый статус по найденным кандидатам."""
+        candidates = self._filter_candidates_by_currency_hint(mention, candidates)
         if not candidates:
             return ProductResolveResult(status="not_found", mention=mention)
         if len(candidates) == 1:
@@ -741,6 +772,49 @@ class ProductResolverService:
             mention=mention,
             options=candidates,
         )
+
+    @classmethod
+    def _detect_currency_hints(cls, value: str) -> set[str]:
+        """Достаёт ключи валют из сырого текста (до вырезания символов нормализацией)."""
+        text = str(value or "")
+        if not text:
+            return set()
+        lowered = text.casefold()
+        found: set[str] = set()
+        for key, markers in CURRENCY_HINT_MARKERS.items():
+            for marker in markers:
+                if marker.isascii() and marker.isalpha():
+                    needle = marker.casefold()
+                    if needle in lowered:
+                        found.add(key)
+                        break
+                elif marker in text or marker.casefold() in lowered:
+                    found.add(key)
+                    break
+        return found
+
+    @classmethod
+    def _filter_candidates_by_currency_hint(
+        cls,
+        mention: str,
+        candidates: list[ProductCandidate],
+    ) -> list[ProductCandidate]:
+        """Сужает ambiguous-набор, если в запросе явно указана валюта ($ / ¥ / доллары)."""
+        if len(candidates) < 2:
+            return candidates
+        query_hints = cls._detect_currency_hints(mention)
+        if not query_hints:
+            return candidates
+
+        filtered = [
+            candidate
+            for candidate in candidates
+            if query_hints
+            & cls._detect_currency_hints(
+                f"{candidate.canonical_name} {candidate.alias}"
+            )
+        ]
+        return filtered or candidates
 
     def _has_clear_top_candidate(self, candidates: list[ProductCandidate]) -> bool:
         """Проверяет, достаточно ли top fuzzy-кандидат оторвался от следующего."""

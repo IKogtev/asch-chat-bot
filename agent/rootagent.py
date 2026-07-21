@@ -28,6 +28,11 @@ from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
+from .stage_metrics import (
+    STAGE_METRICS_STATE_KEY,
+    TIMING_STATE_DELTA_KEY,
+    build_timing_payload,
+)
 from collections import OrderedDict, deque
 import asyncpg
 
@@ -204,6 +209,10 @@ class RootAgent(BaseAgent):
         product_dialog_context = session_state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY)
         if isinstance(product_dialog_context, dict):
             state_delta[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = product_dialog_context
+
+        timing = build_timing_payload(session_state)
+        if timing:
+            state_delta[TIMING_STATE_DELTA_KEY] = timing
 
         # Сохраняем last_* ключи для контекста между сессиями
         for key in [
@@ -425,6 +434,7 @@ class RootAgent(BaseAgent):
                 "product_filter_resolution",
                 "owasp_current_user_message",
                 "owasp_recent_messages_json",
+                STAGE_METRICS_STATE_KEY,
             ],
         )
     def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
@@ -689,7 +699,40 @@ class RootAgent(BaseAgent):
         if mode == "no_data":
             self._clear_product_dialog_context(ctx)
             return
-            
+
+        if mode == "needs_clarification":
+            options = self._normalize_dialog_products(
+                product_selection.get("clarification_options") or []
+            )
+            previous = self._get_product_dialog_context(ctx)
+            pending_intent = str(
+                ctx.session.state.get("product_selection_intent")
+                or ctx.session.state.get("last_intent")
+                or previous.get("pending_intent")
+                or ""
+            ).strip()
+            original_search_query = str(
+                ctx.session.state.get("product_selection_search_query")
+                or ctx.session.state.get("last_search_query")
+                or previous.get("original_search_query")
+                or ""
+            ).strip()
+            compare_resolved = self._resolved_products_from_resolutions(ctx)
+            if not compare_resolved:
+                compare_resolved = self._normalize_dialog_products(
+                    previous.get("compare_resolved_products") or []
+                )
+            ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+                "last_mode": "needs_clarification",
+                "pending_intent": pending_intent,
+                "products": options,
+                "clarification_options": options,
+                "compare_resolved_products": compare_resolved,
+                "original_search_query": original_search_query,
+                "selected_product": previous.get("selected_product"),
+            }
+            return
+
         if mode == "product_compare":
             resolved_product = product_selection.get("resolved_product")
             products = self._normalize_dialog_products(product_selection.get("products") or [])
@@ -831,6 +874,165 @@ class RootAgent(BaseAgent):
                 return products[0]
 
         return None
+
+    def _resolved_products_from_resolutions(
+        self,
+        ctx: InvocationContext,
+    ) -> List[Dict[str, str]]:
+        """Достаёт уже resolved продукты из product_resolutions (для resume compare)."""
+        resolutions = ctx.session.state.get("product_resolutions") or {}
+        items = resolutions.get("items") if isinstance(resolutions, dict) else None
+        if not isinstance(items, list):
+            return []
+
+        products: List[Dict[str, str]] = []
+        seen_codes: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict) or item.get("status") != "resolved":
+                continue
+            code = str(item.get("product_code") or "").strip()
+            name = str(item.get("product_name") or "").strip()
+            if not code and not name:
+                continue
+            if code and code in seen_codes:
+                continue
+            if code:
+                seen_codes.add(code)
+            product: Dict[str, str] = {}
+            if code:
+                product["code"] = code
+            if name:
+                product["name"] = name
+            products.append(product)
+        return products
+
+    def _match_clarification_option(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+    ) -> Dict[str, str] | None:
+        """Сопоставляет ответ пользователя с options после needs_clarification."""
+        context = self._get_product_dialog_context(ctx)
+        if context.get("last_mode") != "needs_clarification":
+            return None
+
+        options = self._normalize_dialog_products(
+            context.get("clarification_options") or context.get("products") or []
+        )
+        if not options:
+            return None
+
+        codes = self._extract_product_codes(user_text)
+        if len(codes) == 1:
+            code = codes[0]
+            for option in options:
+                if option.get("code") == code:
+                    return option
+
+        normalized = self._normalize_product_dialog_text(user_text)
+        matches: List[Dict[str, str]] = []
+        for option in options:
+            label = self._normalize_product_dialog_text(
+                self._format_clarification_option(option)
+            )
+            name = self._normalize_product_dialog_text(option.get("name", ""))
+            if normalized and (
+                normalized == label
+                or (name and normalized == name)
+            ):
+                matches.append(option)
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _dispatch_clarification_followup(
+        self,
+        ctx: InvocationContext,
+        selected: Dict[str, str],
+    ) -> Dict[str, Any] | None:
+        """Продолжает исходный intent (обычно product_compare) после выбора option."""
+        context = self._get_product_dialog_context(ctx)
+        pending_intent = str(
+            context.get("pending_intent")
+            or ctx.session.state.get("last_intent")
+            or ""
+        ).strip()
+        code = str(selected.get("code") or "").strip()
+        name = str(selected.get("name") or "").strip()
+        if not code and not name:
+            return None
+
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+            **context,
+            "last_mode": pending_intent or "needs_clarification",
+            "selected_product": selected,
+            "clarification_options": [],
+            "pending_intent": "",
+        }
+
+        if pending_intent == "product_compare":
+            resolved = self._normalize_dialog_products(
+                context.get("compare_resolved_products") or []
+            )
+            codes: List[str] = []
+            for product in resolved:
+                product_code = str(product.get("code") or "").strip()
+                if product_code and product_code not in codes:
+                    codes.append(product_code)
+            if code and code not in codes:
+                codes.append(code)
+
+            if len(codes) >= 2:
+                query = f"сравни продукты {codes[0]} и {codes[1]}"
+            else:
+                original = str(context.get("original_search_query") or "").strip()
+                selected_label = code or name
+                query = (
+                    f"{original} {selected_label}".strip()
+                    if original
+                    else f"сравни продукт {selected_label}"
+                )
+
+            logger.info(
+                "Clarification followup -> product_compare: selected=%s query=%s",
+                code or name,
+                query,
+            )
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": "product_compare",
+                    "reason": "product_compare_clarification_followup",
+                    "search_query": query,
+                },
+                dict(ctx.session.state),
+            )
+
+        if pending_intent == "product_kit":
+            target = code or name
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "product_selection",
+                    "intent": "product_kit",
+                    "reason": "product_kit_clarification_followup",
+                    "search_query": f"скачать комплект документов по продукту {target}",
+                },
+                dict(ctx.session.state),
+            )
+
+        target = code or name
+        return validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "product_selection",
+                "intent": "product_card",
+                "reason": "product_card_clarification_followup",
+                "search_query": f"показать карточку продукта {target}",
+            },
+            dict(ctx.session.state),
+        )
 
     @staticmethod
     def _product_resolution_to_state(value: Any) -> Dict[str, Any]:
@@ -1074,6 +1276,10 @@ class RootAgent(BaseAgent):
         context = self._get_product_dialog_context(ctx)
         # Блок поиска по атрибутам и кодам (требует обязательного наличия RAM-контекста)
         if context:
+            clarification_pick = self._match_clarification_option(ctx, user_text)
+            if clarification_pick:
+                return self._dispatch_clarification_followup(ctx, clarification_pick)
+            
             attribute_value = self._find_attribute_value_in_dialog_context(ctx, user_text)
             if attribute_value:
                 attribute_name = str(context.get("attribute_name") or "").strip()
@@ -1453,6 +1659,7 @@ class RootAgent(BaseAgent):
                     "product_resolution",
                     "product_resolutions",
                     "product_filter_resolution",
+                    STAGE_METRICS_STATE_KEY,
                 ],
             )
             # Проверка безопасности (OWASP)
