@@ -40,25 +40,9 @@ input/output tokens, число tool calls и model turns.
   [`tests/unit/agent/test_json_leaf_runner.py`](../tests/unit/agent/test_json_leaf_runner.py),
   [`tests/unit/bot/test_adk_events.py`](../tests/unit/bot/test_adk_events.py).
 
-Вспомогательный скрипт разбора прогонов: [`tmp_analyze_models.py`](../tmp_analyze_models.py).
-
 ---
 
-## 2. Бенчмарк ADK: качество ответов и тайминги
-
-Добавлен офлайн-прогон вопросов напрямую в ADK (минуя Telegram) с выгрузкой
-ответов, таймингов и LLM-оценкой ok/не ok.
-
-- Скрипт [`scripts/adk_ask.py`](../scripts/adk_ask.py) — Excel/текстовый набор
-  вопросов, сессии ADK, сбор `answers.jsonl` / `timings.jsonl`, summary по агентам,
-  оценка по 10-балльной шкале (как в Jenkins tester).
-- Пример вопросов: [`scripts/sample_questions.txt`](../scripts/sample_questions.txt).
-- Артефакты прогонов: каталоги [`out/adk_ask*`](../out/)
-  (в т.ч. сравнения моделей Qwen3-30B / Qwen3.6-27B).
-
----
-
-## 3. Product selection: три leaf-агента вместо одного
+## 2. Product selection: три leaf-агента вместо одного
 
 Один `product_selection_agent` разделён на три специализированных leaf-агента
 с отдельными tool-filter, промптами и `output_schema` (плоский контракт под ADK
@@ -83,7 +67,7 @@ input/output tokens, число tool calls и model turns.
 
 ---
 
-## 4. Диалог уточнения продукта (needs_clarification → follow-up)
+## 3. Диалог уточнения продукта (needs_clarification → follow-up)
 
 В root-агенте добавлен resume после `needs_clarification`: пользователь выбирает
 вариант, цепочка продолжает исходный intent (compare / kit / card).
@@ -99,9 +83,9 @@ input/output tokens, число tool calls и model turns.
 
 ---
 
-## 5. Резолвер продуктов: валюта и защита от RecursionError
+## 4. Резолвер продуктов: валюта и защита от RecursionError
 
-### 5.1. Фильтр по валюте
+### 4.1. Фильтр по валюте
 
 При ambiguous-наборе кандидатов запрос сужается, если в тексте явно указана
 валюта (`$`, `¥`, «доллар», «юань», …) — символы валюты раньше вырезались
@@ -111,7 +95,7 @@ input/output tokens, число tool calls и model turns.
   `CURRENCY_HINT_MARKERS`, `_detect_currency_hints`,
   `_filter_candidates_by_currency_hint`.
 
-### 5.2. RecursionError на «архивные бандлы 8965 7698»
+### 4.2. RecursionError на «архивные бандлы 8965 7698»
 
 Для запросов вроде `архивные бандлы 8965 7698` `extract_product_mentions`
 возвращал и всю фразу, и отдельно коды:
@@ -131,12 +115,12 @@ input/output tokens, число tool calls и model turns.
 
 Тесты: [`tests/unit/agent/test_product_resolver_service.py`](../tests/unit/agent/test_product_resolver_service.py).
 
-> Примечание: фикс §5.2 на момент написания документа может быть ещё в
+> Примечание: фикс §4.2 на момент написания документа может быть ещё в
 > незакоммиченном working tree (не только в `main...HEAD`).
 
 ---
 
-## 6. Конфиг LLM: thinking, таймауты, общий GenerateContentConfig
+## 5. Конфиг LLM: thinking, таймауты, общий GenerateContentConfig
 
 Единая фабрика генерации и параметры LiteLLM под thinking-модели.
 
@@ -163,7 +147,7 @@ input/output tokens, число tool calls и model turns.
 
 ---
 
-## 7. Doc search: отказ от snippet в выдаче
+## 6. Doc search: отказ от snippet в выдаче
 
 Список документов больше не хранит и не показывает snippet — только
 ранг, id, имя и путь.
@@ -182,7 +166,6 @@ input/output tokens, число tool calls и model turns.
 | Тема | Главные файлы |
 |------|----------------|
 | Тайминги стадий | [`agent/stage_metrics.py`](../agent/stage_metrics.py), [`agent/json_leaf_runner.py`](../agent/json_leaf_runner.py), [`bot/services/adk_events.py`](../bot/services/adk_events.py) |
-| Бенчмарк | [`scripts/adk_ask.py`](../scripts/adk_ask.py) |
 | Product selection split | [`agent/agents/product_selection_agent.py`](../agent/agents/product_selection_agent.py) |
 | Clarification resume | [`agent/rootagent.py`](../agent/rootagent.py) |
 | Валюта + RecursionError в mentions | [`agent/product_resolver_service.py`](../agent/product_resolver_service.py) |
