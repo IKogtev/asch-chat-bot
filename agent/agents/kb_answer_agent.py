@@ -29,9 +29,9 @@ ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и 
 # 1. Объявляем схему как Pydantic-класс
 class KbAnswerResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    mode: Literal["text_answer", "no_data"] = Field(description="Режим ответа")
+    mode: Literal["text_answer"] = Field(description="Режим ответа")
     message: str = Field(description="Текст ответа на русском языке")
-    source: Literal["faq_search", "kb_search", "faq_search+kb_search", "none"] = Field(description="Источник данных")
+    source: Literal["faq_search", "kb_search", "faq_search+kb_search"] = Field(description="Источник данных")
 
 
 def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,29 +229,31 @@ If multiple definitions are present and context does not disambiguate them, do n
 - {{kb_answer_collection}} - имя коллекции для kb_search
 - {{intent}} - тип запроса (kb_answer, smalltalk, doc_search)
 
-Правила:
-1. Если {{intent}} == "smalltalk":
-   - не вызывай faq_search
-   - не вызывай kb_search
-   - если {{user_query}} или {{search_query}} - это вопрос о возможностях ассистента
-     (например: "что ты умеешь", "что умеешь", "что ты можешь", "что можешь",
-     "чем ты можешь помочь", "чем можешь помочь", "какие у тебя возможности",
-     "каковы твои возможности", "на что ты способен", "на что способен"),
-     отвечай ровно одной фразой: "{ASSISTANT_CAPABILITIES_ANSWER}"
-   - для этого ответа верни source="none"
-   - не импровизируй и не добавляй новых деталей
-   - в остальных smalltalk-случаях ответь кратко и естественно
+Твоя единственная задача —
+отвечать на содержательные вопросы пользователей на основе:
 
-2. Если {{intent}} != "smalltalk":
+• faq_search
+• kb_search
+• from_glossary
+
+Ты не умеешь вести обычную беседу.
+
+Ты не отвечаешь на приветствия.
+
+Ты не поддерживаешь smalltalk.
+
+Если пользователь пишет обычную социальную реплику, значит произошла ошибка маршрутизации dispatcher.
+Правила:
+1. Всегда начинай с faq_search:
    - сначала ОБЯЗАТЕЛЬНО вызови faq_search
    - передай: query={{user_query}}, collection={{faq_collection}}
 
-3. Если faq_search дал точный или достаточно уверенный прямой ответ на вопрос:
+2. Если faq_search дал точный или достаточно уверенный прямой ответ на вопрос:
    - используй только faq_search
    - kb_search не вызывай
    - верни source="faq_search"
 
-4. Если faq_search дал частично релевантный, слабый или неполный результат:
+3. Если faq_search дал частично релевантный, слабый или неполный результат:
    - вызови kb_search
    - передай: query={{search_query}}, collection={{kb_answer_collection}}, include_metadata=true, search_profile="kb_answer"
    - если {{search_query}} пустой, используй {{user_query}}
@@ -259,19 +261,18 @@ If multiple definitions are present and context does not disambiguate them, do n
    - если ответ собран по обоим источникам, верни source="faq_search+kb_search"
    - если в итоговый ответ вошли только данные kb_search, верни source="kb_search"
 
-5. Если данные faq_search и kb_search противоречат друг другу:
+4. Если данные faq_search и kb_search противоречат друг другу:
    - приоритет у faq_search
    - конфликтующие детали из kb_search не используй
 
-6. Если оба поиска не дали достаточных данных:
+5. Если оба поиска не дали достаточных данных:
    - не отвечай по памяти
    - верни mode="no_data"
    - верни source="none"
    - в message кратко скажи, что точный ответ не найден
 
-7. Для intent=kb_answer запрещено отвечать без обращения к faq_search, кроме случая smalltalk
-
-8. Верни только JSON без markdown
+6. Для intent=kb_answer запрещено отвечать без обращения к faq_search
+7. Верни только JSON без markdown
 
 Формат ответа:
 {{

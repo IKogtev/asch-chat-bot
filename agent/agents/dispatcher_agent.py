@@ -28,7 +28,7 @@ ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES = (
 # Объявляем схему как Pydantic-класс
 class DispatcherResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    route: Literal["doc_search", "kb_answer", "product_selection"] = Field(description="Маршрут обработки запроса")
+    route: Literal["doc_search", "kb_answer", "product_selection", "smalltalk"] = Field(description="Маршрут обработки запроса")
     intent: Literal[
         "doc_search", "show_more", "show_all", "file_download",
         "kb_answer", "smalltalk",
@@ -57,7 +57,8 @@ class DispatcherResponseSchema(BaseModel):
         автоматически исправляет логические ошибки модели, приводя их к 100% валидному контракту.
         """
         doc_intents = {"doc_search", "show_more", "show_all", "file_download"}
-        kb_intents = {"kb_answer", "smalltalk"}
+        kb_intents = {"kb_answer"}
+        smalltalk_intents = {"smalltalk"}
         product_intents = {
             "product_card", "product_kit", "product_filter", 
             "product_compare", "product_attribute_values"
@@ -71,6 +72,9 @@ class DispatcherResponseSchema(BaseModel):
         elif self.intent in kb_intents and self.route != "kb_answer":
             logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'kb_answer' for intent '{self.intent}'")
             self.route = "kb_answer"
+        elif self.intent in smalltalk_intents and self.route != "smalltalk":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'smalltalk' for intent '{self.intent}'")
+            self.route = "smalltalk"
         elif self.intent in product_intents and self.route != "product_selection":
             logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_selection' for intent '{self.intent}'")
             self.route = "product_selection"
@@ -97,7 +101,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Ожидаемый контракт:
     - `status="ok"`;
-    - `route` один из `doc_search`, `kb_answer`, `product_selection`;
+    - `route` один из `doc_search`, `kb_answer`, `product_selection`, `smalltalk`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
       `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
       `product_compare`, `product_attribute_values`;
@@ -105,7 +109,8 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Семантические правила:
     - `doc_search`, `show_more`, `show_all`, `file_download` допустимы только с `route="doc_search"`;
-    - `kb_answer` и `smalltalk` допустимы только с `route="kb_answer"`;
+    - `kb_answer` допустим только с `route="kb_answer"`;
+    - `smalltalk` допустим только с `route="smalltalk"`;
     - follow-up intent (`show_more`, `show_all`, `file_download`) не должен содержать `search_query`;
     - `smalltalk` должен иметь пустой `search_query`;
     - для `doc_search` с `intent="doc_search"` ожидается **дословный** текст последнего сообщения пользователя в `search_query` (нормализацию под поиск делает downstream `doc_search_agent`);
@@ -123,9 +128,10 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     """
     agent_name = "dispatcher_agent"
     _ = context
-    allowed_routes = {"doc_search", "kb_answer", "product_selection"}
+    allowed_routes = {"doc_search", "kb_answer", "product_selection", "smalltalk"}
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
-    kb_route_intents = {"kb_answer", "smalltalk"}
+    kb_route_intents = {"kb_answer"}
+    smalltalk_route_intents = {"smalltalk"}
     product_route_intents = {
         "product_card",
         "product_kit",
@@ -133,9 +139,10 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
         "product_compare",
         "product_attribute_values",
     }
-    allowed_intents = doc_route_intents | kb_route_intents | product_route_intents
+    allowed_intents = doc_route_intents | kb_route_intents | smalltalk_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}
-
+    empty_query_intents = follow_up_no_query | {"smalltalk"}
+    
     def _validate_payload_type(payload: Dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             raise build_validation_error(
@@ -203,7 +210,16 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
-                problem="kb_answer and smalltalk intents must use route='kb_answer'",
+                problem="kb_answer intent must use route='kb_answer'",
+                data=payload,
+                fields=("route", "intent"),
+            )
+        
+        if intent in smalltalk_route_intents and route != "smalltalk":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="smalltalk intent must use route='smalltalk'",
                 data=payload,
                 fields=("route", "intent"),
             )
@@ -235,7 +251,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 fields=("intent", "search_query"),
             )
 
-        if intent not in follow_up_no_query and intent != "smalltalk" and not search_query:
+        if intent not in empty_query_intents and not search_query:
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
