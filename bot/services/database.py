@@ -502,25 +502,20 @@ class NewsStore:
 class AdkApiClient:
     """Клиент для взаимодействия с Google ADK API"""
 
-    def __init__(self, base_url: str, app_name: str, timeout_sec: Optional[int] = None):
+    def __init__(self, base_url: str, app_name: str):
         self.base_url = base_url.rstrip('/')
         self.app_name = app_name
-        self.timeout_sec = int(timeout_sec if timeout_sec is not None else Settings.ADK_TIMEOUT_SEC)
         self.http: Optional[aiohttp.ClientSession] = None
 
         # Буфер stateDelta до ближайшего run()
         # ключ: (user_id, session_id)
         self._pending_state_delta: dict[tuple[str, str], dict] = {}
-        logger.info(
-            f"Инициализация ADK клиента: {base_url}, app={app_name}, "
-            f"timeout_sec={self.timeout_sec}"
-        )
+        logger.info(f"Инициализация ADK клиента: {base_url}, app={app_name}")
 
     async def open(self) -> None:
         """Открытие HTTP сессии"""
-        timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
-        self.http = aiohttp.ClientSession(timeout=timeout)
-        logger.info(f"HTTP сессия ADK клиента открыта (timeout={self.timeout_sec}s)")
+        self.http = aiohttp.ClientSession()
+        logger.info("HTTP сессия ADK клиента открыта")
 
     async def close(self) -> None:
         """Закрытие HTTP сессии"""

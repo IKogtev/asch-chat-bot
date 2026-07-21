@@ -1,18 +1,13 @@
 from typing import Any, Dict
 
 from google.adk.agents import LlmAgent
+from google.genai.types import GenerateContentConfig
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 from utils.logger import setup_logger
-from ..config import (
-    KBSEARCH_MCP_URL,
-    MCP_TIMEOUT_SEC,
-    MCP_TOKEN,
-    DOC_SEARCH_TEMPERATURE,
-    build_generate_content_config,
-)
+from ..config import KBSEARCH_MCP_URL, MCP_TIMEOUT_SEC, MCP_TOKEN, DOC_SEARCH_TEMPERATURE
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
@@ -354,15 +349,24 @@ For document search, glossary context must not erase document type, product name
     name = "doc_search_agent"
     if DOC_SEARCH_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DOC_SEARCH_TEMPERATURE}")
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="doc_search_result_json",
+            generate_content_config=GenerateContentConfig(
+                temperature=DOC_SEARCH_TEMPERATURE,
+            )
+        )
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-    agent = LlmAgent(
-        name=name,
-        model=model,
-        instruction=instruction,
-        tools=tools,
-        output_key="doc_search_result_json",
-        generate_content_config=build_generate_content_config(DOC_SEARCH_TEMPERATURE),
-    )
+        agent = LlmAgent(
+            name=name,
+            model=model,
+            instruction=instruction,
+            tools=tools,
+            output_key="doc_search_result_json"
+        )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

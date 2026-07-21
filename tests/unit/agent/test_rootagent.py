@@ -111,21 +111,6 @@ def _load_rootagent_module():
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.validate_product_selection_result = lambda data, context: data
 
-    def _select_product_selection_agent(intent, agents=None, **kwargs):
-        if agents is not None:
-            if intent in {"product_card", "product_kit"}:
-                return agents.card_kit
-            if intent == "product_compare":
-                return agents.compare
-            return agents.filter
-        if intent in {"product_card", "product_kit"}:
-            return kwargs["card_kit"]
-        if intent == "product_compare":
-            return kwargs["compare"]
-        return kwargs["filter_agent"]
-
-    product_selection_stub.select_product_selection_agent = _select_product_selection_agent
-
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
 
     class ProductResolverService:
@@ -278,9 +263,7 @@ def _make_agent(**kwargs) -> RootAgent:
         dispatcher_agent=fake_subagent,
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
-        product_selection_card_kit_agent=fake_subagent,
-        product_selection_filter_agent=fake_subagent,
-        product_selection_compare_agent=fake_subagent,
+        product_selection_agent=fake_subagent,
         **kwargs,
     )
 
@@ -832,7 +815,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
     )
 
     async def fake_run_json_leaf_agent(**kwargs):
-        assert kwargs["agent"] is agent.product_selection_card_kit_agent
+        assert kwargs["agent"] is agent.product_selection_agent
         assert kwargs["output_key"] == "product_selection_result_json"
         assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
         ctx.session.state["_product_selection_result_parsed"] = {

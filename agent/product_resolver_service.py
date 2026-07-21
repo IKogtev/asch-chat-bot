@@ -610,15 +610,10 @@ class ProductResolverService:
                 error=type(exc).__name__,
             )
 
-    async def _resolve_product_filter_safe(
-        self,
-        query: str,
-        *,
-        allow_multi: bool = True,
-    ) -> ProductFilterResolveResult:
+    async def _resolve_product_filter_safe(self, query: str) -> ProductFilterResolveResult:
         """Выполняет каскад поиска для product_filter и возвращает набор кандидатов."""
         mentions = self.extract_product_mentions(query)
-        if allow_multi and len(mentions) > 1:
+        if len(mentions) > 1:
             return await self._resolve_product_filter_multi(query, mentions)
 
         candidate_queries = self._candidate_queries(query)
@@ -639,12 +634,7 @@ class ProductResolverService:
         all_products: list[ProductCandidate] = []
         matched_terms: list[str] = []
         for mention in mentions:
-            # Не даём mention снова уйти в multi: иначе фраза с кодами
-            # (например «бандлы 8965 7698») рекурсивно извлекает саму себя.
-            mention_result = await self._resolve_product_filter_safe(
-                mention,
-                allow_multi=False,
-            )
+            mention_result = await self._resolve_product_filter_safe(mention)
             if mention_result.products:
                 all_products.extend(mention_result.products)
                 matched_terms.extend(mention_result.matched_terms or [mention])
@@ -716,21 +706,7 @@ class ProductResolverService:
             cls._remove_query_noise(part)
             for part in COMPARE_SPLIT_RE.split(text)
         ]
-        mentions: list[str] = []
-        for part in parts:
-            if not part:
-                continue
-            # Коды уже идут отдельными mentions — убираем их из текстовой части,
-            # иначе остаётся исходная фраза и multi рекурсивно зацикливается.
-            if code_mentions:
-                part_without_codes = re.sub(
-                    r"\b\d{3,}(?:\+\d{3,})?\b",
-                    " ",
-                    part,
-                )
-                part = " ".join(part_without_codes.split()).strip()
-            if part:
-                mentions.append(part)
+        mentions = [part for part in parts if part]
         mentions.extend(code_mentions)
         return cls._deduplicate_mentions(mentions)
 
