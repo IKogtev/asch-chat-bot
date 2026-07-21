@@ -24,6 +24,7 @@ from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
+from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_selection_agent import validate_product_selection_result
 from .glossary import GlossaryLookup
@@ -101,6 +102,7 @@ class RootAgent(BaseAgent):
     dispatcher_agent: LlmAgent
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
+    smalltalk_agent: LlmAgent
     product_selection_agent: LlmAgent
     glossary_lookup: GlossaryLookup
     product_resolver: ProductResolverService
@@ -121,6 +123,7 @@ class RootAgent(BaseAgent):
         dispatcher_agent: LlmAgent,
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
+        smalltalk_agent: LlmAgent,
         product_selection_agent: LlmAgent,
         glossary_lookup: GlossaryLookup | None = None,
         product_resolver: ProductResolverService | None = None,
@@ -133,6 +136,7 @@ class RootAgent(BaseAgent):
             dispatcher_agent=dispatcher_agent,
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
+            smalltalk_agent=smalltalk_agent,
             product_selection_agent=product_selection_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             product_resolver=product_resolver or ProductResolverService(),
@@ -143,6 +147,7 @@ class RootAgent(BaseAgent):
                 dispatcher_agent,
                 doc_search_orchestrator,
                 kb_answer_agent,
+                smalltalk_agent,
                 product_selection_agent,
             ],
         )
@@ -447,6 +452,7 @@ class RootAgent(BaseAgent):
                 "_dispatcher_result_parsed",
                 "_doc_search_result_parsed",
                 "_kb_answer_result_parsed",
+                "_smalltalk_result_parsed",
                 "_product_selection_result_parsed",
                 "_root_final_text",
                 "_bot_action",
@@ -1560,6 +1566,7 @@ class RootAgent(BaseAgent):
                     "_dispatcher_result_parsed",
                     "_doc_search_result_parsed",
                     "_kb_answer_result_parsed",
+                    "_smalltalk_result_parsed",
                     "_product_selection_result_parsed",
                     "_root_final_text",
                     "_bot_action",
@@ -1725,12 +1732,36 @@ class RootAgent(BaseAgent):
                 final_text = self._get_required_state_text(ctx, "_root_final_text")
                 yield self._build_final_event_with_history(ctx, user_text, final_text)
                 return
-            # По умолчанию уходим в базу знаний (kb_answer)
-            async for event in self._handle_kb_answer(
+            
+            if dispatch["route"] == "kb_answer":
+                async for event in self._handle_kb_answer(
+                    ctx,
+                    user_text,
+                    dispatch.get("search_query", ""),
+                    dispatch.get("intent", "kb_answer"),
+                ):
+                    yield event
+                final_text = self._get_required_state_text(ctx, "_root_final_text")
+                yield self._build_final_event_with_history(ctx, user_text, final_text)
+                return
+
+            if dispatch["route"] == "smalltalk":
+                async for event in self._handle_smalltalk(
+                    ctx,
+                    user_text,
+                    dispatch.get("intent", "smalltalk"),
+                ):
+                    yield event
+                final_text = self._get_required_state_text(ctx, "_root_final_text")
+                yield self._build_final_event_with_history(ctx, user_text, final_text)
+                return
+            # ДЕФОЛТНЫЙ FALLBACK: Если диспетчер вернул неизвестный маршрут, 
+            # безопаснее всего передать управление в smalltalk, чтобы он вежливо 
+            logger.warning("Unknown route '%s', falling back to smalltalk", dispatch.get("route"))
+            async for event in self._handle_smalltalk(
                 ctx,
                 user_text,
-                dispatch["search_query"],
-                dispatch["intent"],
+                "unknown_route",
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
@@ -1749,6 +1780,8 @@ class RootAgent(BaseAgent):
                 agent_name = "product_selection"
             elif "kb_answer" in exc.log_label:
                 agent_name = "kb_answer"
+            elif "smalltalk" in exc.log_label:
+                agent_name = "smalltalk"
             elif "dispatcher" in exc.log_label:
                 agent_name = "dispatcher"
             elif "doc_search" in exc.log_label:
@@ -1784,6 +1817,11 @@ class RootAgent(BaseAgent):
             
             elif agent_name == "kb_answer":
                 parsed = ctx.session.state.get("_kb_answer_result_parsed") or {}
+                context["mode"] = parsed.get("mode", "")
+                context["source"] = parsed.get("source", "")
+            
+            elif agent_name == "smalltalk":
+                parsed = ctx.session.state.get("_smalltalk_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["source"] = parsed.get("source", "")
             
@@ -2018,6 +2056,36 @@ class RootAgent(BaseAgent):
 
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
+
+    async def _handle_smalltalk(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        intent: str,
+    ) -> AsyncGenerator[Event, None]:
+        """
+        Запуск smalltalk_agent для приветствий, прощаний и светской беседы.
+        """
+        logger.info(
+            "smalltalk route: user_message=%s intent=%s",
+            truncate_for_log(user_message, 300),
+            intent,
+        )
+        
+        ctx.session.state["intent"] = intent
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.smalltalk_agent,
+            output_key="smalltalk_result_json",
+            parsed_state_key="_smalltalk_result_parsed",
+            validator=validate_smalltalk_result,
+            log_label="smalltalk_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+        ):
+            yield event
+
+        smalltalk = self._get_required_state_dict(ctx, "_smalltalk_result_parsed")
+        ctx.session.state["_root_final_text"] = format_text_answer(smalltalk["message"])
 
     async def _handle_product_selection(
         self,
