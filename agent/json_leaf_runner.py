@@ -19,6 +19,13 @@ from .langfuse_logger import langfuse_logger
 from opentelemetry import context
 from opentelemetry import trace as otel_trace
 from opentelemetry.trace import Status, StatusCode
+from .stage_metrics import (
+    event_has_model_output,
+    event_is_model_turn,
+    extract_usage_tokens,
+    record_stage_metrics,
+    stage_name_from_log_label,
+)
 
 logger = setup_logger("json_leaf_runner", "agent.log")
 
@@ -44,7 +51,6 @@ class AgentValidationFailure(Exception):
 def _copy_with_updates(obj: Any, updates: Dict[str, Any]) -> Any:
     if hasattr(obj, "model_copy"):
         return obj.model_copy(deep=True, update=updates)
-
     cloned = copy.copy(obj)
     for key, value in updates.items():
         setattr(cloned, key, value)
@@ -55,15 +61,12 @@ def _has_meaningful_actions(event: Event) -> bool:
     actions = getattr(event, "actions", None)
     if not actions:
         return False
-
     values = getattr(actions, "__dict__", None)
     if isinstance(values, dict):
         return any(value not in (None, False, {}, [], "") for value in values.values())
-
     if hasattr(actions, "model_dump"):
         dumped = actions.model_dump(exclude_none=True)
         return any(value not in (None, False, {}, [], "") for value in dumped.values())
-
     return True
 
 
@@ -72,16 +75,13 @@ def strip_thought_parts(event: Event) -> Event | None:
     parts = getattr(content, "parts", None)
     if not parts:
         return event
-
     filtered_parts = [
         part for part in parts if getattr(part, "thought", False) is not True
     ]
     if len(filtered_parts) == len(parts):
         return event
-
     if not filtered_parts and not _has_meaningful_actions(event):
         return None
-
     return _copy_with_updates(
         event,
         {"content": _copy_with_updates(content, {"parts": filtered_parts})},
@@ -101,11 +101,9 @@ def _extract_function_call_name(part: Any) -> str | None:
     )
     if not function_call:
         return None
-
     name = _get_mapping_or_attr(function_call, "name")
     if not name:
         return None
-
     return str(name).strip() or None
 
 
@@ -124,11 +122,9 @@ def _extract_function_call_summary(part: Any) -> dict[str, str] | None:
     )
     if not function_call:
         return None
-
     name = _get_mapping_or_attr(function_call, "name")
     if not name:
         return None
-
     args = (
         _get_mapping_or_attr(function_call, "args")
         or _get_mapping_or_attr(function_call, "arguments")
@@ -171,11 +167,9 @@ def _extract_function_response_raw(part: Any) -> tuple[str, Any] | None:
     )
     if not function_response:
         return None
-
     name = _get_mapping_or_attr(function_response, "name")
     if not name:
         return None
-
     response = (
         _get_mapping_or_attr(function_response, "response")
         or _get_mapping_or_attr(function_response, "result")
@@ -192,7 +186,6 @@ def _extract_kb_search_response_texts_from_event(event: Event) -> list[str]:
         parts = content.get("parts") if isinstance(content, dict) else None
     if not parts:
         return []
-
     texts: list[str] = []
     for part in parts:
         raw = _extract_function_response_raw(part)
@@ -219,16 +212,12 @@ def _store_doc_search_kb_hits(ctx: InvocationContext, response_texts: list[str])
             format_kb_hits_summary(existing_hits),
         )
         return
-
     if not response_texts:
         logger.info(
             "doc_search kb_hits: attempt=%s no kb_search response to store",
             attempt,
         )
         return
-
-    # kb_search уже склеивает чанки в один документ; при нескольких вызовах тула
-    # берём только последний ответ как источник allowed document_id.
     hits = parse_kb_search_hits(response_texts[-1])
     if hits:
         ctx.session.state["_doc_search_kb_hits"] = hits
@@ -251,7 +240,6 @@ def _extract_function_response_summary(part: Any) -> dict[str, str] | None:
     )
     if not function_response:
         return None
-
     name = _get_mapping_or_attr(function_response, "name") or ""
     response = (
         _get_mapping_or_attr(function_response, "response")
@@ -273,14 +261,12 @@ def _extract_tool_event_summaries(event: Event) -> list[dict[str, str]]:
         parts = content.get("parts") if isinstance(content, dict) else None
     if not parts:
         return []
-
     summaries = []
     for part in parts:
         call_summary = _extract_function_call_summary(part)
         if call_summary:
             summaries.append(call_summary)
             continue
-
         response_summary = _extract_function_response_summary(part)
         if response_summary:
             summaries.append(response_summary)
@@ -295,19 +281,17 @@ def _extract_function_call_names(event: Event) -> list[str]:
         parts = content.get("parts") if isinstance(content, dict) else None
     if not parts:
         return []
-
     names = []
     for part in parts:
         name = _extract_function_call_name(part)
         if name:
             names.append(name)
     return names
-
+# ХЕЛПЕРЫ ДЛЯ OPENTELEMETRY
 def _extract_clean_state(state: Any) -> dict:
     """Безопасно извлекает только JSON-сериализуемые примитивы из стейта сессии."""
     if state is None:
         return {}
-    
     if hasattr(state, "to_dict") and callable(getattr(state, "to_dict")):
         try:
             state_dict = state.to_dict()
@@ -342,7 +326,6 @@ def _extract_text_from_event(event: Any) -> str:
     """Безопасно извлекает текстовое содержимое из событий Google ADK."""
     if not event:
         return ""
-    
     # 1. Проверяем стандартную структуру ADK (event.content.parts)
     if hasattr(event, "content") and event.content:
         content = event.content
@@ -356,11 +339,9 @@ def _extract_text_from_event(event: Any) -> str:
             return "".join(parts_text)
         elif isinstance(content, str):
             return content
-            
     # 2. Фолбек на плоский текст события
     if hasattr(event, "text") and event.text:
         return event.text
-        
     return ""
 
 async def instrumented_agent_run(agent: Any, ctx: Any, input_data: Any) -> AsyncGenerator[Any, None]:
@@ -370,31 +351,25 @@ async def instrumented_agent_run(agent: Any, ctx: Any, input_data: Any) -> Async
     """
     full_output = ""
     span_enriched = False
-    
     # Запускаем оригинальный генератор ADK
     async for event in agent.run_async(ctx):
         # Получаем текущий активный спан ADK (например, "invoke_agent owasp_agent")
         current_span = otel_trace.get_current_span()
-        
         if current_span and current_span.is_recording():
             # Записываем Input на первой итерации
             if not span_enriched:
                 input_str = input_data if isinstance(input_data, str) else json.dumps(input_data, ensure_ascii=False)
-                
                 # Записываем как в стандартном OpenInference, так и в специфичных для Langfuse ключах
                 current_span.set_attribute("input.value", input_str)
                 current_span.set_attribute("langfuse.observation.input", input_str)
                 span_enriched = True
-            
             # Собираем чанки выходного текста
             chunk_text = _extract_text_from_event(event)
             if chunk_text:
                 full_output += chunk_text
-                
                 # Обновляем Output на лету (безопасно при стриминге и раннем выходе)
                 current_span.set_attribute("output.value", full_output)
                 current_span.set_attribute("langfuse.observation.output", full_output)
-        
         yield event
 
 async def run_json_leaf_agent(
@@ -408,13 +383,10 @@ async def run_json_leaf_agent(
 ) -> AsyncGenerator[Event, None]:
     # OPENTELEMETRY: СОЗДАНИЕ ВЛОЖЕННОГО СПАНА
     tracer = otel_trace.get_tracer("json_leaf_runner")
-    
     # Создаем спан. Благодаря OTel он автоматически станет "ребенком" активного агента ADK
     span = tracer.start_span(log_label)
-    
     # Динамически собираем актуальные параметры сессии перед запуском агента
     state_input = _extract_clean_state(ctx.session.state)
-
     # Записываем входящие параметры в семантический атрибут 'input'
     span.set_attribute(
         "input.value",
@@ -428,12 +400,19 @@ async def run_json_leaf_agent(
         }, ensure_ascii=False)
     )
     span.set_attribute("input.mime_type", "application/json")
-
     # Делаем спан активным в OTel-контексте для текущей корутины/генератора
-    token = context.attach(otel_trace.set_span_in_context(span))
+    token = context.attach(otel_trace.set_span_in_context(span))    
     try:
+        # МЕТРИКИ И ТАЙМИНГИ
         _doc_timing = log_label == "doc_search_result_json"
-        _t_llm0 = time.monotonic() if _doc_timing else None
+        stage_name = stage_name_from_log_label(log_label)
+        _t_llm0 = time.monotonic()
+        ttft_ms: int | None = None
+        input_tokens = 0
+        output_tokens = 0
+        model_turns = 0
+        usage_model_turns = 0
+        output_model_turns = 0
         tool_calls: list[str] = []
         tool_event_summaries: list[dict[str, str]] = []
         kb_search_response_texts: list[str] = []
@@ -444,18 +423,59 @@ async def run_json_leaf_agent(
             or ""
         )
 
-        # 2. ЗАМЕНЯЕМ оригинальный `agent.run_async(ctx)` на нашу обертку:
         async for event in instrumented_agent_run(agent, ctx, input_data=agent_input):
-        # async for event in agent.run_async(ctx):
             tool_calls.extend(_extract_function_call_names(event))
             tool_event_summaries.extend(_extract_tool_event_summaries(event))
+            
             if _doc_timing:
                 kb_search_response_texts.extend(
                     _extract_kb_search_response_texts_from_event(event)
                 )
+                
+            # Считаем TTFT и токены
+            if ttft_ms is None and event_has_model_output(event):
+                ttft_ms = int((time.monotonic() - _t_llm0) * 1000.0)
+                
+            usage = getattr(event, "usage_metadata", None)
+            if usage is None and isinstance(event, dict):
+                usage = event.get("usage_metadata") or event.get("usageMetadata")
+                
+            if usage is not None:
+                usage_model_turns += 1
+            elif event_is_model_turn(event):
+                output_model_turns += 1
+                
+            in_tok, out_tok = extract_usage_tokens(usage)
+            input_tokens += in_tok
+            output_tokens += out_tok
+
             sanitized_event = strip_thought_parts(event)
             if sanitized_event is not None:
                 yield sanitized_event
+        model_turns = usage_model_turns if usage_model_turns > 0 else output_model_turns
+        llm_ms = int((time.monotonic() - _t_llm0) * 1000.0)
+        if stage_name:
+            record_stage_metrics(
+                ctx.session.state,
+                stage_name,
+                ms=llm_ms,
+                ttft_ms=ttft_ms if ttft_ms is not None else llm_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                tool_calls=len(tool_calls),
+                model_turns=model_turns,
+            )
+            logger.info(
+                "stage_metrics: stage=%s ms=%s ttft_ms=%s input_tokens=%s output_tokens=%s "
+                "tool_calls=%s model_turns=%s",
+                stage_name,
+                llm_ms,
+                ttft_ms if ttft_ms is not None else llm_ms,
+                input_tokens,
+                output_tokens,
+                len(tool_calls),
+                model_turns,
+            )
 
         if _doc_timing:
             _store_doc_search_kb_hits(ctx, kb_search_response_texts)
@@ -465,11 +485,6 @@ async def run_json_leaf_agent(
                 ctx.session.state.get("doc_search_rerank_only"),
                 tool_calls.count("kb_search"),
             )
-
-        _llm_ms: float | None = None
-        if _doc_timing and _t_llm0 is not None:
-            _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
-            
         # Достаем сырой результат без жесткого каста к str на первом шаге
         raw_payload = ctx.session.state.get(output_key)
         logger.debug(
@@ -479,7 +494,7 @@ async def run_json_leaf_agent(
             json.dumps(tool_event_summaries, ensure_ascii=False),
         )
         logger.debug("%s raw: %s", log_label, truncate_for_log(raw_payload, 500))
-
+        
         _t_parse0 = time.monotonic() if _doc_timing else None
         try:
             if isinstance(raw_payload, (dict, Mapping)):
@@ -526,11 +541,11 @@ async def run_json_leaf_agent(
                 user_message=validation_error_user_message,
             ) from exc
 
-        if _doc_timing and _t_parse0 is not None and _llm_ms is not None:
+        if _doc_timing and _t_parse0 is not None:
             _parse_ms = (time.monotonic() - _t_parse0) * 1000.0
             logger.debug(
-                "doc_search LLM timing: agent.run_async wall_ms=%.1f; json_extract+validate wall_ms=%.1f",
-                _llm_ms,
+                "doc_search LLM timing: agent.run_async wall_ms=%s; json_extract+validate wall_ms=%.1f",
+                llm_ms,
                 _parse_ms,
             )
 

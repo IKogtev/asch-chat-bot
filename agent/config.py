@@ -32,6 +32,9 @@ PROMPTS_DIR = Path(os.getenv("AGENT_PROMPTS_DIR", str(SCRIPT_DIR / "prompts")))
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_API_URL = os.getenv("LLM_API_URL", "").strip()
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
+LITELLM_REQUEST_TIMEOUT = float(os.getenv("LITELLM_REQUEST_TIMEOUT", "90"))
+LITELLM_NUM_RETRIES = int(os.getenv("LITELLM_NUM_RETRIES", "1"))
+LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", 4096))
 
 # =============================================================================
 # AGENT TEMPERATURES
@@ -100,7 +103,7 @@ logger = setup_logger("agent_chain", "agent.log")
 # MODEL FACTORY
 # =============================================================================
 from google.adk.models.lite_llm import LiteLlm
-
+from typing import Any, Dict, List, Optional, Protocol
 
 def build_common_model() -> LiteLlm:
     """
@@ -110,12 +113,17 @@ def build_common_model() -> LiteLlm:
         model=LLM_API_MODEL,
         api_key=LLM_API_KEY,
         api_base=LLM_API_URL,
+        timeout=LITELLM_REQUEST_TIMEOUT,
+        num_retries=LITELLM_NUM_RETRIES,
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": True},
+            "thinking_token_budget": 2048,
+        }
     )
 
 # =============================================================================
 # KB BACKEND PROTOCOL & STUB
 # =============================================================================
-from typing import Protocol, Any, Dict, List, Optional
 
 class KbSearchBackend(Protocol):
     """

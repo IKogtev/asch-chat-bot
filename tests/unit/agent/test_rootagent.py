@@ -25,6 +25,8 @@ def _load_rootagent_module():
     agent_pkg.__path__ = [str(repo_root / "agent")]
     agents_pkg = types.ModuleType("agent.agents")
     agents_pkg.__path__ = [str(repo_root / "agent" / "agents")]
+    sys.modules["agent"] = agent_pkg
+    sys.modules["agent.agents"] = agents_pkg
 
     logger_stub = types.ModuleType("utils.logger")
     logger_stub.setup_logger = lambda *args, **kwargs: _build_logger()
@@ -35,6 +37,45 @@ def _load_rootagent_module():
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
     config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
     config_stub.DATABASE_URL = "postgresql://test"
+    config_stub.COMPARE_FRAZE = "сравни"
+    config_stub.PRODUCT_CARD_KIT_OFFER = "комплект"
+
+    stage_metrics_spec = importlib.util.spec_from_file_location(
+        "agent.stage_metrics",
+        repo_root / "agent" / "stage_metrics.py",
+    )
+    stage_metrics_module = importlib.util.module_from_spec(stage_metrics_spec)
+    assert stage_metrics_spec is not None and stage_metrics_spec.loader is not None
+    sys.modules["agent.stage_metrics"] = stage_metrics_module
+    stage_metrics_spec.loader.exec_module(stage_metrics_module)
+
+    glossary_stub = types.ModuleType("agent.glossary")
+
+    class GlossaryLookup:
+        async def find(self, text):
+            return []
+
+        async def expand_search_query(self, query):
+            return query
+
+    glossary_stub.GlossaryLookup = GlossaryLookup
+
+    smart_fallback_stub = types.ModuleType("agent.smart_fallback")
+
+    async def generate_agent_fallback(**kwargs):
+        return "fallback"
+
+    smart_fallback_stub.generate_agent_fallback = generate_agent_fallback
+
+    doc_search_format_stub = types.ModuleType("utils.doc_search_format")
+    doc_search_format_stub.extract_download_ranks = lambda text: []
+
+    asyncpg_stub = types.ModuleType("asyncpg")
+
+    async def _asyncpg_connect(*args, **kwargs):
+        raise RuntimeError("asyncpg stub")
+
+    asyncpg_stub.connect = _asyncpg_connect
 
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.extract_json = lambda text: json.loads(text[text.find("{"): text.rfind("}") + 1])
@@ -69,6 +110,21 @@ def _load_rootagent_module():
 
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.validate_product_selection_result = lambda data, context: data
+
+    def _select_product_selection_agent(intent, agents=None, **kwargs):
+        if agents is not None:
+            if intent in {"product_card", "product_kit"}:
+                return agents.card_kit
+            if intent == "product_compare":
+                return agents.compare
+            return agents.filter
+        if intent in {"product_card", "product_kit"}:
+            return kwargs["card_kit"]
+        if intent == "product_compare":
+            return kwargs["compare"]
+        return kwargs["filter_agent"]
+
+    product_selection_stub.select_product_selection_agent = _select_product_selection_agent
 
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
 
@@ -149,15 +205,20 @@ def _load_rootagent_module():
     sys.modules["agent"] = agent_pkg
     sys.modules["agent.agents"] = agents_pkg
     sys.modules["utils.logger"] = logger_stub
+    sys.modules["utils.doc_search_format"] = doc_search_format_stub
     sys.modules["agent.config"] = config_stub
     sys.modules["agent.helpers"] = helpers_stub
     sys.modules["agent.json_leaf_runner"] = json_leaf_runner_stub
+    sys.modules["agent.stage_metrics"] = stage_metrics_module
+    sys.modules["agent.glossary"] = glossary_stub
+    sys.modules["agent.smart_fallback"] = smart_fallback_stub
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
     sys.modules["agent.agents.product_selection_agent"] = product_selection_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
     sys.modules["agent.product_resolver_service"] = product_resolver_stub
+    sys.modules["asyncpg"] = asyncpg_stub
     sys.modules["google"] = google_pkg
     sys.modules["google.genai"] = genai_pkg
     sys.modules["google.genai.types"] = genai_types_stub
@@ -205,6 +266,9 @@ def _make_agent(**kwargs) -> RootAgent:
                 to_dict=lambda: {"status": "not_found", "query": query, "product_codes": [], "products": []}
             )
 
+        async def fetch_product_full_details(self, product_code):
+            return {}
+
     kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
     kwargs.setdefault("product_resolver", EmptyProductResolver())
     fake_subagent = object()
@@ -214,7 +278,9 @@ def _make_agent(**kwargs) -> RootAgent:
         dispatcher_agent=fake_subagent,
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
-        product_selection_agent=fake_subagent,
+        product_selection_card_kit_agent=fake_subagent,
+        product_selection_filter_agent=fake_subagent,
+        product_selection_compare_agent=fake_subagent,
         **kwargs,
     )
 
@@ -431,6 +497,57 @@ def test_build_final_event_includes_bot_action_state_delta() -> None:
             "type": "send_product_kit",
             "product_code": "2832",
         }
+    }
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_flat_stage_timing() -> None:
+    ctx = _make_ctx(
+        invocation_id="abc",
+        session_state={
+            rootagent_module.STAGE_METRICS_STATE_KEY: {
+                "owasp": {
+                    "ms": 120,
+                    "ttft_ms": 40,
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "tool_calls": 0,
+                    "model_turns": 1,
+                },
+                "kb_answer": {
+                    "ms": 800,
+                    "ttft_ms": 200,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "tool_calls": 3,
+                    "model_turns": 2,
+                },
+            },
+            "_dispatcher_result_parsed": {
+                "route": "kb_answer",
+                "intent": "faq",
+                "search_query": "test",
+            },
+        },
+    )
+
+    event = RootAgent._build_final_event(ctx, "Answer")
+
+    assert event.actions.state_delta[rootagent_module.TIMING_STATE_DELTA_KEY] == {
+        "owasp_ms": 120,
+        "owasp_ttft_ms": 40,
+        "owasp_input_tokens": 10,
+        "owasp_output_tokens": 5,
+        "owasp_tool_calls": 0,
+        "owasp_model_turns": 1,
+        "kb_answer_ms": 800,
+        "kb_answer_ttft_ms": 200,
+        "kb_answer_input_tokens": 100,
+        "kb_answer_output_tokens": 50,
+        "kb_answer_tool_calls": 3,
+        "kb_answer_model_turns": 2,
+        "route": "kb_answer",
+        "intent": "faq",
     }
 
 
@@ -715,7 +832,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
     )
 
     async def fake_run_json_leaf_agent(**kwargs):
-        assert kwargs["agent"] is agent.product_selection_agent
+        assert kwargs["agent"] is agent.product_selection_card_kit_agent
         assert kwargs["output_key"] == "product_selection_result_json"
         assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
         ctx.session.state["_product_selection_result_parsed"] = {
@@ -749,7 +866,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
     assert ctx.session.state["first_name"] == "Ivan"
     assert ctx.session.state["product_selection_search_query"] == "Original question"
     assert ctx.session.state["product_selection_intent"] == "product_card"
-    assert ctx.session.state["_root_final_text"] == "Product selection answer"
+    assert ctx.session.state["_root_final_text"].startswith("Product selection answer")
     assert "_bot_action" not in ctx.session.state
 
 
@@ -1000,10 +1117,9 @@ async def test_handle_product_selection_keeps_context_for_product_compare() -> N
 
     assert events == []
     assert ctx.session.state["_root_final_text"] == "Compare answer"
-    assert (
-        ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
-        == product_dialog_context
-    )
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["last_mode"] == "product_compare"
+    assert stored["selected_product"] == product_dialog_context["selected_product"]
 
 
 @pytest.mark.unit
@@ -1477,6 +1593,97 @@ async def test_run_async_impl_routes_product_card_followup_from_product_code_onl
     assert product_called is True
     assert dispatcher_called is False
 
+
+@pytest.mark.unit
+def test_store_needs_clarification_keeps_pending_compare_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "product_selection_intent": "product_compare",
+            "product_selection_search_query": "сравни ФД 3 года и ФД 1 год",
+            "product_resolutions": {
+                "status": "ambiguous",
+                "items": [
+                    {
+                        "status": "resolved",
+                        "product_code": "8941",
+                        "product_name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    },
+                    {
+                        "status": "ambiguous",
+                        "product_code": None,
+                        "product_name": None,
+                        "options": [],
+                    },
+                ],
+            },
+        }
+    )
+
+    agent._store_product_dialog_context(
+        ctx,
+        {
+            "mode": "needs_clarification",
+            "clarification_options": [
+                {"code": "8914", "name": "Фиксированный доход 1 год"},
+                {"code": "8959", "name": "Фиксированный доход 1 год + Альфа-Вклад Актив"},
+            ],
+        },
+    )
+
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["last_mode"] == "needs_clarification"
+    assert stored["pending_intent"] == "product_compare"
+    assert stored["compare_resolved_products"] == [
+        {
+            "code": "8941",
+            "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        }
+    ]
+    assert [item["code"] for item in stored["clarification_options"]] == ["8914", "8959"]
+
+
+@pytest.mark.unit
+def test_product_followup_dispatch_resumes_compare_after_clarification_code() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_intent": "product_compare",
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "needs_clarification",
+                "pending_intent": "product_compare",
+                "products": [
+                    {"code": "8914", "name": "Фиксированный доход 1 год"},
+                    {"code": "8959", "name": "Фиксированный доход 1 год + Альфа-Вклад Актив"},
+                ],
+                "clarification_options": [
+                    {"code": "8914", "name": "Фиксированный доход 1 год"},
+                    {"code": "8959", "name": "Фиксированный доход 1 год + Альфа-Вклад Актив"},
+                ],
+                "compare_resolved_products": [
+                    {
+                        "code": "8941",
+                        "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    }
+                ],
+                "original_search_query": "сравни ФД 3 года и ФД 1 год",
+                "selected_product": None,
+            },
+        }
+    )
+
+    dispatch = agent._product_followup_dispatch(
+        ctx,
+        "8914 Фиксированный доход 1 год",
+    )
+
+    assert dispatch is not None
+    assert dispatch["route"] == "product_selection"
+    assert dispatch["intent"] == "product_compare"
+    assert dispatch["reason"] == "product_compare_clarification_followup"
+    assert dispatch["search_query"] == "сравни продукты 8941 и 8914"
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_async_impl_routes_product_card_followup_from_saved_product_list() -> None:
@@ -1886,6 +2093,9 @@ async def test_handle_product_selection_sets_single_product_resolution_state() -
         async def resolve_product_filter(self, query):
             raise AssertionError("resolve_product_filter must not be called")
 
+        async def fetch_product_full_details(self, product_code):
+            return {}
+
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
 
@@ -1933,6 +2143,12 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
                     ],
                 }
             )
+
+        async def resolve_product_filter(self, query):
+            raise AssertionError("resolve_product_filter must not be called")
+
+        async def fetch_product_full_details(self, product_code):
+            return {}
 
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
@@ -2002,6 +2218,12 @@ async def test_handle_product_selection_deduplicates_compare_product_resolutions
                     ],
                 }
             )
+
+        async def resolve_product_filter(self, query):
+            raise AssertionError("resolve_product_filter must not be called")
+
+        async def fetch_product_full_details(self, product_code):
+            return {}
 
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
@@ -2120,6 +2342,9 @@ async def test_handle_product_selection_resolves_product_filter() -> None:
                     "error": None,
                 }
             )
+
+        async def fetch_product_full_details(self, product_code):
+            return {}
 
     agent = _make_agent(product_resolver=FakeProductResolver())
     ctx = _make_ctx(parts=[], session_state={})
