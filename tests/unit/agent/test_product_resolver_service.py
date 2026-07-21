@@ -239,6 +239,35 @@ async def test_resolve_product_filter_unions_multiple_product_mentions() -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_product_filter_unions_text_and_product_codes() -> None:
+    """Фраза с кодами не должна рекурсивно извлекать саму себя (RecursionError)."""
+    resolver = FakeProductResolver(
+        exact={
+            "8965": [candidate("8965", "Product A")],
+            "7698": [candidate("7698", "Product B")],
+        },
+        tokens={
+            "архивные бандлы": [candidate("1000", "Архивный бандл")],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("архивные бандлы 8965 7698")
+
+    assert result.status == "resolved"
+    assert result.product_codes == ["1000", "8965", "7698"]
+
+
+@pytest.mark.unit
+def test_extract_product_mentions_strips_codes_from_text_parts() -> None:
+    mentions = ProductResolverService.extract_product_mentions(
+        "архивные бандлы 8965 7698"
+    )
+
+    assert mentions == ["архивные бандлы", "8965", "7698"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_filter_does_not_stop_on_combined_fuzzy_match() -> None:
     resolver = FakeProductResolver(
         fuzzy={
