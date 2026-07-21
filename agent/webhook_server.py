@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import uuid
 from typing import Dict, Any, Tuple
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -127,8 +128,15 @@ def _parse_dataset_input(raw_input: Any) -> Dict[str, Any]:
         return {"user_query": raw_input}
     return {"user_query": str(raw_input)}
 
-async def process_dataset_background(dataset_name: str, run_name: str):
+async def process_dataset_background(
+    dataset_name: str, 
+    run_name: str, 
+    run_description: str = "", 
+    run_metadata: dict = None
+):
     """Фоновая задача для запуска эксперимента по всему датасету."""
+    if run_metadata is None:
+        run_metadata = {}
     try:
         logger.info(f"🚀 Запуск эксперимента '{run_name}' для датасета '{dataset_name}'...")
         dataset = langfuse.get_dataset(dataset_name)
@@ -147,12 +155,24 @@ async def process_dataset_background(dataset_name: str, run_name: str):
                 
                 if adk_trace_id:
                     # 2. Привязываем к Dataset Run (этот метод у вас уже сработал в логах!)
-                    langfuse.api.dataset_run_items.create(
-                        run_name=run_name,
-                        dataset_item_id=item.id,
-                        trace_id=adk_trace_id
-                    )
-                    logger.info(f"✅ элемент {idx + 1} привязан к ADK трассировке: {adk_trace_id}")
+                    try:
+                        langfuse.api.dataset_run_items.create(
+                            run_name=run_name,
+                            dataset_item_id=item.id,
+                            trace_id=adk_trace_id,
+                            run_description=run_description,
+                            metadata=run_metadata
+                        )
+                        logger.info(f"✅ элемент {idx + 1} привязан к ADK трассировке: {adk_trace_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка привязки с описанием ({e}), пробуем без run_description...")
+                        # Fallback на случай, если конкретная версия SDK не поддерживает run_description
+                        langfuse.api.dataset_run_items.create(
+                            dataset_item_id=item.id,
+                            trace_id=adk_trace_id,
+                            run_name=run_name,
+                            metadata=run_metadata
+                        )
                 else:
                     logger.info(f"⚠️ элемент {idx + 1} не удалось привязать к ADK trace_id.")
             finally:
@@ -170,11 +190,22 @@ async def handle_langfuse_webhook(request: Request, background_tasks: Background
         dataset_name = payload.get("datasetName")
         if not dataset_name:
             raise HTTPException(status_code=400, detail="datasetName is required in webhook payload")
-            
-        run_name = payload.get("runName") or f"webhook_run_{uuid.uuid4().hex[:8]}"
-        background_tasks.add_task(process_dataset_background, dataset_name, run_name)
+        full_model_name = os.environ.get("LLM_API_MODEL", "unknown_model")
+        model_name = full_model_name.split("/")[-1]    
+        run_name = payload.get("runName") or f"webhook_run_{model_name}_{uuid.uuid4().hex[:8]}"
+        run_metadata = payload.get("metadata", {})
+        run_description = payload.get("description", "")
+        if not run_description and isinstance(run_metadata, dict):
+            run_description = run_metadata.get("description", "")
+        background_tasks.add_task(
+            process_dataset_background, 
+            dataset_name, 
+            run_name,
+            run_description,
+            run_metadata
+        )
         
-        return {"status": "accepted", "dataset": dataset_name, "run_name": run_name}
+        return {"status": "accepted", "dataset": dataset_name, "run_name": run_name, "description":run_description}
     except Exception as e:
         logger.error(f"Ошибка webhook: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

@@ -567,7 +567,15 @@ class ProductResolverService:
 
     async def _resolve_product_filter_safe(self, query: str) -> ProductFilterResolveResult:
         """Выполняет каскад поиска для product_filter и возвращает набор кандидатов."""
-        mentions = self.extract_product_mentions(query)
+        normalized = self.normalize_product_text(query)
+
+        if re.search(r"\b\d{3,}\s+plus\s+\d{3,}\b", normalized):
+            mentions = re.findall(
+                r"\d{3,}\s+plus\s+\d{3,}",
+                normalized,
+            )
+        else:
+            mentions = self.extract_product_mentions(query)
         if len(mentions) > 1:
             return await self._resolve_product_filter_multi(query, mentions)
 
@@ -584,26 +592,44 @@ class ProductResolverService:
         query: str,
         mentions: list[str],
     ) -> ProductFilterResolveResult:
-        """Разрешает каждое упоминание отдельно и объединяет наборы кандидатов."""
+        """Разрешает каждое упоминание отдельно и объединяет найденные продукты."""
         logger.debug("resolve_product_filter multi_mentions=%s", mentions)
+
         all_products: list[ProductCandidate] = []
         matched_terms: list[str] = []
+
         for mention in mentions:
-            mention_result = await self._resolve_product_filter_safe(mention)
-            if mention_result.products:
-                all_products.extend(mention_result.products)
-                matched_terms.extend(mention_result.matched_terms or [mention])
+            for candidate_query in self._candidate_queries(mention):
+                result = await self._resolve_product_filter_for_query(
+                    mention,
+                    candidate_query,
+                )
+
+                if result is None:
+                    continue
+
+                if result.products:
+                    all_products.extend(result.products)
+                    matched_terms.extend(result.matched_terms or [mention])
+
+                    # нашли продукт для этого mention — дальше его искать не нужно
+                    break
 
         products = self._unique_products(all_products)
+
         if products:
             return ProductFilterResolveResult(
                 status="resolved",
                 query=query,
-                product_codes=[candidate.product_code for candidate in products],
+                product_codes=[p.product_code for p in products],
                 products=products,
                 matched_terms=matched_terms,
             )
-        return ProductFilterResolveResult(status="not_found", query=query)
+
+        return ProductFilterResolveResult(
+            status="not_found",
+            query=query,
+        )
 
     async def _resolve_product_filter_for_query(
         self,
@@ -655,14 +681,27 @@ class ProductResolverService:
         text = str(query or "").strip()
         if not text:
             return []
-
-        code_mentions = re.findall(r"\b\d{3,}(?:\+\d{3,})?\b", text)
+        # сначала ищем составные коды
+        bundle_codes = re.findall(
+            r"\b\d{3,}\s*(?:\+|plus)\s*\d{3,}\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        # затем одиночные
+        code_mentions = re.findall(
+            r"\b\d{3,}\b",
+            text,
+        )
         parts = [
             cls._remove_query_noise(part)
             for part in COMPARE_SPLIT_RE.split(text)
         ]
         mentions = [part for part in parts if part]
-        mentions.extend(code_mentions)
+        mentions.extend(bundle_codes)
+        for code in code_mentions:
+            if any(code in bundle for bundle in bundle_codes):
+                continue
+            mentions.append(code)
         return cls._deduplicate_mentions(mentions)
 
     @staticmethod
