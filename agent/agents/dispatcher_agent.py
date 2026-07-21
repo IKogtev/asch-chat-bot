@@ -1,5 +1,6 @@
-from typing import Any, Dict
-
+from typing import Any, Dict, Literal
+from pydantic import BaseModel, Field, model_validator
+from typing_extensions import Self
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
@@ -23,6 +24,71 @@ ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES = (
     "на что ты способен",
     "на что способен",
 )
+
+# Объявляем схему как Pydantic-класс
+class DispatcherResponseSchema(BaseModel):
+    status: Literal["ok"] = Field(description="Всегда 'ok'")
+    route: Literal["doc_search", "kb_answer", "product_selection"] = Field(description="Маршрут обработки запроса")
+    intent: Literal[
+        "doc_search", "show_more", "show_all", "file_download",
+        "kb_answer", "smalltalk",
+        "product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values"
+    ] = Field(description="Классифицированное намерение пользователя")
+    reason: Literal[
+        "asks_for_documents", "asks_for_document_list", 
+        "followup_show_more", "followup_show_all", "followup_file_download",
+        "asks_about_conditions", "asks_about_rules", "asks_about_applicability", "asks_for_explanation",
+        "product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values",
+        "smalltalk_greeting", "smalltalk_thanks", "smalltalk_other"
+    ] = Field(description="Обоснование выбора")
+    search_query: str = Field(
+        description=(
+            "Поисковый запрос. СТРОЖАЙШИЕ ПРАВИЛА:\n"
+            "1. ОБЯЗАТЕЛЬНО ПУСТАЯ СТРОКА (строго '') для интентов: 'smalltalk', 'show_more', 'show_all', 'file_download'.\n"
+            "2. ОБЯЗАТЕЛЬНО НЕПУСТОЙ нормализованный поисковый запрос для интентов: 'doc_search', 'kb_answer', 'product_card', 'product_kit', 'product_filter', 'product_compare', 'product_attribute_values'. "
+            "Если выбрано intent='kb_answer', поле search_query НЕ может быть пустым. Сформируй в нем поисковый запрос по смыслу сообщения пользователя."
+        )
+    )
+
+    @model_validator(mode='after')
+    def heal_and_validate(self) -> "DispatcherResponseSchema":
+        """
+        Вместо выброса исключений и падения всего приложения, этот валидатор 
+        автоматически исправляет логические ошибки модели, приводя их к 100% валидному контракту.
+        """
+        doc_intents = {"doc_search", "show_more", "show_all", "file_download"}
+        kb_intents = {"kb_answer", "smalltalk"}
+        product_intents = {
+            "product_card", "product_kit", "product_filter", 
+            "product_compare", "product_attribute_values"
+        }
+        empty_query_intents = {"show_more", "show_all", "file_download", "smalltalk"}
+
+        # 1. Исправляем несоответствие route и intent
+        if self.intent in doc_intents and self.route != "doc_search":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'doc_search' for intent '{self.intent}'")
+            self.route = "doc_search"
+        elif self.intent in kb_intents and self.route != "kb_answer":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'kb_answer' for intent '{self.intent}'")
+            self.route = "kb_answer"
+        elif self.intent in product_intents and self.route != "product_selection":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_selection' for intent '{self.intent}'")
+            self.route = "product_selection"
+
+        # 2. Исправляем аномалии в search_query
+        # Если интент требует пустого запроса, но модель что-то прислала -> очищаем
+        if self.intent in empty_query_intents and self.search_query != "":
+            logger.warning(f"[Self-Healing] search_query cleared for empty-query intent '{self.intent}'")
+            self.search_query = ""
+        
+        # Если интент требует НЕПУСТОГО запроса, а пришла пустая строка (ваша проблема)
+        elif self.intent not in empty_query_intents and not self.search_query.strip():
+            # Восстанавливаем запрос на основе reason (заменяя '_' на пробелы) либо ставим дефолт
+            fallback_query = self.reason.replace("_", " ") if self.reason else "запрос"
+            logger.warning(f"[Self-Healing] search_query was empty for intent '{self.intent}'. Set fallback: '{fallback_query}'")
+            self.search_query = fallback_query
+
+        return self
 
 
 def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -238,26 +304,21 @@ High-priority product-focus rule: if the latest user message is "Что сейч
     prompt_file = "dispatcher_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "dispatcher_agent"
+    # Конфигурация генерации с принудительным JSON Output и схемой данных
+    config_params = {}
     if DISPATCHER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")    
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            include_contents="none",
-            output_key="dispatcher_result_json",
-            generate_content_config=GenerateContentConfig(
-                temperature=DISPATCHER_TEMPERATURE,
-            )
-        )
+        config_params["temperature"] = DISPATCHER_TEMPERATURE
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            include_contents="none",
-            output_key="dispatcher_result_json"
-        )
+    agent = LlmAgent(
+        name=name,
+        model=model,
+        instruction=instruction,
+        include_contents="none",
+        output_key="dispatcher_result_json",
+        output_schema=DispatcherResponseSchema,
+        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+    )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
