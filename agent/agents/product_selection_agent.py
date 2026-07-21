@@ -363,26 +363,21 @@ Response format:
     prompt_file = "product_selection_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "product_selection_agent"
+    # Конфигурация генерации с принудительным JSON Output и схемой данных
+    config_params = {}
     if PRODUCT_SELECTION_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {PRODUCT_SELECTION_TEMPERATURE}")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            tools=tools,
-            output_key="product_selection_result_json",
-            generate_content_config=GenerateContentConfig(
-                temperature=PRODUCT_SELECTION_TEMPERATURE,
-            )
-        )
+        config_params["temperature"] = PRODUCT_SELECTION_TEMPERATURE
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            tools=tools,
-            output_key="product_selection_result_json"
-        )
+    agent = LlmAgent(
+        name=name,
+        model=model,
+        instruction=instruction,
+        tools=tools,
+        output_key="product_selection_result_json",
+        # output_schema=? TODO здесь можно добавить схему по которой будет модель работать
+        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+    )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

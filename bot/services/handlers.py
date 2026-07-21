@@ -13,7 +13,7 @@ from utils.event_logger import EventLogger
 # импортируем конфиг
 from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
-from bot.services.adk_events import extract_bot_action
+from bot.services.adk_events import extract_bot_action, extract_timing
 from bot.services.product_kits import get_product_kit
 
 from bot.services.utils import (
@@ -58,6 +58,28 @@ USER_LOCKS: dict[str, asyncio.Lock] = {}
 USER_ACTIVE_REQUESTS: dict[str, asyncio.Event] = {}
 # отслеживание текущей session_id для каждого пользователя (для отмены и удаления)
 CURRENT_USER_SESSION: dict[str, str] = {}
+
+
+def _response_event_payload(
+    *,
+    turn_id: str,
+    text: str,
+    response_time_ms: int,
+    events: list | None = None,
+    **extra,
+) -> dict:
+    """Payload для events.response: e2e time + плоские stage timings (если есть)."""
+    payload = {
+        "turn_id": turn_id,
+        "text": text,
+        "response_time_ms": response_time_ms,
+        **extra,
+    }
+    timing = extract_timing(events) if events else None
+    if timing:
+        payload.update(timing)
+    return payload
+
 
 async def get_user_lock(user_id: str) -> asyncio.Lock:
     """Получить или создать блокировку для пользователя"""
@@ -972,11 +994,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                                 user_id=str(global_user_id),
                                 session_id=session_id,
                                 channel=platform,
-                                payload={
-                                    "turn_id": turn_id,
-                                    "text": final_text,
-                                    "response_time_ms": response_time,
-                                },
+                                payload=_response_event_payload(
+                                    turn_id=turn_id,
+                                    text=final_text,
+                                    response_time_ms=response_time,
+                                    events=events,
+                                ),
                             )
 
                     await handle_product_kit_action(
@@ -1047,11 +1070,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                                 user_id=str(global_user_id),
                                 session_id=session_id,
                                 channel=platform,
-                                payload={
-                                    "turn_id": turn_id,
-                                    "text": no_list_answer,
-                                    "response_time_ms": response_time,
-                                },
+                                payload=_response_event_payload(
+                                    turn_id=turn_id,
+                                    text=no_list_answer,
+                                    response_time_ms=response_time,
+                                    events=events,
+                                ),
                             )
                     return
 
@@ -1077,11 +1101,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                                 user_id=str(global_user_id),
                                 session_id=session_id,
                                 channel=platform,
-                                payload={
-                                    "turn_id": turn_id,
-                                    "text": text_list,
-                                    "response_time_ms": response_time
-                                }    
+                                payload=_response_event_payload(
+                                    turn_id=turn_id,
+                                    text=text_list,
+                                    response_time_ms=response_time,
+                                    events=events,
+                                ),
                             )
                         return
 
@@ -1103,7 +1128,12 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                         await eventlogger.log_event(
                             event_type="response", user_id=str(global_user_id),
                             session_id=session_id, channel=platform,
-                            payload={"turn_id": turn_id, "text": final_text, "response_time_ms":response_time}
+                            payload=_response_event_payload(
+                                turn_id=turn_id,
+                                text=final_text,
+                                response_time_ms=response_time,
+                                events=events,
+                            ),
                         )
             # Блоки исключений, чтобы ответы были точнее от бота
             except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, ConnectionResetError, ConnectionError) as e:

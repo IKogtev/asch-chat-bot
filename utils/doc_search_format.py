@@ -175,15 +175,7 @@ def render_doc_list_html(items: list[dict], total: int, offset: int = 0) -> str:
     for i, item in enumerate(items, start=offset + 1):
         title = html_module.escape(item["source_name"])
         archive_prefix = f"{_ARCHIVE_LABEL} " if is_archive_document(item) else ""
-        snippet = (item.get("snippet") or "").strip().replace("\n", " ")
-        if len(snippet) > 180:
-            snippet = snippet[:177] + "..."
-        snippet = html_module.escape(snippet)
-
-        block = f"<b>{i}. {archive_prefix}{title}</b>"
-        if snippet:
-            block += f"\n{snippet}"
-        lines.append(block)
+        lines.append(f"<b>{i}. {archive_prefix}{title}</b>")
 
     text += "\n\n".join(lines)
 
