@@ -6,6 +6,7 @@ import copy
 import json
 import time
 import ast
+import os
 from typing import Any, AsyncGenerator, Callable, Dict, Mapping
 
 from google.adk.agents import InvocationContext, LlmAgent
@@ -331,6 +332,17 @@ async def run_json_leaf_agent(
     async for event in agent.run_async(ctx):
         tool_calls.extend(_extract_function_call_names(event))
         tool_event_summaries.extend(_extract_tool_event_summaries(event))
+        # блок диагностики мыслей
+        SHOW_LLM_RAW = bool(os.getenv("SHOW_LLM_RAW", False))
+        if SHOW_LLM_RAW:
+            raw_text_parts = []
+            if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
+                for part in event.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        raw_text_parts.append(part.text)
+            if raw_text_parts:
+                logger.debug("🔍 RAW LLM OUTPUT (before strip) for %s: %s", log_label, truncate_for_log("".join(raw_text_parts), 1000))
+            
         if _doc_timing:
             kb_search_response_texts.extend(
                 _extract_kb_search_response_texts_from_event(event)
