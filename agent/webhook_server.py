@@ -42,11 +42,10 @@ async def _collect_runner_events(runner, user_id: str, session_id: str, content:
                 intent = delta['_dispatcher_result_parsed'].get('intent', '')
     return final_text, route, intent
 
-async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str, Any]:
+async def run_agent_logic(input_data: Dict[str, Any], item_idx: int, session_id: str) -> Dict[str, Any]:
     """Асинхронная логика запуска вашего мультиагента."""
     user_query = input_data.get("user_query", "")
     runner = Runner(app=app, session_service=global_session_service)
-    session_id = str(uuid.uuid4())
     user_id = "00000000-0000-0000-0000-000000000001"
     # Создаем сессию с предустановленными тестовыми данными профиля,
     # чтобы агент не падал с KeyError при попытке их прочитать из промптов или логики.
@@ -67,7 +66,7 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int) -> Dict[str
         )
     except Exception as e:
         if "Уже существует" in str(e).lower():
-            logger.info(f"⚠️ Сессия {session_id} уже существует (похоже создана Runner). Продолжаем...")
+            logger.info(f"⚠️ Сессия {session_id} уже существует. Продолжаем...")
         else:
             raise e
     
@@ -142,41 +141,64 @@ async def process_dataset_background(
         dataset = langfuse.get_dataset(dataset_name)
         total_items = len(dataset.items)
         logger.info(f"Найдено {total_items} в датасете.")
-        
-        for idx, item in enumerate(dataset.items):
-            logger.info(f"Обработка элемента {idx + 1}/{total_items}...")
+        # Группировка и сортировка
+        conversations = {}  # {conversation_id: [(turn, item), ...]}
+        independent_items = [] # Одиночные элементы без conversation_id
+        for item in dataset.items:
+            meta = item.metadata or {}
+            conv_id = meta.get("conversation_id")
+            turn = meta.get("turn", 0)
+            if conv_id:
+                conversations.setdefault(conv_id, []).append((turn, item))
+            else:
+                independent_items.append(item)
+        # Сортируем элементы внутри каждого диалога по номеру шага (turn)
+        for conv_id in conversations:
+            conversations[conv_id].sort(key=lambda x: x[0])
+            
+        logger.info(f"Найдено {len(conversations)} диалоговых сценариев и {len(independent_items)} одиночных запросов.")
+        # Функция-обертка для обработки одного элемента
+        async def process_single_item(item, session_id, idx_label):
             input_data = _parse_dataset_input(item.input)
-
-             # Включаем режим Webhook, чтобы rootagent.py НЕ создавал ручной трейс
+            # Включаем режим Webhook, чтобы rootagent.py НЕ создавал ручной трейс
             token = webhook_mode_var.set(True)
             try:
-                result = await run_agent_logic(input_data, idx)
+                result = await run_agent_logic(input_data, idx_label, session_id)
                 adk_trace_id = result.pop("adk_trace_id", None)
                 
                 if adk_trace_id:
-                    # 2. Привязываем к Dataset Run (этот метод у вас уже сработал в логах!)
+                    # Привязываем к Dataset Run
                     try:
                         langfuse.api.dataset_run_items.create(
-                            run_name=run_name,
-                            dataset_item_id=item.id,
-                            trace_id=adk_trace_id,
-                            run_description=run_description,
-                            metadata=run_metadata
+                            run_name=run_name, dataset_item_id=item.id, trace_id=adk_trace_id,
+                            run_description=run_description, metadata=run_metadata
                         )
-                        logger.info(f"✅ элемент {idx + 1} привязан к ADK трассировке: {adk_trace_id}")
+                        logger.info(f"✅ [{idx_label}] привязан к ADK trace: {adk_trace_id}")
                     except Exception as e:
-                        logger.warning(f"⚠️ Ошибка привязки с описанием ({e}), пробуем без run_description...")
-                        # Fallback на случай, если конкретная версия SDK не поддерживает run_description
+                        logger.warning(f"⚠️ Ошибка привязки ({e}), пробуем без description...")
                         langfuse.api.dataset_run_items.create(
-                            dataset_item_id=item.id,
-                            trace_id=adk_trace_id,
-                            run_name=run_name,
-                            metadata=run_metadata
+                            dataset_item_id=item.id, trace_id=adk_trace_id,
+                            run_name=run_name, metadata=run_metadata
                         )
                 else:
-                    logger.info(f"⚠️ элемент {idx + 1} не удалось привязать к ADK trace_id.")
+                    logger.info(f"⚠️ [{idx_label}] не удалось привязать к ADK trace_id.")
             finally:
                 webhook_mode_var.reset(token)
+
+        # 1. Обработка одиночных запросов (каждый в своей сессии)
+        for idx, item in enumerate(independent_items):
+            session_id = str(uuid.uuid4())
+            logger.info(f"Обработка элемента {idx + 1}/{len(independent_items)}... из всех {total_items}")
+            await process_single_item(item, session_id, f"Single-{idx+1}")
+        # 2. Обработка диалоговых сценариев (одна сессия на весь диалог)
+        for conv_id, items_with_turns in conversations.items():
+            # Генерируем ОДИН session_id для всего диалога
+            session_id = str(uuid.uuid4()) 
+            logger.info(f"🗣️ Запуск диалога '{conv_id}' (шагов: {len(items_with_turns)}) в сессии {session_id}")
+            
+            for turn_num, (turn_idx, item) in enumerate(items_with_turns):
+                label = f"Conv-{conv_id}-Turn-{turn_idx}"
+                await process_single_item(item, session_id, label)
                 
         logger.info(f"✅ Эксперимент '{run_name}' завершен успешно!")
     except Exception as e:
