@@ -2765,13 +2765,10 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
     WITH base_events AS (
         SELECT
             e.*,
-
             -- events.user_id уже глобальный user_id
             e.user_id::text as global_user_id
-
         FROM events e
     ),
-
     users AS (
         SELECT DISTINCT ON (user_id)
             user_id::text as global_user_id,
@@ -2780,30 +2777,25 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
         FROM user_accounts
         ORDER BY user_id, last_seen DESC
     ),
-
     messages AS (
-        SELECT
+        SELECT DISTINCT ON (be.payload->>'turn_id')
             be.payload->>'turn_id' as turn_id,
             be.session_id,
             be.global_user_id,
             be.channel,
             be.created_at as message_time,
             be.payload->>'text' as message,
-
             COALESCE(
                 NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
                 'Аноним'
             ) as user_name
-
         FROM base_events be
-
         LEFT JOIN users u
             ON u.global_user_id = be.global_user_id
-
         WHERE be.event_type = 'message_received'
           AND be.created_at BETWEEN $1 AND $2
+        ORDER BY be.payload->>'turn_id', be.created_at ASC
     ),
-
     responses AS (
         SELECT DISTINCT ON (payload->>'turn_id')
             payload->>'turn_id' as turn_id,
@@ -2813,7 +2805,6 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
         WHERE event_type = 'response'
         ORDER BY payload->>'turn_id', created_at DESC
     ),
-
     downloads_turn AS (
         SELECT
             payload->>'turn_id' as turn_id,
@@ -2823,7 +2814,6 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
           AND payload->>'file_path' IS NOT NULL
         GROUP BY payload->>'turn_id'
     ),
-
     downloads_session AS (
         SELECT
             session_id,
@@ -2837,7 +2827,6 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
           AND payload->>'file_path' IS NOT NULL
         GROUP BY session_id
     ),
-
     msg_counts AS (
         SELECT session_id, COUNT(*) as msg_count
         FROM base_events
@@ -2845,31 +2834,25 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
           AND created_at BETWEEN $1 AND $2
         GROUP BY session_id
     )
-
     SELECT
         m.session_id,
         m.user_name,
         (m.message_time + INTERVAL '3 hour') as message_time,
         m.message,
-
         CASE
             WHEN r.response IS NOT NULL THEN r.response
             WHEN dt.files IS NOT NULL THEN dt.files
             ELSE ''
         END as response,
-
         r.response_time_ms,
         mc.msg_count,
         m.channel,
         ds.all_files as downloaded_files
-
     FROM messages m
-
     LEFT JOIN responses r ON r.turn_id = m.turn_id
     LEFT JOIN downloads_turn dt ON dt.turn_id = m.turn_id
     LEFT JOIN downloads_session ds ON ds.session_id = m.session_id
     LEFT JOIN msg_counts mc ON mc.session_id = m.session_id
-
     ORDER BY m.message_time
     """
 
@@ -2886,12 +2869,6 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
         # Заполнить нулями Nan
         df["response_time_sec"] = (df["response_time_ms"].fillna(0) / 1000).round(2)
         df.drop(columns=["response_time_ms"], inplace=True)
-    
-    # оптимизируем названия в выгрузке
-    def clean_file_names(files):
-        if not files:
-            return ""
-        return " | ".join(f.split("/")[-1] for f in files.split(" | "))
 
     def clean_files_pipe(files):
         """для response (| разделитель)"""
@@ -2905,15 +2882,54 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
             return ""
         return ", ".join(f.split("/")[-1] for f in files.split(", "))
 
+    def looks_like_files(value: str) -> bool:
+        if not value:
+            return False
+        # Текстовые ответы бота часто содержат переносы строк, а пути к файлам из БД - никогда
+        if "\n" in value or "\r" in value:
+            return False
+        # Файлы склеены через ' | '. Проверяем, что КАЖДАЯ часть содержит '/' (путь)
+        parts = value.split(" | ")
+        if not parts:
+            return False
+        # Если хоть одна часть не содержит '/', это текст (например, "Привет | как дела")
+        return all("/" in p.strip() for p in parts)
+
     # response (может быть текст или файлы)
     df["response"] = df["response"].fillna("").apply(
-        lambda x: clean_files_pipe(x) if "|" in x else clean_file_names(x)
+        lambda x: clean_files_pipe(x)
+        if looks_like_files(x)
+        else x
     )
-
+    # Нормализуем переносы строк
+    df["response"] = (
+        df["response"]
+        .fillna("")
+        .str.replace("\r\n", "\n", regex=False)
+        .str.replace("\r", "\n", regex=False)
+    )
     # все скачанные файлы
     df["downloaded_files"] = df["downloaded_files"].fillna("").apply(clean_files_csv)
     file_path = "/tmp/dialogs.xlsx"
-    df.to_excel(file_path, index=False)
+    with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+        ws = writer.sheets["Sheet1"]
+        from openpyxl.styles import Alignment
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(
+                    wrap_text=True,
+                    vertical="top",
+                )
+        for column_cells in ws.columns:
+            length = max(
+                len(str(cell.value or ""))
+                for cell in column_cells
+            )
+            ws.column_dimensions[column_cells[0].column_letter].width = min(
+                max(length + 2, 20),
+                80,
+            )
     # сохраняем обязательно с media_type для корректной выгрузки файла
     return FileResponse(
             file_path,
@@ -3152,72 +3168,52 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
         FROM events e
         WHERE e.user_id::text = $1
     ),
-
     messages AS (
         SELECT
             payload->>'turn_id' as turn_id,
             created_at as message_time,
             payload->>'text' as message
-
         FROM target_events
-
         WHERE event_type = 'message_received'
           AND created_at BETWEEN $2 AND $3
     ),
-
     responses AS (
         SELECT DISTINCT ON (payload->>'turn_id')
-
             payload->>'turn_id' as turn_id,
-
             payload->>'text' as response
-
         FROM target_events
-
         WHERE event_type = 'response'
-
         ORDER BY payload->>'turn_id', created_at DESC
     ),
-
     downloads_turn AS (
         SELECT
             payload->>'turn_id' as turn_id,
-
             STRING_AGG(
                 payload->>'file_path',
                 ' || '
                 ORDER BY created_at
             ) as file_paths
-
         FROM target_events
-
         WHERE event_type IN (
             'document_download',
             'document_download_menu'
         )
           AND payload->>'file_path' IS NOT NULL
-
         GROUP BY payload->>'turn_id'
     )
-
     SELECT
         m.message_time,
         m.message,
-
         CASE
             WHEN r.response IS NOT NULL THEN r.response
             WHEN dt.file_paths IS NOT NULL THEN dt.file_paths
             ELSE ''
         END as response
-
     FROM messages m
-
     LEFT JOIN responses r
         ON r.turn_id = m.turn_id
-
     LEFT JOIN downloads_turn dt
         ON dt.turn_id = m.turn_id
-
     ORDER BY m.message_time
     """
 
