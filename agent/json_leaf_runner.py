@@ -6,6 +6,7 @@ import copy
 import json
 import time
 import ast
+import os
 from typing import Any, AsyncGenerator, Callable, Dict, Mapping
 
 from google.adk.agents import InvocationContext, LlmAgent
@@ -426,6 +427,16 @@ async def run_json_leaf_agent(
         async for event in instrumented_agent_run(agent, ctx, input_data=agent_input):
             tool_calls.extend(_extract_function_call_names(event))
             tool_event_summaries.extend(_extract_tool_event_summaries(event))
+            # блок диагностики мыслей
+            SHOW_LLM_RAW = bool(os.getenv("SHOW_LLM_RAW", False))
+            if SHOW_LLM_RAW:
+                raw_text_parts = []
+                if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            raw_text_parts.append(part.text)
+                if raw_text_parts:
+                    logger.debug("🔍 RAW LLM OUTPUT (before strip) for %s: %s", log_label, truncate_for_log("".join(raw_text_parts), 1000))
             
             if _doc_timing:
                 kb_search_response_texts.extend(
@@ -487,6 +498,21 @@ async def run_json_leaf_agent(
             )
         # Достаем сырой результат без жесткого каста к str на первом шаге
         raw_payload = ctx.session.state.get(output_key)
+        # Защита от пустого ответа LLM (raw=None)
+        if raw_payload is None or (isinstance(raw_payload, str) and not raw_payload.strip()):
+            logger.error(
+                "%s LLM returned EMPTY response (raw=None). "
+                "Possible causes: output_schema parsing failed, or model output was filtered out. "
+                "user_query=%s",
+                log_label,
+                truncate_for_log(ctx.session.state.get("user_query"), 200),
+            )
+            raise AgentValidationFailure(
+                log_label=log_label,
+                validation_error="LLM returned empty response or output_schema parsing failed (raw is None)",
+                raw="None",
+                user_message=validation_error_user_message,
+            )    
         logger.debug(
             "%s tool diagnostics: calls=%s events=%s",
             log_label,
