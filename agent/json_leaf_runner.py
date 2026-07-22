@@ -387,6 +387,21 @@ async def run_json_leaf_agent(
         
     # Достаем сырой результат без жесткого каста к str на первом шаге
     raw_payload = ctx.session.state.get(output_key)
+    # Защита от пустого ответа LLM (raw=None)
+    if raw_payload is None or (isinstance(raw_payload, str) and not raw_payload.strip()):
+        logger.error(
+            "%s LLM returned EMPTY response (raw=None). "
+            "Possible causes: output_schema parsing failed, or model output was filtered out. "
+            "user_query=%s",
+            log_label,
+            truncate_for_log(ctx.session.state.get("user_query"), 200),
+        )
+        raise AgentValidationFailure(
+            log_label=log_label,
+            validation_error="LLM returned empty response or output_schema parsing failed (raw is None)",
+            raw="None",
+            user_message=validation_error_user_message,
+        )
     logger.debug(
         "%s tool diagnostics: calls=%s events=%s",
         log_label,
