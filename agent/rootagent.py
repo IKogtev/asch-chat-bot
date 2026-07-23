@@ -58,10 +58,10 @@ OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
-    "Могу показать карточку продукта или скачать комплект. Какой продукт Вас интересует ?"
+    "Могу показать карточку продукта или скачать комплект. Какой продукт тебя интересует ?"
 )
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
-    "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
+    "Могу показать продукты с этими свойствами. Какое свойство тебя интересует ?"
 )
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
