@@ -23,6 +23,22 @@ langfuse = Langfuse()
 # чтобы избежать проблем с внутренним кэшем ADK.
 global_session_service = InMemorySessionService()
 
+# ==============================================================================
+# ⚙️ НАСТРОЙКИ НАГРУЗКИ (Rate Limiting)
+# ==============================================================================
+# Максимальное количество одновременных запросов к LLM. 
+# Начнем с 1, чтобы не перегружать модель.
+MAX_CONCURRENT_REQUESTS = 3 
+
+# Задержка в секундах между началом обработки каждого элемента.
+# Помогает равномерно распределить нагрузку во времени.
+REQUEST_DELAY_SECONDS = 2.0 
+
+# Глобальные объекты для контроля
+_request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+_is_test_running = False
+_test_run_lock = asyncio.Lock()
+
 async def _collect_runner_events(runner, user_id: str, session_id: str, content: Any) -> Tuple[str, str, str]:
     """Вспомогательная функция для безопасного сбора событий из асинхронного генератора."""
     # Вспомогательная функция для извлечения документов из распарсенного JSON
@@ -65,7 +81,8 @@ async def run_agent_logic(input_data: Dict[str, Any], item_idx: int, session_id:
             }
         )
     except Exception as e:
-        if "Уже существует" in str(e).lower():
+        error_msg = str(e).lower()
+        if "Уже существует" in error_msg or "already exists" in error_msg:
             logger.info(f"⚠️ Сессия {session_id} уже существует. Продолжаем...")
         else:
             raise e
@@ -134,6 +151,13 @@ async def process_dataset_background(
     run_metadata: dict = None
 ):
     """Фоновая задача для запуска эксперимента по всему датасету."""
+    global _is_test_running
+    # 1. БЛОКИРОВКА: Запрещаем запуск нового теста, если старый еще идет
+    async with _test_run_lock:
+        if _is_test_running:
+            logger.warning(f"⚠️ Тест для датасета '{dataset_name}' уже запущен. Игнорируем новый запрос, чтобы избежать DDoS.")
+            return  # Тихо выходим, не создавая новый фон
+        _is_test_running = True
     if run_metadata is None:
         run_metadata = {}
     try:
@@ -159,31 +183,35 @@ async def process_dataset_background(
         logger.info(f"Найдено {len(conversations)} диалоговых сценариев и {len(independent_items)} одиночных запросов.")
         # Функция-обертка для обработки одного элемента
         async def process_single_item(item, session_id, idx_label):
-            input_data = _parse_dataset_input(item.input)
-            # Включаем режим Webhook, чтобы rootagent.py НЕ создавал ручной трейс
-            token = webhook_mode_var.set(True)
-            try:
-                result = await run_agent_logic(input_data, idx_label, session_id)
-                adk_trace_id = result.pop("adk_trace_id", None)
-                
-                if adk_trace_id:
-                    # Привязываем к Dataset Run
-                    try:
-                        langfuse.api.dataset_run_items.create(
-                            run_name=run_name, dataset_item_id=item.id, trace_id=adk_trace_id,
-                            run_description=run_description, metadata=run_metadata
-                        )
-                        logger.info(f"✅ [{idx_label}] привязан к ADK trace: {adk_trace_id}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка привязки ({e}), пробуем без description...")
-                        langfuse.api.dataset_run_items.create(
-                            dataset_item_id=item.id, trace_id=adk_trace_id,
-                            run_name=run_name, metadata=run_metadata
-                        )
-                else:
-                    logger.info(f"⚠️ [{idx_label}] не удалось привязать к ADK trace_id.")
-            finally:
-                webhook_mode_var.reset(token)
+            # СЕМАФОР: Ограничиваем количество одновременно выполняющихся запросов
+            async with _request_semaphore:
+                # ЗАДЕРЖКА: Даем модели "передохнуть" перед началом обработки
+                await asyncio.sleep(REQUEST_DELAY_SECONDS)
+                input_data = _parse_dataset_input(item.input)
+                # Включаем режим Webhook, чтобы rootagent.py НЕ создавал ручной трейс
+                token = webhook_mode_var.set(True)
+                try:
+                    result = await run_agent_logic(input_data, idx_label, session_id)
+                    adk_trace_id = result.pop("adk_trace_id", None)
+                    
+                    if adk_trace_id:
+                        # Привязываем к Dataset Run
+                        try:
+                            langfuse.api.dataset_run_items.create(
+                                run_name=run_name, dataset_item_id=item.id, trace_id=adk_trace_id,
+                                run_description=run_description, metadata=run_metadata
+                            )
+                            logger.info(f"✅ [{idx_label}] привязан к ADK trace: {adk_trace_id}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Ошибка привязки ({e}), пробуем без description...")
+                            langfuse.api.dataset_run_items.create(
+                                dataset_item_id=item.id, trace_id=adk_trace_id,
+                                run_name=run_name, metadata=run_metadata
+                            )
+                    else:
+                        logger.info(f"⚠️ [{idx_label}] не удалось привязать к ADK trace_id.")
+                finally:
+                    webhook_mode_var.reset(token)
 
         # 1. Обработка одиночных запросов (каждый в своей сессии)
         for idx, item in enumerate(independent_items):
@@ -203,6 +231,11 @@ async def process_dataset_background(
         logger.info(f"✅ Эксперимент '{run_name}' завершен успешно!")
     except Exception as e:
         logger.info(f"❌ Ошибка обработки датасета {dataset_name}: {e}")
+    finally:
+        # Снимаем блокировку, чтобы можно было запустить следующий тест
+        async with _test_run_lock:
+            _is_test_running = False
+        logger.info("🔓 Блокировка теста снята. Можно запускать новый эксперимент.")
 
 @app_fastapi.post("/webhook/langfuse-experiment")
 async def handle_langfuse_webhook(request: Request, background_tasks: BackgroundTasks):

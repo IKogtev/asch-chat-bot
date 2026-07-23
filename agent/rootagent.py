@@ -69,7 +69,6 @@ PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство вас интересует ?"
 )
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
-DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
@@ -210,6 +209,12 @@ class RootAgent(BaseAgent):
         # 🚀 LANGFUSE / TRACING: Обогащаем output ТОЛЬКО для трейсинга
         # ====================================================================
         langfuse_output_text = text  # По умолчанию равен чистому тексту
+        # скрытая пометка о скачивании для langfuse
+        bot_action = ctx.session.state.get("_bot_action") or {}
+        if isinstance(bot_action, dict) and bot_action.get("type") == "download_by_ranks":
+            ranks = bot_action.get("ranks", [])
+            # Эта строка попадет в Langfuse, но НЕ будет отправлена пользователю
+            langfuse_output_text = f"{text}\n\n[СИСТЕМНОЕ СОБЫТИЕ: Инициировано скачивание документов по номерам: {ranks}]".strip()
         dispatch = ctx.session.state.get("_dispatcher_result_parsed") or {}
         
         # Если это был поиск документов, забираем результат из памяти (Source of Truth)
