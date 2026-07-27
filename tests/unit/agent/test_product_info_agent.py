@@ -133,3 +133,17 @@ def test_product_info_factory_uses_response_schema() -> None:
 def test_product_info_response_schema_restricts_mode() -> None:
     with pytest.raises(Exception):
         product_info.ProductInfoResponseSchema(status="ok", mode="product_filter", message="x")
+
+
+@pytest.mark.unit
+def test_product_info_response_schema_restricts_status_without_const() -> None:
+    with pytest.raises(Exception, match="status must be 'ok'"):
+        product_info.ProductInfoResponseSchema(
+            status="error",
+            mode="product_card",
+            message="x",
+        )
+
+    schema = product_info.ProductInfoResponseSchema.model_json_schema()
+    assert "const" not in schema["properties"]["status"]
+    assert schema["properties"]["status"]["type"] == "string"

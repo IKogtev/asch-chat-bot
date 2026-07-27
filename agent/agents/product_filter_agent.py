@@ -1,6 +1,6 @@
 from typing import Any, Dict, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
@@ -35,7 +35,7 @@ PRODUCT_FILTER_MODES = {
 
 
 class ProductFilterResponseSchema(BaseModel):
-    status: Literal["ok"] = Field(description="Всегда указывай значение 'ok'.")
+    status: str = Field(description="Всегда указывай значение 'ok'.")
     mode: Literal[
         "product_filter",
         "product_compare",
@@ -78,6 +78,13 @@ class ProductFilterResponseSchema(BaseModel):
         default_factory=list,
         description="Значения свойства; непустой список обязателен при product_attribute_values.",
     )
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        if value != "ok":
+            raise ValueError("status must be 'ok'")
+        return value
 
 
 def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
