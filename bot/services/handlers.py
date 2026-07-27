@@ -1144,7 +1144,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 timeout_msg = (
                     "⏳ База знаний отвечает дольше обычного.\n\n"
                     "Пожалуйста, подожди минуту и повтори запрос.\n"
-                    "Если ответа всё ещё нет - отправь /reset и задай вопрос заново.\n"
+                    "Если ответа всё ещё нет — отправь /reset и задай вопрос заново.\n"
                 )
                 await bot_res.send(timeout_msg)
                 await eventlogger.log_event(
