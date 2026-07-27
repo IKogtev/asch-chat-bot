@@ -28,7 +28,7 @@ ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES = (
 # Объявляем схему как Pydantic-класс
 class DispatcherResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    route: Literal["doc_search", "kb_answer", "product_selection", "smalltalk"] = Field(description="Маршрут обработки запроса")
+    route: Literal["doc_search", "kb_answer", "product_info", "product_filter", "smalltalk"] = Field(description="Маршрут обработки запроса")
     intent: Literal[
         "doc_search", "show_more", "show_all", "file_download",
         "kb_answer", "smalltalk",
@@ -59,9 +59,9 @@ class DispatcherResponseSchema(BaseModel):
         doc_intents = {"doc_search", "show_more", "show_all", "file_download"}
         kb_intents = {"kb_answer"}
         smalltalk_intents = {"smalltalk"}
-        product_intents = {
-            "product_card", "product_kit", "product_filter", 
-            "product_compare", "product_attribute_values"
+        product_info_intents = {"product_card", "product_kit"}
+        product_filter_intents = {
+            "product_filter", "product_compare", "product_attribute_values"
         }
         empty_query_intents = {"show_more", "show_all", "file_download", "smalltalk"}
 
@@ -75,9 +75,12 @@ class DispatcherResponseSchema(BaseModel):
         elif self.intent in smalltalk_intents and self.route != "smalltalk":
             logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'smalltalk' for intent '{self.intent}'")
             self.route = "smalltalk"
-        elif self.intent in product_intents and self.route != "product_selection":
-            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_selection' for intent '{self.intent}'")
-            self.route = "product_selection"
+        elif self.intent in product_info_intents and self.route != "product_info":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_info' for intent '{self.intent}'")
+            self.route = "product_info"
+        elif self.intent in product_filter_intents and self.route != "product_filter":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_filter' for intent '{self.intent}'")
+            self.route = "product_filter"
 
         # 2. Исправляем аномалии в search_query
         # Если интент требует пустого запроса, но модель что-то прислала -> очищаем
@@ -239,25 +242,6 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 data=payload,
                 fields=("route", "intent"),
             )
-        
-        if intent in product_info_intents and route != "product_info":
-            raise build_validation_error(
-                agent=agent_name,
-                stage="semantics",
-                problem="product card and kit intents must use route='product_info'",
-                data=payload,
-                fields=("route", "intent"),
-            )
-
-        if intent in product_filter_intents and route != "product_filter":
-            raise build_validation_error(
-                agent=agent_name,
-                stage="semantics",
-                problem="product filter intents must use route='product_filter'",
-                data=payload,
-                fields=("route", "intent"),
-            )
-
         if intent in follow_up_no_query and search_query:
             raise build_validation_error(
                 agent=agent_name,
