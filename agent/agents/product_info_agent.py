@@ -1,6 +1,6 @@
 from typing import Any, Dict, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
@@ -29,7 +29,7 @@ PRODUCT_INFO_MODES = {"product_card", "product_kit", "needs_clarification", "no_
 
 
 class ProductInfoResponseSchema(BaseModel):
-    status: Literal["ok"] = Field(description="Всегда указывай значение 'ok'.")
+    status: str = Field(description="Всегда указывай значение 'ok'.")
     mode: Literal["product_card", "product_kit", "needs_clarification", "no_data"] = Field(
         description="Режим: product_card, product_kit, needs_clarification или no_data."
     )
@@ -64,6 +64,13 @@ class ProductInfoResponseSchema(BaseModel):
         default_factory=list,
         description="Не используется для карточки и комплекта: пустой список.",
     )
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        if value != "ok":
+            raise ValueError("status must be 'ok'")
+        return value
 
 
 def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
