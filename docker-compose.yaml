@@ -179,6 +179,8 @@ services:
       - ROOT_TEMPERATURE=0.8
       - DOC_SEARCH_TEMPERATURE=0.0
       - KB_ANSWER_TEMPERATURE=0.0
+      - PRODUCT_SELECTION_TEMPERATURE=0.2
+      - DISPATCHER_TEMPERATURE=0.2
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:

@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, ClassVar
-
+from dataclasses import dataclass, field
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
@@ -14,10 +14,7 @@ from .config import (
     FAQ_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
     DATABASE_URL,
-    COMPARE_FRAZE,
     PRODUCT_CARD_KIT_OFFER,
-    experiment_trace_var,
-    webhook_mode_var
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
@@ -37,20 +34,17 @@ from .stage_metrics import (
 )
 from collections import OrderedDict, deque
 import asyncpg
-from .langfuse_logger import langfuse_logger
 import json
 from opentelemetry import trace as otel_trace
 
 logger = setup_logger("root_agent", "agent.log")
 
-OWASP_INVALID_CONTRACT_REASON = "invalid_contract"
 OWASP_INVALID_CONTRACT_USER_MESSAGE = (
     "Извините, ваш запрос не может быть обработан. Пожалуйста, переформулируйте вопрос."
 )
 
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
-VALIDATION_ERROR_USER_MESSAGE = "Не удалось корректно обработать запрос. Попробуйте переформулировать вопрос."
-RECOVERY_MESSAGE = (
+VALIDATION_ERROR_USER_MESSAGE = (
     "Я не смогла корректно обработать запрос.\n\n"
     "Попробуйте:\n"
     "• уточнить формулировку вопроса;\n"
@@ -58,7 +52,6 @@ RECOVERY_MESSAGE = (
     "• использовать /reset если диалог зашел в тупик;\n"
     "• подождать и задать вопрос позже"
 )
-VALIDATION_ERROR_USER_MESSAGE = RECOVERY_MESSAGE
 OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
@@ -96,10 +89,26 @@ async def is_history_empty_by_global_id(global_user_id: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
         return False
+
+@dataclass
+class PipelineContext:
+    """Единый контейнер данных текущего шага пайплайна."""
+    ctx: Any
+    user_text: str
+    clean_text: str
+    session_id: str
+    last_route: Optional[str] = None
+    last_intent: Optional[str] = None
+    last_search_query: Optional[str] = None
+    last_product: Optional[str] = None
+    product_dialog_context: Optional[Dict[str, Any]] = None
+    doc_search_context: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
-    owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
+    owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent | product_selection | smalltalk)
     """
 
     owasp_agent: LlmAgent
@@ -113,7 +122,6 @@ class RootAgent(BaseAgent):
     faq_collection: str
     kb_collection: str
 
-    model_config = {"arbitrary_types_allowed": True}
     MAX_HISTORY_PER_USER: ClassVar[int] = 3  # Сколько последних запросов хранить для ОДНОГО пользователя
     # Глобальный кэш для сохранения контекста при 409 Conflict (сплите сессий)
     # Ключом будет базовый session_id, значением — словарь с контекстом
@@ -615,8 +623,6 @@ class RootAgent(BaseAgent):
                 return message
 
             return_message = "\n".join([message, *options])
-            # if COMPARE_FRAZE not in return_message:
-            #     return_message += f"\n\n {COMPARE_FRAZE}"
             return return_message
 
         return message
@@ -655,13 +661,6 @@ class RootAgent(BaseAgent):
 
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
-
-    @classmethod
-    def clear_user_cache(cls, user_id: str) -> None:
-        """Полностью удаляет RAM-историю запросов конкретного пользователя"""
-        if user_id in cls._CROSS_SESSION_CACHE:
-            cls._CROSS_SESSION_CACHE.pop(user_id, None)
-            logger.info(f"Cross-session FIFO cache successfully cleared for user: {user_id}")
 
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
@@ -1202,13 +1201,6 @@ class RootAgent(BaseAgent):
                 ctx.session.state["product_resolution"],
             )
     
-    def _is_contextual_product_request(self, text: str) -> bool:
-        """Проверяет, является ли запрос ссылкой на контекстный продукт."""
-        normalized = text.lower().strip()
-        triggers = ["о нем", "про него", "расскажи", "покажи", "параметры", "подробнее", "характеристики"]
-        # Если запрос короткий и содержит маркеры контекста
-        return len(normalized) < 30 and any(t in normalized for t in triggers)
-    
     def _get_explicit_intent_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
         """
         Перехватывает явные запросы на комплект или фильтр до вызова LLM-dispatcher.
@@ -1704,22 +1696,26 @@ class RootAgent(BaseAgent):
                     span.set_attribute("langfuse.observation.output", agent_output_str)
                     span.set_attribute("output.mime_type", "application/json")
 
-    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+    async def _prepare_pipeline_context(self, ctx: Any) -> PipelineContext:
+        """
+        Извлекает и нормализует данные из сессии и текущего вызова ctx.
+        Инициализирует базовое состояние для дальнейшей обработки.
+        """
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
-        # БЛОК АВТОМАТИЧЕСКОГО ВОССТАНОВЛЕНИЯ КОНТЕКСТА (ЗАЩИТА ОТ 409 CONFLICT) ---
+
+        # Блок автоматического восстановления контекста (защита от 409 Conflict)
         sess_id = getattr(ctx.session, "id", "")
         clean_id = sess_id.split("_")[0] if sess_id else ""
         if clean_id:
             # Проверяем существующую БД: если там пусто, значит бот стёр историю через /reset
-            if await is_history_empty_by_global_id(clean_id):  # или is_context_cleared_in_db
+            if await is_history_empty_by_global_id(clean_id):
                 self._CROSS_SESSION_CACHE.pop(clean_id, None)
                 logger.info(f"🧹 [RAM Cache] Локальная память агента очищена, так как в БД история пуста для {clean_id}")
             elif clean_id in self._CROSS_SESSION_CACHE:
                 # Если в новой сессии пропали ключевые данные контекста, восстанавливаем их из кэша
                 if not ctx.session.state.get("last_product") and not ctx.session.state.get("_product_dialog_context"):
                     user_history = self._CROSS_SESSION_CACHE[clean_id]
-                    
                     if user_history:  # Если у этого юзера есть сохраненные шаги
                         logger.info(
                             "Session split (409). Restoring context from the latest request of user: %s", 
@@ -1729,255 +1725,344 @@ class RootAgent(BaseAgent):
                         latest_cached_state = user_history[-1]
                         for key, value in latest_cached_state.items():
                             ctx.session.state[key] = value
-        # Перехватываем автоматически созданный корневой спан от SDK
+        # Настройка родительского OpenTelemetry спана
         root_span = otel_trace.get_current_span()
         if root_span and root_span.is_recording():
-            root_span.set_attribute("langfuse.trace.name", "root_agent")
             # Записываем вход во всех возможных конвенциях для 100% совместимости
+            root_span.set_attribute("langfuse.trace.name", "root_agent")
             root_span.set_attribute("langfuse.trace.input", user_text)
             root_span.set_attribute("langfuse.observation.input", user_text)
             root_span.set_attribute("input.value", user_text)
             root_span.set_attribute("input.mime_type", "text/plain")
-        try:
-            await self._trim_dialog_memory(ctx)
 
-            if not user_text:
-                yield self._build_final_event_with_history(
-                    ctx,
-                    user_text,
-                    "Пустой запрос. Напишите сообщение еще раз.",
-                )
-                return
+        await self._trim_dialog_memory(ctx)
 
-            # Синхронизация профиля из бота через AdkApiClient.set_user_state:
-            # это не пользовательский запрос и цепочку агентов запускать не нужно.
-            if is_bot_user_profile_injection_message(user_text):
-                logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
-                yield self._build_final_event(ctx, "")
-                return
-            # Инициализируем переменные контекста, если их нет в state
-            for key in [
-                "last_user_query", 
-                "last_route", 
-                "last_intent", 
-                "last_search_query",
-                "last_product",
-                "last_document_list"
-            ]:
-                if key not in ctx.session.state:
-                    ctx.session.state[key] = ""
-            # Сбрасываем служебное состояние текущего шага
-            self._reset_turn_state(ctx)
-            ctx.session.state["user_query"] = user_text
-            self._prepare_owasp_input(ctx, user_text)
-            self._clear_state_keys(
-                ctx,
-                [
-                    "_owasp_result_parsed",
-                    "_dispatcher_result_parsed",
-                    "_doc_search_result_parsed",
-                    "_kb_answer_result_parsed",
-                    "_smalltalk_result_parsed",
-                    "_product_selection_result_parsed",
-                    "_root_final_text",
-                    "_bot_action",
-                    "_from_glossary",
-                    "doc_search_query",
-                    "product_resolution",
-                    "product_resolutions",
-                    "product_filter_resolution",
-                    STAGE_METRICS_STATE_KEY,
-                ],
-            )
-            # Проверка безопасности (OWASP)
-            async for event in self._run_json_leaf_agent(
-                ctx=ctx,
-                agent=self.owasp_agent,
-                output_key="owasp_result_json",
-                parsed_state_key="_owasp_result_parsed",
-                validator=validate_owasp_result,
-                log_label="owasp_result_json",
-                validation_error_user_message=OWASP_INVALID_CONTRACT_USER_MESSAGE,
-            ):
-                yield event
+        # Инициализируем переменные контекста, если их нет в state
+        for key in [
+            "last_user_query", 
+            "last_route", 
+            "last_intent", 
+            "last_search_query",
+            "last_product",
+            "last_document_list"
+        ]:
+            if key not in ctx.session.state:
+                ctx.session.state[key] = ""
 
-            owasp = self._get_required_state_dict(ctx, "_owasp_result_parsed")
-            logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
+        # Сбрасываем служебное состояние текущего шага
+        self._reset_turn_state(ctx)
+        ctx.session.state["user_query"] = user_text
+        self._prepare_owasp_input(ctx, user_text)
+        self._clear_state_keys(
+            ctx,
+            [
+                "_owasp_result_parsed",
+                "_dispatcher_result_parsed",
+                "_doc_search_result_parsed",
+                "_kb_answer_result_parsed",
+                "_smalltalk_result_parsed",
+                "_product_selection_result_parsed",
+                "_root_final_text",
+                "_bot_action",
+                "_from_glossary",
+                "doc_search_query",
+                "product_resolution",
+                "product_resolutions",
+                "product_filter_resolution",
+                STAGE_METRICS_STATE_KEY,
+            ],
+        )
 
-            if owasp["status"] == "blocked":
-                # Используем _build_final_event, чтобы НЕ сохранять заблокированное 
-                # сообщение в историю OWASP и не загрязнять контекст для следующих запросов
-                yield self._build_final_event(
-                    ctx,
-                    format_reject_answer(owasp["user_message"]),
-                )
-                return
+        return PipelineContext(
+            ctx=ctx,
+            user_text=user_text,
+            clean_text=user_text.strip(),
+            session_id=sess_id,
+            last_route=ctx.session.state.get("last_route"),
+            last_intent=ctx.session.state.get("last_intent"),
+            last_search_query=ctx.session.state.get("last_search_query"),
+            last_product=ctx.session.state.get("last_product"),
+            product_dialog_context=ctx.session.state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY),
+            doc_search_context=ctx.session.state.get("_doc_search_result_parsed"),
+            metadata={"clean_id": clean_id},
+        )
 
-            ctx.session.state["from_glossary"] = await self.glossary_lookup.find(user_text)
-            logger.info(
-                "Glossary terms found: %s",
-                len(ctx.session.state["from_glossary"]),
-            )
-            # 1. Пытаемся перехватить явные интенты (Комплект, Архивные) без LLM
-            dispatch = self._get_explicit_intent_dispatch(ctx, user_text)
+    async def _check_safety_guardrails(self, pipeline_ctx: PipelineContext) -> Optional[Event]:
+        """Проверки Stage 0: пустой ввод, синхронизация профиля и OWASP фильтрация."""
+        ctx = pipeline_ctx.ctx
+        user_text = pipeline_ctx.user_text
 
-            # 2. Product follow-up по _product_dialog_context / last_product
-            if not dispatch:
-                dispatch = self._product_followup_dispatch(ctx, user_text)
-
-            # 3. Doc list follow-up: пагинация и скачивание при last_route=doc_search
-            if not dispatch:
-                dispatch = self._doc_list_followup_dispatch(ctx, user_text)
-
-            if dispatch:
-                ctx.session.state["_dispatcher_result_parsed"] = dispatch
-                ctx.session.state.pop("dispatcher_result_json", None)
-                logger.info(
-                    "Dispatcher skipped (short-circuit): reason=%s intent=%s search_query=%s",
-                    dispatch.get("reason"),
-                    dispatch["intent"],
-                    dispatch["search_query"],
-                )
-            else:
-                ctx.session.state["dispatcher_user_query"] = user_text
-                ctx.session.state.pop("dispatcher_result_json", None)
-
-                async for event in self._run_json_leaf_agent(
-                    ctx=ctx,
-                    agent=self.dispatcher_agent,
-                    output_key="dispatcher_result_json",
-                    parsed_state_key="_dispatcher_result_parsed",
-                    validator=validate_dispatcher_result,
-                    log_label="dispatcher_result_json",
-                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-                ):
-                    yield event
-
-                dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
-                logger.info(
-                    "Dispatcher result: route=%s intent=%s search_query=%s",
-                    dispatch["route"],
-                    dispatch["intent"],
-                    dispatch["search_query"],
-                )
-            # Сохраняем контекст текущего хода для следующих реплик
-            ctx.session.state["last_user_query"] = user_text
-            ctx.session.state["last_route"] = dispatch["route"]
-            ctx.session.state["last_intent"] = dispatch["intent"]
-            # не затираем last_search_query пустой строкой при follow-up
-            new_search_query = dispatch.get("search_query", "")
-            if new_search_query:
-                ctx.session.state["last_search_query"] = new_search_query
-
-            if dispatch["route"] == "doc_search":
-                async for event in self._handle_doc_search(
-                    ctx,
-                    user_text,
-                    dispatch["intent"],
-                    dispatch.get("search_query", ""),
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                # Сохраняем список документов в state для контекста диспетчера
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
-
-            if dispatch["route"] == "product_selection":
-                # СЛОЙ ПЕРЕХВАТА МЕСТОИМЕНИЙ И ОБОГАЩЕНИЯ КОНТЕКСТА ---
-                sq_clean = dispatch.get("search_query", "").strip().lower()
-                # Обогощение запроса для сравнения (product_compare) <<<
-                if dispatch.get("intent") == "product_compare":
-                    context = self._get_product_dialog_context(ctx)
-                    products = self._normalize_dialog_products(context.get("products") or [])
-                    
-                    # Если в контексте есть список продуктов (например, после product_filter)
-                    if len(products) >= 2:
-                        # Проверяем, упомянул ли пользователь конкретные продукты в запросе явно
-                        mentioned = False
-                        for p in products:
-                            code = p.get("code", "")
-                            name = p.get("name", "").lower()
-                            if (code and code in sq_clean) or (name and name in sq_clean):
-                                mentioned = True
-                                break
-                        
-                        # Если продукты из контекста не упомянуты, проверяем, не является ли это запросом на сравнение НОВЫХ продуктов
-                        if not mentioned:
-                            has_explicit_codes = bool(self._extract_product_codes(user_text))
-                            # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
-                            blind_pattern = r"(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*"
-                            # Передаем flags=re.IGNORECASE
-                            is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip(), flags=re.IGNORECASE)) or (not has_explicit_codes and len(user_text.split()) <= 3)
-                            if not is_blind_followup:
-                                # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
-                                logger.info("Skipping product_compare enrichment: user specified new products.")
-                            else:
-                                names = [p.get("name") or p.get("code") for p in products[:2]]
-                                dispatch["search_query"] = f"сравнить {' и '.join(names)}"
-                                sq_clean = dispatch["search_query"].strip().lower()
-                                ctx.session.state["last_search_query"] = dispatch["search_query"]
-                                logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
-                pronoun_triggers = [
-                    "нем", "о нем", "ней", "о ней", "этом", "об этом", 
-                    "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
-                ]
-                if sq_clean in pronoun_triggers or not sq_clean:
-                    product = self._get_selected_product_from_context(ctx)
-                    if not product:
-                        product = self._get_last_product_from_state(ctx)
-                    
-                    if product:
-                        code = product.get("code") or ""
-                        name = product.get("name") or ""
-                        # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
-                        dispatch["search_query"] = f"продукт {code or name}".strip()
-                        ctx.session.state["last_search_query"] = dispatch["search_query"]
-                        logger.info("Enriched product_selection pronoun search_query to: %s", dispatch["search_query"])
-                
-                async for event in self._handle_product_selection(
-                    ctx,
-                    user_text,
-                    dispatch["search_query"],
-                    dispatch["intent"],
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
-            
-            if dispatch["route"] == "kb_answer":
-                async for event in self._handle_kb_answer(
-                    ctx,
-                    user_text,
-                    dispatch.get("search_query", ""),
-                    dispatch.get("intent", "kb_answer"),
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
-
-            if dispatch["route"] == "smalltalk":
-                async for event in self._handle_smalltalk(
-                    ctx,
-                    user_text,
-                    dispatch.get("intent", "smalltalk"),
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
-            # ДЕФОЛТНЫЙ FALLBACK: Если диспетчер вернул неизвестный маршрут, 
-            # безопаснее всего передать управление в smalltalk, чтобы он вежливо 
-            logger.warning("Unknown route '%s', falling back to smalltalk", dispatch.get("route"))
-            async for event in self._handle_smalltalk(
+        if not user_text:
+            return self._build_final_event_with_history(
                 ctx,
                 user_text,
-                "unknown_route",
+                "Пустой запрос. Напишите сообщение еще раз.",
+            )
+        # Синхронизация профиля из бота через AdkApiClient.set_user_state:
+        # это не пользовательский запрос и цепочку агентов запускать не нужно.
+        if is_bot_user_profile_injection_message(user_text):
+            logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
+            return self._build_final_event(ctx, "")
+
+        # Запуск OWASP агента
+        async for _ in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.owasp_agent,
+            output_key="owasp_result_json",
+            parsed_state_key="_owasp_result_parsed",
+            validator=validate_owasp_result,
+            log_label="owasp_result_json",
+            validation_error_user_message=OWASP_INVALID_CONTRACT_USER_MESSAGE,
+        ):
+            pass
+
+        owasp = self._get_required_state_dict(ctx, "_owasp_result_parsed")
+        logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
+
+        if owasp["status"] == "blocked":
+            # Используем _build_final_event, чтобы НЕ сохранять заблокированное 
+            # сообщение в историю OWASP и не загрязнять контекст для следующих запросов
+            return self._build_final_event(
+                ctx,
+                format_reject_answer(owasp["user_message"]),
+            )
+
+        ctx.session.state["from_glossary"] = await self.glossary_lookup.find(user_text)
+        logger.info("Glossary terms found: %s", len(ctx.session.state["from_glossary"]))
+        return None
+
+    async def _try_shortcut_routing(self, pipeline_ctx: PipelineContext) -> Optional[Dict[str, Any]]:
+        """Stage 1 Short-circuit: явный перехват команд комплектов/архивов без LLM."""
+        dispatch = self._get_explicit_intent_dispatch(pipeline_ctx.ctx, pipeline_ctx.user_text)
+        if dispatch:
+            pipeline_ctx.ctx.session.state["_dispatcher_result_parsed"] = dispatch
+            pipeline_ctx.ctx.session.state.pop("dispatcher_result_json", None)
+            logger.info(
+                "Dispatcher skipped (short-circuit): reason=%s intent=%s search_query=%s",
+                dispatch.get("reason"),
+                dispatch["intent"],
+                dispatch["search_query"],
+            )
+        return dispatch
+
+    async def _execute_shortcut(
+        self, shortcut_result: Dict[str, Any], pipeline_ctx: PipelineContext
+    ) -> AsyncGenerator[Event, None]:
+        """Исполнение решения, принятого через явный шорткат."""
+        async for event in self._execute_target_agent(shortcut_result, pipeline_ctx):
+            yield event
+
+    async def _try_contextual_followup(self, pipeline_ctx: PipelineContext) -> Optional[Dict[str, Any]]:
+        """Stage 2 Short-circuit: контекстный follow-up по продуктам или спискам документов."""
+        ctx = pipeline_ctx.ctx
+        user_text = pipeline_ctx.user_text
+
+        dispatch = self._product_followup_dispatch(ctx, user_text)
+        if not dispatch:
+            dispatch = self._doc_list_followup_dispatch(ctx, user_text)
+
+        if dispatch:
+            ctx.session.state["_dispatcher_result_parsed"] = dispatch
+            ctx.session.state.pop("dispatcher_result_json", None)
+            logger.info(
+                "Dispatcher skipped (followup short-circuit): reason=%s intent=%s search_query=%s",
+                dispatch.get("reason"),
+                dispatch["intent"],
+                dispatch["search_query"],
+            )
+            return dispatch
+
+    async def _execute_leaf_agent(
+        self, dispatch_result: Dict[str, Any], pipeline_ctx: PipelineContext
+    ) -> AsyncGenerator[Event, None]:
+        """Исполнение leaf-агента для контекстного follow-up."""
+        async for event in self._execute_target_agent(dispatch_result, pipeline_ctx):
+            yield event
+
+    async def _run_llm_dispatcher(self, pipeline_ctx: PipelineContext) -> Dict[str, Any]:
+        """Основной вызов LLM-диспетчера роутинга."""
+        ctx = pipeline_ctx.ctx
+        user_text = pipeline_ctx.user_text
+
+        ctx.session.state["dispatcher_user_query"] = user_text
+        ctx.session.state.pop("dispatcher_result_json", None)
+
+        async for _ in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.dispatcher_agent,
+            output_key="dispatcher_result_json",
+            parsed_state_key="_dispatcher_result_parsed",
+            validator=validate_dispatcher_result,
+            log_label="dispatcher_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+        ):
+            pass
+
+        dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
+        logger.info(
+            "Dispatcher result: route=%s intent=%s search_query=%s",
+            dispatch["route"],
+            dispatch["intent"],
+            dispatch["search_query"],
+        )
+        return dispatch   
+
+    async def _execute_target_agent(
+        self, dispatch: Dict[str, Any], pipeline_ctx: PipelineContext
+    ) -> AsyncGenerator[Event, None]:
+        """Обогащение контекста, маршрутизация в целевой leaf-агент и сохранение истории."""
+        ctx = pipeline_ctx.ctx
+        user_text = pipeline_ctx.user_text
+        # Сохраняем контекст текущего хода для следующих реплик
+        ctx.session.state["last_user_query"] = user_text
+        ctx.session.state["last_route"] = dispatch["route"]
+        ctx.session.state["last_intent"] = dispatch["intent"]
+        # не затираем last_search_query пустой строкой при follow-up
+        new_search_query = dispatch.get("search_query", "")
+        if new_search_query:
+            ctx.session.state["last_search_query"] = new_search_query
+
+        # 1. Поиск документов
+        if dispatch["route"] == "doc_search":
+            async for event in self._handle_doc_search(
+                ctx,
+                user_text,
+                dispatch["intent"],
+                dispatch.get("search_query", ""),
             ):
                 yield event
             final_text = self._get_required_state_text(ctx, "_root_final_text")
             yield self._build_final_event_with_history(ctx, user_text, final_text)
+            return
+
+        # 2. Подбор продуктов
+        if dispatch["route"] == "product_selection":
+            sq_clean = dispatch.get("search_query", "").strip().lower()
+
+            # Обогащение запроса для сравнения продуктов
+            if dispatch.get("intent") == "product_compare":
+                context = self._get_product_dialog_context(ctx)
+                products = self._normalize_dialog_products(context.get("products") or [])
+                # Если в контексте есть список продуктов (например, после product_filter)
+                if len(products) >= 2:
+                    # Проверяем, упомянул ли пользователь конкретные продукты в запросе явно
+                    mentioned = False
+                    for p in products:
+                        code = p.get("code", "")
+                        name = p.get("name", "").lower()
+                        if (code and code in sq_clean) or (name and name in sq_clean):
+                            mentioned = True
+                            break
+                    # Если продукты из контекста не упомянуты, проверяем, не является ли это запросом на сравнение новых продуктов
+                    if not mentioned:
+                        has_explicit_codes = bool(self._extract_product_codes(user_text))
+                        # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
+                        blind_pattern = r"(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*"
+                        # Передаем flags=re.IGNORECASE
+                        is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip(), flags=re.IGNORECASE)) or (not has_explicit_codes and len(user_text.split()) <= 3)
+                        if not is_blind_followup:
+                            # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
+                            logger.info("Skipping product_compare enrichment: user specified new products.")
+                        else:
+                            names = [p.get("name") or p.get("code") for p in products[:2]]
+                            dispatch["search_query"] = f"сравнить {' и '.join(names)}"
+                            sq_clean = dispatch["search_query"].strip().lower()
+                            ctx.session.state["last_search_query"] = dispatch["search_query"]
+                            logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
+
+            # Обогащение местоимений
+            pronoun_triggers = [
+                "нем", "о нем", "ней", "о ней", "этом", "об этом", 
+                "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
+            ]
+            if sq_clean in pronoun_triggers or not sq_clean:
+                product = self._get_selected_product_from_context(ctx)
+                if not product:
+                    product = self._get_last_product_from_state(ctx)
+
+                if product:
+                    code = product.get("code") or ""
+                    name = product.get("name") or ""
+                    # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
+                    dispatch["search_query"] = f"продукт {code or name}".strip()
+                    ctx.session.state["last_search_query"] = dispatch["search_query"]
+                    logger.info("Enriched product_selection pronoun search_query to: %s", dispatch["search_query"])
+
+            async for event in self._handle_product_selection(
+                ctx,
+                user_text,
+                dispatch["search_query"],
+                dispatch["intent"],
+            ):
+                yield event
+            final_text = self._get_required_state_text(ctx, "_root_final_text")
+            yield self._build_final_event_with_history(ctx, user_text, final_text)
+            return
+
+        # 3. База знаний / FAQ
+        if dispatch["route"] == "kb_answer":
+            async for event in self._handle_kb_answer(
+                ctx,
+                user_text,
+                dispatch.get("search_query", ""),
+                dispatch.get("intent", "kb_answer"),
+            ):
+                yield event
+            final_text = self._get_required_state_text(ctx, "_root_final_text")
+            yield self._build_final_event_with_history(ctx, user_text, final_text)
+            return
+
+        # 4. Smalltalk
+        if dispatch["route"] == "smalltalk":
+            async for event in self._handle_smalltalk(
+                ctx,
+                user_text,
+                dispatch.get("intent", "smalltalk"),
+            ):
+                yield event
+            final_text = self._get_required_state_text(ctx, "_root_final_text")
+            yield self._build_final_event_with_history(ctx, user_text, final_text)
+            return
+
+        # Fallback для неизвестного маршрута
+        logger.warning("Unknown route '%s', falling back to smalltalk", dispatch.get("route"))
+        async for event in self._handle_smalltalk(
+            ctx,
+            user_text,
+            "unknown_route",
+        ):
+            yield event
+        final_text = self._get_required_state_text(ctx, "_root_final_text")
+        yield self._build_final_event_with_history(ctx, user_text, final_text)
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        # Подготовка контекста и валидация
+        root_span = otel_trace.get_current_span()
+        pipeline_ctx = await self._prepare_pipeline_context(ctx)
+        try:
+            # 1. Safety / OWASP проверки (Short-circuit Stage 0)
+            if safety_event := await self._check_safety_guardrails(pipeline_ctx):
+                yield safety_event
+                return
+
+            # 2. Явные команды и шорткаты (Short-circuit Stage 1: скачивание, пагинация, явные интенты)
+            if shortcut_result := await self._try_shortcut_routing(pipeline_ctx):
+                async for event in self._execute_shortcut(shortcut_result, pipeline_ctx):
+                    yield event
+                return
+
+            # 3. Контекстный Follow-up (Short-circuit Stage 2: привязка к продукту/документу из State)
+            if followup_result := await self._try_contextual_followup(pipeline_ctx):
+                async for event in self._execute_leaf_agent(followup_result, pipeline_ctx):
+                    yield event
+                return
+
+            # 4. LLM Диспетчеризация (Основной роутинг)
+            dispatch_decision = await self._run_llm_dispatcher(pipeline_ctx)
+
+            # 5. Исполнение целевого Leaf-агента + Синхронизация состояния и Телеметрия
+            async for event in self._execute_target_agent(dispatch_decision, pipeline_ctx):
+                yield event
 
         except AgentValidationFailure as exc:
             logger.warning(
@@ -1998,12 +2083,10 @@ class RootAgent(BaseAgent):
                 agent_name = "dispatcher"
             elif "doc_search" in exc.log_label:
                 agent_name = "doc_search"
-
             # Собираем контекст из состояния
             context: Dict[str, Any] = {
                 "validation_error": exc.validation_error,
             }
-            
             # Поисковый запрос — в разных ключах для разных агентов
             context["search_query"] = (
                 ctx.session.state.get("product_selection_search_query")
@@ -2020,28 +2103,23 @@ class RootAgent(BaseAgent):
                 context["resolved_product"] = parsed.get("resolved_product")
                 context["clarification_options"] = parsed.get("clarification_options") or []
                 context["products"] = parsed.get("products") or []
-            
             elif agent_name == "doc_search":
                 parsed = ctx.session.state.get("_doc_search_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["results_count"] = len(parsed.get("results") or [])
                 context["source"] = "kb_search"
-            
             elif agent_name == "kb_answer":
                 parsed = ctx.session.state.get("_kb_answer_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["source"] = parsed.get("source", "")
-            
             elif agent_name == "smalltalk":
                 parsed = ctx.session.state.get("_smalltalk_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["source"] = parsed.get("source", "")
-            
             elif agent_name == "dispatcher":
                 parsed = ctx.session.state.get("_dispatcher_result_parsed") or {}
                 context["route"] = parsed.get("route", "")
                 context["intent"] = parsed.get("intent", "")
-
             # Пытаемся извлечь данные из сырого ответа
             payload = {}
             if exc.log_label == "product_selection_result_json":
@@ -2057,7 +2135,6 @@ class RootAgent(BaseAgent):
                     context.setdefault("used_tables", payload.get("used_tables") or [])
                 except Exception:
                     pass
-            
             # Пытаемся извлечь сообщение из сырого ответа 
             product_selection_tool_usage_failure = (
                 exc.log_label == "product_selection_result_json"
@@ -2071,72 +2148,46 @@ class RootAgent(BaseAgent):
                 )
                 else None
             )
-            # Приоритет 2: Умный fallback
+            # Умный fallback
             smart_message = None
             if not legacy_message:
                 smart_message = generate_agent_fallback(
-                    user_text=user_text,
+                    user_text=pipeline_ctx.user_text,
                     error_type="validation_failure",
                     agent_name=agent_name,
                     context=context,
                 )
             final_fallback_message = legacy_message or smart_message or exc.user_message
-            if exc.log_label == "product_selection_result_json":
-                logger.debug(
-                    "product_selection fallback diagnostics: legacy_used=%s smart_used=%s "
-                    "blocked_by_tool_usage=%s mode=%s resolved_product=%s "
-                    "clarification_options_count=%s message_preview=%s",
-                    bool(legacy_message),
-                    bool(smart_message),
-                    product_selection_tool_usage_failure,
-                    payload.get("mode"),
-                    payload.get("resolved_product"),
-                    len(payload.get("clarification_options") or []),
-                    truncate_for_log(payload.get("message"), 300),
-                )
-            else:
-                logger.debug(
-                    "agent fallback diagnostics: agent=%s smart_used=%s "
-                    "search_query=%s validation_error=%s",
-                    agent_name,
-                    bool(smart_message),
-                    truncate_for_log(context.get("search_query"), 100),
-                    truncate_for_log(context.get("validation_error"), 200),
-                )
+
             yield self._build_final_event_with_history(
                 ctx,
-                user_text,
+                pipeline_ctx.user_text,
                 final_fallback_message,
             )
 
         except Exception as exc:
-            # --- LANGFUSE: ЛОГИРУЕМ КРИТИЧЕСКУЮ ОШИБКУ В ТРЕЙС ---
             logger.error("RootAgent failure: %s", exc, exc_info=True)
             message = (
                 f"DEBUG: {type(exc).__name__}: {exc}"
                 if DEBUG_EXCEPTIONS
                 # fallback при нескольких сообщениях подряд
-                else RECOVERY_MESSAGE
+                else VALIDATION_ERROR_USER_MESSAGE
             )
-            yield self._build_final_event_with_history(ctx, user_text, message)
-        
-        finally: 
+            yield self._build_final_event_with_history(ctx, pipeline_ctx.user_text, message)
+
+        finally:
             if root_span and root_span.is_recording():
                 final_text = ctx.session.state.get("_root_final_text") or ""
                 bot_action = ctx.session.state.get("_bot_action") or {}
-                
-                root_span.set_attribute("output.value", json.dumps({
-                    "final_text": final_text,
-                    "bot_action": bot_action
-                }, ensure_ascii=False))
+
+                root_span.set_attribute(
+                    "output.value",
+                    json.dumps(
+                        {"final_text": final_text, "bot_action": bot_action},
+                        ensure_ascii=False,
+                    ),
+                )
                 root_span.set_attribute("output.mime_type", "application/json")
-            # # Трейс принадлежит вебхуку, и он сам его корректно закроет в своем цикле.
-            # if is_webhook_experiment:
-            #     trace.update(output=final_output)
-            # else:
-            #     # Для обычного режима (Telegram бот) закрываем как раньше
-            #     langfuse_logger.end_trace(trace, output=final_output)
-            pass
 
     async def _handle_doc_search(
         self,
@@ -2403,6 +2454,7 @@ class RootAgent(BaseAgent):
                     
                 # Жестко инжектим folder_kit в словарь
                 resolved["folder_kit"] = full_details["folder_kit"]
+        # Сохранение контекста и формирование финального ответа
         if isinstance(product_resolution, dict) and product_resolution.get("product_code"):
             if not resolved:
                 # Если агент не вернул resolved_product, но resolver нашел продукт, используем его данные

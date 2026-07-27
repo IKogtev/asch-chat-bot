@@ -5,8 +5,8 @@
 import copy
 import json
 import time
-import ast
 import os
+import re
 from typing import Any, AsyncGenerator, Callable, Dict, Mapping
 
 from google.adk.agents import InvocationContext, LlmAgent
@@ -16,7 +16,6 @@ from utils.logger import setup_logger
 from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
 from .doc_search_validation import DocSearchRetryableValidationError
 from .helpers import extract_json, truncate_for_log
-from .langfuse_logger import langfuse_logger
 from opentelemetry import context
 from opentelemetry import trace as otel_trace
 from opentelemetry.trace import Status, StatusCode
@@ -532,16 +531,25 @@ async def run_json_leaf_agent(
             else:
                 # Ветка 3: Если вернулась строка (старый формат из промпта)
                 raw_str = str(raw_payload or "").strip()
+                # 1. Удаляем Markdown-обертку кода (```json ... ``` или ``` ... ```)
+                cleaned = re.sub(r'```(?:json)?\s*(.*?)\s*```', r'\1', raw_str, flags=re.DOTALL)
+                
+                # 2. Ищем первую валидную JSON-структуру ({...} или [...]) внутри текста рассуждений
+                match = re.search(r'(\{.*\}|\[.*\])', cleaned, flags=re.DOTALL)
+                json_str = match.group(1) if match else cleaned
                 try:
-                    # Шаг А: Стандартный строгий JSON (для двойных кавычек)
-                    extracted = extract_json(raw_str)
-                except Exception:
-                    # Шаг Б: Если упал, пробуем безопасно распарсить одинарные кавычки 
-                    parsed_literal = ast.literal_eval(raw_str)
-                    if isinstance(parsed_literal, (dict, Mapping)):
-                        extracted = dict(parsed_literal)
-                    else:
-                        raise ValueError("Parsed literal from string is not a dictionary")
+                    # 3. Парсим через стандартный json.loads
+                    extracted = json.loads(json_str)
+                    if not isinstance(extracted, (dict, Mapping)):
+                        raise ValueError("Parsed JSON is not a dictionary/mapping")
+                except Exception as json_err:
+                    # Фолбек на extract_json, если стандартный парсер не справился
+                    try:
+                        extracted = extract_json(raw_str)
+                        if not isinstance(extracted, (dict, Mapping)):
+                            raise ValueError()
+                    except Exception:
+                        raise ValueError(f"Failed to extract valid JSON from LLM output. Error: {json_err}")
             logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
             validator_context = dict(getattr(ctx.session, "state", {}) or {})
             validator_context["_adk_tool_calls"] = tool_calls
