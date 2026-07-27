@@ -29,3 +29,20 @@ docker compose up
 ```
 (.venv) C:\Users\Igor\Desktop\project_links\Job NNT\asch-chat-bot>python agent/langfuse_files_scripts/import_dataset.py
 ```
+
+В настройках проекта задаем какая модель у нас будет: 
+![alt text](langfuse_files_scripts/setting_llm.png)
+
+задаем имя провайдера модели(просто название для индентификации для себя), подставляем api key, указываем наш api для подключения модели 
+```
+https://api.llm.nstcloud.ru/v1
+```
+и указываем имя модели, которую мы будем использовать в качестве оценщика
+![alt text](langfuse_files_scripts/setting_llm2.png)
+
+для создания evaluator запускаем файл создания evaluator,  
+```
+(.venv) C:\Users\Igor\Desktop\project_links\Job NNT\asch-chat-bot>python agent/langfuse_files_scripts/create_evaluator.py 
+```
+но настройку к сожалению делаем только внутри для автоматических запусков 
+
