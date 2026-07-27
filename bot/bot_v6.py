@@ -112,6 +112,7 @@ async def main() -> None:
         raise RuntimeError("DATABASE_URL (or POSTGRES_DSN) is missing in .env")
     adk_base = os.getenv("ADK_API_BASE", "http://agent:8000").strip()
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
+    adk_timeout_sec = Settings.ADK_TIMEOUT_SEC
     # Конфигурация для DocumentHandler
     kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
@@ -119,6 +120,7 @@ async def main() -> None:
     logger.info(f"Конфигурация:")
     logger.info(f"  ADK Base: {adk_base}")
     logger.info(f"  ADK App: {adk_app}")
+    logger.info(f"  ADK Timeout: {adk_timeout_sec}s")
     logger.info(f"  KB Manager: {Settings.KB_MANAGER_URL}")
     logger.info(f"  Downloads: {downloads_dir}")
     logger.info(f"  Database: {dsn.split('@')[1] if '@' in dsn else 'configured'}")
@@ -132,7 +134,7 @@ async def main() -> None:
     user_resolver = UserResolver(store.pool)
     # инициализируем хранилище новостей
     news_store = NewsStore(store.pool)
-    adk = AdkApiClient(base_url=adk_base, app_name=adk_app)
+    adk = AdkApiClient(base_url=adk_base, app_name=adk_app, timeout_sec=adk_timeout_sec)
     await adk.open()
     # Инициализация DocumentHandler
     doc_handler = DocumentHandler(

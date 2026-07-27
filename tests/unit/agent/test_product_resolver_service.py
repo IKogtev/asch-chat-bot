@@ -80,6 +80,55 @@ async def test_resolve_product_returns_ambiguous_for_multiple_token_matches() ->
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_product_disambiguates_by_currency_symbol_in_query() -> None:
+    """$ / ¥ вырезаются нормализацией, но сырой mention должен выбрать валютный вариант."""
+    usd = candidate("8957", "Защищенный капитал $ 3 года")
+    cny = candidate("8962", "Защищенный капитал ¥ 3 года")
+    mention = "Защищенный капитал $ 3 года"
+    cleaned = ProductResolverService._remove_query_noise(mention)
+    resolver = FakeProductResolver(
+        tokens={cleaned: [usd, cny]},
+    )
+
+    result = await resolver.resolve_product(mention)
+
+    assert result.status == "resolved"
+    assert result.product_code == "8957"
+    assert result.product_name == "Защищенный капитал $ 3 года"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_disambiguates_by_currency_word_in_query() -> None:
+    usd = candidate("8957", "Защищенный капитал $ 3 года")
+    cny = candidate("8962", "Защищенный капитал ¥ 3 года")
+    mention = "Защищенный капитал 3 года в юанях"
+    cleaned = ProductResolverService._remove_query_noise(mention)
+    resolver = FakeProductResolver(
+        tokens={cleaned: [usd, cny]},
+    )
+
+    result = await resolver.resolve_product(mention)
+
+    assert result.status == "resolved"
+    assert result.product_code == "8962"
+
+
+@pytest.mark.unit
+def test_filter_candidates_by_currency_hint_keeps_matching_symbol() -> None:
+    usd = candidate("8957", "Защищенный капитал $ 3 года")
+    cny = candidate("8962", "Защищенный капитал ¥ 3 года")
+
+    filtered = ProductResolverService._filter_candidates_by_currency_hint(
+        "Дай комплект по Защищенному капиталу $ 3 года",
+        [usd, cny],
+    )
+
+    assert [item.product_code for item in filtered] == ["8957"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_uses_clear_fuzzy_top_match() -> None:
     resolver = FakeProductResolver(
         fuzzy={
@@ -186,6 +235,35 @@ async def test_resolve_product_filter_unions_multiple_product_mentions() -> None
     assert result.status == "resolved"
     assert result.product_codes == ["8914", "8837", "8885", "8916"]
     assert result.matched_terms == ["fort knox", "защищенный капитал"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_unions_text_and_product_codes() -> None:
+    """Фраза с кодами не должна рекурсивно извлекать саму себя (RecursionError)."""
+    resolver = FakeProductResolver(
+        exact={
+            "8965": [candidate("8965", "Product A")],
+            "7698": [candidate("7698", "Product B")],
+        },
+        tokens={
+            "архивные бандлы": [candidate("1000", "Архивный бандл")],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("архивные бандлы 8965 7698")
+
+    assert result.status == "resolved"
+    assert result.product_codes == ["1000", "8965", "7698"]
+
+
+@pytest.mark.unit
+def test_extract_product_mentions_strips_codes_from_text_parts() -> None:
+    mentions = ProductResolverService.extract_product_mentions(
+        "архивные бандлы 8965 7698"
+    )
+
+    assert mentions == ["архивные бандлы", "8965", "7698"]
 
 
 @pytest.mark.unit

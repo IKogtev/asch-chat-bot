@@ -51,7 +51,8 @@ async def save_doc_search_results(
 ) -> str:
     """
     Полная замена search_meta/search_results для пары (user_id, session_id).
-    items: document_id, source_name, source_path?, snippet?, rank (1..n).
+    items: document_id, source_name, source_path?, score?, rank (1..n).
+    Поле snippet в БД не записывается (остаётся NULL).
     """
     search_id = str(uuid4())
     n = len(items)
@@ -93,15 +94,14 @@ async def save_doc_search_results(
                         str(item["source_name"]),
                         item.get("source_path"),
                         item.get("score"),
-                        (item.get("snippet") or "")[:2000],
                     )
                     for item in items
                 ]
                 await conn.executemany(
                     """
                     INSERT INTO search_results
-                    (user_id, session_id, search_id, rank, document_id, source_name, source_path, score, snippet)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    (user_id, session_id, search_id, rank, document_id, source_name, source_path, score)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
                     rows,
                 )

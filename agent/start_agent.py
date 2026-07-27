@@ -11,6 +11,7 @@ from .agents.dispatcher_agent import create_dispatcher_agent
 from .agents.doc_search_agent import create_doc_search_agent
 from .agents.doc_search_orchestrator import create_doc_search_orchestrator
 from .agents.kb_answer_agent import create_kb_answer_agent
+from .agents.smalltalk_agent import create_smalltalk_agent
 from .agents.product_filter_agent import create_product_filter_agent
 from .agents.product_info_agent import create_product_info_agent
 
@@ -30,12 +31,14 @@ def build_agent_chain() -> RootAgent:
     product_filter_agent = create_product_filter_agent(model)
     dispatcher_agent = create_dispatcher_agent(model)
     owasp_agent = create_owasp_agent(model)
+    smalltalk_agent = create_smalltalk_agent(model)
 
     return RootAgent(
         owasp_agent=owasp_agent,
         dispatcher_agent=dispatcher_agent,
         doc_search_orchestrator=doc_search_orchestrator,
         kb_answer_agent=kb_answer_agent,
+        smalltalk_agent = smalltalk_agent,
         product_info_agent=product_info_agent,
         product_filter_agent=product_filter_agent,
         kb_collection=KB_DOCUMENTS_COLLECTION,

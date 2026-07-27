@@ -49,14 +49,22 @@ def _load_json_leaf_runner_module():
         "agent.doc_search_validation",
         repo_root / "agent" / "doc_search_validation.py",
     )
+    stage_metrics_spec = importlib.util.spec_from_file_location(
+        "agent.stage_metrics",
+        repo_root / "agent" / "stage_metrics.py",
+    )
     assert kb_context_spec is not None and kb_context_spec.loader is not None
     assert validation_spec is not None and validation_spec.loader is not None
+    assert stage_metrics_spec is not None and stage_metrics_spec.loader is not None
     kb_context_module = importlib.util.module_from_spec(kb_context_spec)
     validation_module = importlib.util.module_from_spec(validation_spec)
+    stage_metrics_module = importlib.util.module_from_spec(stage_metrics_spec)
     sys.modules["agent.doc_search_kb_context"] = kb_context_module
     sys.modules["agent.doc_search_validation"] = validation_module
+    sys.modules["agent.stage_metrics"] = stage_metrics_module
     kb_context_spec.loader.exec_module(kb_context_module)
     validation_spec.loader.exec_module(validation_module)
+    stage_metrics_spec.loader.exec_module(stage_metrics_module)
 
     adk_agents_stub = types.ModuleType("google.adk.agents")
     adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
@@ -194,6 +202,89 @@ def test_run_json_leaf_agent_yields_sanitized_events() -> None:
     assert events[0].content.parts == [visible]
     assert event.content.parts == [thought, visible]
     assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
+    assert "_stage_metrics" in ctx.session.state
+    assert ctx.session.state["_stage_metrics"]["owasp"]["input_tokens"] == 0
+    assert ctx.session.state["_stage_metrics"]["owasp"]["output_tokens"] == 0
+    assert "ms" in ctx.session.state["_stage_metrics"]["owasp"]
+    assert "ttft_ms" in ctx.session.state["_stage_metrics"]["owasp"]
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_accumulates_usage_metadata() -> None:
+    visible = types.SimpleNamespace(text='{"status":"ok"}')
+    event = _make_event([visible])
+    event.usage_metadata = types.SimpleNamespace(
+        prompt_token_count=21,
+        candidates_token_count=9,
+    )
+    ctx = _make_ctx('{"status":"ok"}')
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent([event]),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=lambda data, context: data,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    metrics = ctx.session.state["_stage_metrics"]["owasp"]
+    assert metrics["input_tokens"] == 21
+    assert metrics["output_tokens"] == 9
+    assert metrics["tool_calls"] == 0
+    assert metrics["model_turns"] == 1
+    assert metrics["ttft_ms"] is not None
+    assert metrics["ms"] >= metrics["ttft_ms"]
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_counts_tool_calls_and_model_turns() -> None:
+    call = types.SimpleNamespace(
+        function_call=types.SimpleNamespace(name="kb_search", args={})
+    )
+    response = types.SimpleNamespace(
+        function_response=types.SimpleNamespace(name="kb_search", response={"ok": True})
+    )
+    final = types.SimpleNamespace(text='{"status":"ok"}')
+
+    first = _make_event([call])
+    first.usage_metadata = types.SimpleNamespace(
+        prompt_token_count=5,
+        candidates_token_count=2,
+    )
+    second = _make_event([response])
+    third = _make_event([final])
+    third.usage_metadata = types.SimpleNamespace(
+        prompt_token_count=8,
+        candidates_token_count=4,
+    )
+    ctx = _make_ctx('{"status":"ok"}')
+    ctx.session.state["kb_answer_result_json"] = '{"status":"ok"}'
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent([first, second, third]),
+                output_key="kb_answer_result_json",
+                parsed_state_key="_kb_answer_result_parsed",
+                validator=lambda data, context: data,
+                log_label="kb_answer_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    metrics = ctx.session.state["_stage_metrics"]["kb_answer"]
+    assert metrics["tool_calls"] == 1
+    assert metrics["model_turns"] == 2
+    assert metrics["input_tokens"] == 13
+    assert metrics["output_tokens"] == 6
 
 
 @pytest.mark.unit

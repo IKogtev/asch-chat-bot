@@ -64,7 +64,7 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - в итоговый список попадают только релевантные, отсортированные по `new_rank`;
     - каждый `document_id` должен быть из `_doc_search_kb_hits`, если kb_search вернул документы;
       при неверных id на попытке 1 — retry; на финальной попытке — отбрасываются;
-    - `snippet` обрезается до 500 символов;
+    - `snippet` игнорируется (не сохраняется);
     - `source_path` приводится к строке или `None`.
 
     При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
@@ -198,7 +198,6 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                     "document_id": document_id,
                     "source_name": source_name,
                     "source_path": str(path_raw).strip() if path_raw else None,
-                    "snippet": str(item.get("snippet") or "").strip()[:500],
                     "new_rank": new_rank,
                     "_order": index,
                 }
@@ -252,7 +251,6 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 "document_id": item["document_id"],
                 "source_name": item["source_name"],
                 "source_path": item["source_path"],
-                "snippet": item["snippet"],
             }
             for item in relevant_items
         ]
@@ -326,7 +324,7 @@ For document search, glossary context must not erase document type, product name
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
 7. В results включай только релевантные документы из CONTEXT kb_search; document_id должен совпадать с DOCUMENT_ID из CONTEXT.
-8. У каждого элемента results обязательны new_rank (целое ≥ 1) и snippet; is_relevant можно опустить.
+8. У каждого элемента results обязателен new_rank (целое ≥ 1); snippet и is_relevant не передавай.
 9. Если пользователь указал тип материала (презентер, сториз, ПФ и т.д.), в results только файлы с совпадением типа в FILE_NAME.
 10. Если {doc_search_rerank_only}=true — kb_search не вызывай, переранжируй по CONTEXT из предыдущего вызова. Причина повтора: {doc_search_retry_reason}.
 
@@ -340,9 +338,7 @@ For document search, glossary context must not erase document type, product name
       "document_id": "...",
       "source_name": "...",
       "source_path": null,
-      "is_relevant": true,
-      "new_rank": 1,
-      "snippet": "..."
+      "new_rank": 1
     }
   ]
 }
@@ -351,26 +347,21 @@ For document search, glossary context must not erase document type, product name
     prompt_file = "doc_search_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "doc_search_agent"
+    # Конфигурация генерации с принудительным JSON Output и схемой данных
+    config_params = {}
     if DOC_SEARCH_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DOC_SEARCH_TEMPERATURE}")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            tools=tools,
-            output_key="doc_search_result_json",
-            generate_content_config=GenerateContentConfig(
-                temperature=DOC_SEARCH_TEMPERATURE,
-            )
-        )
+        config_params["temperature"] = DOC_SEARCH_TEMPERATURE
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-        agent = LlmAgent(
-            name=name,
-            model=model,
-            instruction=instruction,
-            tools=tools,
-            output_key="doc_search_result_json"
-        )
+    agent = LlmAgent(
+        name=name,
+        model=model,
+        instruction=instruction,
+        tools=tools,
+        output_key="doc_search_result_json",
+        # output_schema=? TODO здесь можно добавить схему по которой будет модель работать
+        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+    )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
