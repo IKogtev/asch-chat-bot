@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -71,6 +72,21 @@ class ProductInfoResponseSchema(BaseModel):
         if value != "ok":
             raise ValueError("status must be 'ok'")
         return value
+
+    @field_validator("resolved_product", mode="before")
+    @classmethod
+    def parse_resolved_product(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("resolved_product must be a JSON object") from exc
+
+        if not isinstance(parsed, dict):
+            raise ValueError("resolved_product must be a JSON object")
+        return parsed
 
 
 def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:

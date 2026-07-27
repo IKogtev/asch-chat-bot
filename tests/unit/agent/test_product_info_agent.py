@@ -147,3 +147,32 @@ def test_product_info_response_schema_restricts_status_without_const() -> None:
     schema = product_info.ProductInfoResponseSchema.model_json_schema()
     assert "const" not in schema["properties"]["status"]
     assert schema["properties"]["status"]["type"] == "string"
+
+
+@pytest.mark.unit
+def test_product_info_response_schema_parses_json_string_resolved_product() -> None:
+    response = product_info.ProductInfoResponseSchema(
+        status="ok",
+        mode="product_card",
+        message="Карточка продукта",
+        resolved_product='{"code": "8914", "name": "Фиксированный доход 1 год"}',
+    )
+
+    assert response.resolved_product == {
+        "code": "8914",
+        "name": "Фиксированный доход 1 год",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("resolved_product", ["not-json", '["8914"]'])
+def test_product_info_response_schema_rejects_non_object_resolved_product(
+    resolved_product: str,
+) -> None:
+    with pytest.raises(Exception, match="resolved_product must be a JSON object"):
+        product_info.ProductInfoResponseSchema(
+            status="ok",
+            mode="product_card",
+            message="Карточка продукта",
+            resolved_product=resolved_product,
+        )
