@@ -1,6 +1,6 @@
 import pytest
 
-from bot.services.adk_events import extract_bot_action
+from bot.services.adk_events import extract_bot_action, extract_timing
 
 
 @pytest.mark.unit
@@ -33,3 +33,39 @@ def test_extract_bot_action_from_state_delta() -> None:
 @pytest.mark.unit
 def test_extract_bot_action_returns_none_without_action() -> None:
     assert extract_bot_action([{"actions": {"stateDelta": {"x": 1}}}]) is None
+
+
+@pytest.mark.unit
+def test_extract_timing_from_state_delta() -> None:
+    events = [
+        {"author": "owasp_agent", "actions": {"stateDelta": {}}},
+        {
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {
+                    "_timing": {
+                        "owasp_ms": 100,
+                        "owasp_ttft_ms": 30,
+                        "owasp_input_tokens": 11,
+                        "owasp_output_tokens": 4,
+                        "route": "kb_answer",
+                        "intent": "faq",
+                    }
+                }
+            },
+        },
+    ]
+
+    assert extract_timing(events) == {
+        "owasp_ms": 100,
+        "owasp_ttft_ms": 30,
+        "owasp_input_tokens": 11,
+        "owasp_output_tokens": 4,
+        "route": "kb_answer",
+        "intent": "faq",
+    }
+
+
+@pytest.mark.unit
+def test_extract_timing_returns_none_without_timing() -> None:
+    assert extract_timing([{"actions": {"stateDelta": {"_bot_action": {"type": "x"}}}}]) is None

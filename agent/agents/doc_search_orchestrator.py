@@ -114,7 +114,6 @@ async def _persist_full_list(
                 "source_name": str(it["source_name"]),  # Название источника
                 "source_path": it.get("source_path"),   # Путь к файлу (может быть None)
                 "score": it.get("score"),               # Оценка релевантности (опционально)
-                "snippet": (it.get("snippet") or "")[:2000],  # Краткий фрагмент содержимого (не более 2000 символов)
             }
         )
 
@@ -337,7 +336,6 @@ class DocSearchOrchestrator(BaseAgent):
                     "document_id": item["document_id"],       # ID документа
                     "source_name": item["source_name"],       # Название документа
                     "source_path": item.get("source_path"),   # Путь (может быть None)
-                    "snippet": item.get("snippet") or "",     # Краткий фрагмент
                     "rank": i,                                # Место в списке
                 }
             )
