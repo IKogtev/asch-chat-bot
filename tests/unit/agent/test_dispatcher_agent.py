@@ -106,7 +106,7 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
     result = validate_dispatcher_result(
         {
             "status": "ok",
-            "route": "kb_answer",
+            "route": "smalltalk",
             "intent": "smalltalk",
             "reason": "casual talk",
             "search_query": "",
@@ -114,7 +114,7 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
         VALIDATION_CONTEXT,
     )
 
-    assert result["route"] == "kb_answer"
+    assert result["route"] == "smalltalk"
     assert result["intent"] == "smalltalk"
 
 

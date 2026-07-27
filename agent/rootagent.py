@@ -554,9 +554,9 @@ class RootAgent(BaseAgent):
         return str(option or "").strip()
 
     @classmethod
-    def _format_product_selection_answer(cls, product_selection: Dict[str, Any]) -> str:
-        message = format_text_answer(product_selection["message"])
-        mode = product_selection.get("mode")
+    def _format_product_answer(cls, product_result: Dict[str, Any]) -> str:
+        message = format_text_answer(product_result["message"])
+        mode = product_result.get("mode")
         if mode == "product_filter":
             if PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
                 message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
@@ -577,7 +577,7 @@ class RootAgent(BaseAgent):
             
             options = [
                 cls._format_clarification_option(option)
-                for option in product_selection.get("clarification_options") or []
+                for option in product_result.get("clarification_options") or []
             ]
             options = [option for option in options if option]
             if not options:
@@ -650,18 +650,18 @@ class RootAgent(BaseAgent):
     def _store_product_dialog_context(
         self,
         ctx: InvocationContext,
-        product_selection: Dict[str, Any],
+        product_result: Dict[str, Any],
     ) -> None:
-        mode = product_selection.get("mode")
+        mode = product_result.get("mode")
         if mode == "product_attribute_values":
             attribute_values = self._normalize_attribute_values(
-                product_selection.get("attribute_values")
+                product_result.get("attribute_values")
             )
             if attribute_values:
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
                     "last_mode": "product_attribute_values",
-                    "attribute_name": str(product_selection.get("attribute_name") or "").strip(),
-                    "attribute_column": str(product_selection.get("attribute_column") or "").strip(),
+                    "attribute_name": str(product_result.get("attribute_name") or "").strip(),
+                    "attribute_column": str(product_result.get("attribute_column") or "").strip(),
                     "attribute_values": attribute_values,
                     "products": [],
                     "selected_product": None,
@@ -671,7 +671,7 @@ class RootAgent(BaseAgent):
             return
 
         if mode == "product_filter":
-            products = self._normalize_dialog_products(product_selection.get("products"))
+            products = self._normalize_dialog_products(product_result.get("products"))
             if products:
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
                     "last_mode": "product_filter",
@@ -683,7 +683,7 @@ class RootAgent(BaseAgent):
             return
 
         if mode == "product_card":
-            resolved_product = product_selection.get("resolved_product")
+            resolved_product = product_result.get("resolved_product")
             products = self._normalize_dialog_products([resolved_product])
             if products:
                 previous = self._get_product_dialog_context(ctx)
@@ -695,7 +695,7 @@ class RootAgent(BaseAgent):
             return
 
         if mode == "product_kit":
-            resolved_product = product_selection.get("resolved_product")
+            resolved_product = product_result.get("resolved_product")
             products = self._normalize_dialog_products([resolved_product])
             if products:
                 previous = self._get_product_dialog_context(ctx)
@@ -712,17 +712,19 @@ class RootAgent(BaseAgent):
 
         if mode == "needs_clarification":
             options = self._normalize_dialog_products(
-                product_selection.get("clarification_options") or []
+                product_result.get("clarification_options") or []
             )
             previous = self._get_product_dialog_context(ctx)
             pending_intent = str(
-                ctx.session.state.get("product_selection_intent")
+                ctx.session.state.get("product_info_intent")
+                or ctx.session.state.get("product_filter_intent")
                 or ctx.session.state.get("last_intent")
                 or previous.get("pending_intent")
                 or ""
             ).strip()
             original_search_query = str(
-                ctx.session.state.get("product_selection_search_query")
+                ctx.session.state.get("product_info_search_query")
+                or ctx.session.state.get("product_filter_search_query")
                 or ctx.session.state.get("last_search_query")
                 or previous.get("original_search_query")
                 or ""
@@ -744,8 +746,8 @@ class RootAgent(BaseAgent):
             return
 
         if mode == "product_compare":
-            resolved_product = product_selection.get("resolved_product")
-            products = self._normalize_dialog_products(product_selection.get("products") or [])
+            resolved_product = product_result.get("resolved_product")
+            products = self._normalize_dialog_products(product_result.get("products") or [])
             previous = self._get_product_dialog_context(ctx)
             
             # Если агент явно выбрал один продукт (например, ответил на вопрос "где меньше рисков")
@@ -1011,7 +1013,7 @@ class RootAgent(BaseAgent):
             return validate_dispatcher_result(
                 {
                     "status": "ok",
-                    "route": "product_selection",
+                    "route": "product_filter",
                     "intent": "product_compare",
                     "reason": "product_compare_clarification_followup",
                     "search_query": query,
@@ -1024,7 +1026,7 @@ class RootAgent(BaseAgent):
             return validate_dispatcher_result(
                 {
                     "status": "ok",
-                    "route": "product_selection",
+                    "route": "product_info",
                     "intent": "product_kit",
                     "reason": "product_kit_clarification_followup",
                     "search_query": f"скачать комплект документов по продукту {target}",
@@ -1036,7 +1038,7 @@ class RootAgent(BaseAgent):
         return validate_dispatcher_result(
             {
                 "status": "ok",
-                "route": "product_selection",
+                "route": "product_info",
                 "intent": "product_card",
                 "reason": "product_card_clarification_followup",
                 "search_query": f"показать карточку продукта {target}",
@@ -1541,7 +1543,7 @@ class RootAgent(BaseAgent):
         )
 
     @classmethod
-    def _fallback_product_selection_message(cls, raw: str) -> str | None:
+    def _fallback_product_message(cls, raw: str) -> str | None:
         try:
             payload = extract_json(raw)
         except Exception:
@@ -1551,7 +1553,7 @@ class RootAgent(BaseAgent):
         if not message:
             return None
 
-        return cls._format_product_selection_answer(
+        return cls._format_product_answer(
             {
                 "mode": payload.get("mode"),
                 "message": message,
@@ -1818,7 +1820,7 @@ class RootAgent(BaseAgent):
                         # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
                         dispatch["search_query"] = f"продукт {code or name}".strip()
                         ctx.session.state["last_search_query"] = dispatch["search_query"]
-                        logger.info("Enriched product_selection pronoun search_query to: %s", dispatch["search_query"])
+                        logger.info("Enriched product route pronoun search_query to: %s", dispatch["search_query"])
                 
                 handler = (
                     self._handle_product_info
@@ -1963,7 +1965,7 @@ class RootAgent(BaseAgent):
                 and "tool_usage" in exc.validation_error
             )
             legacy_message = (
-                self._fallback_product_selection_message(exc.raw)
+                self._fallback_product_message(exc.raw)
                 if (
                     exc.log_label in {"product_info_result_json", "product_filter_result_json"}
                     and not product_tool_usage_failure
@@ -1982,7 +1984,7 @@ class RootAgent(BaseAgent):
             final_fallback_message = legacy_message or smart_message or exc.user_message
             if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
                 logger.debug(
-                    "product_selection fallback diagnostics: legacy_used=%s smart_used=%s "
+                    "product fallback diagnostics: legacy_used=%s smart_used=%s "
                     "blocked_by_tool_usage=%s mode=%s resolved_product=%s "
                     "clarification_options_count=%s message_preview=%s",
                     bool(legacy_message),
@@ -2146,7 +2148,7 @@ class RootAgent(BaseAgent):
         smalltalk = self._get_required_state_dict(ctx, "_smalltalk_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(smalltalk["message"])
 
-    async def _handle_product_selection(
+    async def _handle_product_filter(
         self,
         ctx: InvocationContext,
         user_message: str,
@@ -2193,7 +2195,7 @@ class RootAgent(BaseAgent):
             }
             ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
 
-        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
+        ctx.session.state["_root_final_text"] = self._format_product_answer(
             product_result
         )
         self._store_product_dialog_context(ctx, product_result)
@@ -2246,7 +2248,7 @@ class RootAgent(BaseAgent):
             }
             ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
 
-        ctx.session.state["_root_final_text"] = self._format_product_selection_answer(
+        ctx.session.state["_root_final_text"] = self._format_product_answer(
             product_result
         )
         self._store_product_dialog_context(ctx, product_result)

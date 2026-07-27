@@ -837,3 +837,8 @@ Now I need to merge to my this branch from qwen36 branch. Please prepare a plan 
 ==========
 I keeped incoming prompt kb_storage\prompts\dispatcher\dispatcher_agent_prompt.md 
 Insert into it parts from older version of this prompt, that needed for prodict_info and product filter agents. Take old version of this prompt before merge.
+==========
+realize 1 (set SMALLTALK_TEMPERATURE to 0.8)
+fix 2,3,4,5 (set temperature for product_info_agent and product_filter_agent to 0.5)
+fix 6, 7
+from your list
