@@ -1,0 +1,33 @@
+{
+  "id": "cmrz0o7360098nv07dzyecnq7",
+  "name": "Accuracy Evaluation Rule",
+  "evaluator": {
+    "id": "cmrz39umc00apnv0773dxckkx",
+    "name": "Accuracy Evaluator",
+    "scope": "project",
+    "type": "llm_as_judge"
+  },
+  "target": "experiment",
+  "enabled": true,
+  "status": "active",
+  "pausedReason": null,
+  "pausedMessage": null,
+  "sampling": 1,
+  "filter": [],
+  "mapping": [
+    {
+      "variable": "input",
+      "source": "input"
+    },
+    {
+      "variable": "expected_output",
+      "source": "expected_output"
+    },
+    {
+      "variable": "output",
+      "source": "output"
+    }
+  ],
+  "createdAt": "2026-07-24T14:09:38.274Z",
+  "updatedAt": "2026-07-24T15:22:27.784Z"
+}

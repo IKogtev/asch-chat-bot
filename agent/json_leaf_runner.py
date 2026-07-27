@@ -428,7 +428,7 @@ async def run_json_leaf_agent(
             tool_calls.extend(_extract_function_call_names(event))
             tool_event_summaries.extend(_extract_tool_event_summaries(event))
             # блок диагностики мыслей
-            SHOW_LLM_RAW = bool(os.getenv("SHOW_LLM_RAW", False))
+            SHOW_LLM_RAW = os.getenv("SHOW_LLM_RAW", False)
             if SHOW_LLM_RAW:
                 raw_text_parts = []
                 if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
