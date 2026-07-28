@@ -49,7 +49,7 @@ def build_hybrid_qdrant_filter(
     """
     must_not = [
         FieldCondition(
-            key="__type__",
+            key="type",
             match=MatchValue(value=COLLECTION_META_TYPE),
         )
     ]

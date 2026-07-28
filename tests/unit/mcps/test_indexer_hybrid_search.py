@@ -13,6 +13,65 @@ from kbsearch_import_helper import load_kbsearch_module
 
 ROOT = Path(__file__).resolve().parents[3]
 
+class _DynamicMeta(type):
+    """Метакласс, позволяющий классу иметь любые атрибуты (например, Distance.COSINE)."""
+    def __getattr__(cls, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        # Возвращаем строку-заглушку. Этого достаточно для значений по умолчанию в сигнатурах.
+        return f"mock_{name}"
+
+class _DynamicClass(metaclass=_DynamicMeta):
+    """Класс, поддерживающий любые атрибуты экземпляра, вызовы и итерации."""
+    def __init__(self, *args, **kwargs): pass
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _DynamicClass()
+    def __call__(self, *args, **kwargs):
+        return _DynamicClass()
+    def __iter__(self):
+        return iter([])
+    def __len__(self): return 0
+    def __getitem__(self, item): return _DynamicClass()
+    def __bool__(self):
+        return True
+    def __eq__(self, other): return isinstance(other, _DynamicClass)
+
+class _DynamicStubModule(types.ModuleType):
+    """Модуль, поддерживающий любые импорты (from x import *) и итерации."""
+    def __init__(self, *args, **kwargs):
+        # Принимаем любые аргументы, чтобы код вида Filter(must=[...]) не падал
+        pass
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _DynamicClass()
+    
+    def __call__(self, *args, **kwargs):
+        return _DynamicClass()
+    
+    def __iter__(self):
+        return iter([])
+    
+    def __bool__(self):
+        return True
+
+_qdrant_submodules = [
+    "qdrant_client",
+    "qdrant_client.models",
+    "qdrant_client.http",
+    "qdrant_client.http.models",
+    "qdrant_client.grpc",
+    "qdrant_client.conversions",
+    "qdrant_client.conversions.common_types",
+]
+
+for _mod_name in _qdrant_submodules:
+    if _mod_name not in sys.modules:
+        sys.modules[_mod_name] = _DynamicStubModule(_mod_name)
+
 
 def load_utils_module(relative_path: str, module_name: str):
     path = ROOT / "utils" / relative_path
@@ -23,6 +82,30 @@ def load_utils_module(relative_path: str, module_name: str):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class _FakeMatchValue:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeFieldCondition:
+    def __init__(self, key, match):
+        self.key = key
+        self.match = match
+
+
+class _FakeFilter:
+    def __init__(self, must=None, must_not=None):
+        self.must = must or []
+        self.must_not = must_not or []
+
+
+# Expose concrete stub classes for the Qdrant models used by the filter builder.
+models_module = sys.modules["qdrant_client.http.models"]
+models_module.FieldCondition = _FakeFieldCondition
+models_module.Filter = _FakeFilter
+models_module.MatchValue = _FakeMatchValue
 
 
 INDEXER_PATH = ROOT / "utils" / "indexer.py"
@@ -42,23 +125,6 @@ def collection_hybrid_mode(client, name: str) -> str:
 
 def hybrid_rrf_params_for_profile(profile: str) -> tuple[int, int]:
     return _rrf_params_stub["fn"](profile)
-
-
-class _FakeMatchValue:
-    def __init__(self, value):
-        self.value = value
-
-
-class _FakeFieldCondition:
-    def __init__(self, key, match):
-        self.key = key
-        self.match = match
-
-
-class _FakeFilter:
-    def __init__(self, must=None, must_not=None):
-        self.must = must or []
-        self.must_not = must_not or []
 
 
 def _load_indexer_class():

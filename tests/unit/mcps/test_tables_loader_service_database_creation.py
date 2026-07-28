@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import pandas as real_pandas
 
 
 def _load_tables_loader_module(monkeypatch):
@@ -336,8 +337,6 @@ def test_read_glossary_sheet_skips_second_description_row(monkeypatch) -> None:
 @pytest.mark.unit
 def test_normalize_products_dataframe_trims_strings_and_coerces_numeric_columns(monkeypatch) -> None:
     module = _load_tables_loader_module(monkeypatch)
-    import pandas as real_pandas
-
     module.pd = real_pandas
     service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
     df = real_pandas.DataFrame(

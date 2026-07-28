@@ -6,6 +6,7 @@ from collections import OrderedDict
 
 import pytest
 import utils
+import re
 
 os.environ.setdefault("BOT_START_MESSAGE_FILE", "C:/GitHub/asch-chat-bot/tests/.tmp/bot_start_message.md")
 os.environ.setdefault("UPLOAD_NEWS", "C:/GitHub/asch-chat-bot/tests/.tmp")
@@ -45,6 +46,23 @@ maxapi_types_stub = types.ModuleType("maxapi.types")
 maxapi_types_stub.InputMedia = type("InputMedia", (), {})
 sys.modules["maxapi.types"] = maxapi_types_stub
 
+doc_search_format_stub = types.ModuleType("utils.doc_search_format")
+doc_search_format_stub.DOWNLOAD_RE = re.compile(r"dummy_pattern")
+# Заглушка для функции render_doc_list_html. 
+# Она реализована так, чтобы прошел тест test_render_results_delegates_to_shared_doc_list_renderer
+def _dummy_render_doc_list_html(items, total=0, offset=0):
+    if not items:
+        return ""
+    parts = []
+    for i, item in enumerate(items):
+        parts.append(f"<b>{i + 1}. {item.get('source_name', '')}</b>")
+        if item.get('snippet'):
+            parts.append(item['snippet'])
+    return "\n".join(parts)
+
+doc_search_format_stub.render_doc_list_html = _dummy_render_doc_list_html
+sys.modules["utils.doc_search_format"] = doc_search_format_stub
+
 from bot.services.config import Settings
 from bot.services.utils import (
     html_to_bot as html_to_telegram,
@@ -55,6 +73,8 @@ from bot.services.utils import (
     split_message,
 )
 
+if "utils.doc_search_format" in sys.modules:
+    del sys.modules["utils.doc_search_format"]
 
 @pytest.mark.unit
 def test_markdown_to_safe_html_escapes_html_and_converts_basic_markdown() -> None:

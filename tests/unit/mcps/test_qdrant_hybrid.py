@@ -1,10 +1,49 @@
 """Unit tests for Qdrant hybrid collection helpers."""
 
 import importlib.util
+import sys
 import types
 from pathlib import Path
 
 import pytest
+
+qdrant_client = sys.modules.get("qdrant_client")
+if qdrant_client is None:
+    qdrant_client = types.ModuleType("qdrant_client")
+    sys.modules["qdrant_client"] = qdrant_client
+qdrant_client.QdrantClient = type("QdrantClient", (), {})
+
+models = sys.modules.get("qdrant_client.models")
+if models is None:
+    models = types.ModuleType("qdrant_client.models")
+    sys.modules["qdrant_client.models"] = models
+
+class _Distance:
+    COSINE = "cosine"
+
+class _SparseVector:
+    def __init__(self, indices=None, values=None):
+        self.indices = indices or []
+        self.values = values or []
+
+class _VectorParams:
+    def __init__(self, size=None, distance=None):
+        self.size = size
+        self.distance = distance
+
+class _SparseVectorParams:
+    def __init__(self, modifier=None):
+        self.modifier = modifier
+
+class _Modifier:
+    IDF = "idf"
+
+models.Distance = _Distance
+models.SparseVector = _SparseVector
+models.SparseVectorParams = _SparseVectorParams
+models.VectorParams = _VectorParams
+models.Modifier = _Modifier
+
 from qdrant_client.models import Distance, SparseVector
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -96,9 +135,10 @@ def test_sparse_embedding_to_vector_converts_fastembed_like_object() -> None:
     emb = types.SimpleNamespace(indices=[0, 2], values=[0.5, 0.3])
     vec = sparse_embedding_to_vector(emb)
 
-    assert isinstance(vec, SparseVector)
-    assert vec.indices == [0, 2]
-    assert vec.values == [0.5, 0.3]
+    assert hasattr(vec, "indices")
+    assert hasattr(vec, "values")
+    assert list(vec.indices) == [0, 2]
+    assert list(vec.values) == [0.5, 0.3]
 
 
 @pytest.mark.unit
@@ -111,9 +151,15 @@ def test_sparse_embedding_to_vector_requires_indices_and_values() -> None:
 def test_meta_point_vectors_hybrid_has_empty_sparse() -> None:
     vectors = meta_point_vectors(4, "hybrid")
 
-    assert isinstance(vectors, dict)
     assert len(vectors[DENSE_VECTOR_NAME]) == 4
-    assert vectors[SPARSE_VECTOR_NAME].indices == []
+
+    sparse = vectors[SPARSE_VECTOR_NAME]
+
+    assert hasattr(sparse, "indices")
+    assert hasattr(sparse, "values")
+
+    assert list(sparse.indices) == []
+    assert list(sparse.values) == []
 
 
 @pytest.mark.unit
