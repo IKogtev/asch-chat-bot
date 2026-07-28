@@ -28,7 +28,7 @@ ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES = (
 # Объявляем схему как Pydantic-класс
 class DispatcherResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    route: Literal["doc_search", "kb_answer", "product_selection", "smalltalk"] = Field(description="Маршрут обработки запроса")
+    route: Literal["doc_search", "kb_answer", "product_info", "product_filter", "smalltalk"] = Field(description="Маршрут обработки запроса")
     intent: Literal[
         "doc_search", "show_more", "show_all", "file_download",
         "kb_answer", "smalltalk",
@@ -59,9 +59,9 @@ class DispatcherResponseSchema(BaseModel):
         doc_intents = {"doc_search", "show_more", "show_all", "file_download"}
         kb_intents = {"kb_answer"}
         smalltalk_intents = {"smalltalk"}
-        product_intents = {
-            "product_card", "product_kit", "product_filter", 
-            "product_compare", "product_attribute_values"
+        product_info_intents = {"product_card", "product_kit"}
+        product_filter_intents = {
+            "product_filter", "product_compare", "product_attribute_values"
         }
         empty_query_intents = {"show_more", "show_all", "file_download", "smalltalk"}
 
@@ -75,9 +75,12 @@ class DispatcherResponseSchema(BaseModel):
         elif self.intent in smalltalk_intents and self.route != "smalltalk":
             logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'smalltalk' for intent '{self.intent}'")
             self.route = "smalltalk"
-        elif self.intent in product_intents and self.route != "product_selection":
-            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_selection' for intent '{self.intent}'")
-            self.route = "product_selection"
+        elif self.intent in product_info_intents and self.route != "product_info":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_info' for intent '{self.intent}'")
+            self.route = "product_info"
+        elif self.intent in product_filter_intents and self.route != "product_filter":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_filter' for intent '{self.intent}'")
+            self.route = "product_filter"
 
         # 2. Исправляем аномалии в search_query
         # Если интент требует пустого запроса, но модель что-то прислала -> очищаем
@@ -101,7 +104,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Ожидаемый контракт:
     - `status="ok"`;
-    - `route` один из `doc_search`, `kb_answer`, `product_selection`, `smalltalk`;
+    - `route` один из `doc_search`, `kb_answer`, `product_info`, `product_filter`, `smalltalk`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
       `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
       `product_compare`, `product_attribute_values`;
@@ -128,17 +131,17 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     """
     agent_name = "dispatcher_agent"
     _ = context
-    allowed_routes = {"doc_search", "kb_answer", "product_selection", "smalltalk"}
+    allowed_routes = {"doc_search", "kb_answer", "product_info", "product_filter", "smalltalk"}
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
     kb_route_intents = {"kb_answer"}
     smalltalk_route_intents = {"smalltalk"}
-    product_route_intents = {
-        "product_card",
-        "product_kit",
+    product_info_intents = {"product_card", "product_kit"}
+    product_filter_intents = {
         "product_filter",
         "product_compare",
         "product_attribute_values",
     }
+    product_route_intents = product_info_intents | product_filter_intents
     allowed_intents = doc_route_intents | kb_route_intents | smalltalk_route_intents | product_route_intents
     follow_up_no_query = {"show_more", "show_all", "file_download"}
     empty_query_intents = follow_up_no_query | {"smalltalk"}
@@ -214,7 +217,23 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 data=payload,
                 fields=("route", "intent"),
             )
-        
+        if intent in product_info_intents and route != "product_info":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="product card and kit intents must use route='product_info'",
+                data=payload,
+                fields=("route", "intent"),
+            )
+
+        if intent in product_filter_intents and route != "product_filter":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="product filter intents must use route='product_filter'",
+                data=payload,
+                fields=("route", "intent"),
+            )        
         if intent in smalltalk_route_intents and route != "smalltalk":
             raise build_validation_error(
                 agent=agent_name,
@@ -223,16 +242,6 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 data=payload,
                 fields=("route", "intent"),
             )
-
-        if intent in product_route_intents and route != "product_selection":
-            raise build_validation_error(
-                agent=agent_name,
-                stage="semantics",
-                problem="product intents must use route='product_selection'",
-                data=payload,
-                fields=("route", "intent"),
-            )
-
         if intent in follow_up_no_query and search_query:
             raise build_validation_error(
                 agent=agent_name,
@@ -282,8 +291,8 @@ Use state variable {from_glossary} as a dictionary of terms already found by cod
 Do not call tools and do not invent additional expansions.
 If a user term is present in {from_glossary}, use its definition when choosing route and intent.
 Do not substitute definitions into search_query and do not replace abbreviations with full names — downstream code expands the query.
-High-priority product-card rule: if the latest user message asks to show, open, display, describe, or provide parameters/card/details for a numeric product code, return route="product_selection", intent="product_card", reason="product_card". Examples: "покажи 8914", "параметры 8914", "карточка 8914". Do not route these messages to kb_answer as applicability or explanation questions.
-High-priority product-focus rule: if the latest user message is "Что сейчас в фокусе?" or "что в фокусе", return route="product_selection", intent="product_filter", reason="product_filter", search_query="покажи продукты в фокусе". Do not route these messages to kb_answer.
+High-priority product-card rule: if the latest user message asks to show, open, display, describe, or provide parameters/card/details for a numeric product code, return route="product_info", intent="product_card", reason="product_card". Examples: "покажи 8914", "параметры 8914", "карточка 8914". Do not route these messages to kb_answer as applicability or explanation questions.
+High-priority product-focus rule: if the latest user message is "Что сейчас в фокусе?" or "что в фокусе", return route="product_filter", intent="product_filter", reason="product_filter", search_query="покажи продукты в фокусе". Do not route these messages to kb_answer.
 
 Ты dispatcher_agent.
 Верни только JSON без markdown и без пояснений.
@@ -291,7 +300,7 @@ High-priority product-focus rule: if the latest user message is "Что сейч
 Формат:
 {
   "status": "ok",
-  "route": "doc_search",
+  "route": "product_info",
   "intent": "doc_search",
   "reason": "user asks to find documents",
   "search_query": "нормализованный поисковый запрос"
@@ -300,12 +309,14 @@ High-priority product-focus rule: if the latest user message is "Что сейч
 Разрешённые route:
 - doc_search
 - kb_answer
-- product_selection
+- product_info
+- product_filter
 
 Разрешённые intent:
 - doc_search, show_more, show_all, file_download (только с route=doc_search)
 - kb_answer, smalltalk (только с route=kb_answer)
-- product_card, product_kit, product_filter, product_compare (только с route=product_selection)
+- product_card, product_kit (только с route=product_info)
+- product_filter, product_compare, product_attribute_values (только с route=product_filter)
 
 Правила:
 - smalltalk идёт в route=kb_answer

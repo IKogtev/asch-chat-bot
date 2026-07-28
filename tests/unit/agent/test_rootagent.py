@@ -108,23 +108,14 @@ def _load_rootagent_module():
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
     kb_answer_stub.validate_kb_answer_result = lambda data, context: data
 
-    product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
-    product_selection_stub.validate_product_selection_result = lambda data, context: data
+    smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
+    smalltalk_stub.validate_smalltalk_result = lambda data, context: data
 
-    def _select_product_selection_agent(intent, agents=None, **kwargs):
-        if agents is not None:
-            if intent in {"product_card", "product_kit"}:
-                return agents.card_kit
-            if intent == "product_compare":
-                return agents.compare
-            return agents.filter
-        if intent in {"product_card", "product_kit"}:
-            return kwargs["card_kit"]
-        if intent == "product_compare":
-            return kwargs["compare"]
-        return kwargs["filter_agent"]
+    product_info_stub = types.ModuleType("agent.agents.product_info_agent")
+    product_info_stub.validate_product_info_result = lambda data, context: data
 
-    product_selection_stub.select_product_selection_agent = _select_product_selection_agent
+    product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
+    product_filter_stub.validate_product_filter_result = lambda data, context: data
 
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
 
@@ -215,7 +206,9 @@ def _load_rootagent_module():
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
-    sys.modules["agent.agents.product_selection_agent"] = product_selection_stub
+    sys.modules["agent.agents.smalltalk_agent"] = smalltalk_stub
+    sys.modules["agent.agents.product_info_agent"] = product_info_stub
+    sys.modules["agent.agents.product_filter_agent"] = product_filter_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
     sys.modules["agent.product_resolver_service"] = product_resolver_stub
     sys.modules["asyncpg"] = asyncpg_stub
@@ -278,9 +271,9 @@ def _make_agent(**kwargs) -> RootAgent:
         dispatcher_agent=fake_subagent,
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
-        product_selection_card_kit_agent=fake_subagent,
-        product_selection_filter_agent=fake_subagent,
-        product_selection_compare_agent=fake_subagent,
+        smalltalk_agent=fake_subagent,
+        product_info_agent=fake_subagent,
+        product_filter_agent=fake_subagent,
         **kwargs,
     )
 
@@ -589,8 +582,10 @@ def test_reset_turn_state_removes_turn_specific_state_keys() -> None:
         session_state={
             "user_query": "старый вопрос",
             "search_query": "старый поиск",
-            "product_selection_search_query": "old_selection",
-            "product_selection_intent": "product_card",
+            "product_info_search_query": "old_info",
+            "product_info_intent": "product_card",
+            "product_filter_search_query": "old_filter",
+            "product_filter_intent": "product_filter",
             "dispatcher_user_query": "старый запрос",
             "_owasp_result_parsed": {"status": "ok"},
             "_root_final_text": "старый ответ",
@@ -612,8 +607,10 @@ async def test_run_async_impl_resets_turn_state_before_processing_new_message() 
         session_state={
             "user_query": "старый вопрос",
             "search_query": "старый поиск",
-            "product_selection_search_query": "old_selection",
-            "product_selection_intent": "product_card",
+            "product_info_search_query": "old_info",
+            "product_info_intent": "product_card",
+            "product_filter_search_query": "old_filter",
+            "product_filter_intent": "product_filter",
             "dispatcher_user_query": "старый запрос",
             "_owasp_result_parsed": {"status": "ok"},
             "_root_final_text": "старый ответ",
@@ -667,7 +664,8 @@ async def test_run_async_impl_resets_turn_state_before_processing_new_message() 
     assert ctx.session.state["user_query"] == "новый вопрос"
     assert ctx.session.state["search_query"] == "новый вопрос"
     assert ctx.session.state["dispatcher_user_query"] == "новый вопрос"
-    assert ctx.session.state.get("product_selection_search_query") is None
+    assert ctx.session.state.get("product_info_search_query") is None
+    assert ctx.session.state.get("product_filter_search_query") is None
     assert ctx.session.state.get("_root_final_text") == "ответ"
     assert ctx.session.state["persistent"] == "keep"
 
@@ -824,7 +822,7 @@ async def test_handle_kb_answer_sets_expected_state_and_final_text() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_sets_expected_state_and_final_text() -> None:
+async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
         user_state={"first_name": "Ivan"},
@@ -832,10 +830,10 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
     )
 
     async def fake_run_json_leaf_agent(**kwargs):
-        assert kwargs["agent"] is agent.product_selection_card_kit_agent
-        assert kwargs["output_key"] == "product_selection_result_json"
-        assert kwargs["parsed_state_key"] == "_product_selection_result_parsed"
-        ctx.session.state["_product_selection_result_parsed"] = {
+        assert kwargs["agent"] is agent.product_info_agent
+        assert kwargs["output_key"] == "product_info_result_json"
+        assert kwargs["parsed_state_key"] == "_product_info_result_parsed"
+        ctx.session.state["_product_info_result_parsed"] = {
             "status": "ok",
             "mode": "product_card",
             "message": " Product selection answer ",
@@ -854,7 +852,7 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_info(
             ctx,
             "Original question",
             "",
@@ -864,20 +862,20 @@ async def test_handle_product_selection_sets_expected_state_and_final_text() -> 
 
     assert events == []
     assert ctx.session.state["first_name"] == "Ivan"
-    assert ctx.session.state["product_selection_search_query"] == "Original question"
-    assert ctx.session.state["product_selection_intent"] == "product_card"
+    assert ctx.session.state["product_info_search_query"] == "Original question"
+    assert ctx.session.state["product_info_intent"] == "product_card"
     assert ctx.session.state["_root_final_text"].startswith("Product selection answer")
     assert "_bot_action" not in ctx.session.state
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_appends_clarification_options() -> None:
+async def test_handle_product_info_appends_clarification_options() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
 
     async def fake_run_json_leaf_agent(**kwargs):
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_info_result_parsed"] = {
             "status": "ok",
             "mode": "needs_clarification",
             "message": "Choose product",
@@ -900,7 +898,7 @@ async def test_handle_product_selection_appends_clarification_options() -> None:
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_info(
             ctx,
             "Original question",
             "Fort Knox",
@@ -919,12 +917,12 @@ async def test_handle_product_selection_appends_clarification_options() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_filter_stores_products_and_adds_followup_question() -> None:
+async def test_handle_product_filter_stores_products_and_adds_followup_question() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
 
     async def fake_run_json_leaf_agent(**kwargs):
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_filter_result_parsed"] = {
             "status": "ok",
             "mode": "product_filter",
             "message": "Найдено продуктов: 1.\n2867 - Bundle Fort Knox 3+36 месяцев",
@@ -946,7 +944,7 @@ async def test_handle_product_selection_filter_stores_products_and_adds_followup
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_filter(
             ctx,
             "show products",
             "список продуктов",
@@ -971,12 +969,12 @@ async def test_handle_product_selection_filter_stores_products_and_adds_followup
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_attribute_values_stores_context_and_adds_followup_question() -> None:
+async def test_handle_product_filter_attribute_values_stores_context_and_adds_followup_question() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
 
     async def fake_run_json_leaf_agent(**kwargs):
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_filter_result_parsed"] = {
             "status": "ok",
             "mode": "product_attribute_values",
             "message": "Available values:\n- RUB\n- CNY",
@@ -995,7 +993,7 @@ async def test_handle_product_selection_attribute_values_stores_context_and_adds
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_filter(
             ctx,
             "which currencies exist",
             "which currencies exist",
@@ -1017,7 +1015,7 @@ async def test_handle_product_selection_attribute_values_stores_context_and_adds
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_sets_bot_action_for_product_kit() -> None:
+async def test_handle_product_info_sets_bot_action_for_product_kit() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
         session_state={
@@ -1030,7 +1028,7 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
     )
 
     async def fake_run_json_leaf_agent(**kwargs):
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_info_result_parsed"] = {
             "status": "ok",
             "mode": "product_kit",
             "message": " Kit answer ",
@@ -1049,7 +1047,7 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_info(
             ctx,
             "Original question",
             "Fort Knox",
@@ -1078,7 +1076,7 @@ async def test_handle_product_selection_sets_bot_action_for_product_kit() -> Non
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_keeps_context_for_product_compare() -> None:
+async def test_handle_product_filter_keeps_context_for_product_compare() -> None:
     product_dialog_context = {
         "last_mode": "product_card",
         "products": [{"code": "2832", "name": "Fort Knox"}],
@@ -1092,7 +1090,7 @@ async def test_handle_product_selection_keeps_context_for_product_compare() -> N
     )
 
     async def fake_run_json_leaf_agent(**kwargs):
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_filter_result_parsed"] = {
             "status": "ok",
             "mode": "product_compare",
             "message": " Compare answer ",
@@ -1107,7 +1105,7 @@ async def test_handle_product_selection_keeps_context_for_product_compare() -> N
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_filter(
             ctx,
             "Compare",
             "Fort Knox and other product",
@@ -1176,7 +1174,7 @@ async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_async_impl_uses_product_selection_message_fallback_on_validation_failure() -> None:
+async def test_run_async_impl_uses_product_info_message_fallback_on_validation_failure() -> None:
     agent = _make_agent()
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="show fort knox")], session_state={})
     debug_messages = []
@@ -1202,7 +1200,7 @@ async def test_run_async_impl_uses_product_selection_message_fallback_on_validat
         if kwargs["log_label"] == "dispatcher_result_json":
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
-                "route": "product_selection",
+                "route": "product_info",
                 "intent": "product_card",
                 "reason": "product_card",
                 "search_query": "fort knox",
@@ -1212,7 +1210,7 @@ async def test_run_async_impl_uses_product_selection_message_fallback_on_validat
             return
 
         raise rootagent_module.AgentValidationFailure(
-            log_label="product_selection_result_json",
+            log_label="product_info_result_json",
             validation_error="bad contract",
             raw=json.dumps(
                 {
@@ -1244,14 +1242,14 @@ async def test_run_async_impl_uses_product_selection_message_fallback_on_validat
         "Fort Knox 6 months (8793)"
     )
     assert any(
-        "product_selection fallback diagnostics" in message
+        "product fallback diagnostics" in message
         for message in debug_messages
     )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_failure() -> None:
+async def test_run_async_impl_blocks_product_info_fallback_on_tool_usage_failure() -> None:
     agent = _make_agent()
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="show product")], session_state={})
     debug_messages = []
@@ -1277,7 +1275,7 @@ async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_fa
         if kwargs["log_label"] == "dispatcher_result_json":
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
-                "route": "product_selection",
+                "route": "product_info",
                 "intent": "product_card",
                 "reason": "product_card",
                 "search_query": "product",
@@ -1287,8 +1285,8 @@ async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_fa
             return
 
         raise rootagent_module.AgentValidationFailure(
-            log_label="product_selection_result_json",
-            validation_error="product_selection_agent validation failed at tool_usage",
+            log_label="product_info_result_json",
+            validation_error="product_info_agent validation failed at tool_usage",
             raw=json.dumps(
                 {
                     "status": "ok",
@@ -1313,7 +1311,7 @@ async def test_run_async_impl_blocks_product_selection_fallback_on_tool_usage_fa
     assert len(events) == 1
     assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
     assert any(
-        "product_selection fallback diagnostics" in message
+        "product fallback diagnostics" in message
         for message in debug_messages
     )
 
@@ -1323,9 +1321,9 @@ def test_product_compare_tool_usage_fallback_mentions_unconfirmed_sql_data() -> 
     message = rootagent_module.generate_agent_fallback(
         "compare products",
         error_type="validation_failure",
-        agent_name="product_selection",
+        agent_name="product_filter",
         context={
-            "validation_error": "product_selection_agent validation failed at tool_usage",
+            "validation_error": "product_filter_agent validation failed at tool_usage",
             "mode": "product_compare",
             "search_query": "compare products 111 and 222",
         },
@@ -1338,7 +1336,7 @@ def test_product_compare_tool_usage_fallback_mentions_unconfirmed_sql_data() -> 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_async_impl_routes_product_selection_to_product_agent_only() -> None:
+async def test_run_async_impl_routes_product_filter_to_product_agent_only() -> None:
     agent = _make_agent()
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="compare products")], session_state={})
     product_called = False
@@ -1359,7 +1357,7 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
         if kwargs["log_label"] == "dispatcher_result_json":
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
-                "route": "product_selection",
+                "route": "product_filter",
                 "intent": "product_compare",
                 "reason": "product comparison",
                 "search_query": "Fort Knox and protected capital",
@@ -1371,7 +1369,7 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
         if False:
             yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_filter(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "compare products"
@@ -1394,7 +1392,7 @@ async def test_run_async_impl_routes_product_selection_to_product_agent_only() -
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_filter = fake_handle_product_filter
     agent._handle_kb_answer = fake_handle_kb_answer
     agent.doc_search_orchestrator.run_async = fake_doc_run_async
 
@@ -1445,7 +1443,7 @@ async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text
         if False:
             yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_filter(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == user_text
@@ -1463,7 +1461,7 @@ async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_filter = fake_handle_product_filter
     agent._handle_kb_answer = fake_handle_kb_answer
 
     events = [event async for event in agent._run_async_impl(ctx)]
@@ -1512,7 +1510,7 @@ async def test_run_async_impl_routes_attribute_value_followup_to_product_filter(
             if False:
                 yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_filter(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "CNY"
@@ -1523,7 +1521,7 @@ async def test_run_async_impl_routes_attribute_value_followup_to_product_filter(
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_filter = fake_handle_product_filter
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
@@ -1571,7 +1569,7 @@ async def test_run_async_impl_routes_product_card_followup_from_product_code_onl
             if False:
                 yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "2867"
@@ -1584,7 +1582,7 @@ async def test_run_async_impl_routes_product_card_followup_from_product_code_onl
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_info = fake_handle_product_info
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
@@ -1599,8 +1597,8 @@ def test_store_needs_clarification_keeps_pending_compare_context() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
         session_state={
-            "product_selection_intent": "product_compare",
-            "product_selection_search_query": "сравни ФД 3 года и ФД 1 год",
+            "product_filter_intent": "product_compare",
+            "product_filter_search_query": "сравни ФД 3 года и ФД 1 год",
             "product_resolutions": {
                 "status": "ambiguous",
                 "items": [
@@ -1678,7 +1676,7 @@ def test_product_followup_dispatch_resumes_compare_after_clarification_code() ->
     )
 
     assert dispatch is not None
-    assert dispatch["route"] == "product_selection"
+    assert dispatch["route"] == "product_filter"
     assert dispatch["intent"] == "product_compare"
     assert dispatch["reason"] == "product_compare_clarification_followup"
     assert dispatch["search_query"] == "сравни продукты 8941 и 8914"
@@ -1723,7 +1721,7 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
             if False:
                 yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "параметры 2867"
@@ -1734,7 +1732,7 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_info = fake_handle_product_info
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
@@ -1786,7 +1784,7 @@ async def test_run_async_impl_routes_product_card_followup_from_selected_product
             if False:
                 yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "покажи карточку"
@@ -1797,7 +1795,7 @@ async def test_run_async_impl_routes_product_card_followup_from_selected_product
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_info = fake_handle_product_info
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
@@ -1849,7 +1847,7 @@ async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -
             if False:
                 yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "пакет"
@@ -1860,7 +1858,7 @@ async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_info = fake_handle_product_info
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
@@ -1912,7 +1910,7 @@ async def test_run_async_impl_routes_product_kit_followup_from_selected_product(
             if False:
                 yield None
 
-    async def fake_handle_product_selection(ctx, user_message, search_query, intent):
+    async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
         assert user_message == "дай документы"
@@ -1923,7 +1921,7 @@ async def test_run_async_impl_routes_product_kit_followup_from_selected_product(
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_product_selection = fake_handle_product_selection
+    agent._handle_product_info = fake_handle_product_info
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
@@ -2072,7 +2070,7 @@ async def test_handle_kb_answer_expands_search_query_with_glossary() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_sets_single_product_resolution_state() -> None:
+async def test_handle_product_info_sets_single_product_resolution_state() -> None:
     class FakeProductResolver:
         async def resolve_product(self, query):
             assert query == "Fort Knox"
@@ -2102,7 +2100,7 @@ async def test_handle_product_selection_sets_single_product_resolution_state() -
     async def fake_run_json_leaf_agent(**kwargs):
         assert ctx.session.state["product_resolution"]["product_code"] == "2832"
         assert ctx.session.state["product_resolutions"] == {}
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_info_result_parsed"] = {
             "message": "ok",
             "mode": "no_data",
         }
@@ -2113,7 +2111,7 @@ async def test_handle_product_selection_sets_single_product_resolution_state() -
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_info(
             ctx,
             "show Fort Knox",
             "Fort Knox",
@@ -2127,7 +2125,7 @@ async def test_handle_product_selection_sets_single_product_resolution_state() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_sets_compare_product_resolutions_state() -> None:
+async def test_handle_product_filter_sets_compare_product_resolutions_state() -> None:
     class FakeProductResolver:
         async def resolve_product(self, query):
             raise AssertionError("resolve_product must not be called")
@@ -2156,7 +2154,7 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
     async def fake_run_json_leaf_agent(**kwargs):
         assert ctx.session.state["product_resolutions"]["status"] == "resolved"
         assert ctx.session.state["product_resolution"] == {}
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_filter_result_parsed"] = {
             "message": "ok",
             "mode": "no_data",
         }
@@ -2167,7 +2165,7 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_filter(
             ctx,
             "compare products",
             "Fort Knox and Unit Linked",
@@ -2181,7 +2179,7 @@ async def test_handle_product_selection_sets_compare_product_resolutions_state()
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_deduplicates_compare_product_resolutions_state() -> None:
+async def test_handle_product_filter_deduplicates_compare_product_resolutions_state() -> None:
     class FakeProductResolver:
         async def resolve_product(self, query):
             raise AssertionError("resolve_product must not be called")
@@ -2231,7 +2229,7 @@ async def test_handle_product_selection_deduplicates_compare_product_resolutions
     async def fake_run_json_leaf_agent(**kwargs):
         items = ctx.session.state["product_resolutions"]["items"]
         assert [item["product_code"] for item in items] == ["111", "222"]
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_filter_result_parsed"] = {
             "message": "ok",
             "mode": "no_data",
         }
@@ -2242,7 +2240,7 @@ async def test_handle_product_selection_deduplicates_compare_product_resolutions
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_filter(
             ctx,
             "compare products",
             "Product A 111 and Product B 222",
@@ -2320,7 +2318,7 @@ def test_product_resolutions_dedup_key_uses_option_name_fallback() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_resolves_product_filter() -> None:
+async def test_handle_product_filter_resolves_product_filter() -> None:
     class FakeProductResolver:
         async def resolve_product(self, query):
             raise AssertionError("resolve_product must not be called")
@@ -2354,7 +2352,7 @@ async def test_handle_product_selection_resolves_product_filter() -> None:
         assert ctx.session.state["product_resolutions"] == {}
         assert ctx.session.state["product_filter_resolution"]["product_codes"] == ["2832", "2867"]
         assert "products" not in ctx.session.state["product_filter_resolution"]
-        ctx.session.state["_product_selection_result_parsed"] = {
+        ctx.session.state["_product_filter_result_parsed"] = {
             "message": "ok",
             "mode": "no_data",
         }
@@ -2365,7 +2363,7 @@ async def test_handle_product_selection_resolves_product_filter() -> None:
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_filter(
             ctx,
             "show products",
             "products in USD",
@@ -2378,7 +2376,7 @@ async def test_handle_product_selection_resolves_product_filter() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_selection_expands_search_query_with_glossary() -> None:
+async def test_handle_product_info_expands_search_query_with_glossary() -> None:
     class FakeGlossaryLookup:
         async def find(self, text):
             return []
@@ -2396,10 +2394,10 @@ async def test_handle_product_selection_expands_search_query_with_glossary() -> 
 
     async def fake_run_json_leaf_agent(**kwargs):
         assert (
-            ctx.session.state["product_selection_search_query"]
+            ctx.session.state["product_info_search_query"]
             == "карточка продукта Fort Knox"
         )
-        ctx.session.state["_product_selection_result_parsed"] = {"message": "ok", "mode": "no_data"}
+        ctx.session.state["_product_info_result_parsed"] = {"message": "ok", "mode": "no_data"}
         if False:
             yield None
 
@@ -2407,7 +2405,7 @@ async def test_handle_product_selection_expands_search_query_with_glossary() -> 
 
     events = [
         event
-        async for event in agent._handle_product_selection(
+        async for event in agent._handle_product_info(
             ctx,
             "карточка продукта ФК",
             "карточка продукта ФК",
@@ -2445,10 +2443,10 @@ async def test_run_async_impl_returns_owasp_specific_stub_on_validation_failure(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer() -> None:
+async def test_run_async_impl_routes_smalltalk_capabilities_request_to_smalltalk() -> None:
     agent = _make_agent()
     ctx = _make_ctx(parts=[types.SimpleNamespace(text="Что ты умеешь?")], session_state={})
-    kb_called = False
+    smalltalk_called = False
     doc_called = False
 
     async def fake_run_json_leaf_agent(**kwargs):
@@ -2465,7 +2463,7 @@ async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer
         if kwargs["log_label"] == "dispatcher_result_json":
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
-                "route": "kb_answer",
+                "route": "smalltalk",
                 "intent": "smalltalk",
                 "reason": "assistant_capabilities_smalltalk",
                 "search_query": "",
@@ -2477,11 +2475,10 @@ async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer
         if False:
             yield None
 
-    async def fake_handle_kb_answer(ctx, user_message, search_query, intent):
-        nonlocal kb_called
-        kb_called = True
+    async def fake_handle_smalltalk(ctx, user_message, intent):
+        nonlocal smalltalk_called
+        smalltalk_called = True
         assert user_message == "Что ты умеешь?"
-        assert search_query == ""
         assert intent == "smalltalk"
         ctx.session.state["_root_final_text"] = "Я умею искать документы и помогать продавать продукты АСЖ."
         if False:
@@ -2494,14 +2491,14 @@ async def test_run_async_impl_routes_smalltalk_capabilities_request_to_kb_answer
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
-    agent._handle_kb_answer = fake_handle_kb_answer
+    agent._handle_smalltalk = fake_handle_smalltalk
     agent.doc_search_orchestrator.run_async = fake_doc_run_async
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
     assert events[0].content.parts[0].text == "Я умею искать документы и помогать продавать продукты АСЖ."
-    assert kb_called is True
+    assert smalltalk_called is True
     assert doc_called is False
 
 

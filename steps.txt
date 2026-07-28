@@ -806,12 +806,39 @@ is_active	insurance_type	product_type	term 	capital_loss_risk	product_risk_level
 - добавь пункт в начало "Установка, изучение и настройка langfuse", отв. Игорь К.
 - надо замерять и решать задачу скорости ответов, отв. Иван
 - составить календарный план перехода 30->36, отв. Миша
-
-
-
 ===========
 В последних выгрузках нет информации о телефонах.
 Детализация постановки:
 1. посчитать количество клиентов на конец июня месяца
 2. посчитать количество клиентов, у которых были операции по полисам за последние 12 месяцев
 3. посчитать сколько из 1 и 2 абонентов МТС. Предполагаем "абонент МТС" по коду телефона, поэтому "переходами к другим операторам со своим телефоном" - пренебрегаем.
+=======
+Current task: separete product_selection_agent into 2 agents: product_info_agent (card and kit) and product_filter_agent (filterring and comparison). Prepare a plan for this separation, including:
+- dispatcher changes
+- temperature settings
+- divide prompts
+- divide code base (validators, follow-up code)
+- all nessesary changes (analyze it)
+Create plan in .md, save it into docs folder
+=========
+Please add to plan:
+- implementation of response contracts like kb_answer_agent
+- add unit tests for both agents
+- remove any k8s config changes from plan, as it will be done by another team
+- we plan to move from qwen3 to qwen3.6, so please analyze if any changes are needed in prompts or code for this transition
+=========
+correct plan:
+- we do not planning separatly test this changes and moving to qwen36
+- prompts shuild be in russian
+==========
+Now we are splitting product_selection_agent into 2 agents. Maybe we should split it into 5 agents instead of 2 ? Analize this version and write short list pros and cons for this approach.
+==========
+Now I need to merge to my this branch from qwen36 branch. Please prepare a plan for this merge.
+==========
+I keeped incoming prompt kb_storage\prompts\dispatcher\dispatcher_agent_prompt.md 
+Insert into it parts from older version of this prompt, that needed for prodict_info and product filter agents. Take old version of this prompt before merge.
+==========
+realize 1 (set SMALLTALK_TEMPERATURE to 0.8)
+fix 2,3,4,5 (set temperature for product_info_agent and product_filter_agent to 0.5)
+fix 6, 7
+from your list
