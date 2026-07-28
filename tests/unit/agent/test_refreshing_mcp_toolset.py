@@ -2,7 +2,9 @@ import asyncio
 import importlib.util
 import sys
 from pathlib import Path
-
+# Полифилл для Python 3.10
+if sys.version_info < (3, 11):
+    ExceptionGroup = Exception
 import pytest
 
 

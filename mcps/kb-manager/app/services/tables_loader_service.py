@@ -979,6 +979,11 @@ class TablesLoaderService:
                 else:
                     dates_missing += 1
             self._normalize_product_input_date_column(df)
+            self.product_kit_folders_found = 0
+            self.archive_product_kit_folders_found = 0
+            self.product_input_dates_from_table = dates_from_table
+            self.product_input_dates_from_kits = 0
+            self.product_input_dates_missing = dates_missing
             self.product_kit_products_total = total
             return df
             
