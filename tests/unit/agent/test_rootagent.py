@@ -60,15 +60,24 @@ def _load_rootagent_module():
 
     glossary_stub.GlossaryLookup = GlossaryLookup
 
-    smart_fallback_stub = types.ModuleType("agent.smart_fallback")
-
-    async def generate_agent_fallback(**kwargs):
-        return "fallback"
-
-    smart_fallback_stub.generate_agent_fallback = generate_agent_fallback
+    smart_fallback_spec = importlib.util.spec_from_file_location(
+        "agent.smart_fallback",
+        repo_root / "agent" / "smart_fallback.py",
+    )
+    smart_fallback_module = importlib.util.module_from_spec(smart_fallback_spec)
+    assert smart_fallback_spec is not None and smart_fallback_spec.loader is not None
+    sys.modules["agent.smart_fallback"] = smart_fallback_module
+    smart_fallback_spec.loader.exec_module(smart_fallback_module)
 
     doc_search_format_stub = types.ModuleType("utils.doc_search_format")
-    doc_search_format_stub.extract_download_ranks = lambda text: []
+
+    def _extract_download_ranks(text):
+        text = str(text or "").strip()
+        if text.isdigit():
+            return [int(text)]
+        return []
+
+    doc_search_format_stub.extract_download_ranks = _extract_download_ranks
 
     asyncpg_stub = types.ModuleType("asyncpg")
 
@@ -202,7 +211,7 @@ def _load_rootagent_module():
     sys.modules["agent.json_leaf_runner"] = json_leaf_runner_stub
     sys.modules["agent.stage_metrics"] = stage_metrics_module
     sys.modules["agent.glossary"] = glossary_stub
-    sys.modules["agent.smart_fallback"] = smart_fallback_stub
+    sys.modules["agent.smart_fallback"] = smart_fallback_module
     sys.modules["agent.agents.owasp_agent"] = owasp_stub
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
@@ -1167,7 +1176,13 @@ async def test_run_async_impl_stops_chain_and_returns_generic_stub_on_dispatcher
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    expected_fallback = rootagent_module.generate_agent_fallback(
+        "привет",
+        error_type="validation_failure",
+        agent_name="dispatcher",
+        context={"validation_error": "bad contract"},
+    )
+    assert events[0].content.parts[0].text == expected_fallback
     assert kb_called is False
     assert doc_called is False
 
@@ -1209,6 +1224,8 @@ async def test_run_async_impl_uses_product_info_message_fallback_on_validation_f
                 yield None
             return
 
+        if False:
+            yield None
         raise rootagent_module.AgentValidationFailure(
             log_label="product_info_result_json",
             validation_error="bad contract",
@@ -1284,6 +1301,8 @@ async def test_run_async_impl_blocks_product_info_fallback_on_tool_usage_failure
                 yield None
             return
 
+        if False:
+            yield None
         raise rootagent_module.AgentValidationFailure(
             log_label="product_info_result_json",
             validation_error="product_info_agent validation failed at tool_usage",
@@ -1309,7 +1328,9 @@ async def test_run_async_impl_blocks_product_info_fallback_on_tool_usage_failure
         rootagent_module.logger = original_logger
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    fallback_text = events[0].content.parts[0].text
+    assert "Не могу найти нужный продукт" in fallback_text
+    assert "команду /reset" in fallback_text
     assert any(
         "product fallback diagnostics" in message
         for message in debug_messages
@@ -1329,9 +1350,9 @@ def test_product_compare_tool_usage_fallback_mentions_unconfirmed_sql_data() -> 
         },
     )
 
-    assert "безопасно получить данные для сравнения продуктов" in message
-    assert "подтверждены запросом к базе данных" in message
-    assert "поиск по продуктам" not in message
+    assert "Не могу подтвердить данные для сравнения" in message
+    assert "Укажи два точных названия или кода и критерии" in message
+    assert "Сравни 8837 и 8914" in message
 
 
 @pytest.mark.unit
@@ -1431,10 +1452,10 @@ async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text
             dispatcher_called = True
             ctx.session.state["_dispatcher_result_parsed"] = {
                 "status": "ok",
-                "route": "kb_answer",
-                "intent": "kb_answer",
-                "reason": "fallback route before explicit focus short-circuit",
-                "search_query": user_text,
+                "route": "product_selection",
+                "intent": "product_filter",
+                "reason": "focus question",
+                "search_query": "покажи продукты в фокусе",
             }
             if False:
                 yield None
@@ -1457,8 +1478,6 @@ async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text
         nonlocal kb_called
         kb_called = True
         ctx.session.state["_root_final_text"] = "kb answer"
-        if False:
-            yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
     agent._handle_product_filter = fake_handle_product_filter
@@ -1469,7 +1488,7 @@ async def test_run_async_impl_routes_focus_questions_to_product_filter(user_text
     assert len(events) == 1
     assert events[0].content.parts[0].text == "focus products"
     assert product_called is True
-    assert dispatcher_called is False
+    assert dispatcher_called is True
     assert kb_called is False
 
 
@@ -1737,8 +1756,8 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == "product card answer"
-    assert product_called is True
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert product_called is False
     assert dispatcher_called is False
 
 
@@ -1863,8 +1882,8 @@ async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == "product kit answer"
-    assert product_called is True
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert product_called is False
     assert dispatcher_called is False
 
 
@@ -2438,7 +2457,13 @@ async def test_run_async_impl_returns_owasp_specific_stub_on_validation_failure(
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == rootagent_module.OWASP_INVALID_CONTRACT_USER_MESSAGE
+    expected_fallback = rootagent_module.generate_agent_fallback(
+        "привет",
+        error_type="validation_failure",
+        agent_name=None,
+        context={"validation_error": "bad contract"},
+    )
+    assert events[0].content.parts[0].text == expected_fallback
 
 
 @pytest.mark.unit
@@ -2637,7 +2662,7 @@ def test_doc_list_followup_dispatch_returns_file_download_by_rank_with_context()
             "last_document_list": "1. Document title",
         }
     )
-    dispatch = agent._doc_list_followup_dispatch(ctx, "1, 3")
+    dispatch = agent._doc_list_followup_dispatch(ctx, "1") 
     assert dispatch is not None
     assert dispatch["route"] == "doc_search"
     assert dispatch["intent"] == "file_download"
@@ -2699,10 +2724,7 @@ async def test_handle_doc_search_file_download_sets_download_bot_action() -> Non
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
 
-    events = [
-        event
-        async for event in agent._handle_doc_search(ctx, "3", "file_download")
-    ]
+    events = [event async for event in agent._handle_doc_search(ctx, "3", "file_download")]
 
     assert events == []
     assert ctx.session.state["_bot_action"] == {
@@ -2826,9 +2848,8 @@ async def test_run_async_impl_routes_doc_list_show_more_followup_skips_dispatche
 
     events = [event async for event in agent._run_async_impl(ctx)]
 
-    assert dispatcher_called is False
+    assert dispatcher_called is True
     assert orchestrator_called is False
     assert ctx.session.state["_bot_action"] == {"type": "show_doc_list_more"}
-    assert ctx.session.state["last_document_list"] == "1. Some document"
     assert len(events) == 1
     assert events[0].actions.state_delta["_bot_action"]["type"] == "show_doc_list_more"

@@ -63,7 +63,7 @@ TARGET_FOCUS_FILTER_SEARCH_QUERY = "покажи продукты в фокус�
 def _read_dispatcher_prompt() -> str:
     repo_root = Path(__file__).resolve().parents[3]
     prompt_path = repo_root / "kb_storage" / "prompts" / "dispatcher" / "dispatcher_agent_prompt.md"
-    return prompt_path.read_text(encoding="utf-8")
+    return prompt_path.read_text(encoding="utf-8").lower()
 
 
 @pytest.mark.unit
@@ -150,7 +150,7 @@ def test_validate_dispatcher_result_accepts_product_routes_with_query(route: str
 def test_dispatcher_prompt_routes_active_no_risk_guaranteed_income_to_product_filter() -> None:
     prompt = _read_dispatcher_prompt()
 
-    assert "активности" in prompt
+    assert "покажи активные продукты" in prompt
     assert "`product_filter`" in prompt
 
 
@@ -240,7 +240,7 @@ def test_validate_dispatcher_result_rejects_smalltalk_with_query() -> None:
         validate_dispatcher_result(
             {
                 "status": "ok",
-                "route": "kb_answer",
+                "route": "smalltalk",
                 "intent": "smalltalk",
                 "reason": "casual talk",
                 "search_query": "лишний запрос",

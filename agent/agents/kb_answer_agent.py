@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
 
@@ -29,10 +30,33 @@ ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и 
 # 1. Объявляем схему как Pydantic-класс
 class KbAnswerResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    mode: Literal["text_answer"] = Field(description="Режим ответа")
+    mode: Literal["text_answer", "no_data"] = Field(description="Режим ответа")
     message: str = Field(description="Текст ответа на русском языке")
     source: Literal["faq_search", "kb_search", "faq_search+kb_search"] = Field(description="Источник данных")
 
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        context: Any | None = None,
+    ) -> "KbAnswerResponseSchema":
+        """
+        Перехватив ADK-вызов model_validate_json, срезаем ```json ... ```
+        до того, как pydantic_core выбросит json_invalid.
+        """
+        if isinstance(json_data, (bytes, bytearray)):
+            json_data = json_data.decode("utf-8")
+
+        if isinstance(json_data, str):
+            json_data = json_data.strip()
+            # Регуляркой извлекаем чистый JSON из markdown-блока, если LLM его добавила
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", json_data, re.IGNORECASE)
+            if match:
+                json_data = match.group(1).strip()
+
+        return super().model_validate_json(json_data, strict=strict, context=context)
 
 def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -272,7 +296,7 @@ If multiple definitions are present and context does not disambiguate them, do n
    - в message кратко скажи, что точный ответ не найден
 
 6. Для intent=kb_answer запрещено отвечать без обращения к faq_search
-7. Верни только JSON без markdown
+7. Верни ТОЛЬКО сырой JSON. Категорически запрещено использовать markdown-обертки (```json или ```). Твой ответ должен начинаться с '{' и заканчиваться на '}'.
 
 Формат ответа:
 {{
@@ -286,7 +310,10 @@ If multiple definitions are present and context does not disambiguate them, do n
     instruction = load_prompt(prompt_file, fallback)
     name = "kb_answer_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params = {}
+    config_params: Dict[str, Any] = {
+        "response_mime_type": "application/json"
+    }
+
     if KB_ANSWER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
         config_params["temperature"] = KB_ANSWER_TEMPERATURE
@@ -300,7 +327,7 @@ If multiple definitions are present and context does not disambiguate them, do n
         tools=tools,
         output_key="kb_answer_result_json",
         output_schema=KbAnswerResponseSchema,
-        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+        generate_content_config=GenerateContentConfig(**config_params),
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

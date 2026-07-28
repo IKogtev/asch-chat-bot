@@ -113,7 +113,7 @@ async def test_bot_response_sends_telegram_document_from_message() -> None:
 async def test_handle_product_kit_action_sends_files() -> None:
     eventlogger = _FakeEventLogger()
 
-    def fake_get_product_kit(product_code, product_name, folder_kit):
+    def fake_get_product_kit(product_code, product_name, folder_kit, folder_kit_root=None):
         assert product_code == "2832"
         assert folder_kit == "Fort Knox (2832)"
         return {
@@ -127,6 +127,7 @@ async def test_handle_product_kit_action_sends_files() -> None:
             "get_product_kit": fake_get_product_kit,
             "eventlogger": eventlogger,
             "time": types.SimpleNamespace(time=lambda: 10.0),
+            "logger": _build_logger(),
         }
     )
     bot_res = _FakeBotResponse()
@@ -162,6 +163,7 @@ async def test_handle_product_kit_action_sends_files() -> None:
         "product_code": "2832",
         "product_name": "Fort Knox",
         "folder_kit": "Fort Knox (2832)",
+        "is_archive": False,
     }
 
 
@@ -170,7 +172,7 @@ async def test_handle_product_kit_action_sends_files() -> None:
 async def test_handle_product_kit_action_sends_status_message_when_no_files() -> None:
     eventlogger = _FakeEventLogger()
 
-    def fake_get_product_kit(product_code, product_name, folder_kit):
+    def fake_get_product_kit(product_code, product_name, folder_kit, folder_kit_root=None):
         assert product_code == "2832"
         assert folder_kit == ""
         return {
@@ -185,6 +187,7 @@ async def test_handle_product_kit_action_sends_status_message_when_no_files() ->
             "get_product_kit": fake_get_product_kit,
             "eventlogger": eventlogger,
             "time": types.SimpleNamespace(time=lambda: 10.0),
+            "logger": _build_logger(),
         }
     )
     bot_res = _FakeBotResponse()

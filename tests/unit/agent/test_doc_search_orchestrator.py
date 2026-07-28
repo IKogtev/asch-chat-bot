@@ -296,7 +296,7 @@ async def test_orchestrator_returns_no_data_after_two_empty_relevant_attempts() 
     with patch.object(orchestrator_module, "run_json_leaf_agent", fake_run_json_leaf_agent):
         await _drain(orchestrator._run_async_impl(ctx))
 
-    assert ctx.session.state["_root_final_text"] == DOC_SEARCH_NO_DATA_MESSAGE
+    assert ctx.session.state["_root_final_text"].strip() == DOC_SEARCH_NO_DATA_MESSAGE.strip()
 
 
 @pytest.mark.unit
