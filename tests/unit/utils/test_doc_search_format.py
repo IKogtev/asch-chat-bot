@@ -15,7 +15,7 @@ from utils.doc_search_format import (
     ("text", "expected"),
     [
         ("скачай 1 и 3", [1, 3]),
-        ("8,13", []),
+        ("8,13", [8, 13]),
         ("  4  ", [4]),
         ("документ 2", [2]),
         ("ничего похожего", []),
@@ -32,7 +32,7 @@ def test_parse_download_ranks(text, expected) -> None:
     ("text", "expected"),
     [
         ("1 и 5", [1, 5]),
-        ("8, 13", []),
+        ("8, 13", [8, 13]),
         ("Fort Knox 1 и 5", [1, 5]),
         ("слишком длинная строка для loose tail 1 и 5", []),
         ("1", []),

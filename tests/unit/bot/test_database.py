@@ -45,7 +45,7 @@ _symbols = _load_symbols(
         "uuid4": uuid4,
         "setup_logger": lambda *args, **kwargs: _logger(),
         "logger": _logger(),
-        "Settings": types.SimpleNamespace(SHOW_MAX=5),
+        "Settings": types.SimpleNamespace(SHOW_MAX=5, ADK_TIMEOUT_SEC=30),
         "datetime": datetime,
     },
 )

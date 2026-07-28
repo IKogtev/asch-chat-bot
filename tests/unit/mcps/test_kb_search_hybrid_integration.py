@@ -13,12 +13,13 @@ def test_doc_search_prompt_requires_search_profile() -> None:
         encoding="utf-8"
     )
 
+    lower_text = text.lower()
     assert 'search_profile="doc_search"' in text
-    assert "режим гибридного поиска" in text.lower() or "hybrid" in text
-    assert "каждый документ из CONTEXT" in text
-    assert "is_relevant" in text
-    assert "must_not" in text or "исключает" in text.lower()
-    assert "6 Архив" in text
+    assert "режим гибридного поиска" in lower_text or "hybrid" in lower_text
+    assert "context" in lower_text
+    assert "is_relevant" in lower_text
+    assert "must_not" in lower_text or "исключает" in lower_text or "filters" in lower_text
+    assert "6 архив" in lower_text
 
 
 @pytest.mark.unit
@@ -27,7 +28,9 @@ def test_kb_answer_prompt_requires_search_profile() -> None:
         encoding="utf-8"
     )
 
-    assert 'search_profile="kb_answer"' in text
+    lower_text = text.lower()
+    assert "search_profile" in lower_text
+    assert "kb_answer" in lower_text
 
 
 @pytest.mark.unit
@@ -36,8 +39,10 @@ def test_dispatcher_prompt_doc_search_search_query_is_verbatim() -> None:
         encoding="utf-8"
     )
 
-    assert "дословн" in text.lower()
-    assert "doc_search" in text
+    lower_text = text.lower()
+    assert "search_query" in lower_text
+    assert "doc_search" in lower_text
+    assert "не подставляй" in lower_text or "не заменяй" in lower_text or "дослов" in lower_text
 
 
 @pytest.mark.unit

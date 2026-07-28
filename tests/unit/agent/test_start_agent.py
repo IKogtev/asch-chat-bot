@@ -58,6 +58,9 @@ def _load_start_agent_module(monkeypatch):
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
     kb_answer_stub.create_kb_answer_agent = _agent_factory("kb_answer_agent")
 
+    smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
+    smalltalk_stub.create_smalltalk_agent = _agent_factory("smalltalk_agent")
+
     product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
     product_selection_stub.create_product_selection_agent = _agent_factory("product_selection_agent")
 
@@ -71,6 +74,7 @@ def _load_start_agent_module(monkeypatch):
         "agent.agents.doc_search_agent": doc_search_stub,
         "agent.agents.doc_search_orchestrator": doc_orchestrator_stub,
         "agent.agents.kb_answer_agent": kb_answer_stub,
+        "agent.agents.smalltalk_agent": smalltalk_stub,
         "agent.agents.product_selection_agent": product_selection_stub,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
