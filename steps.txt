@@ -842,3 +842,24 @@ realize 1 (set SMALLTALK_TEMPERATURE to 0.8)
 fix 2,3,4,5 (set temperature for product_info_agent and product_filter_agent to 0.5)
 fix 6, 7
 from your list
+==========
+There is some problems:
+1. product list should not have bullets
+2. product list should have only 1 parameter in () - product_type
+3. product list should start from phrase with product count
+here is wrong example:
+===
+Вот список действующих продуктов:
+• 2851 — АльфаЗдоровье 5 лет (Долгосрочный, Рубли)
+• 2855 — Деньги в резерве 2 года (Среднесрочный, Рубли)
+• 2858 — Путь к успеху 3 года (Среднесрочный, Рубли)
+• 3821 — Альфа Kids 5 лет (Долгосрочный, Рубли)
+• 7725 — Альфа Kids+ 5 лет (Долгосрочный, Рубли)
+===
+Use prompt from prev release to take proved fragments (git show main:kb_storage/prompts/product_selection/product_selection_agent_prompt.md)
+Type numbered list of prompt updated. Do not change anything
+===========
+Update prompt in section ### `product_filter`. True algorithm for displaing rpperties in ()
+1. if agent use template from semantic_templates, then display in () all properties from display_columns except code and name
+2. if agent do not use any template, then display in () only product_type
+correct prompt
