@@ -61,8 +61,11 @@ def _load_start_agent_module(monkeypatch):
     smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
     smalltalk_stub.create_smalltalk_agent = _agent_factory("smalltalk_agent")
 
-    product_selection_stub = types.ModuleType("agent.agents.product_selection_agent")
-    product_selection_stub.create_product_selection_agent = _agent_factory("product_selection_agent")
+    product_info_stub = types.ModuleType("agent.agents.product_info_agent")
+    product_info_stub.create_product_info_agent = _agent_factory("product_info_agent")
+
+    product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
+    product_filter_stub.create_product_filter_agent = _agent_factory("product_filter_agent")
 
     for name, module in {
         "agent": agent_pkg,
@@ -75,7 +78,8 @@ def _load_start_agent_module(monkeypatch):
         "agent.agents.doc_search_orchestrator": doc_orchestrator_stub,
         "agent.agents.kb_answer_agent": kb_answer_stub,
         "agent.agents.smalltalk_agent": smalltalk_stub,
-        "agent.agents.product_selection_agent": product_selection_stub,
+        "agent.agents.product_info_agent": product_info_stub,
+        "agent.agents.product_filter_agent": product_filter_stub,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -93,4 +97,6 @@ def test_start_agent_exports_app(monkeypatch) -> None:
     assert module.app.name == "agent"
     assert module.app.root_agent is module.root_agent
     assert not hasattr(module.app, "events_compaction_config")
-    assert module.root_agent.product_selection_agent.name == "product_selection_agent"
+    assert module.root_agent.smalltalk_agent.name == "smalltalk_agent"
+    assert module.root_agent.product_info_agent.name == "product_info_agent"
+    assert module.root_agent.product_filter_agent.name == "product_filter_agent"

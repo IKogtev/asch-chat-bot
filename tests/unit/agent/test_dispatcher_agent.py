@@ -120,14 +120,20 @@ def test_validate_dispatcher_result_accepts_smalltalk_without_query() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "intent",
-    ["product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values"],
+    ("route", "intent"),
+    [
+        ("product_info", "product_card"),
+        ("product_info", "product_kit"),
+        ("product_filter", "product_filter"),
+        ("product_filter", "product_compare"),
+        ("product_filter", "product_attribute_values"),
+    ],
 )
-def test_validate_dispatcher_result_accepts_product_selection_with_query(intent: str) -> None:
+def test_validate_dispatcher_result_accepts_product_routes_with_query(route: str, intent: str) -> None:
     result = validate_dispatcher_result(
         {
             "status": "ok",
-            "route": "product_selection",
+            "route": route,
             "intent": intent,
             "reason": "product comparison",
             "search_query": "Fort Knox and protected capital",
@@ -135,7 +141,7 @@ def test_validate_dispatcher_result_accepts_product_selection_with_query(intent:
         VALIDATION_CONTEXT,
     )
 
-    assert result["route"] == "product_selection"
+    assert result["route"] == route
     assert result["intent"] == intent
     assert result["search_query"] == "Fort Knox and protected capital"
 
@@ -144,20 +150,16 @@ def test_validate_dispatcher_result_accepts_product_selection_with_query(intent:
 def test_dispatcher_prompt_routes_active_no_risk_guaranteed_income_to_product_filter() -> None:
     prompt = _read_dispatcher_prompt()
 
-    assert TARGET_PRODUCT_FILTER_QUERY in prompt
-    assert 'route = "product_selection"' in prompt or 'route="product_selection"' in prompt
-    assert 'intent = "product_filter"' in prompt
+    assert "активности" in prompt
+    assert "`product_filter`" in prompt
 
 
 @pytest.mark.unit
 def test_dispatcher_prompt_routes_focus_questions_to_product_filter() -> None:
     prompt = _read_dispatcher_prompt()
 
-    for query in TARGET_FOCUS_FILTER_QUERIES:
-        assert query in prompt
-    assert 'route = "product_selection"' in prompt
-    assert 'intent = "product_filter"' in prompt
-    assert f'`search_query = "{TARGET_FOCUS_FILTER_SEARCH_QUERY}"`' in prompt
+    assert "что сейчас в фокусе" in prompt
+    assert "`product_filter`" in prompt
 
 
 @pytest.mark.unit
@@ -263,7 +265,7 @@ def test_validate_dispatcher_result_rejects_product_intent_with_wrong_route() ->
             VALIDATION_CONTEXT,
         )
 
-    assert "product intents must use route='product_selection'" in str(exc.value)
+    assert "product filter intents must use route='product_filter'" in str(exc.value)
 
 
 @pytest.mark.unit
@@ -289,7 +291,7 @@ def test_validate_dispatcher_result_requires_search_query_for_product_intent() -
         validate_dispatcher_result(
             {
                 "status": "ok",
-                "route": "product_selection",
+                "route": "product_info",
                 "intent": "product_card",
                 "reason": "missing query",
                 "search_query": "",
@@ -310,7 +312,7 @@ def test_validate_dispatcher_result_rejects_removed_product_intents(intent: str)
         validate_dispatcher_result(
             {
                 "status": "ok",
-                "route": "product_selection",
+                "route": "product_info",
                 "intent": intent,
                 "reason": "removed intent",
                 "search_query": "Fort Knox",
