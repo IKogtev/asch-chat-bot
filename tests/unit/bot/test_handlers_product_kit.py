@@ -163,6 +163,7 @@ async def test_handle_product_kit_action_sends_files() -> None:
         "product_code": "2832",
         "product_name": "Fort Knox",
         "folder_kit": "Fort Knox (2832)",
+        "is_archive": False,
     }
 
 

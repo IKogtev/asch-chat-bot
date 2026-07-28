@@ -1756,7 +1756,7 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == rootagent_module.RECOVERY_MESSAGE
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
     assert product_called is False
     assert dispatcher_called is False
 
@@ -1882,7 +1882,7 @@ async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert len(events) == 1
-    assert events[0].content.parts[0].text == rootagent_module.RECOVERY_MESSAGE
+    assert events[0].content.parts[0].text == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
     assert product_called is False
     assert dispatcher_called is False
 
