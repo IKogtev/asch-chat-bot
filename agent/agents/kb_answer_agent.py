@@ -29,7 +29,7 @@ ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и 
 # 1. Объявляем схему как Pydantic-класс
 class KbAnswerResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    mode: Literal["text_answer"] = Field(description="Режим ответа")
+    mode: Literal["text_answer", "no_data"] = Field(description="Режим ответа")
     message: str = Field(description="Текст ответа на русском языке")
     source: Literal["faq_search", "kb_search", "faq_search+kb_search"] = Field(description="Источник данных")
 
@@ -286,7 +286,10 @@ If multiple definitions are present and context does not disambiguate them, do n
     instruction = load_prompt(prompt_file, fallback)
     name = "kb_answer_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params = {}
+    config_params: Dict[str, Any] = {
+        "response_mime_type": "application/json"
+    }
+
     if KB_ANSWER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
         config_params["temperature"] = KB_ANSWER_TEMPERATURE
@@ -300,7 +303,7 @@ If multiple definitions are present and context does not disambiguate them, do n
         tools=tools,
         output_key="kb_answer_result_json",
         output_schema=KbAnswerResponseSchema,
-        generate_content_config=GenerateContentConfig(**config_params) if config_params else None
+        generate_content_config=GenerateContentConfig(**config_params),
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
