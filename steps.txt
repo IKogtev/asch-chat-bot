@@ -868,3 +868,26 @@ There is log from testing on another site: logs\1.txt
 Analize this log and:
 - find problems for owasp_agent
 - type numbered causes of that promlems
+============
+update product_filter prompt (in compare mode)
+1. exclude code and name from list of difference (we display it in product title)
+2. display "КВ" in per cent with comma separated (look product_info prompt for details)
+wrong example is:
+======
+У двух продуктов отличаются следующие свойства:
+
+8793 - Фиксированный доход 6 месяцев
+• Код продукта: 8793
+• Название продукта: Фиксированный доход 6 месяцев
+• Срок продукта: Краткосрочный
+• КВ: 0.1
+• Дата продукта: 2026-05-20
+• Ликвидность: Высокая
+
+8856 - Фиксированный доход 18 месяцев
+• Код продукта: 8856
+• Название продукта: Фиксированный доход 18 месяцев
+• Срок продукта: Среднесрочный
+• КВ: 1.5
+• Дата продукта: не указано
+• Ликвидность: Средняя

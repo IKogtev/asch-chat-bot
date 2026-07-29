@@ -239,6 +239,43 @@ async def test_resolve_product_filter_unions_multiple_product_mentions() -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_product_filter_reports_partial_multi_match() -> None:
+    resolver = FakeProductResolver(
+        tokens={
+            "защищенный капитал": [
+                candidate("8885", "Защищенный капитал 5 лет"),
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("Fort Knox и Защищенный капитал")
+
+    assert result.status == "partial"
+    assert result.product_codes == ["8885"]
+    assert result.matched_terms == ["защищенный капитал"]
+    assert result.unmatched_terms == ["fort knox"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_ignores_status_modifier_for_name_match() -> None:
+    resolver = FakeProductResolver(
+        tokens={
+            "fort knox": [
+                candidate("8914", "Fort Knox 1 год"),
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("архивные Fort Knox")
+
+    assert result.status == "resolved"
+    assert result.product_codes == ["8914"]
+    assert result.matched_terms == ["fort knox"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_filter_unions_text_and_product_codes() -> None:
     """Фраза с кодами не должна рекурсивно извлекать саму себя (RecursionError)."""
     resolver = FakeProductResolver(

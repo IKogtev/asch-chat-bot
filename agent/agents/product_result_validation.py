@@ -10,6 +10,12 @@ CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
 PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit", "is_active")
 
 
+def normalize_optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def normalize_used_tables(value: Any) -> list[str]:
     if value is None:
         return []
@@ -17,8 +23,13 @@ def normalize_used_tables(value: Any) -> list[str]:
         item = value.strip()
         return [item] if item else []
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()] if str(value).strip() else []
+        return [
+            normalized
+            for item in value
+            if (normalized := normalize_optional_text(item))
+        ]
+    normalized = normalize_optional_text(value)
+    return [normalized] if normalized else []
 
 
 def normalize_product(
@@ -32,7 +43,7 @@ def normalize_product(
 
     normalized = {}
     for key in field_keys:
-        item = str(value.get(key, "")).strip()
+        item = normalize_optional_text(value.get(key))
         if item:
             normalized[key] = item
 
@@ -76,7 +87,11 @@ def normalize_text_list(value: Any, field_name: str) -> list[str]:
         return []
     if not isinstance(value, list):
         raise TypeError(f"{field_name} expected list, got {type(value).__name__}")
-    return [str(item).strip() for item in value if str(item).strip()]
+    return [
+        normalized
+        for item in value
+        if (normalized := normalize_optional_text(item))
+    ]
 
 
 def normalize_tool_calls(value: Any) -> set[str]:
@@ -99,12 +114,11 @@ def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any
             problem=f"expected dict, got {type(data).__name__}",
         )
 
-    status = str(data.get("status", "")).strip()
-    mode = str(data.get("mode", "")).strip()
-    message = str(data.get("message", "")).strip()
+    mode = normalize_optional_text(data.get("mode"))
+    message = normalize_optional_text(data.get("message"))
     used_tables = normalize_used_tables(data.get("used_tables"))
-    attribute_name = str(data.get("attribute_name", "")).strip()
-    attribute_column = str(data.get("attribute_column", "")).strip()
+    attribute_name = normalize_optional_text(data.get("attribute_name"))
+    attribute_column = normalize_optional_text(data.get("attribute_column"))
 
     try:
         resolved_product = normalize_product(data.get("resolved_product"))
@@ -122,15 +136,6 @@ def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any
             fields=("resolved_product", "clarification_options", "products", "attribute_values"),
         ) from exc
 
-    if status != "ok":
-        raise build_validation_error(
-            agent=agent_name,
-            stage="basic_fields",
-            problem=f"invalid status {status!r}, expected 'ok'",
-            data=data,
-            fields=("status", "mode"),
-        )
-
     if not message:
         raise build_validation_error(
             agent=agent_name,
@@ -141,7 +146,6 @@ def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any
         )
 
     return {
-        "status": status,
         "mode": mode,
         "message": message,
         "used_tables": used_tables,

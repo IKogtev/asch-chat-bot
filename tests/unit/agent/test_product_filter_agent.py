@@ -82,7 +82,6 @@ SQL_CONTEXT = {"_adk_tool_calls": ["execute_sql"]}
 def test_product_filter_contract_normalizes_products() -> None:
     result = product_filter.validate_product_filter_result(
         {
-            "status": "ok",
             "mode": "product_filter",
             "message": "Найдены продукты",
             "products": [{"code": 2867, "name": " Fort Knox ", "is_active": "Действующий"}],
@@ -94,10 +93,129 @@ def test_product_filter_contract_normalizes_products() -> None:
 
 
 @pytest.mark.unit
+def test_product_filter_contract_normalizes_nullable_fields() -> None:
+    payload = product_filter.ProductFilterResponseSchema(
+        mode="needs_clarification",
+        message="Уточните продукт",
+        clarification_options=[
+            {"code": "8914", "name": "Фиксированный доход 1 год"},
+            {
+                "code": "8959",
+                "name": "Фиксированный доход 1 год + Альфа-Вклад Актив",
+            },
+        ],
+        products=[
+            {
+                "code": "8914",
+                "name": "Фиксированный доход 1 год",
+                "term": None,
+                "currency": None,
+                "folder_kit": None,
+            }
+        ],
+        attribute_name=None,
+        attribute_column=None,
+    ).model_dump()
+
+    result = product_filter.validate_product_filter_result(payload, {})
+
+    assert "status" not in result
+    assert result["clarification_options"] == [
+        {"code": "8914", "name": "Фиксированный доход 1 год"},
+        {
+            "code": "8959",
+            "name": "Фиксированный доход 1 год + Альфа-Вклад Актив",
+        },
+    ]
+    assert result["products"] == [
+        {"code": "8914", "name": "Фиксированный доход 1 год"}
+    ]
+    assert result["attribute_name"] == ""
+    assert result["attribute_column"] == ""
+
+
+@pytest.mark.unit
+def test_product_filter_response_schema_rejects_noncanonical_clarification_options() -> None:
+    with pytest.raises(Exception):
+        product_filter.ProductFilterResponseSchema(
+            mode="needs_clarification",
+            message="Уточните продукт",
+            clarification_options=[
+                {
+                    "product_code": "8914",
+                    "canonical_name": "Фиксированный доход 1 год",
+                }
+            ],
+        )
+
+
+@pytest.mark.unit
+def test_product_filter_response_schema_keeps_clarification_options_inline() -> None:
+    schema = product_filter.ProductFilterResponseSchema.model_json_schema()
+    clarification_schema = schema["properties"]["clarification_options"]
+
+    assert "$defs" not in schema
+    assert "$ref" not in str(clarification_schema)
+    assert clarification_schema["items"]["type"] == "object"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("resolved_product", ["None", " none ", "null"])
+def test_product_filter_response_schema_normalizes_absent_resolved_product(
+    resolved_product: str,
+) -> None:
+    response = product_filter.ProductFilterResponseSchema(
+        mode="product_filter",
+        message="Найдены продукты",
+        resolved_product=resolved_product,
+    )
+
+    assert response.resolved_product is None
+
+
+@pytest.mark.unit
+def test_product_filter_response_schema_rejects_other_resolved_product_strings() -> None:
+    with pytest.raises(Exception):
+        product_filter.ProductFilterResponseSchema(
+            mode="product_filter",
+            message="Найдены продукты",
+            resolved_product="not-a-product",
+        )
+
+
+@pytest.mark.unit
+def test_product_filter_response_schema_normalizes_null_list_fields() -> None:
+    response = product_filter.ProductFilterResponseSchema(
+        mode="product_compare",
+        message="Сравнение продуктов",
+        clarification_options=None,
+        attribute_values=None,
+    )
+
+    assert response.clarification_options == []
+    assert response.attribute_values == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field_name", ["clarification_options", "attribute_values"])
+def test_product_filter_response_schema_rejects_non_list_field_values(
+    field_name: str,
+) -> None:
+    payload = {
+        "mode": "product_compare",
+        "message": "Сравнение продуктов",
+        field_name: "None",
+    }
+
+    with pytest.raises(Exception):
+        product_filter.ProductFilterResponseSchema(**payload)
+
+
+@pytest.mark.unit
 def test_product_filter_contract_requires_attribute_values() -> None:
     with pytest.raises(ValueError, match="requires attribute_values"):
         product_filter.validate_product_filter_result(
-            {"status": "ok", "mode": "product_attribute_values", "message": "Значения"},
+            {"mode": "product_attribute_values", "message": "Значения"},
             SQL_CONTEXT,
         )
 
@@ -106,7 +224,7 @@ def test_product_filter_contract_requires_attribute_values() -> None:
 def test_product_filter_contract_rejects_info_mode() -> None:
     with pytest.raises(ValueError, match="invalid mode"):
         product_filter.validate_product_filter_result(
-            {"status": "ok", "mode": "product_card", "message": "x"},
+            {"mode": "product_card", "message": "x"},
             SQL_CONTEXT,
         )
 
@@ -123,18 +241,16 @@ def test_product_filter_factory_uses_response_schema() -> None:
 @pytest.mark.unit
 def test_product_filter_response_schema_restricts_mode() -> None:
     with pytest.raises(Exception):
-        product_filter.ProductFilterResponseSchema(status="ok", mode="product_kit", message="x")
+        product_filter.ProductFilterResponseSchema(mode="product_kit", message="x")
 
 
 @pytest.mark.unit
-def test_product_filter_response_schema_restricts_status_without_const() -> None:
-    with pytest.raises(Exception, match="status must be 'ok'"):
-        product_filter.ProductFilterResponseSchema(
-            status="error",
-            mode="product_filter",
-            message="x",
-        )
-
+def test_product_filter_response_schema_omits_status() -> None:
     schema = product_filter.ProductFilterResponseSchema.model_json_schema()
-    assert "const" not in schema["properties"]["status"]
-    assert schema["properties"]["status"]["type"] == "string"
+    response = product_filter.ProductFilterResponseSchema(
+        mode="product_filter",
+        message="x",
+    )
+
+    assert "status" not in schema["properties"]
+    assert "status" not in response.model_dump()

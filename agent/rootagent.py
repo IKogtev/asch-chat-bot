@@ -54,6 +54,10 @@ RECOVERY_MESSAGE = (
     "• использовать /reset если диалог зашел в тупик;\n"
     "• подождать и задать вопрос позже"
 )
+RESPONSE_SCHEMA_CONFIGURATION_ERROR_MESSAGE = (
+    "Сервис временно недоступен из-за внутренней ошибки конфигурации. "
+    "Переформулирование запроса или /reset не поможет. Попробуйте позже."
+)
 VALIDATION_ERROR_USER_MESSAGE = RECOVERY_MESSAGE
 OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
@@ -70,6 +74,14 @@ DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"}
 def is_bot_user_profile_injection_message(text: str) -> bool:
     t = (text or "").lstrip()
     return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
+
+def is_response_schema_configuration_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "failed to parse the parameter" in message
+        and "set_model_response" in message
+        and "automatic function calling" in message
+    )
 
 async def is_history_empty_by_global_id(global_user_id: str) -> bool:
     """Одним запросом находит platform_user_id по UUID в user_accounts 
@@ -1050,8 +1062,30 @@ class RootAgent(BaseAgent):
     def _product_resolution_to_state(value: Any) -> Dict[str, Any]:
         if hasattr(value, "to_dict"):
             data = value.to_dict()
-            return data if isinstance(data, dict) else {}
-        return value if isinstance(value, dict) else {}
+        elif isinstance(value, dict):
+            data = value
+        else:
+            return {}
+        return RootAgent._canonicalize_resolution_options(data)
+
+    @staticmethod
+    def _canonicalize_resolution_options(data: Dict[str, Any]) -> Dict[str, Any]:
+        options = data.get("options")
+        if not isinstance(options, list):
+            return data
+
+        canonical_options = []
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            code = str(option.get("product_code") or "").strip()
+            name = str(option.get("canonical_name") or "").strip()
+            if not code or not name:
+                continue
+
+            canonical_options.append({"code": code, "name": name})
+
+        return {**data, "options": canonical_options}
 
     @staticmethod
     def _product_resolutions_to_state(value: Any) -> Dict[str, Any]:
@@ -1082,7 +1116,7 @@ class RootAgent(BaseAgent):
                     continue
                 seen_keys.add(dedup_key)
 
-            unique_items.append(item)
+            unique_items.append(RootAgent._canonicalize_resolution_options(item))
 
         return {**data, "items": unique_items}
 
@@ -1128,6 +1162,7 @@ class RootAgent(BaseAgent):
             "query": data.get("query"),
             "product_codes": data.get("product_codes") or [],
             "matched_terms": data.get("matched_terms") or [],
+            "unmatched_terms": data.get("unmatched_terms") or [],
             "error": data.get("error"),
         }
 
@@ -2011,13 +2046,21 @@ class RootAgent(BaseAgent):
             )
 
         except Exception as exc:
-            logger.error("RootAgent failure: %s", exc, exc_info=True)
-            message = (
-                f"DEBUG: {type(exc).__name__}: {exc}"
-                if DEBUG_EXCEPTIONS
-                # fallback при нескольких сообщениях подряд
-                else RECOVERY_MESSAGE
-            )
+            if is_response_schema_configuration_error(exc):
+                logger.error(
+                    "RootAgent response schema configuration failure: %s",
+                    exc,
+                    exc_info=True,
+                )
+                message = RESPONSE_SCHEMA_CONFIGURATION_ERROR_MESSAGE
+            else:
+                logger.error("RootAgent failure: %s", exc, exc_info=True)
+                message = (
+                    f"DEBUG: {type(exc).__name__}: {exc}"
+                    if DEBUG_EXCEPTIONS
+                    # fallback при нескольких сообщениях подряд
+                    else RECOVERY_MESSAGE
+                )
             yield self._build_final_event_with_history(ctx, user_text, message)
 
     async def _handle_doc_search(
