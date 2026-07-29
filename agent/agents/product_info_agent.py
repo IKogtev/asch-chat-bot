@@ -30,7 +30,6 @@ PRODUCT_INFO_MODES = {"product_card", "product_kit", "needs_clarification", "no_
 
 
 class ProductInfoResponseSchema(BaseModel):
-    status: str = Field(description="Всегда указывай значение 'ok'.")
     mode: Literal["product_card", "product_kit", "needs_clarification", "no_data"] = Field(
         description="Режим: product_card, product_kit, needs_clarification или no_data."
     )
@@ -66,13 +65,6 @@ class ProductInfoResponseSchema(BaseModel):
         description="Не используется для карточки и комплекта: пустой список.",
     )
 
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, value: str) -> str:
-        if value != "ok":
-            raise ValueError("status must be 'ok'")
-        return value
-
     @field_validator("resolved_product", mode="before")
     @classmethod
     def parse_resolved_product(cls, value: Any) -> Any:
@@ -101,7 +93,7 @@ def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) 
             stage="basic_fields",
             problem=f"invalid mode {mode!r}, expected one of {sorted(PRODUCT_INFO_MODES)}",
             data=data,
-            fields=("status", "mode"),
+            fields=("mode",),
         )
 
     resolved_product = parsed["resolved_product"]
@@ -186,7 +178,6 @@ Use state variables {user_query}, {product_info_search_query}, {product_info_int
 The product and abbreviation substitutions in product_info_search_query are already applied in code. Do not invent facts, tables, fields, values, or product names.
 First call search_semantic_template, then inspect the catalog and execute the smallest read-only SQL query. Use only rows returned in this run for a card or product details.
 For product_card and product_kit use product_resolution only to identify the product code; it is not a source of card facts. If resolution is ambiguous, return needs_clarification with options. For product_kit include code and folder_kit when available. Write the user message in Russian.
-Return fields status, mode, message, used_tables, resolved_product, clarification_options, products, attribute_name, attribute_column, attribute_values.
 """
     prompt_file = "product_info_agent_prompt.md"
     config_params = {}

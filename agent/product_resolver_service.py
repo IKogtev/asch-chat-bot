@@ -261,6 +261,22 @@ PRODUCT_QUERY_STOPWORDS = frozenset(
         "это",
     }
 )
+PRODUCT_FILTER_QUERY_MODIFIERS = frozenset(
+    {
+        "активная",
+        "активное",
+        "активные",
+        "активный",
+        "архивная",
+        "архивное",
+        "архивные",
+        "архивный",
+        "действующая",
+        "действующее",
+        "действующие",
+        "действующий",
+    }
+)
 
 COMPARE_SPLIT_RE = re.compile(
     r"\s+(?:and|vs|versus|и|с|или)\s+|[,;/]+",
@@ -370,11 +386,12 @@ class ProductMultiResolveResult:
 @dataclass(frozen=True)
 class ProductFilterResolveResult:
     """Результат предварительного разрешения продуктового фильтра в набор кандидатов."""
-    status: Literal["resolved", "not_found", "error"]
+    status: Literal["resolved", "partial", "not_found", "error"]
     query: str = ""
     product_codes: list[str] | None = None
     products: list[ProductCandidate] | None = None
     matched_terms: list[str] | None = None
+    unmatched_terms: list[str] | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -385,6 +402,7 @@ class ProductFilterResolveResult:
             "product_codes": self.product_codes or [],
             "products": [candidate.to_dict() for candidate in self.products or []],
             "matched_terms": self.matched_terms or [],
+            "unmatched_terms": self.unmatched_terms or [],
             "error": self.error,
         }
 
@@ -594,10 +612,12 @@ class ProductResolverService:
         try:
             result = await self._resolve_product_filter_safe(normalized_query)
             logger.debug(
-                "resolve_product_filter result status=%s product_codes=%s matched_terms=%s products=%s error=%s",
+                "resolve_product_filter result status=%s product_codes=%s matched_terms=%s "
+                "unmatched_terms=%s products=%s error=%s",
                 result.status,
                 result.product_codes or [],
                 result.matched_terms or [],
+                result.unmatched_terms or [],
                 self._candidate_summary(result.products or []),
                 result.error,
             )
@@ -638,6 +658,7 @@ class ProductResolverService:
         logger.debug("resolve_product_filter multi_mentions=%s", mentions)
         all_products: list[ProductCandidate] = []
         matched_terms: list[str] = []
+        unmatched_terms: list[str] = []
         for mention in mentions:
             # Не даём mention снова уйти в multi: иначе фраза с кодами
             # (например «бандлы 8965 7698») рекурсивно извлекает саму себя.
@@ -648,17 +669,24 @@ class ProductResolverService:
             if mention_result.products:
                 all_products.extend(mention_result.products)
                 matched_terms.extend(mention_result.matched_terms or [mention])
+            else:
+                unmatched_terms.append(mention)
 
         products = self._unique_products(all_products)
         if products:
             return ProductFilterResolveResult(
-                status="resolved",
+                status="partial" if unmatched_terms else "resolved",
                 query=query,
                 product_codes=[candidate.product_code for candidate in products],
                 products=products,
                 matched_terms=matched_terms,
+                unmatched_terms=unmatched_terms,
             )
-        return ProductFilterResolveResult(status="not_found", query=query)
+        return ProductFilterResolveResult(
+            status="not_found",
+            query=query,
+            unmatched_terms=unmatched_terms,
+        )
 
     async def _resolve_product_filter_for_query(
         self,
@@ -851,7 +879,11 @@ class ProductResolverService:
     @classmethod
     def _candidate_queries(cls, query: str) -> list[str]:
         """Формирует варианты поискового запроса: очищенный, исходный и выделенные части."""
-        candidates = [cls._remove_query_noise(query)]
+        cleaned_query = cls._remove_query_noise(query)
+        candidates = [
+            cleaned_query,
+            cls._remove_filter_modifiers(cleaned_query),
+        ]
         candidates.append(str(query or "").strip())
         candidates.extend(cls.extract_product_mentions(query))
         return cls._deduplicate_query_candidates(candidates)
@@ -864,6 +896,16 @@ class ProductResolverService:
             token
             for token in normalized.split()
             if token not in PRODUCT_QUERY_STOPWORDS
+        ]
+        return " ".join(tokens).strip()
+
+    @staticmethod
+    def _remove_filter_modifiers(value: str) -> str:
+        """Убирает статус продукта, чтобы он не мешал разрешению названия."""
+        tokens = [
+            token
+            for token in str(value or "").split()
+            if token not in PRODUCT_FILTER_QUERY_MODIFIERS
         ]
         return " ".join(tokens).strip()
 

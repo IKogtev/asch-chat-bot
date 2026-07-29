@@ -481,6 +481,22 @@ def test_build_final_event_creates_end_of_agent_event() -> None:
 
 
 @pytest.mark.unit
+def test_detects_response_schema_configuration_error() -> None:
+    error = ValueError(
+        "Failed to parse the parameter clarification_options of function "
+        "set_model_response for automatic function calling."
+    )
+
+    assert rootagent_module.is_response_schema_configuration_error(error) is True
+    assert (
+        rootagent_module.is_response_schema_configuration_error(
+            ValueError("database timeout")
+        )
+        is False
+    )
+
+
+@pytest.mark.unit
 def test_build_final_event_includes_bot_action_state_delta() -> None:
     ctx = _make_ctx(
         invocation_id="abc",
@@ -2309,21 +2325,30 @@ def test_product_resolutions_dedup_key_uses_option_name_fallback() -> None:
                     "status": "resolved",
                     "product_code": "7698",
                     "options": [
-                        {"canonical_name": "Unit Linked Активные облигации"},
+                        {
+                            "product_code": "7698",
+                            "canonical_name": "Unit Linked Активные облигации",
+                        },
                     ],
                 },
                 {
                     "status": "resolved",
                     "product_code": "7698",
                     "options": [
-                        {"alias": "Unit Linked Активные облигации"},
+                        {
+                            "product_code": "7698",
+                            "canonical_name": "Unit Linked Активные облигации",
+                        },
                     ],
                 },
                 {
                     "status": "resolved",
                     "product_code": "7698",
                     "options": [
-                        {"canonical_name": "Unit Linked Стратегия роста"},
+                        {
+                            "product_code": "7698",
+                            "canonical_name": "Unit Linked Стратегия роста",
+                        },
                     ],
                 },
             ],
@@ -2331,8 +2356,12 @@ def test_product_resolutions_dedup_key_uses_option_name_fallback() -> None:
     )
 
     assert len(state["items"]) == 2
-    assert state["items"][0]["options"][0]["canonical_name"] == "Unit Linked Активные облигации"
-    assert state["items"][1]["options"][0]["canonical_name"] == "Unit Linked Стратегия роста"
+    assert state["items"][0]["options"] == [
+        {"code": "7698", "name": "Unit Linked Активные облигации"}
+    ]
+    assert state["items"][1]["options"] == [
+        {"code": "7698", "name": "Unit Linked Стратегия роста"}
+    ]
 
 
 @pytest.mark.unit

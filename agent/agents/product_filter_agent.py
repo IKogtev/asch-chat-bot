@@ -35,7 +35,6 @@ PRODUCT_FILTER_MODES = {
 
 
 class ProductFilterResponseSchema(BaseModel):
-    status: str = Field(description="Всегда указывай значение 'ok'.")
     mode: Literal[
         "product_filter",
         "product_compare",
@@ -54,23 +53,23 @@ class ProductFilterResponseSchema(BaseModel):
         default_factory=list,
         description="Таблицы, использованные в SQL текущего запуска.",
     )
-    resolved_product: dict[str, str] | None = Field(
+    resolved_product: dict[str, str | None] | None = Field(
         default=None,
         description="Подтверждённые code и name конкретного продукта, если нужны ответу.",
     )
     clarification_options: list[dict[str, str]] = Field(
         default_factory=list,
-        description="Варианты с code, name, term и currency; обязателен при needs_clarification.",
+        description="Варианты только с code и name; обязательны при needs_clarification.",
     )
-    products: list[dict[str, str]] = Field(
+    products: list[dict[str, str | None]] = Field(
         default_factory=list,
         description="Строки итогового списка: code, name, term, currency, folder_kit и is_active.",
     )
-    attribute_name: str = Field(
+    attribute_name: str | None = Field(
         default="",
         description="Понятное пользователю название свойства.",
     )
-    attribute_column: str = Field(
+    attribute_column: str | None = Field(
         default="",
         description="Подтверждённое каталогом техническое имя колонки свойства.",
     )
@@ -79,12 +78,38 @@ class ProductFilterResponseSchema(BaseModel):
         description="Значения свойства; непустой список обязателен при product_attribute_values.",
     )
 
-    @field_validator("status")
+    @field_validator("resolved_product", mode="before")
     @classmethod
-    def validate_status(cls, value: str) -> str:
-        if value != "ok":
-            raise ValueError("status must be 'ok'")
+    def normalize_absent_resolved_product(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip().lower() in {"none", "null"}:
+            return None
         return value
+
+    @field_validator("clarification_options", "attribute_values", mode="before")
+    @classmethod
+    def normalize_null_list_fields(cls, value: Any) -> Any:
+        return [] if value is None else value
+
+    @field_validator("clarification_options")
+    @classmethod
+    def validate_clarification_options(
+        cls,
+        value: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for option in value:
+            if set(option) != {"code", "name"}:
+                raise ValueError(
+                    "clarification option must contain only code and name"
+                )
+            code = option["code"].strip()
+            name = option["name"].strip()
+            if not code or not name:
+                raise ValueError(
+                    "clarification option code and name must be non-empty"
+                )
+            normalized.append({"code": code, "name": name})
+        return normalized
 
 
 def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,7 +124,7 @@ def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]
             stage="basic_fields",
             problem=f"invalid mode {mode!r}, expected one of {sorted(PRODUCT_FILTER_MODES)}",
             data=data,
-            fields=("status", "mode"),
+            fields=("mode",),
         )
     if mode == "product_attribute_values" and not parsed["attribute_values"]:
         raise build_validation_error(
@@ -165,8 +190,8 @@ You are product_filter_agent. Return one JSON object only, without markdown fenc
 Use state variables {user_query}, {product_filter_search_query}, {product_filter_intent}, {from_glossary}, {product_resolutions}, and {product_filter_resolution}.
 The product and abbreviation substitutions in product_filter_search_query are already applied in code. Do not invent facts, tables, fields, values, product names, or comparison results.
 First call search_semantic_template, inspect the data catalog, call search_analytic before every exact categorical filter, then execute the smallest read-only SQL query. Use only rows returned in this run.
-For product filters include is_active in the final product list and fill products from displayed rows. For attribute values fill attribute_name, attribute_column, and attribute_values. For comparisons use product_resolutions only as confirmed product codes, never as product facts. Write the user message in Russian.
-Return fields status, mode, message, used_tables, resolved_product, clarification_options, products, attribute_name, attribute_column, attribute_values.
+For product filters include is_active in the final product list and fill products from displayed rows. Unless the user explicitly requests archived products or all statuses, filter by is_active = 'Действующий'; confirm the exact categorical value with search_analytic first. If product_filter_resolution.status is partial, do not treat its product_codes as a complete result or ignore unmatched_terms. For attribute values fill attribute_name, attribute_column, and attribute_values. For comparisons use product_resolutions only as confirmed product codes, never as product facts. Write the user message in Russian.
+Use mode="needs_clarification" for clarification. Clarification options must use code and name keys. Omit unavailable optional product fields instead of returning null, and use empty strings for inapplicable attribute_name and attribute_column.
 """
     prompt_file = "product_filter_agent_prompt.md"
     config_params = {}

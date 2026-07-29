@@ -83,7 +83,6 @@ SQL_CONTEXT = {"_adk_tool_calls": ["execute_sql"]}
 def test_product_info_contract_accepts_card() -> None:
     result = product_info.validate_product_info_result(
         {
-            "status": "ok",
             "mode": "product_card",
             "message": "Карточка продукта",
             "used_tables": "products",
@@ -92,6 +91,7 @@ def test_product_info_contract_accepts_card() -> None:
         SQL_CONTEXT,
     )
 
+    assert "status" not in result
     assert result["used_tables"] == ["products"]
     assert result["resolved_product"] == {"code": "2832", "name": "Fort Knox"}
 
@@ -100,7 +100,6 @@ def test_product_info_contract_accepts_card() -> None:
 def test_product_info_contract_keeps_folder_kit_exception() -> None:
     result = product_info.validate_product_info_result(
         {
-            "status": "ok",
             "mode": "product_kit",
             "message": "Комплект готов",
             "resolved_product": {"code": "2832", "name": "Fort Knox", "folder_kit": "Fort Knox (2832)"},
@@ -115,7 +114,7 @@ def test_product_info_contract_keeps_folder_kit_exception() -> None:
 def test_product_info_rejects_filter_mode() -> None:
     with pytest.raises(ValueError, match="invalid mode"):
         product_info.validate_product_info_result(
-            {"status": "ok", "mode": "product_filter", "message": "x"},
+            {"mode": "product_filter", "message": "x"},
             SQL_CONTEXT,
         )
 
@@ -132,27 +131,24 @@ def test_product_info_factory_uses_response_schema() -> None:
 @pytest.mark.unit
 def test_product_info_response_schema_restricts_mode() -> None:
     with pytest.raises(Exception):
-        product_info.ProductInfoResponseSchema(status="ok", mode="product_filter", message="x")
+        product_info.ProductInfoResponseSchema(mode="product_filter", message="x")
 
 
 @pytest.mark.unit
-def test_product_info_response_schema_restricts_status_without_const() -> None:
-    with pytest.raises(Exception, match="status must be 'ok'"):
-        product_info.ProductInfoResponseSchema(
-            status="error",
-            mode="product_card",
-            message="x",
-        )
-
+def test_product_info_response_schema_omits_status() -> None:
     schema = product_info.ProductInfoResponseSchema.model_json_schema()
-    assert "const" not in schema["properties"]["status"]
-    assert schema["properties"]["status"]["type"] == "string"
+    response = product_info.ProductInfoResponseSchema(
+        mode="product_card",
+        message="x",
+    )
+
+    assert "status" not in schema["properties"]
+    assert "status" not in response.model_dump()
 
 
 @pytest.mark.unit
 def test_product_info_response_schema_parses_json_string_resolved_product() -> None:
     response = product_info.ProductInfoResponseSchema(
-        status="ok",
         mode="product_card",
         message="Карточка продукта",
         resolved_product='{"code": "8914", "name": "Фиксированный доход 1 год"}',
@@ -171,7 +167,6 @@ def test_product_info_response_schema_rejects_non_object_resolved_product(
 ) -> None:
     with pytest.raises(Exception, match="resolved_product must be a JSON object"):
         product_info.ProductInfoResponseSchema(
-            status="ok",
             mode="product_card",
             message="Карточка продукта",
             resolved_product=resolved_product,
