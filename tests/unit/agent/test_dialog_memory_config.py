@@ -25,7 +25,7 @@ def _load_config_module(monkeypatch):
     lite_llm_stub.LiteLlm = type(
         "LiteLlm",
         (),
-        {"__init__": lambda self, **kwargs: None},
+        {"__init__": lambda self, **kwargs: self.__dict__.update(kwargs)},
     )
 
     monkeypatch.setitem(sys.modules, "dotenv", dotenv_stub)
@@ -55,3 +55,34 @@ def test_dialog_memory_max_turns_reads_env(monkeypatch) -> None:
     config = _load_config_module(monkeypatch)
 
     assert config.AGENT_DIALOG_MEMORY_MAX_TURNS == 5
+
+
+@pytest.mark.unit
+def test_owasp_generation_settings_read_environment(monkeypatch) -> None:
+    monkeypatch.setenv("ROOT_TEMPERATURE", "0.8")
+    monkeypatch.setenv("OWASP_TEMPERATURE", "0.2")
+    monkeypatch.setenv("OWASP_TOP_P", "0.8")
+    monkeypatch.setenv("OWASP_MAX_OUTPUT_TOKENS", "128")
+    monkeypatch.setenv("OWASP_ENABLE_THINKING", "false")
+
+    config = _load_config_module(monkeypatch)
+
+    assert config.OWASP_TEMPERATURE == 0.2
+    assert config.OWASP_TOP_P == 0.8
+    assert config.OWASP_MAX_OUTPUT_TOKENS == 128
+    assert config.OWASP_ENABLE_THINKING is False
+
+
+@pytest.mark.unit
+def test_owasp_model_disables_thinking(monkeypatch) -> None:
+    monkeypatch.setenv("OWASP_ENABLE_THINKING", "false")
+    config = _load_config_module(monkeypatch)
+
+    common_model = config.build_common_model()
+    owasp_model = config.build_owasp_model()
+
+    assert common_model.extra_body["chat_template_kwargs"]["enable_thinking"] is True
+    assert common_model.extra_body["thinking_token_budget"] == 2048
+    assert owasp_model.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }

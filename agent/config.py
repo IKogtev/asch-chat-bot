@@ -35,6 +35,10 @@ LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", 4096))
 # AGENT TEMPERATURES
 # =============================================================================
 ROOT_TEMPERATURE = float(os.getenv("ROOT_TEMPERATURE", 0.0))
+OWASP_TEMPERATURE = float(os.getenv("OWASP_TEMPERATURE", ROOT_TEMPERATURE))
+OWASP_TOP_P = float(os.getenv("OWASP_TOP_P", 0.8))
+OWASP_MAX_OUTPUT_TOKENS = int(os.getenv("OWASP_MAX_OUTPUT_TOKENS", 128))
+OWASP_ENABLE_THINKING = os.getenv("OWASP_ENABLE_THINKING", "true").strip().lower() == "true"
 DISPATCHER_TEMPERATURE = float(os.getenv("DISPATCHER_TEMPERATURE", ROOT_TEMPERATURE))
 DOC_SEARCH_TEMPERATURE = float(os.getenv("DOC_SEARCH_TEMPERATURE", ROOT_TEMPERATURE))
 KB_ANSWER_TEMPERATURE = float(os.getenv("KB_ANSWER_TEMPERATURE", ROOT_TEMPERATURE))
@@ -101,21 +105,35 @@ logger = setup_logger("agent_chain", "agent.log")
 from google.adk.models.lite_llm import LiteLlm
 from typing import Any, Dict, List, Optional, Protocol
 
-def build_common_model() -> LiteLlm:
-    """
-    Создает общую модель LiteLlm для всех агентов.
-    """
+def _build_model(*, enable_thinking: bool) -> LiteLlm:
+    extra_body: Dict[str, Any] = {
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
+    }
+    if enable_thinking:
+        extra_body["thinking_token_budget"] = 2048
+
     return LiteLlm(
         model=LLM_API_MODEL,
         api_key=LLM_API_KEY,
         api_base=LLM_API_URL,
         timeout=LITELLM_REQUEST_TIMEOUT,
         num_retries=LITELLM_NUM_RETRIES,
-        extra_body={
-            "chat_template_kwargs": {"enable_thinking": True},
-            "thinking_token_budget": 2048,
-        }
+        extra_body=extra_body,
     )
+
+
+def build_common_model() -> LiteLlm:
+    """
+    Создает общую модель LiteLlm для агентов, которым нужен thinking mode.
+    """
+    return _build_model(enable_thinking=True)
+
+
+def build_owasp_model() -> LiteLlm:
+    """
+    Создает отдельную LiteLlm с настройкой thinking mode для OWASP-классификатора.
+    """
+    return _build_model(enable_thinking=OWASP_ENABLE_THINKING)
 
 # =============================================================================
 # KB BACKEND PROTOCOL & STUB
