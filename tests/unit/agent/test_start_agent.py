@@ -33,7 +33,10 @@ def _load_start_agent_module(monkeypatch):
     config_stub = types.ModuleType("agent.config")
     config_stub.ACTIVE_DOCUMENTS_COLLECTION = "active_docs"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb_docs"
-    config_stub.build_common_model = lambda: object()
+    common_model = object()
+    owasp_model = object()
+    config_stub.build_common_model = lambda: common_model
+    config_stub.build_owasp_model = lambda: owasp_model
 
     def _agent_factory(name):
         return lambda model: types.SimpleNamespace(name=name, model=model)
@@ -100,3 +103,4 @@ def test_start_agent_exports_app(monkeypatch) -> None:
     assert module.root_agent.smalltalk_agent.name == "smalltalk_agent"
     assert module.root_agent.product_info_agent.name == "product_info_agent"
     assert module.root_agent.product_filter_agent.name == "product_filter_agent"
+    assert module.root_agent.owasp_agent.model is not module.root_agent.dispatcher_agent.model

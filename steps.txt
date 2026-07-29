@@ -863,3 +863,8 @@ Update prompt in section ### `product_filter`. True algorithm for displaing rppe
 1. if agent use template from semantic_templates, then display in () all properties from display_columns except code and name
 2. if agent do not use any template, then display in () only product_type
 correct prompt
+============
+There is log from testing on another site: logs\1.txt
+Analize this log and:
+- find problems for owasp_agent
+- type numbered causes of that promlems

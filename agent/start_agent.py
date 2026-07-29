@@ -5,6 +5,7 @@ from .config import (
     ACTIVE_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
     build_common_model,
+    build_owasp_model,
 )
 from .agents.owasp_agent import create_owasp_agent
 from .agents.dispatcher_agent import create_dispatcher_agent
@@ -20,6 +21,7 @@ def build_agent_chain() -> RootAgent:
     Создает полную цепочку агентов.
     """
     model = build_common_model()
+    owasp_model = build_owasp_model()
 
     doc_search_agent = create_doc_search_agent(model)
     doc_search_orchestrator = create_doc_search_orchestrator(
@@ -30,7 +32,7 @@ def build_agent_chain() -> RootAgent:
     product_info_agent = create_product_info_agent(model)
     product_filter_agent = create_product_filter_agent(model)
     dispatcher_agent = create_dispatcher_agent(model)
-    owasp_agent = create_owasp_agent(model)
+    owasp_agent = create_owasp_agent(owasp_model)
     smalltalk_agent = create_smalltalk_agent(model)
 
     return RootAgent(
