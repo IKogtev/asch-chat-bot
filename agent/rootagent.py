@@ -1,7 +1,9 @@
 import json
 import re
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, ClassVar
-
+from dataclasses import dataclass, field
+from collections import OrderedDict, deque
+import asyncpg
 from google.genai import types as genai_types
 from google.adk.agents import BaseAgent, LlmAgent, InvocationContext
 from google.adk.events import Event, EventActions
@@ -14,7 +16,6 @@ from .config import (
     FAQ_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
     DATABASE_URL,
-    COMPARE_FRAZE,
     PRODUCT_CARD_KIT_OFFER
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
@@ -34,19 +35,15 @@ from .stage_metrics import (
     TIMING_STATE_DELTA_KEY,
     build_timing_payload,
 )
-from collections import OrderedDict, deque
-import asyncpg
 
 logger = setup_logger("root_agent", "agent.log")
 
-OWASP_INVALID_CONTRACT_REASON = "invalid_contract"
 OWASP_INVALID_CONTRACT_USER_MESSAGE = (
     "Извините, ваш запрос не может быть обработан. Пожалуйста, переформулируйте вопрос."
 )
 
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
-VALIDATION_ERROR_USER_MESSAGE = "Не удалось корректно обработать запрос. Попробуйте переформулировать вопрос."
-RECOVERY_MESSAGE = (
+VALIDATION_ERROR_USER_MESSAGE = (
     "Я не смогла корректно обработать запрос.\n\n"
     "Попробуйте:\n"
     "• уточнить формулировку вопроса;\n"
@@ -58,7 +55,6 @@ RESPONSE_SCHEMA_CONFIGURATION_ERROR_MESSAGE = (
     "Сервис временно недоступен из-за внутренней ошибки конфигурации. "
     "Переформулирование запроса или /reset не поможет. Попробуйте позже."
 )
-VALIDATION_ERROR_USER_MESSAGE = RECOVERY_MESSAGE
 OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
@@ -69,11 +65,38 @@ PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство тебя интересует ?"
 )
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
-DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
+
+# Скомпилированные регулярные выражения (оптимизация производительности)
+RE_CLEAN_SPACES = re.compile(r"\s+")
+RE_PRODUCT_CODES = re.compile(r"\b\d{3,}(?:\+\d{3,})?\b")
+RE_BLIND_TRIGGERS = re.compile(
+    r"\b(скач\w*|пришл\w*|отправ\w*|дай|дать|комплект\w*|материал\w*|документ\w*|давай|ок|хорошо|ладно|параметр\w*|карточк\w*|свойств\w*|характеристик\w*|подробн\w*|покаж\w*|расскаж\w*|презентац\w*|презентер\w*|памятк\w*|инструкц\w*|регламент\w*|шаблон\w*|пф|полис\w*|договор\w*|буклет\w*|нем|о\s+нем|ней|о\s+ней|этом|об\s+этом|программе|продукт\w*|программа|его|ее|них|покажи|выведи|открой|найди|скинь|кидай|хочу|пакет\s+документов|пакет\s+материалов|комплект\s+документов|полный\s+комплект|нужен|скачать|скинь|пришли|отправь|про|по|для|на|в|во|с|со|к|ко|о|об|и|а|но|да|же|бы|ли)\b"
+)
+RE_EXPLICIT_KIT = re.compile(r"\b(пакет документов|пакет материалов|полный комплект|все материалы|комплект|пакет)\b")
+RE_ASKING_LIST = re.compile(r"\b(какие|что за|список|покажи список|есть ли)\b")
+RE_EXPLICIT_FILTER = re.compile(r"\b(архивные|все продукты|список продуктов|покажи продукты|покажи архивные)\b")
+RE_CONFIRMATION_WORDS = {"давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"}
+RE_PRODUCT_NAME_TRIM = re.compile(r"(?i)^(найди|покажи|выведи|открой|документы|доки|по|для|скачать|файл|файлы|материалы|презентацию|презентер|памятку|инструкцию|регламент|шаблон|список)\s+")
+
+# Полный список ключей состояния, очищаемых перед каждым ходом
+STATE_KEYS_TO_CLEAR = [
+    "user_query", "search_query", "faq_collection", "kb_answer_collection", "intent",
+    "dispatcher_user_query", "doc_search_query", "doc_search_intent",
+    "product_info_search_query", "product_info_intent",
+    "product_filter_search_query", "product_filter_intent",
+    "from_glossary", "_from_glossary", "_owasp_result_parsed",
+    "_dispatcher_result_parsed", "_doc_search_result_parsed",
+    "_kb_answer_result_parsed", "_smalltalk_result_parsed",
+    "_product_info_result_parsed", "_product_filter_result_parsed",
+    "product_info_result_json", "product_filter_result_json",
+    "_root_final_text", "_bot_action", "product_resolution",
+    "product_resolutions", "product_filter_resolution",
+    "owasp_current_user_message", "owasp_recent_messages_json",
+    STAGE_METRICS_STATE_KEY,
+]
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
-    t = (text or "").lstrip()
-    return t.startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
+    return (text or "").lstrip().startswith(BOT_USER_PROFILE_MESSAGE_PREFIX)
 
 def is_response_schema_configuration_error(exc: Exception) -> bool:
     message = str(exc).lower()
@@ -99,18 +122,32 @@ async def is_history_empty_by_global_id(global_user_id: str) -> bool:
                 WHERE user_id = $1
             );
         """, global_user_id)
-        
         await conn.close()
         return count == 0  # Если 0, значит история пуста (был /reset)
     except Exception as e:
         logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
         return False
+
+@dataclass
+class PipelineContext:
+    """Единый контейнер данных текущего шага пайплайна."""
+    ctx: Any
+    user_text: str
+    clean_text: str
+    session_id: str
+    last_route: Optional[str] = None
+    last_intent: Optional[str] = None
+    last_search_query: Optional[str] = None
+    last_product: Optional[str] = None
+    product_dialog_context: Optional[Dict[str, Any]] = None
+    doc_search_context: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
 class RootAgent(BaseAgent):
     """
     Оркестратор цепочки:
     owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
     """
-
     owasp_agent: LlmAgent
     dispatcher_agent: LlmAgent
     doc_search_orchestrator: DocSearchOrchestrator
@@ -123,7 +160,6 @@ class RootAgent(BaseAgent):
     faq_collection: str
     kb_collection: str
 
-    model_config = {"arbitrary_types_allowed": True}
     MAX_HISTORY_PER_USER: ClassVar[int] = 3  # Сколько последних запросов хранить для ОДНОГО пользователя
     # Глобальный кэш для сохранения контекста при 409 Conflict (сплите сессий)
     # Ключом будет базовый session_id, значением — словарь с контекстом
@@ -176,10 +212,8 @@ class RootAgent(BaseAgent):
         2) затем fallback из `ctx.session.state`, если профиль есть только в сессии.
         """
         profile: Dict[str, Any] = {}
-
         user_state = getattr(getattr(ctx, "user", None), "state", None) or {}
         session_state = getattr(getattr(ctx, "session", None), "state", None) or {}
-
         for key in (
             "first_name",
             "last_name",
@@ -192,10 +226,8 @@ class RootAgent(BaseAgent):
             value = user_state.get(key)
             if value in (None, ""):
                 value = session_state.get(key)
-
             if value not in (None, ""):
                 profile[key] = value
-
         return profile
 
     @staticmethod
@@ -212,7 +244,6 @@ class RootAgent(BaseAgent):
                     out.append(text)
             if out:
                 return "\n".join(out).strip()
-
         return ""
 
     @staticmethod
@@ -277,9 +308,7 @@ class RootAgent(BaseAgent):
             # Автоматически управляем списком документов
             if dispatch.get("route") == "doc_search":
                 intent = str(dispatch.get("intent") or "")
-                if intent in DOC_LIST_FOLLOWUP_INTENTS:
-                    pass
-                elif intent == "doc_search" and text.strip():
+                if intent not in DOC_LIST_FOLLOWUP_INTENTS and intent == "doc_search" and text.strip():
                     ctx.session.state["last_document_list"] = text[:1500]
                     # Автоматическое сохранение контекста продукта из найденных документов ---
                     codes = self._extract_product_codes(text)
@@ -289,9 +318,8 @@ class RootAgent(BaseAgent):
                     if first_code:
                         match_name = re.search(r"(?:^|\d+\.\s*)([^\n()]+)\s*\(" + re.escape(first_code) + r"\)", text)
                         if match_name:
-                            name_guess = match_name.group(1).strip()
                             # Очищаем от процентов доходности в хвосте, если они прилипли
-                            name_guess = re.sub(r"\s+\d+([.,]\d+)?%\s*$", "", name_guess).strip()
+                            name_guess = re.sub(r"\s+\d+([.,]\d+)?%\s*$", "", match_name.group(1).strip()).strip()
                     
                     # Fallback: если в тексте ответа нет кодов, берем название из search_query или user_text
                     if not name_guess:
@@ -300,20 +328,12 @@ class RootAgent(BaseAgent):
                         if sq and len(sq) > 2 and not re.fullmatch(r"(?i)(документы|файлы|материалы|список)", sq):
                             name_guess = sq
                         elif user_text:
-                            name_guess = re.sub(
-                                r"(?i)^(найди|покажи|выведи|открой|документы|доки|по|для|скачать|файл|файлы|материалы|презентацию|презентер|памятку|инструкцию|регламент|шаблон|список)\s+", 
-                                "", 
-                                user_text
-                            ).strip()
+                            name_guess = RE_PRODUCT_NAME_TRIM.sub("", user_text).strip()
                             name_guess = re.sub(r"(?i)\bпо\b\s*", "", name_guess).strip()
                     # Если имя удалось определить, сохраняем контекст
                     if name_guess:
                         # Записываем в плоскую строку для _get_last_product_from_state
-                        if first_code:
-                            ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip()
-                        else:
-                            ctx.session.state["last_product"] = name_guess.strip()
-                            
+                        ctx.session.state["last_product"] = f"{name_guess} (код {first_code})".strip() if first_code else name_guess.strip()
                         # Записываем в структурированный контекст для _get_selected_product_from_context
                         current_context = self._get_product_dialog_context(ctx) or {}
                         current_context["last_mode"] = "product_card"
@@ -324,7 +344,7 @@ class RootAgent(BaseAgent):
                         current_context["products"] = [selected_prod]
                         ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
                         logger.info("Auto-saved product context from doc_search: code=%s, name=%s", first_code, name_guess)
-                else:
+                elif intent not in DOC_LIST_FOLLOWUP_INTENTS:
                     ctx.session.state["last_document_list"] = ""
             else:
                 ctx.session.state["last_document_list"] = ""
@@ -349,19 +369,15 @@ class RootAgent(BaseAgent):
                 "last_product": ctx.session.state.get("last_product"),
                 "_product_dialog_context": ctx.session.state.get("_product_dialog_context"),
             }
-
             # 1. Если пользователя еще нет в кэше — создаем для него личную очередь
             if clean_id not in self._CROSS_SESSION_CACHE:
                 # Инициализируем деку с жестким редактируемым лимитом размера
                 self._CROSS_SESSION_CACHE[clean_id] = deque(maxlen=self.MAX_HISTORY_PER_USER)
-            
             # 2. Добавляем текущее состояние в деку пользователя. 
             # Благодаря maxlen, если там уже было 3 записи, самая старая удалится автоматически!
             self._CROSS_SESSION_CACHE[clean_id].append(current_state)
-            
             # 3. Передвигаем пользователя в конец OrderedDict, так как он совершил действие (LRU-логика)
             self._CROSS_SESSION_CACHE.move_to_end(clean_id)
-            
             logger.debug(
                 "State saved for user %s. User history size: %d/%d. Total users in cache: %d",
                 clean_id,
@@ -369,7 +385,6 @@ class RootAgent(BaseAgent):
                 self.MAX_HISTORY_PER_USER,
                 len(self._CROSS_SESSION_CACHE)
             )
-
         return self._build_final_event(ctx, text)
 
     @staticmethod
@@ -386,10 +401,8 @@ class RootAgent(BaseAgent):
     def _retained_dialog_memory_events(events: List[Any], max_turns: int) -> List[Any]:
         if max_turns <= 0:
             return list(events)
-
         user_turn_indices = [
-            idx
-            for idx, event in enumerate(events)
+            idx for idx, event in enumerate(events)
             if RootAgent._is_dialog_memory_event(event)
             and getattr(getattr(event, "content", None), "role", None) == "user"
         ]
@@ -407,9 +420,7 @@ class RootAgent(BaseAgent):
         )
         if len(retained_events) == len(events):
             return
-
         ctx.session.events = retained_events
-
         logger.info(
             "Dialog memory trimmed in current invocation: kept_events=%s removed_events=%s max_turns=%s",
             len(retained_events),
@@ -424,41 +435,8 @@ class RootAgent(BaseAgent):
 
     def _reset_turn_state(self, ctx: InvocationContext) -> None:
         """Сбрасывает служебное состояние перед новым пользовательским сообщением."""
-        self._clear_state_keys(
-            ctx,
-            [
-                "user_query",
-                "search_query",
-                "faq_collection",
-                "kb_answer_collection",
-                "intent",
-                "dispatcher_user_query",
-                "doc_search_query",
-                "doc_search_intent",
-                "product_info_search_query",
-                "product_info_intent",
-                "product_filter_search_query",
-                "product_filter_intent",
-                "from_glossary",
-                "_owasp_result_parsed",
-                "_dispatcher_result_parsed",
-                "_doc_search_result_parsed",
-                "_kb_answer_result_parsed",
-                "_smalltalk_result_parsed",
-                "_product_info_result_parsed",
-                "_product_filter_result_parsed",
-                "product_info_result_json",
-                "product_filter_result_json",
-                "_root_final_text",
-                "_bot_action",
-                "product_resolution",
-                "product_resolutions",
-                "product_filter_resolution",
-                "owasp_current_user_message",
-                "owasp_recent_messages_json",
-                STAGE_METRICS_STATE_KEY,
-            ],
-        )
+        self._clear_state_keys(ctx, STATE_KEYS_TO_CLEAR)
+
     def _get_recent_messages(self, ctx: InvocationContext) -> List[Dict[str, str]]:
         """Возвращает сохраненное ограниченное окно недавних сообщений."""
         value = ctx.session.state.get(OWASP_HISTORY_STATE_KEY)
@@ -483,9 +461,8 @@ class RootAgent(BaseAgent):
         """Добавляет сообщение в bounded history, игнорируя пустые записи."""
         normalized_role = str(role or "").strip()
         normalized_text = str(text or "").strip()
-        if normalized_role not in {"user", "assistant"} or not normalized_text:
+        if normalized_role in {"user", "assistant"} or not normalized_text:
             return
-
         history = self._get_recent_messages(ctx)
         history.append({"role": normalized_role, "text": normalized_text})
         self._store_recent_messages(ctx, history)
@@ -511,25 +488,12 @@ class RootAgent(BaseAgent):
         Возвращает `show_more` или `show_all`, если сообщение похоже на команду
         продолжения уже показанного списка документов.
         """
-        t = user_text.strip().lower().replace("ё", "е")
-        t = re.sub(r"\s+", " ", t)
+        t = RE_CLEAN_SPACES.sub(" ", user_text.strip().lower().replace("ё", "е"))
         if not t:
             return None
-        if re.fullmatch(r"все[!?.]*", t):
+        if re.fullmatch(r"(все|полностью|целиком|all|(покажи|дай|выведи|открой)\s+все|(покажи|выведи)\s+полностью)[!?.]*", t):
             return "show_all"
-        if re.fullmatch(r"(полностью|целиком)([!?.]*)", t):
-            return "show_all"
-        if re.fullmatch(r"all([!?.]*)", t):
-            return "show_all"
-        if re.fullmatch(r"(покажи|дай|выведи|открой)\s+все([!?.]*)", t):
-            return "show_all"
-        if re.fullmatch(r"(покажи|выведи)\s+полностью([!?.]*)", t):
-            return "show_all"
-        if re.fullmatch(r"(еще|больше|далее|следующие)([!?.]*)", t):
-            return "show_more"
-        if re.fullmatch(r"(еще)\s+(файлы|документы)([!?.]*)", t):
-            return "show_more"
-        if re.fullmatch(r"(next|more)([!?.]*)", t):
+        if re.fullmatch(r"(еще|больше|далее|следующие|(еще)\s+(файлы|документы)|next|more)[!?.]*", t):
             return "show_more"
         return None
 
@@ -555,28 +519,20 @@ class RootAgent(BaseAgent):
             term = str(option.get("term") or "").strip()
             currency = str(option.get("currency") or "").strip()
             details = [item for item in (term, currency) if item]
-            if option_code and name:
-                label = f"{option_code} {name}"
-            else:
-                label = option_code or name
-            if details:
-                label = f"{label} - {', '.join(details)}"
-            return label.strip()
-
+            label = f"{option_code} {name}".strip() if (option_code and name) else (option_code or name)
+            return f"{label} - {', '.join(details)}" if details else label
         return str(option or "").strip()
 
     @classmethod
     def _format_product_answer(cls, product_result: Dict[str, Any]) -> str:
         message = format_text_answer(product_result["message"])
         mode = product_result.get("mode")
-        if mode == "product_filter":
-            if PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
-                message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
+        if mode == "product_filter" and PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
+            message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
             return message
 
-        if mode == "product_attribute_values":
-            if PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION not in message:
-                message = "\n\n".join([message, PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION])
+        if mode == "product_attribute_values" and PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION not in message:
+            message = "\n\n".join([message, PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION])
             return message
 
         if mode == "product_card":
@@ -586,7 +542,6 @@ class RootAgent(BaseAgent):
                 message = message + f"\n\n {PRODUCT_CARD_KIT_OFFER}"
             return message
         if mode == "needs_clarification":
-            
             options = [
                 cls._format_clarification_option(option)
                 for option in product_result.get("clarification_options") or []
@@ -594,29 +549,22 @@ class RootAgent(BaseAgent):
             options = [option for option in options if option]
             if not options:
                 return message
-
             return_message = "\n".join([message, *options])
-            # if COMPARE_FRAZE not in return_message:
-            #     return_message += f"\n\n {COMPARE_FRAZE}"
             return return_message
-
         return message
-
 
     @staticmethod
     def _normalize_product_dialog_text(text: str) -> str:
-        value = str(text or "").lower().replace("ё", "е")
-        return re.sub(r"\s+", " ", value).strip()
+        return RE_CLEAN_SPACES.sub(" ", str(text or "").lower().replace("ё", "е")).strip()
 
     @staticmethod
     def _extract_product_codes(text: str) -> List[str]:
-        return re.findall(r"\b\d{3,}(?:\+\d{3,})?\b", text or "")
+        return RE_PRODUCT_CODES.findall(text or "")
 
     @staticmethod
     def _normalize_dialog_products(value: Any) -> List[Dict[str, str]]:
         if not isinstance(value, list):
             return []
-
         products: List[Dict[str, str]] = []
         for item in value:
             if not isinstance(item, dict):
@@ -637,18 +585,10 @@ class RootAgent(BaseAgent):
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
 
-    @classmethod
-    def clear_user_cache(cls, user_id: str) -> None:
-        """Полностью удаляет RAM-историю запросов конкретного пользователя"""
-        if user_id in cls._CROSS_SESSION_CACHE:
-            cls._CROSS_SESSION_CACHE.pop(user_id, None)
-            logger.info(f"Cross-session FIFO cache successfully cleared for user: {user_id}")
-
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
         if not isinstance(value, list):
             return []
-
         values: List[str] = []
         seen: set[str] = set()
         for item in value:
@@ -694,30 +634,16 @@ class RootAgent(BaseAgent):
                 self._clear_product_dialog_context(ctx)
             return
 
-        if mode == "product_card":
-            resolved_product = product_result.get("resolved_product")
-            products = self._normalize_dialog_products([resolved_product])
-            if products:
+        if mode in {"product_card", "product_kit"}:
+            if products := self._normalize_dialog_products([product_result.get("resolved_product")]):
                 previous = self._get_product_dialog_context(ctx)
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
-                    "last_mode": "product_card",
+                    "last_mode": mode,
                     "products": previous.get("products") or products,
                     "selected_product": products[0],
                 }
             return
-
-        if mode == "product_kit":
-            resolved_product = product_result.get("resolved_product")
-            products = self._normalize_dialog_products([resolved_product])
-            if products:
-                previous = self._get_product_dialog_context(ctx)
-                ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
-                    "last_mode": "product_kit",
-                    "products": previous.get("products") or products,
-                    "selected_product": products[0],
-                }
-            return
-
+            
         if mode == "no_data":
             self._clear_product_dialog_context(ctx)
             return
@@ -787,14 +713,10 @@ class RootAgent(BaseAgent):
         explicit_codes = self._extract_product_codes(user_text)
         if explicit_codes:
             return False
-            
         normalized = self._normalize_product_dialog_text(user_text)
-        
         # Удаляем триггеры, местоимения и предлоги
-        blind_triggers = r"\b(скач\w*|пришл\w*|отправ\w*|дай|дать|комплект\w*|материал\w*|документ\w*|давай|ок|хорошо|ладно|параметр\w*|карточк\w*|свойств\w*|характеристик\w*|подробн\w*|покаж\w*|расскаж\w*|презентац\w*|презентер\w*|памятк\w*|инструкц\w*|регламент\w*|шаблон\w*|пф|полис\w*|договор\w*|буклет\w*|нем|о\s+нем|ней|о\s+ней|этом|об\s+этом|программе|продукт\w*|программа|его|ее|них|покажи|выведи|открой|найди|скинь|кидай|хочу|пакет\s+документов|пакет\s+материалов|комплект\s+документов|полный\s+комплект|нужен|скачать|скинь|пришли|отправь|про|по|для|на|в|во|с|со|к|ко|о|об|и|а|но|да|же|бы|ли)\b"
-        clean_msg = re.sub(blind_triggers, "", normalized)
+        clean_msg = RE_BLIND_TRIGGERS.sub("", normalized)
         clean_msg = re.sub(r"[^\w\s]", "", clean_msg).strip()
-        
         # Если после очистки что-то осталось (например, "фн", "зк 2 года") - это явный запрос
         return len(clean_msg) == 0
 
@@ -939,20 +861,17 @@ class RootAgent(BaseAgent):
         context = self._get_product_dialog_context(ctx)
         if context.get("last_mode") != "needs_clarification":
             return None
-
         options = self._normalize_dialog_products(
             context.get("clarification_options") or context.get("products") or []
         )
         if not options:
             return None
-
         codes = self._extract_product_codes(user_text)
         if len(codes) == 1:
             code = codes[0]
             for option in options:
                 if option.get("code") == code:
                     return option
-
         normalized = self._normalize_product_dialog_text(user_text)
         matches: List[Dict[str, str]] = []
         for option in options:
@@ -1033,89 +952,55 @@ class RootAgent(BaseAgent):
                 dict(ctx.session.state),
             )
 
-        if pending_intent == "product_kit":
-            target = code or name
-            return validate_dispatcher_result(
-                {
-                    "status": "ok",
-                    "route": "product_info",
-                    "intent": "product_kit",
-                    "reason": "product_kit_clarification_followup",
-                    "search_query": f"скачать комплект документов по продукту {target}",
-                },
-                dict(ctx.session.state),
-            )
-
-        target = code or name
+        intent = "product_kit" if pending_intent == "product_kit" else "product_card"
+        query_action = "скачать комплект документов по продукту" if intent == "product_kit" else "показать карточку продукта"
         return validate_dispatcher_result(
-            {
-                "status": "ok",
-                "route": "product_info",
-                "intent": "product_card",
-                "reason": "product_card_clarification_followup",
-                "search_query": f"показать карточку продукта {target}",
-            },
+            {"status": "ok", "route": "product_info", "intent": intent, "reason": f"{intent}_clarification_followup", "search_query": f"{query_action} {code or name}"},
             dict(ctx.session.state),
         )
 
     @staticmethod
-    def _product_resolution_to_state(value: Any) -> Dict[str, Any]:
+    def _to_dict(value: Any) -> Dict[str, Any]:
+        """Универсальная конвертация объектов с методом to_dict() в dict."""
         if hasattr(value, "to_dict"):
-            data = value.to_dict()
-        elif isinstance(value, dict):
-            data = value
-        else:
-            return {}
-        return RootAgent._canonicalize_resolution_options(data)
+            return value.to_dict()
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _product_resolution_to_state(value: Any) -> Dict[str, Any]:
+        data = RootAgent._to_dict(value)
+        return RootAgent._canonicalize_resolution_options(data) if data else {}
 
     @staticmethod
     def _canonicalize_resolution_options(data: Dict[str, Any]) -> Dict[str, Any]:
         options = data.get("options")
         if not isinstance(options, list):
             return data
-
         canonical_options = []
         for option in options:
-            if not isinstance(option, dict):
-                continue
-            code = str(option.get("product_code") or "").strip()
-            name = str(option.get("canonical_name") or "").strip()
-            if not code or not name:
-                continue
-
-            canonical_options.append({"code": code, "name": name})
-
+            if isinstance(option, dict):
+                code = str(option.get("product_code") or "").strip()
+                name = str(option.get("canonical_name") or "").strip()
+                if code and name:
+                    canonical_options.append({"code": code, "name": name})
         return {**data, "options": canonical_options}
 
     @staticmethod
     def _product_resolutions_to_state(value: Any) -> Dict[str, Any]:
-        if hasattr(value, "to_dict"):
-            data = value.to_dict()
-        elif isinstance(value, dict):
-            data = value
-        else:
-            return {}
-
-        if not isinstance(data, dict):
-            return {}
-
-        items = data.get("items")
-        if not isinstance(items, list):
+        data = RootAgent._to_dict(value)
+        if not data or not isinstance(data.get("items"), list):
             return data
 
-        unique_items = []
-        seen_keys = set()
-        for item in items:
+        unique_items, seen_keys = [], set()
+        for item in data["items"]:
             if not isinstance(item, dict):
                 unique_items.append(item)
                 continue
-
             dedup_key = RootAgent._product_resolution_dedup_key(item)
             if dedup_key is not None:
                 if dedup_key in seen_keys:
                     continue
                 seen_keys.add(dedup_key)
-
             unique_items.append(RootAgent._canonicalize_resolution_options(item))
 
         return {**data, "items": unique_items}
@@ -1125,13 +1010,11 @@ class RootAgent(BaseAgent):
         product_code = str(item.get("product_code", "")).strip()
         if not product_code:
             return None
-
         name = str(
             item.get("product_name")
             or item.get("canonical_name")
             or ""
         ).strip()
-
         options = item.get("options")
         if not name and isinstance(options, list) and options:
             first_option = options[0]
@@ -1141,22 +1024,14 @@ class RootAgent(BaseAgent):
                     or first_option.get("alias")
                     or ""
                 ).strip()
-
         normalized_name = " ".join(name.casefold().split())
         return product_code, normalized_name
 
     @staticmethod
     def _product_filter_resolution_to_state(value: Any) -> Dict[str, Any]:
-        if hasattr(value, "to_dict"):
-            data = value.to_dict()
-        elif isinstance(value, dict):
-            data = value
-        else:
+        data = RootAgent._to_dict(value)
+        if not data:
             return {}
-
-        if not isinstance(data, dict):
-            return {}
-
         return {
             "status": data.get("status"),
             "query": data.get("query"),
@@ -1187,7 +1062,7 @@ class RootAgent(BaseAgent):
             )
             return
 
-        if intent == "product_compare":
+        elif intent == "product_compare":
             result = await self.product_resolver.resolve_products(query)
             ctx.session.state["product_resolutions"] = self._product_resolutions_to_state(
                 result
@@ -1198,7 +1073,7 @@ class RootAgent(BaseAgent):
             )
             return
 
-        if intent in {"product_card", "product_kit"}:
+        elif intent in {"product_card", "product_kit"}:
             result = await self.product_resolver.resolve_product(query)
             ctx.session.state["product_resolution"] = self._product_resolution_to_state(
                 result
@@ -1207,13 +1082,6 @@ class RootAgent(BaseAgent):
                 "product_resolution state: %s",
                 ctx.session.state["product_resolution"],
             )
-    
-    def _is_contextual_product_request(self, text: str) -> bool:
-        """Проверяет, является ли запрос ссылкой на контекстный продукт."""
-        normalized = text.lower().strip()
-        triggers = ["о нем", "про него", "расскажи", "покажи", "параметры", "подробнее", "характеристики"]
-        # Если запрос короткий и содержит маркеры контекста
-        return len(normalized) < 30 and any(t in normalized for t in triggers)
     
     def _get_explicit_intent_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
         """
@@ -1224,13 +1092,8 @@ class RootAgent(BaseAgent):
             return None
 
         # 1. Явный запрос комплекта/документов (но не "какие документы есть" -> это фильтр)
-        is_explicit_kit = bool(
-            re.search(
-                r"\b(пакет документов|пакет материалов|полный комплект|все материалы|комплект|пакет)\b",
-                normalized,
-            )
-        )
-        is_asking_list = bool(re.search(r"\b(какие|что за|список|покажи список|есть ли)\b", normalized))
+        is_explicit_kit = bool(RE_EXPLICIT_KIT.search(normalized))
+        is_asking_list = bool(RE_ASKING_LIST.search(normalized))
         
         if is_explicit_kit and not is_asking_list:
             # ЕСЛИ ПОЛЬЗОВАТЕЛЬ ЯВНО УКАЗАЛ НОВЫЙ ПРОДУКТ, ОТДАЕМ ДИСПЕТЧЕРУ
@@ -1273,7 +1136,7 @@ class RootAgent(BaseAgent):
             )
 
         # 2. Явный запрос списка/архива/фильтра
-        if re.search(r"\b(архивные|все продукты|список продуктов|покажи продукты|покажи архивные)\b", normalized):
+        if RE_EXPLICIT_FILTER.search(normalized):
             return validate_dispatcher_result(
                 {
                     "status": "ok",
@@ -1287,11 +1150,7 @@ class RootAgent(BaseAgent):
         # 3. Перехват контекстного согласия ("давай", "пришли", "отправь") сразу после показа карточки продукта
         last_route = ctx.session.state.get("last_route")
         last_intent = ctx.session.state.get("last_intent")
-        is_confirmation = normalized in [
-            "давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", 
-            "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"
-        ]
-        if last_route == "product_info" and last_intent == "product_card" and is_confirmation:
+        if last_route == "product_info" and last_intent == "product_card" and normalized in RE_CONFIRMATION_WORDS:
             product = self._find_product_in_dialog_context(ctx, user_text, allow_selected_product=True)
             if not product:
                 product = self._get_selected_product_from_context(ctx)
@@ -1312,8 +1171,7 @@ class RootAgent(BaseAgent):
                         "search_query": query, 
                     },
                     dict(ctx.session.state),
-                )
-            
+                )     
         return None
 
     def _product_followup_dispatch(self, ctx: InvocationContext, user_text: str) -> Dict[str, Any] | None:
@@ -1393,9 +1251,8 @@ class RootAgent(BaseAgent):
         # Дополнительная подстраховка: если это триггер согласия после просмотра карточки
         last_route = ctx.session.state.get("last_route")
         last_intent = ctx.session.state.get("last_intent")
-        if last_route == "product_info" and last_intent == "product_card":
-            if normalized in ["давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо"]:
-                asks_kit = True
+        if last_route == "product_info" and last_intent == "product_card" and normalized in RE_CONFIRMATION_WORDS:
+            asks_kit = True
 
         if not asks_kit and not asks_card and not asks_doc:
             return None
@@ -1633,22 +1490,26 @@ class RootAgent(BaseAgent):
         ):
             yield event
 
-    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+    async def _prepare_pipeline_context(self, ctx: Any) -> PipelineContext:
+        """
+        Извлекает и нормализует данные из сессии и текущего вызова ctx.
+        Инициализирует базовое состояние для дальнейшей обработки.
+        """
         user_text = self._extract_user_text(ctx)
         logger.info("Processing message: %s", truncate_for_log(user_text, 200))
-        # БЛОК АВТОМАТИЧЕСКОГО ВОССТАНОВЛЕНИЯ КОНТЕКСТА (ЗАЩИТА ОТ 409 CONFLICT) ---
+
+        # Блок автоматического восстановления контекста (защита от 409 Conflict)
         sess_id = getattr(ctx.session, "id", "")
         clean_id = sess_id.split("_")[0] if sess_id else ""
         if clean_id:
             # Проверяем существующую БД: если там пусто, значит бот стёр историю через /reset
-            if await is_history_empty_by_global_id(clean_id):  # или is_context_cleared_in_db
+            if await is_history_empty_by_global_id(clean_id):
                 self._CROSS_SESSION_CACHE.pop(clean_id, None)
                 logger.info(f"🧹 [RAM Cache] Локальная память агента очищена, так как в БД история пуста для {clean_id}")
             elif clean_id in self._CROSS_SESSION_CACHE:
                 # Если в новой сессии пропали ключевые данные контекста, восстанавливаем их из кэша
                 if not ctx.session.state.get("last_product") and not ctx.session.state.get("_product_dialog_context"):
                     user_history = self._CROSS_SESSION_CACHE[clean_id]
-                    
                     if user_history:  # Если у этого юзера есть сохраненные шаги
                         logger.info(
                             "Session split (409). Restoring context from the latest request of user: %s", 
@@ -1658,245 +1519,243 @@ class RootAgent(BaseAgent):
                         latest_cached_state = user_history[-1]
                         for key, value in latest_cached_state.items():
                             ctx.session.state[key] = value
-        try:
-            await self._trim_dialog_memory(ctx)
+        await self._trim_dialog_memory(ctx)
 
-            if not user_text:
-                yield self._build_final_event_with_history(
-                    ctx,
-                    user_text,
-                    "Пустой запрос. Напишите сообщение еще раз.",
-                )
-                return
+        # Инициализируем переменные контекста, если их нет в state
+        for key in [
+            "last_user_query", 
+            "last_route", 
+            "last_intent", 
+            "last_search_query",
+            "last_product",
+            "last_document_list"
+        ]:
+            if key not in ctx.session.state:
+                ctx.session.state[key] = ""
 
-            # Синхронизация профиля из бота через AdkApiClient.set_user_state:
-            # это не пользовательский запрос и цепочку агентов запускать не нужно.
-            if is_bot_user_profile_injection_message(user_text):
-                logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
-                yield self._build_final_event(ctx, "")
-                return
-            # Инициализируем переменные контекста, если их нет в state
-            for key in [
-                "last_user_query", 
-                "last_route", 
-                "last_intent", 
-                "last_search_query",
-                "last_product",
-                "last_document_list"
-            ]:
-                if key not in ctx.session.state:
-                    ctx.session.state[key] = ""
-            # Сбрасываем служебное состояние текущего шага
-            self._reset_turn_state(ctx)
-            ctx.session.state["user_query"] = user_text
-            self._prepare_owasp_input(ctx, user_text)
-            self._clear_state_keys(
+        # Сбрасываем служебное состояние текущего шага
+        self._reset_turn_state(ctx)
+        ctx.session.state["user_query"] = user_text
+        self._prepare_owasp_input(ctx, user_text)
+
+        return PipelineContext(
+            ctx=ctx,
+            user_text=user_text,
+            clean_text=user_text.strip(),
+            session_id=sess_id,
+            last_route=ctx.session.state.get("last_route"),
+            last_intent=ctx.session.state.get("last_intent"),
+            last_search_query=ctx.session.state.get("last_search_query"),
+            last_product=ctx.session.state.get("last_product"),
+            product_dialog_context=ctx.session.state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY),
+            doc_search_context=ctx.session.state.get("_doc_search_result_parsed"),
+            metadata={"clean_id": clean_id},
+        )
+    
+    async def _check_safety_guardrails(self, pipeline_ctx: PipelineContext) -> AsyncGenerator[Event, None]:
+        """Проверки Stage 0: пустой ввод, синхронизация профиля и OWASP фильтрация."""
+        ctx = pipeline_ctx.ctx
+        user_text = pipeline_ctx.user_text
+
+        if not user_text:
+            yield self._build_final_event_with_history(
                 ctx,
-                [
-                    "_owasp_result_parsed",
-                    "_dispatcher_result_parsed",
-                    "_doc_search_result_parsed",
-                    "_kb_answer_result_parsed",
-                    "_smalltalk_result_parsed",
-                    "_product_info_result_parsed",
-                    "_product_filter_result_parsed",
-                    "product_info_result_json",
-                    "product_filter_result_json",
-                    "_root_final_text",
-                    "_bot_action",
-                    "_from_glossary",
-                    "doc_search_query",
-                    "product_resolution",
-                    "product_resolutions",
-                    "product_filter_resolution",
-                    STAGE_METRICS_STATE_KEY,
-                ],
+                user_text,
+                "Пустой запрос. Напишите сообщение еще раз.",
             )
-            # Проверка безопасности (OWASP)
-            async for event in self._run_json_leaf_agent(
-                ctx=ctx,
-                agent=self.owasp_agent,
-                output_key="owasp_result_json",
-                parsed_state_key="_owasp_result_parsed",
-                validator=validate_owasp_result,
-                log_label="owasp_result_json",
-                validation_error_user_message=OWASP_INVALID_CONTRACT_USER_MESSAGE,
-            ):
-                yield event
+            return
+        # Синхронизация профиля из бота через AdkApiClient.set_user_state:
+        # это не пользовательский запрос и цепочку агентов запускать не нужно.
+        if is_bot_user_profile_injection_message(user_text):
+            logger.info("Skipping agent chain (bot user profile sync, not a user turn)")
+            yield self._build_final_event(ctx, "")
+            return
 
-            owasp = self._get_required_state_dict(ctx, "_owasp_result_parsed")
-            logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
+        # 1. Очищаем старый стейт OWASP, который мог приехать из кэша прошлых сессий
+        ctx.session.state.pop("_owasp_result_parsed", None)
+        ctx.session.state.pop("owasp_result_json", None)
+        # Запуск OWASP агента
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.owasp_agent,
+            output_key="owasp_result_json",
+            parsed_state_key="_owasp_result_parsed",
+            validator=validate_owasp_result,
+            log_label="owasp_result_json",
+            validation_error_user_message=OWASP_INVALID_CONTRACT_USER_MESSAGE,
+        ):
+            yield event
 
-            if owasp["status"] == "blocked":
-                # Используем _build_final_event, чтобы НЕ сохранять заблокированное 
-                # сообщение в историю OWASP и не загрязнять контекст для следующих запросов
-                yield self._build_final_event(
-                    ctx,
-                    format_reject_answer(owasp["user_message"]),
-                )
-                return
+        owasp = self._get_required_state_dict(ctx, "_owasp_result_parsed")
+        logger.info("OWASP result: status=%s route=%s", owasp["status"], owasp["route"])
 
-            ctx.session.state["from_glossary"] = await self.glossary_lookup.find(user_text)
-            logger.info(
-                "Glossary terms found: %s",
-                len(ctx.session.state["from_glossary"]),
+        if owasp["status"] == "blocked":
+            # Используем _build_final_event, чтобы НЕ сохранять заблокированное 
+            # сообщение в историю OWASP и не загрязнять контекст для следующих запросов
+            yield self._build_final_event(
+                ctx,
+                format_reject_answer(owasp["user_message"]),
             )
-            # 1. Пытаемся перехватить явные интенты (Комплект, Архивные) без LLM
-            dispatch = self._get_explicit_intent_dispatch(ctx, user_text)
+            return
 
-            # 2. Product follow-up по _product_dialog_context / last_product
-            if not dispatch:
-                dispatch = self._product_followup_dispatch(ctx, user_text)
+        ctx.session.state["from_glossary"] = await self.glossary_lookup.find(user_text)
+        logger.info("Glossary terms found: %s", len(ctx.session.state["from_glossary"]))
 
-            # 3. Doc list follow-up: пагинация и скачивание при last_route=doc_search
-            if not dispatch:
-                dispatch = self._doc_list_followup_dispatch(ctx, user_text)
+    async def _try_short_circuit(self, pipeline_ctx: PipelineContext) -> Optional[Dict[str, Any]]:
+        """
+        Единая точка(Stage 1 & 2).
+            Stage 1 Short-circuit: явный перехват команд комплектов/архивов без LLM.
+            Stage 2 Short-circuit: контекстный follow-up по продуктам или спискам документов.
+        Поочередно проверяет эвристики и при совпадении фиксирует результат.
+        """
+        ctx, text = pipeline_ctx.ctx, pipeline_ctx.user_text
 
-            if dispatch:
+        # Последовательность проверок по приоритету
+        resolvers = (
+            ("explicit_intent", self._get_explicit_intent_dispatch),
+            ("product_followup", self._product_followup_dispatch),
+            ("doc_list_followup", self._doc_list_followup_dispatch),
+        )
+
+        for stage_tag, resolver in resolvers:
+            if dispatch := resolver(ctx, text):
+                # Единая фиксация состояния сессии и логирование
                 ctx.session.state["_dispatcher_result_parsed"] = dispatch
                 ctx.session.state.pop("dispatcher_result_json", None)
                 logger.info(
-                    "Dispatcher skipped (short-circuit): reason=%s intent=%s search_query=%s",
+                    "Dispatcher skipped (%s short-circuit): reason=%s intent=%s search_query=%s",
+                    stage_tag,
                     dispatch.get("reason"),
-                    dispatch["intent"],
-                    dispatch["search_query"],
+                    dispatch.get("intent"),
+                    dispatch.get("search_query"),
                 )
-            else:
-                ctx.session.state["dispatcher_user_query"] = user_text
-                ctx.session.state.pop("dispatcher_result_json", None)
+                return dispatch
 
-                async for event in self._run_json_leaf_agent(
-                    ctx=ctx,
-                    agent=self.dispatcher_agent,
-                    output_key="dispatcher_result_json",
-                    parsed_state_key="_dispatcher_result_parsed",
-                    validator=validate_dispatcher_result,
-                    log_label="dispatcher_result_json",
-                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-                ):
-                    yield event
+        return None
 
-                dispatch = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
-                logger.info(
-                    "Dispatcher result: route=%s intent=%s search_query=%s",
-                    dispatch["route"],
-                    dispatch["intent"],
-                    dispatch["search_query"],
-                )
-            # Сохраняем контекст текущего хода для следующих реплик
-            ctx.session.state["last_user_query"] = user_text
-            ctx.session.state["last_route"] = dispatch["route"]
-            ctx.session.state["last_intent"] = dispatch["intent"]
-            # не затираем last_search_query пустой строкой при follow-up
-            new_search_query = dispatch.get("search_query", "")
-            if new_search_query:
-                ctx.session.state["last_search_query"] = new_search_query
+    async def _run_llm_dispatcher(self, pipeline_ctx: PipelineContext) -> AsyncGenerator[Event, None]:
+        """Основной вызов LLM-диспетчера роутинга."""
+        ctx = pipeline_ctx.ctx
 
-            if dispatch["route"] == "doc_search":
-                async for event in self._handle_doc_search(
-                    ctx,
-                    user_text,
-                    dispatch["intent"],
-                    dispatch.get("search_query", ""),
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                # Сохраняем список документов в state для контекста диспетчера
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
+        ctx.session.state["dispatcher_user_query"] = pipeline_ctx.user_text
+        ctx.session.state.pop("dispatcher_result_json", None)
+        ctx.session.state.pop("_dispatcher_result_parsed", None)
 
-            if dispatch["route"] in {"product_info", "product_filter"}:
-                # СЛОЙ ПЕРЕХВАТА МЕСТОИМЕНИЙ И ОБОГАЩЕНИЯ КОНТЕКСТА ---
-                sq_clean = dispatch.get("search_query", "").strip().lower()
-                # Обогощение запроса для сравнения (product_compare) <<<
-                if dispatch.get("intent") == "product_compare":
-                    context = self._get_product_dialog_context(ctx)
-                    products = self._normalize_dialog_products(context.get("products") or [])
-                    
-                    # Если в контексте есть список продуктов (например, после product_filter)
-                    if len(products) >= 2:
-                        # Проверяем, упомянул ли пользователь конкретные продукты в запросе явно
-                        mentioned = False
-                        for p in products:
-                            code = p.get("code", "")
-                            name = p.get("name", "").lower()
-                            if (code and code in sq_clean) or (name and name in sq_clean):
-                                mentioned = True
-                                break
-                        
-                        # Если продукты из контекста не упомянуты, проверяем, не является ли это запросом на сравнение НОВЫХ продуктов
-                        if not mentioned:
-                            has_explicit_codes = bool(self._extract_product_codes(user_text))
-                            # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
-                            blind_pattern = r"(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*"
-                            # Передаем flags=re.IGNORECASE
-                            is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip(), flags=re.IGNORECASE)) or (not has_explicit_codes and len(user_text.split()) <= 3)
-                            if not is_blind_followup:
-                                # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
-                                logger.info("Skipping product_compare enrichment: user specified new products.")
-                            else:
-                                names = [p.get("name") or p.get("code") for p in products[:2]]
-                                dispatch["search_query"] = f"сравнить {' и '.join(names)}"
-                                sq_clean = dispatch["search_query"].strip().lower()
-                                ctx.session.state["last_search_query"] = dispatch["search_query"]
-                                logger.info(f"Enriched product_compare search_query to: {dispatch['search_query']}")
-                pronoun_triggers = [
-                    "нем", "о нем", "ней", "о ней", "этом", "об этом", 
-                    "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
-                ]
-                if sq_clean in pronoun_triggers or not sq_clean:
-                    product = self._get_selected_product_from_context(ctx)
-                    if not product:
-                        product = self._get_last_product_from_state(ctx)
-                    
-                    if product:
-                        code = product.get("code") or ""
-                        name = product.get("name") or ""
-                        # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
-                        dispatch["search_query"] = f"продукт {code or name}".strip()
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.dispatcher_agent,
+            output_key="dispatcher_result_json",
+            parsed_state_key="_dispatcher_result_parsed",
+            validator=validate_dispatcher_result,
+            log_label="dispatcher_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+        ):
+            yield event      
+
+    def _enrich_product_query(self, ctx: InvocationContext, dispatch: Dict[str, Any], user_text: str) -> None:
+        """Вспомогательный метод для обогащения контекстных запросов продуктов."""
+        sq_clean = dispatch.get("search_query", "").strip().lower()
+        # Обогащение запроса для сравнения продуктов
+        if dispatch.get("intent") == "product_compare":
+            context = self._get_product_dialog_context(ctx)
+            products = self._normalize_dialog_products(context.get("products") or [])
+            # Если в контексте есть список продуктов (например, после product_filter)
+            if len(products) >= 2:
+                # Проверяем, упомянул ли пользователь конкретные продукты в запросе явно
+                mentioned = False
+                for p in products:
+                    code = p.get("code", "")
+                    name = p.get("name", "").lower()
+                    if (code and code in sq_clean) or (name and name in sq_clean):
+                        mentioned = True
+                        break
+                # Если продукты из контекста не упомянуты, проверяем, не является ли это запросом на сравнение новых продуктов
+                if not mentioned:
+                    has_explicit_codes = bool(self._extract_product_codes(user_text))
+                    # Паттерн для "слепого" follow-up (например, "сравни их", "чем они отличаются")
+                    blind_pattern = r"(сравни|сравнить|чем\s+отличаются|в\s+чем\s+разница|какие\s+различия|их|эти|эти\s+продукты|два\s+продукта|оба|давай\s+сравним|давайте\s+сравним|сравни\s+их|сравнить\s+их)[\s?!.]*"
+                    # Передаем flags=re.IGNORECASE
+                    is_blind_followup = bool(re.fullmatch(blind_pattern, user_text.strip(), flags=re.IGNORECASE)) or (not has_explicit_codes and len(user_text.split()) <= 3)
+                    if is_blind_followup:
+                        names = [p.get("name") or p.get("code") for p in products[:2]]
+                        dispatch["search_query"] = f"сравнить {' и '.join(names)}"
+                        sq_clean = dispatch["search_query"].strip().lower()
                         ctx.session.state["last_search_query"] = dispatch["search_query"]
-                        logger.info("Enriched product route pronoun search_query to: %s", dispatch["search_query"])
-                
-                handler = (
-                    self._handle_product_info
-                    if dispatch["route"] == "product_info"
-                    else self._handle_product_filter
-                )
-                async for event in handler(
-                    ctx,
-                    user_text,
-                    dispatch["search_query"],
-                    dispatch["intent"],
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
-            
-            if dispatch["route"] == "kb_answer":
-                async for event in self._handle_kb_answer(
-                    ctx,
-                    user_text,
-                    dispatch.get("search_query", ""),
-                    dispatch.get("intent", "kb_answer"),
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
+                    else:
+                        # Пользователь явно указал новые продукты для сравнения, не подменяем запрос
+                        logger.info("Skipping product_compare enrichment: user specified new products.")
+        # Обогащение местоимений
+        pronoun_triggers = [
+            "нем", "о нем", "ней", "о ней", "этом", "об этом", 
+            "программе", "продукт", "продукте", "программа", "подробнее", "о нем подробнее"
+        ]
+        if sq_clean in pronoun_triggers or not sq_clean:
+            if product := (self._get_selected_product_from_context(ctx) or self._get_last_product_from_state(ctx)):
+                code, name = product.get("code") or "", product.get("name") or ""
+                # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
+                dispatch["search_query"] = f"продукт {code or name}".strip()
+                ctx.session.state["last_search_query"] = dispatch["search_query"]
 
-            if dispatch["route"] == "smalltalk":
-                async for event in self._handle_smalltalk(
-                    ctx,
-                    user_text,
-                    dispatch.get("intent", "smalltalk"),
-                ):
-                    yield event
-                final_text = self._get_required_state_text(ctx, "_root_final_text")
-                yield self._build_final_event_with_history(ctx, user_text, final_text)
-                return
-            # ДЕФОЛТНЫЙ FALLBACK: Если диспетчер вернул неизвестный маршрут, 
-            # безопаснее всего передать управление в smalltalk, чтобы он вежливо 
+    async def _execute_target_agent(
+        self, dispatch: Dict[str, Any], pipeline_ctx: PipelineContext
+    ) -> AsyncGenerator[Event, None]:
+        """Обогащение контекста, маршрутизация в целевой leaf-агент и сохранение истории."""
+        ctx = pipeline_ctx.ctx
+        user_text = pipeline_ctx.user_text
+        route = dispatch["route"]
+        # Сохраняем контекст текущего хода для следующих реплик
+        ctx.session.state["last_user_query"] = user_text
+        ctx.session.state["last_route"] = route
+        ctx.session.state["last_intent"] = dispatch["intent"]
+        # не затираем last_search_query пустой строкой при follow-up
+        new_search_query = dispatch.get("search_query", "")
+        if new_search_query:
+            ctx.session.state["last_search_query"] = new_search_query
+
+        
+        # 1. Поиск документов
+        if route == "doc_search":
+            async for event in self._handle_doc_search(
+                ctx,
+                user_text,
+                dispatch["intent"],
+                dispatch.get("search_query", ""),
+            ):
+                yield event
+        # 2. Подбор продуктов
+        elif route in {"product_info", "product_filter"}:
+            self._enrich_product_query(ctx, dispatch, user_text)
+            handler = (
+                self._handle_product_info
+                if route == "product_info"
+                else self._handle_product_filter
+            )
+            async for event in handler(
+                ctx,
+                user_text,
+                dispatch["search_query"],
+                dispatch["intent"],
+            ):
+                yield event
+        # 3. База знаний / FAQ
+        elif route == "kb_answer":
+            async for event in self._handle_kb_answer(
+                ctx,
+                user_text,
+                dispatch.get("search_query", ""),
+                dispatch.get("intent", "kb_answer"),
+            ):
+                yield event
+        # 4. Smalltalk
+        elif route == "smalltalk":
+            async for event in self._handle_smalltalk(
+                ctx,
+                user_text,
+                dispatch.get("intent", "smalltalk"),
+            ):
+                yield event
+        else:        
+            # Fallback для неизвестного маршрута
             logger.warning("Unknown route '%s', falling back to smalltalk", dispatch.get("route"))
             async for event in self._handle_smalltalk(
                 ctx,
@@ -1904,8 +1763,41 @@ class RootAgent(BaseAgent):
                 "unknown_route",
             ):
                 yield event
-            final_text = self._get_required_state_text(ctx, "_root_final_text")
-            yield self._build_final_event_with_history(ctx, user_text, final_text)
+        # записываем контекст и в историю
+        final_text = self._get_required_state_text(ctx, "_root_final_text")
+        yield self._build_final_event_with_history(ctx, user_text, final_text)
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        # Подготовка контекста и валидация
+        pipeline_ctx = await self._prepare_pipeline_context(ctx)
+        try:
+            # 1. Safety / OWASP проверки (Short-circuit Stage 0)
+            async for event in self._check_safety_guardrails(pipeline_ctx):
+                yield event
+            # Если запрос заблокирован OWASP или это был системный запрос профиля — выходим
+            owasp_state = ctx.session.state.get("_owasp_result_parsed") or {}
+            if owasp_state.get("status") == "blocked" or not pipeline_ctx.user_text or is_bot_user_profile_injection_message(pipeline_ctx.user_text):
+                return
+            # 2. Short-circuits (Stage 1 & Stage 2: Явные команды, пагинация, контекстный follow-up)
+            if dispatch := await self._try_short_circuit(pipeline_ctx):
+                # Исполнение решения, принятого через явный шорткат.
+                async for event in self._execute_target_agent(dispatch, pipeline_ctx):
+                    yield event
+                return
+
+            # 3. LLM Диспетчеризация (Основной роутинг)
+            async for event in self._run_llm_dispatcher(pipeline_ctx):
+                yield event
+            dispatch_decision = self._get_required_state_dict(ctx, "_dispatcher_result_parsed")
+            logger.info(
+                "Dispatcher result: route=%s intent=%s search_query=%s",
+                dispatch_decision["route"],
+                dispatch_decision["intent"],
+                dispatch_decision["search_query"],
+            ) 
+            # 4. Исполнение целевого Leaf-агента + Синхронизация состояния и Телеметрия
+            async for event in self._execute_target_agent(dispatch_decision, pipeline_ctx):
+                yield event
 
         except AgentValidationFailure as exc:
             logger.warning(
@@ -1915,25 +1807,11 @@ class RootAgent(BaseAgent):
                 truncate_for_log(exc.raw, 500),
             )
             # Определяем, какой агент работал
-            agent_name = None
-            if "product_info" in exc.log_label:
-                agent_name = "product_info"
-            elif "product_filter" in exc.log_label:
-                agent_name = "product_filter"
-            elif "kb_answer" in exc.log_label:
-                agent_name = "kb_answer"
-            elif "smalltalk" in exc.log_label:
-                agent_name = "smalltalk"
-            elif "dispatcher" in exc.log_label:
-                agent_name = "dispatcher"
-            elif "doc_search" in exc.log_label:
-                agent_name = "doc_search"
-
+            agent_name = next((name for name in ("product_info", "product_filter", "kb_answer", "smalltalk", "dispatcher", "doc_search") if name in exc.log_label), None)
             # Собираем контекст из состояния
             context: Dict[str, Any] = {
                 "validation_error": exc.validation_error,
             }
-            
             # Поисковый запрос — в разных ключах для разных агентов
             context["search_query"] = (
                 ctx.session.state.get("product_info_search_query")
@@ -1956,28 +1834,23 @@ class RootAgent(BaseAgent):
                 context["resolved_product"] = parsed.get("resolved_product")
                 context["clarification_options"] = parsed.get("clarification_options") or []
                 context["products"] = parsed.get("products") or []
-            
             elif agent_name == "doc_search":
                 parsed = ctx.session.state.get("_doc_search_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["results_count"] = len(parsed.get("results") or [])
                 context["source"] = "kb_search"
-            
             elif agent_name == "kb_answer":
                 parsed = ctx.session.state.get("_kb_answer_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["source"] = parsed.get("source", "")
-            
             elif agent_name == "smalltalk":
                 parsed = ctx.session.state.get("_smalltalk_result_parsed") or {}
                 context["mode"] = parsed.get("mode", "")
                 context["source"] = parsed.get("source", "")
-            
             elif agent_name == "dispatcher":
                 parsed = ctx.session.state.get("_dispatcher_result_parsed") or {}
                 context["route"] = parsed.get("route", "")
                 context["intent"] = parsed.get("intent", "")
-
             # Пытаемся извлечь данные из сырого ответа
             payload = {}
             if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
@@ -1993,7 +1866,6 @@ class RootAgent(BaseAgent):
                     context.setdefault("used_tables", payload.get("used_tables") or [])
                 except Exception:
                     pass
-            
             # Пытаемся извлечь сообщение из сырого ответа 
             product_tool_usage_failure = (
                 exc.log_label in {"product_info_result_json", "product_filter_result_json"}
@@ -2007,11 +1879,11 @@ class RootAgent(BaseAgent):
                 )
                 else None
             )
-            # Приоритет 2: Умный fallback
+            # Умный fallback
             smart_message = None
             if not legacy_message:
                 smart_message = generate_agent_fallback(
-                    user_text=user_text,
+                    user_text=pipeline_ctx.user_text,
                     error_type="validation_failure",
                     agent_name=agent_name,
                     context=context,
@@ -2041,7 +1913,7 @@ class RootAgent(BaseAgent):
                 )
             yield self._build_final_event_with_history(
                 ctx,
-                user_text,
+                pipeline_ctx.user_text,
                 final_fallback_message,
             )
 
@@ -2059,10 +1931,11 @@ class RootAgent(BaseAgent):
                     f"DEBUG: {type(exc).__name__}: {exc}"
                     if DEBUG_EXCEPTIONS
                     # fallback при нескольких сообщениях подряд
-                    else RECOVERY_MESSAGE
+                    else VALIDATION_ERROR_USER_MESSAGE
                 )
-            yield self._build_final_event_with_history(ctx, user_text, message)
 
+            yield self._build_final_event_with_history(ctx, pipeline_ctx.user_text, message)
+    
     async def _handle_doc_search(
         self,
         ctx: InvocationContext,
@@ -2110,6 +1983,15 @@ class RootAgent(BaseAgent):
         async for event in self.doc_search_orchestrator.run_async(ctx):
             yield event
 
+    async def _prepare_leaf_query(self, ctx: InvocationContext, search_query: str, user_message: str) -> str:
+        """Общий helper для подгрузки профиля пользователя и обогащения запроса через глоссарий."""
+        # Передаем данные профиля и маршрутизации
+        for key, value in self._get_user_profile(ctx).items():
+            # Распаковываем все поля профиля в корневой state.
+            ctx.session.state[key] = value
+        base_search_query = (search_query or user_message).strip()
+        return await self.glossary_lookup.expand_search_query(base_search_query)
+
     async def _handle_kb_answer(
         self,
         ctx: InvocationContext,
@@ -2127,21 +2009,12 @@ class RootAgent(BaseAgent):
             search_query: Нормализованный поисковый запрос.
             intent: Тип запроса (kb_answer, smalltalk).
         """
-        base_search_query = (search_query or user_message).strip()
-        effective_search_query = await self.glossary_lookup.expand_search_query(
-            base_search_query,
-        )
+        effective_search_query = await self._prepare_leaf_query(ctx, search_query, user_message)
         logger.info(
             "kb_answer route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
             intent,
         )
-
-        # Передаем данные профиля и маршрутизации для kb_answer_agent.
-        user_profile = self._get_user_profile(ctx)
-        # Распаковываем все поля профиля в корневой state.
-        for key, value in user_profile.items():
-            ctx.session.state[key] = value
         ctx.session.state["search_query"] = effective_search_query
         ctx.session.state["faq_collection"] = self.faq_collection
         ctx.session.state["kb_answer_collection"] = self.kb_collection
@@ -2175,7 +2048,6 @@ class RootAgent(BaseAgent):
             truncate_for_log(user_message, 300),
             intent,
         )
-        
         ctx.session.state["intent"] = intent
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
@@ -2201,17 +2073,12 @@ class RootAgent(BaseAgent):
         if intent not in {"product_filter", "product_compare", "product_attribute_values"}:
             raise ValueError(f"product_filter route does not support intent {intent!r}")
 
-        effective_search_query = await self.glossary_lookup.expand_search_query(
-            (search_query or user_message).strip(),
-        )
+        effective_search_query = await self._prepare_leaf_query(ctx, search_query, user_message)
         logger.info(
             "product_filter route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
             intent,
         )
-
-        for key, value in self._get_user_profile(ctx).items():
-            ctx.session.state[key] = value
         ctx.session.state["product_filter_intent"] = intent
         ctx.session.state["product_filter_search_query"] = effective_search_query
         await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
@@ -2254,17 +2121,12 @@ class RootAgent(BaseAgent):
         if intent not in {"product_card", "product_kit"}:
             raise ValueError(f"product_info route does not support intent {intent!r}")
 
-        effective_search_query = await self.glossary_lookup.expand_search_query(
-            (search_query or user_message).strip(),
-        )
+        effective_search_query = await self._prepare_leaf_query(ctx, search_query, user_message)
         logger.info(
             "product_info route: query=%s intent=%s",
             truncate_for_log(effective_search_query, 300),
             intent,
         )
-
-        for key, value in self._get_user_profile(ctx).items():
-            ctx.session.state[key] = value
         ctx.session.state["product_info_intent"] = intent
         ctx.session.state["product_info_search_query"] = effective_search_query
         await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
