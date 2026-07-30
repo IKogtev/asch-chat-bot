@@ -1,6 +1,6 @@
-google-adk==1.26.0
+google-adk==1.36.2
 mcp==1.26.0
 Authlib==1.6.8
-litellm==1.81.15
+litellm==1.83.7
 python-dotenv==1.0.1
 asyncpg==0.31.0
