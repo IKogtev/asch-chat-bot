@@ -170,7 +170,7 @@ services:
       - ADK_APP_NAME=agent
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.11
+      - PLATFORM_VERSION=0.8.0
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -213,7 +213,7 @@ services:
       - ADK_APP_NAME=agent
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.7.11
+      - PLATFORM_VERSION=0.8.0
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -269,7 +269,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
-      - PLATFORM_VERSION=0.7.11
+      - PLATFORM_VERSION=0.8.0
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -488,9 +488,10 @@ services:
       - SMALLTALK_TEMPERATURE=0.8
       - PRODUCT_INFO_TEMPERATURE=0.5
       - PRODUCT_FILTER_TEMPERATURE=0.5
+      - DISPATCHER_TEMPERATURE=0.2
       - LITELLM_REQUEST_TIMEOUT=${LITELLM_REQUEST_TIMEOUT:-90}
       - LITELLM_NUM_RETRIES=${LITELLM_NUM_RETRIES:-1}
-      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-2048}
+      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-10200}
     volumes:
       - ./kb_storage/prompts:/app/agent/prompts
     networks:
