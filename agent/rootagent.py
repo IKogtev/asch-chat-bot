@@ -24,8 +24,14 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
-from .agents.product_filter_agent import validate_product_filter_result
-from .agents.product_info_agent import validate_product_info_result
+from .agents.product_filter_agent import (
+    ProductFilterResponseSchema,
+    validate_product_filter_result,
+)
+from .agents.product_info_agent import (
+    ProductInfoResponseSchema,
+    validate_product_info_result,
+)
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
@@ -116,8 +122,10 @@ class RootAgent(BaseAgent):
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
     smalltalk_agent: LlmAgent
-    product_info_agent: LlmAgent
-    product_filter_agent: LlmAgent
+    product_info_content_agent: LlmAgent
+    product_info_format_agent: LlmAgent
+    product_filter_content_agent: LlmAgent
+    product_filter_format_agent: LlmAgent
     glossary_lookup: GlossaryLookup
     product_resolver: ProductResolverService
     faq_collection: str
@@ -138,8 +146,10 @@ class RootAgent(BaseAgent):
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
         smalltalk_agent: LlmAgent,
-        product_info_agent: LlmAgent,
-        product_filter_agent: LlmAgent,
+        product_info_content_agent: LlmAgent,
+        product_info_format_agent: LlmAgent,
+        product_filter_content_agent: LlmAgent,
+        product_filter_format_agent: LlmAgent,
         glossary_lookup: GlossaryLookup | None = None,
         product_resolver: ProductResolverService | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
@@ -152,8 +162,10 @@ class RootAgent(BaseAgent):
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
             smalltalk_agent=smalltalk_agent,
-            product_info_agent=product_info_agent,
-            product_filter_agent=product_filter_agent,
+            product_info_content_agent=product_info_content_agent,
+            product_info_format_agent=product_info_format_agent,
+            product_filter_content_agent=product_filter_content_agent,
+            product_filter_format_agent=product_filter_format_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             product_resolver=product_resolver or ProductResolverService(),
             faq_collection=faq_collection,
@@ -164,8 +176,10 @@ class RootAgent(BaseAgent):
                 doc_search_orchestrator,
                 kb_answer_agent,
                 smalltalk_agent,
-                product_info_agent,
-                product_filter_agent,
+                product_info_content_agent,
+                product_info_format_agent,
+                product_filter_content_agent,
+                product_filter_format_agent,
             ],
         )
 
@@ -445,10 +459,22 @@ class RootAgent(BaseAgent):
                 "_doc_search_result_parsed",
                 "_kb_answer_result_parsed",
                 "_smalltalk_result_parsed",
+                "_product_info_content_result_parsed",
+                "_product_filter_content_result_parsed",
                 "_product_info_result_parsed",
                 "_product_filter_result_parsed",
+                "product_info_content_result_json",
+                "product_filter_content_result_json",
                 "product_info_result_json",
                 "product_filter_result_json",
+                "_product_info_content_tool_calls",
+                "_product_info_content_tool_events",
+                "_product_filter_content_tool_calls",
+                "_product_filter_content_tool_events",
+                "product_info_format_correction",
+                "product_filter_format_correction",
+                "_product_info_format_attempt",
+                "_product_filter_format_attempt",
                 "_root_final_text",
                 "_bot_action",
                 "product_resolution",
@@ -1617,9 +1643,15 @@ class RootAgent(BaseAgent):
         agent: LlmAgent,
         output_key: str,
         parsed_state_key: str,
-        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]] | None,
         log_label: str,
         validation_error_user_message: str,
+        response_schema: type[Any] | None = None,
+        tool_calls_state_key: str | None = None,
+        tool_events_state_key: str | None = None,
+        validation_tool_calls_state_key: str | None = None,
+        validation_tool_events_state_key: str | None = None,
+        require_non_empty_object: bool = False,
     ) -> AsyncGenerator[Event, None]:
         """Запускает leaf-агента с JSON-валидацией через `json_leaf_runner`."""
         async for event in run_json_leaf_agent(
@@ -1630,8 +1662,76 @@ class RootAgent(BaseAgent):
             validator=validator,
             log_label=log_label,
             validation_error_user_message=validation_error_user_message,
+            response_schema=response_schema,
+            tool_calls_state_key=tool_calls_state_key,
+            tool_events_state_key=tool_events_state_key,
+            validation_tool_calls_state_key=validation_tool_calls_state_key,
+            validation_tool_events_state_key=validation_tool_events_state_key,
+            require_non_empty_object=require_non_empty_object,
         ):
             yield event
+
+    async def _run_product_format_agent(
+        self,
+        *,
+        ctx: InvocationContext,
+        agent: LlmAgent,
+        output_key: str,
+        parsed_state_key: str,
+        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+        response_schema: type[Any],
+        log_label: str,
+        correction_state_key: str,
+        attempt_state_key: str,
+        validation_tool_calls_state_key: str,
+        validation_tool_events_state_key: str,
+    ) -> AsyncGenerator[Event, None]:
+        """Запускает форматирование с одним ограниченным повтором."""
+        ctx.session.state[correction_state_key] = ""
+
+        for attempt in (1, 2):
+            ctx.session.state[attempt_state_key] = attempt
+            try:
+                async for event in self._run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=agent,
+                    output_key=output_key,
+                    parsed_state_key=parsed_state_key,
+                    validator=validator,
+                    response_schema=response_schema,
+                    log_label=log_label,
+                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+                    validation_tool_calls_state_key=validation_tool_calls_state_key,
+                    validation_tool_events_state_key=validation_tool_events_state_key,
+                ):
+                    yield event
+                return
+            except AgentValidationFailure as exc:
+                if attempt == 2:
+                    raise
+
+                # The retry changes only formatting; content evidence and SQL
+                # results remain exactly the same as on the first attempt.
+                ctx.session.state[correction_state_key] = json.dumps(
+                    {
+                        "validation_error": truncate_for_log(
+                            exc.validation_error,
+                            1500,
+                        ),
+                        "invalid_payload": truncate_for_log(exc.raw, 3000),
+                        "instruction": (
+                            "Return one corrected object using only the unchanged "
+                            "content evidence."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+                self._clear_state_keys(ctx, [output_key, parsed_state_key])
+                logger.info(
+                    "%s retrying format after validation failure: %s",
+                    log_label,
+                    truncate_for_log(exc.validation_error, 500),
+                )
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
@@ -1698,10 +1798,22 @@ class RootAgent(BaseAgent):
                     "_doc_search_result_parsed",
                     "_kb_answer_result_parsed",
                     "_smalltalk_result_parsed",
+                    "_product_info_content_result_parsed",
+                    "_product_filter_content_result_parsed",
                     "_product_info_result_parsed",
                     "_product_filter_result_parsed",
+                    "product_info_content_result_json",
+                    "product_filter_content_result_json",
                     "product_info_result_json",
                     "product_filter_result_json",
+                    "_product_info_content_tool_calls",
+                    "_product_info_content_tool_events",
+                    "_product_filter_content_tool_calls",
+                    "_product_filter_content_tool_events",
+                    "product_info_format_correction",
+                    "product_filter_format_correction",
+                    "_product_info_format_attempt",
+                    "_product_filter_format_attempt",
                     "_root_final_text",
                     "_bot_action",
                     "_from_glossary",
@@ -2218,12 +2330,30 @@ class RootAgent(BaseAgent):
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
-            agent=self.product_filter_agent,
+            agent=self.product_filter_content_agent,
+            output_key="product_filter_content_result_json",
+            parsed_state_key="_product_filter_content_result_parsed",
+            validator=None,
+            log_label="product_filter_content_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            tool_calls_state_key="_product_filter_content_tool_calls",
+            tool_events_state_key="_product_filter_content_tool_events",
+            require_non_empty_object=True,
+        ):
+            yield event
+
+        async for event in self._run_product_format_agent(
+            ctx=ctx,
+            agent=self.product_filter_format_agent,
             output_key="product_filter_result_json",
             parsed_state_key="_product_filter_result_parsed",
             validator=validate_product_filter_result,
+            response_schema=ProductFilterResponseSchema,
             log_label="product_filter_result_json",
-            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            correction_state_key="product_filter_format_correction",
+            attempt_state_key="_product_filter_format_attempt",
+            validation_tool_calls_state_key="_product_filter_content_tool_calls",
+            validation_tool_events_state_key="_product_filter_content_tool_events",
         ):
             yield event
 
@@ -2271,12 +2401,30 @@ class RootAgent(BaseAgent):
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
-            agent=self.product_info_agent,
+            agent=self.product_info_content_agent,
+            output_key="product_info_content_result_json",
+            parsed_state_key="_product_info_content_result_parsed",
+            validator=None,
+            log_label="product_info_content_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            tool_calls_state_key="_product_info_content_tool_calls",
+            tool_events_state_key="_product_info_content_tool_events",
+            require_non_empty_object=True,
+        ):
+            yield event
+
+        async for event in self._run_product_format_agent(
+            ctx=ctx,
+            agent=self.product_info_format_agent,
             output_key="product_info_result_json",
             parsed_state_key="_product_info_result_parsed",
             validator=validate_product_info_result,
+            response_schema=ProductInfoResponseSchema,
             log_label="product_info_result_json",
-            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            correction_state_key="product_info_format_correction",
+            attempt_state_key="_product_info_format_attempt",
+            validation_tool_calls_state_key="_product_info_content_tool_calls",
+            validation_tool_events_state_key="_product_info_content_tool_events",
         ):
             yield event
 

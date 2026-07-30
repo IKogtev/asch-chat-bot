@@ -121,9 +121,19 @@ def _load_rootagent_module():
     smalltalk_stub.validate_smalltalk_result = lambda data, context: data
 
     product_info_stub = types.ModuleType("agent.agents.product_info_agent")
+    product_info_stub.ProductInfoResponseSchema = type(
+        "ProductInfoResponseSchema",
+        (),
+        {},
+    )
     product_info_stub.validate_product_info_result = lambda data, context: data
 
     product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
+    product_filter_stub.ProductFilterResponseSchema = type(
+        "ProductFilterResponseSchema",
+        (),
+        {},
+    )
     product_filter_stub.validate_product_filter_result = lambda data, context: data
 
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
@@ -281,8 +291,10 @@ def _make_agent(**kwargs) -> RootAgent:
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
         smalltalk_agent=fake_subagent,
-        product_info_agent=fake_subagent,
-        product_filter_agent=fake_subagent,
+        product_info_content_agent=fake_subagent,
+        product_info_format_agent=fake_subagent,
+        product_filter_content_agent=fake_subagent,
+        product_filter_format_agent=fake_subagent,
         **kwargs,
     )
 
@@ -853,11 +865,30 @@ async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
         user_state={"first_name": "Ivan"},
         session_state={},
     )
+    calls = []
 
     async def fake_run_json_leaf_agent(**kwargs):
-        assert kwargs["agent"] is agent.product_info_agent
+        calls.append(kwargs["output_key"])
+        if kwargs["output_key"] == "product_info_content_result_json":
+            assert kwargs["agent"] is agent.product_info_content_agent
+            assert kwargs["validator"] is None
+            ctx.session.state["_product_info_content_result_parsed"] = {
+                "status": "ok",
+                "rows": [{"code": "2832", "name": "Fort Knox"}],
+            }
+            ctx.session.state["_product_info_content_tool_calls"] = ["execute_sql"]
+            if False:
+                yield None
+            return
+
+        assert kwargs["agent"] is agent.product_info_format_agent
         assert kwargs["output_key"] == "product_info_result_json"
         assert kwargs["parsed_state_key"] == "_product_info_result_parsed"
+        assert kwargs["response_schema"] is rootagent_module.ProductInfoResponseSchema
+        assert (
+            kwargs["validation_tool_calls_state_key"]
+            == "_product_info_content_tool_calls"
+        )
         ctx.session.state["_product_info_result_parsed"] = {
             "status": "ok",
             "mode": "product_card",
@@ -891,6 +922,10 @@ async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
     assert ctx.session.state["product_info_intent"] == "product_card"
     assert ctx.session.state["_root_final_text"].startswith("Product selection answer")
     assert "_bot_action" not in ctx.session.state
+    assert calls == [
+        "product_info_content_result_json",
+        "product_info_result_json",
+    ]
 
 
 @pytest.mark.unit
@@ -945,8 +980,28 @@ async def test_handle_product_info_appends_clarification_options() -> None:
 async def test_handle_product_filter_stores_products_and_adds_followup_question() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
+    calls = []
 
     async def fake_run_json_leaf_agent(**kwargs):
+        calls.append(kwargs["output_key"])
+        if kwargs["output_key"] == "product_filter_content_result_json":
+            assert kwargs["agent"] is agent.product_filter_content_agent
+            assert kwargs["validator"] is None
+            ctx.session.state["_product_filter_content_result_parsed"] = {
+                "status": "ok",
+                "rows": [{"code": "2867"}],
+            }
+            ctx.session.state["_product_filter_content_tool_calls"] = ["execute_sql"]
+            if False:
+                yield None
+            return
+
+        assert kwargs["agent"] is agent.product_filter_format_agent
+        assert kwargs["response_schema"] is rootagent_module.ProductFilterResponseSchema
+        assert (
+            kwargs["validation_tool_calls_state_key"]
+            == "_product_filter_content_tool_calls"
+        )
         ctx.session.state["_product_filter_result_parsed"] = {
             "status": "ok",
             "mode": "product_filter",
@@ -990,6 +1045,121 @@ async def test_handle_product_filter_stores_products_and_adds_followup_question(
         ],
         "selected_product": None,
     }
+    assert calls == [
+        "product_filter_content_result_json",
+        "product_filter_result_json",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_product_format_retry_does_not_repeat_content_stage() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+    content_calls = 0
+    format_calls = 0
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal content_calls, format_calls
+        if kwargs["output_key"] == "product_info_content_result_json":
+            content_calls += 1
+            ctx.session.state["_product_info_content_result_parsed"] = {
+                "status": "ok",
+                "rows": [{"code": "2832", "name": "Fort Knox"}],
+            }
+            ctx.session.state["_product_info_content_tool_calls"] = ["execute_sql"]
+            if False:
+                yield None
+            return
+
+        format_calls += 1
+        if format_calls == 1:
+            raise rootagent_module.AgentValidationFailure(
+                log_label="product_info_result_json",
+                validation_error="message is required",
+                raw='{"mode":"product_card"}',
+                user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+            )
+
+        assert "message is required" in ctx.session.state[
+            "product_info_format_correction"
+        ]
+        ctx.session.state["_product_info_result_parsed"] = {
+            "mode": "product_card",
+            "message": "Карточка продукта",
+            "used_tables": ["products"],
+            "resolved_product": {"code": "2832", "name": "Fort Knox"},
+            "clarification_options": [],
+        }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_info(
+            ctx,
+            "Покажи продукт",
+            "Fort Knox",
+            "product_card",
+        )
+    ]
+
+    assert events == []
+    assert content_calls == 1
+    assert format_calls == 2
+    assert ctx.session.state["_product_info_format_attempt"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_product_format_retry_stops_after_second_failure() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "_product_info_content_tool_calls": ["execute_sql"],
+            "_product_info_content_tool_events": [],
+        }
+    )
+    format_calls = 0
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal format_calls
+        format_calls += 1
+        raise rootagent_module.AgentValidationFailure(
+            log_label="product_info_result_json",
+            validation_error=f"invalid format attempt {format_calls}",
+            raw="{}",
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    with pytest.raises(
+        rootagent_module.AgentValidationFailure,
+        match="invalid format attempt 2",
+    ):
+        [
+            event
+            async for event in agent._run_product_format_agent(
+                ctx=ctx,
+                agent=agent.product_info_format_agent,
+                output_key="product_info_result_json",
+                parsed_state_key="_product_info_result_parsed",
+                validator=rootagent_module.validate_product_info_result,
+                response_schema=rootagent_module.ProductInfoResponseSchema,
+                log_label="product_info_result_json",
+                correction_state_key="product_info_format_correction",
+                attempt_state_key="_product_info_format_attempt",
+                validation_tool_calls_state_key="_product_info_content_tool_calls",
+                validation_tool_events_state_key="_product_info_content_tool_events",
+            )
+        ]
+
+    assert format_calls == 2
 
 
 @pytest.mark.unit

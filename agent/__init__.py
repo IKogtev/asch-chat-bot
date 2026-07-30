@@ -3,6 +3,7 @@ from .config import (
     ACTIVE_DOCUMENTS_COLLECTION,
     KB_DOCUMENTS_COLLECTION,
     build_common_model,
+    build_format_model,
 )
 from .agents.owasp_agent import create_owasp_agent
 from .agents.dispatcher_agent import create_dispatcher_agent
@@ -15,6 +16,7 @@ __all__ = [
     "ACTIVE_DOCUMENTS_COLLECTION",
     "KB_DOCUMENTS_COLLECTION",
     "build_common_model",
+    "build_format_model",
     "create_owasp_agent",
     "create_dispatcher_agent",
     "create_doc_search_agent",

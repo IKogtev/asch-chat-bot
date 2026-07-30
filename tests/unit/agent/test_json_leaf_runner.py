@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 
 def _load_json_leaf_runner_module():
@@ -316,11 +317,132 @@ def test_run_json_leaf_agent_passes_tool_call_names_to_validator_context() -> No
                 validator=validator,
                 log_label="owasp_result_json",
                 validation_error_user_message="stub",
+                tool_calls_state_key="_content_tool_calls",
+                tool_events_state_key="_content_tool_events",
             )
         )
     )
 
     assert ctx.session.state["_owasp_result_parsed"] == {"status": "ok"}
+    assert ctx.session.state["_content_tool_calls"] == ["execute_sql"]
+    assert ctx.session.state["_content_tool_events"][0]["name"] == "execute_sql"
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_validates_schema_before_semantics_once() -> None:
+    order = []
+
+    class ResponseSchema(BaseModel):
+        status: str
+
+        @classmethod
+        def model_validate(cls, value, *args, **kwargs):
+            order.append("schema")
+            return super().model_validate(value, *args, **kwargs)
+
+    def validator(data, context):
+        order.append("semantics")
+        assert data == {"status": "ok"}
+        return data
+
+    ctx = _make_ctx('{"status":"ok"}')
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent(),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=validator,
+                response_schema=ResponseSchema,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+            )
+        )
+    )
+
+    assert order == ["schema", "semantics"]
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_does_not_run_semantics_for_invalid_structure() -> None:
+    class ResponseSchema(BaseModel):
+        status: str
+
+    semantic_calls = 0
+
+    def validator(data, context):
+        nonlocal semantic_calls
+        semantic_calls += 1
+        return data
+
+    ctx = _make_ctx('{"route":"continue"}')
+    with pytest.raises(AgentValidationFailure):
+        asyncio.run(
+            _drain(
+                run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=_FakeAgent(),
+                    output_key="owasp_result_json",
+                    parsed_state_key="_owasp_result_parsed",
+                    validator=validator,
+                    response_schema=ResponseSchema,
+                    log_label="owasp_result_json",
+                    validation_error_user_message="stub",
+                )
+            )
+        )
+
+    assert semantic_calls == 0
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_rejects_empty_content_object_without_validator() -> None:
+    ctx = _make_ctx("{}")
+
+    with pytest.raises(AgentValidationFailure, match="Parsed JSON object is empty"):
+        asyncio.run(
+            _drain(
+                run_json_leaf_agent(
+                    ctx=ctx,
+                    agent=_FakeAgent(),
+                    output_key="owasp_result_json",
+                    parsed_state_key="_content_result_parsed",
+                    validator=None,
+                    log_label="owasp_result_json",
+                    validation_error_user_message="stub",
+                    require_non_empty_object=True,
+                )
+            )
+        )
+
+
+@pytest.mark.unit
+def test_run_json_leaf_agent_uses_content_tool_evidence_for_format_validation() -> None:
+    ctx = _make_ctx('{"status":"ok"}')
+    ctx.session.state["_content_tool_calls"] = ["execute_sql"]
+    ctx.session.state["_content_tool_events"] = [{"name": "execute_sql"}]
+
+    def validator(data, context):
+        assert context["_adk_tool_calls"] == ["execute_sql"]
+        assert context["_adk_tool_event_summaries"] == [{"name": "execute_sql"}]
+        return data
+
+    asyncio.run(
+        _drain(
+            run_json_leaf_agent(
+                ctx=ctx,
+                agent=_FakeAgent(),
+                output_key="owasp_result_json",
+                parsed_state_key="_owasp_result_parsed",
+                validator=validator,
+                log_label="owasp_result_json",
+                validation_error_user_message="stub",
+                validation_tool_calls_state_key="_content_tool_calls",
+                validation_tool_events_state_key="_content_tool_events",
+            )
+        )
+    )
 
 
 @pytest.mark.unit
