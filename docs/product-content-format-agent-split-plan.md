@@ -1,5 +1,22 @@
 # Product content/format split: change plan
 
+## Decisions
+
+1. Do not duplicate product validation. Content agents run no response schema
+   and no legacy product validator; they only return a non-empty internal JSON
+   object and expose their tool evidence. After the format agent, the
+   application runs exactly one explicit `model_validate()` call followed by
+   exactly one call to the existing legacy semantic validator. `output_schema`
+   remains on the format agent as the ADK generation/output constraint, not as
+   a replacement for the explicit application-boundary validation.
+2. Format agents must not perform domain reasoning. They are constrained
+   transformation agents: no tools, no SQL decisions, no product selection, no
+   calculations, and no facts beyond the supplied content result. Disable
+   Qwen thinking/reasoning for these agents when the configured LiteLLM
+   endpoint supports a per-request switch, and use temperature `0` (or the
+   lowest supported value). Content agents retain reasoning because they must
+   select tools, form SQL, and interpret tool results.
+
 ## Current implementation
 
 The repository currently has:
@@ -116,7 +133,9 @@ remove or weaken either legacy validator.
 
 Allow the content-stage call to parse and store its internal JSON result without
 running a final response schema or product semantic validator. Add only a
-minimal content check: the result must be a non-empty JSON object.
+minimal content viability check: the result must be a non-empty JSON object.
+Do not repeat final field, mode, SQL-policy, or tool-usage validation at this
+stage.
 
 ## 4. Change `RootAgent` from one call to two calls per product route
 
@@ -141,8 +160,8 @@ Change `_handle_product_info()`:
    - `_product_info_content_result_parsed`;
    - `_product_info_content_tool_calls`;
    - `_product_info_content_tool_events`.
-4. Reject an empty content result or missing `execute_sql` when the existing
-   semantic rules require SQL.
+4. Reject only an empty or unparseable content result; do not run the response
+   schema or legacy product validator.
 5. Run `product_info_format_agent`.
 6. Pass `ProductInfoResponseSchema` to `run_json_leaf_agent()`.
 7. Pass the content agent's recorded tool calls into the semantic validation
@@ -192,8 +211,11 @@ Modify `agent/start_agent.py`:
 - inject all four into `RootAgent`;
 - remove construction and injection of the two combined agents.
 
-Keep the current route-specific temperature for both parts of each route. Do
-not add new configuration variables as part of this change.
+Keep the current route-specific model settings for each content agent. Create a
+separate model/config instance for both format agents with thinking/reasoning
+disabled and temperature `0` (or the lowest value supported by the endpoint).
+Use one shared format-agent configuration rather than adding separate info and
+filter tuning variables.
 
 ## 7. Update only affected tests
 
@@ -207,14 +229,18 @@ Modify:
   add the equivalent assertions and retain current contract tests;
 - `tests/unit/agent/test_json_leaf_runner.py`:
   verify explicit Pydantic validation runs before semantic validation, invalid
-  structure does not reach the semantic validator, and content tool evidence
-  is stored;
+  structure does not reach the semantic validator, each validator is called
+  only once, and content tool evidence is stored;
 - `tests/unit/agent/test_rootagent.py`:
   verify content then format ordering, propagation of content tool calls,
-  exactly one format retry, no content or SQL retry, and existing final keys;
+  no product schema or legacy validation during the content stage, exactly one
+  format retry, no content or SQL retry, and existing final keys;
 - `tests/unit/agent/test_start_agent.py`:
   replace the two combined factory stubs/assertions with four stage-agent
   stubs/assertions.
+- `tests/unit/agent/test_stage_metrics.py`:
+  replace the combined product-stage labels with separate content and format
+  labels.
 
 Run:
 
@@ -224,7 +250,8 @@ Run:
   tests\unit\agent\test_product_filter_agent.py `
   tests\unit\agent\test_json_leaf_runner.py `
   tests\unit\agent\test_rootagent.py `
-  tests\unit\agent\test_start_agent.py
+  tests\unit\agent\test_start_agent.py `
+  tests\unit\agent\test_stage_metrics.py
 ```
 
 Then run:
@@ -240,6 +267,10 @@ Then run:
 - Only format agents have the retained `output_schema`.
 - Both final payloads pass explicit `model_validate()` before their retained
   legacy validators.
+- Neither product schema nor legacy validator runs during the content stage,
+  and neither final validation step runs more than once per format attempt.
+- Format agents run without reasoning/thinking and perform only evidence-to-
+  schema transformation.
 - Semantic validation receives the corresponding content agent's tool evidence.
 - A validation correction makes at most one additional format call and never
   repeats content retrieval or SQL.

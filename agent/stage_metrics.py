@@ -12,8 +12,10 @@ LOG_LABEL_TO_STAGE: Dict[str, str] = {
     "doc_search_result_json": "doc_search",
     "kb_answer_result_json": "kb_answer",
     "smalltalk_result_json": "smalltalk",
-    "product_info_result_json": "product_info",
-    "product_filter_result_json": "product_filter",
+    "product_info_content_result_json": "product_info_content",
+    "product_info_result_json": "product_info_format",
+    "product_filter_content_result_json": "product_filter_content",
+    "product_filter_result_json": "product_filter_format",
 }
 
 

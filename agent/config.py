@@ -129,6 +129,13 @@ def build_common_model() -> LiteLlm:
     return _build_model(enable_thinking=True)
 
 
+def build_format_model() -> LiteLlm:
+    """
+    Создает модель без thinking mode для детерминированного форматирования.
+    """
+    return _build_model(enable_thinking=False)
+
+
 def build_owasp_model() -> LiteLlm:
     """
     Создает отдельную LiteLlm с настройкой thinking mode для OWASP-классификатора.

@@ -34,8 +34,10 @@ def _load_start_agent_module(monkeypatch):
     config_stub.ACTIVE_DOCUMENTS_COLLECTION = "active_docs"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb_docs"
     common_model = object()
+    format_model = object()
     owasp_model = object()
     config_stub.build_common_model = lambda: common_model
+    config_stub.build_format_model = lambda: format_model
     config_stub.build_owasp_model = lambda: owasp_model
 
     def _agent_factory(name):
@@ -65,10 +67,20 @@ def _load_start_agent_module(monkeypatch):
     smalltalk_stub.create_smalltalk_agent = _agent_factory("smalltalk_agent")
 
     product_info_stub = types.ModuleType("agent.agents.product_info_agent")
-    product_info_stub.create_product_info_agent = _agent_factory("product_info_agent")
+    product_info_stub.create_product_info_content_agent = _agent_factory(
+        "product_info_content_agent"
+    )
+    product_info_stub.create_product_info_format_agent = _agent_factory(
+        "product_info_format_agent"
+    )
 
     product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
-    product_filter_stub.create_product_filter_agent = _agent_factory("product_filter_agent")
+    product_filter_stub.create_product_filter_content_agent = _agent_factory(
+        "product_filter_content_agent"
+    )
+    product_filter_stub.create_product_filter_format_agent = _agent_factory(
+        "product_filter_format_agent"
+    )
 
     for name, module in {
         "agent": agent_pkg,
@@ -101,6 +113,29 @@ def test_start_agent_exports_app(monkeypatch) -> None:
     assert module.app.root_agent is module.root_agent
     assert not hasattr(module.app, "events_compaction_config")
     assert module.root_agent.smalltalk_agent.name == "smalltalk_agent"
-    assert module.root_agent.product_info_agent.name == "product_info_agent"
-    assert module.root_agent.product_filter_agent.name == "product_filter_agent"
+    assert (
+        module.root_agent.product_info_content_agent.name
+        == "product_info_content_agent"
+    )
+    assert module.root_agent.product_info_format_agent.name == "product_info_format_agent"
+    assert (
+        module.root_agent.product_filter_content_agent.name
+        == "product_filter_content_agent"
+    )
+    assert (
+        module.root_agent.product_filter_format_agent.name
+        == "product_filter_format_agent"
+    )
+    assert (
+        module.root_agent.product_info_content_agent.model
+        is module.root_agent.dispatcher_agent.model
+    )
+    assert (
+        module.root_agent.product_info_format_agent.model
+        is module.root_agent.product_filter_format_agent.model
+    )
+    assert (
+        module.root_agent.product_info_format_agent.model
+        is not module.root_agent.product_info_content_agent.model
+    )
     assert module.root_agent.owasp_agent.model is not module.root_agent.dispatcher_agent.model

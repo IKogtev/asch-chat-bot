@@ -79,10 +79,14 @@ def test_owasp_model_disables_thinking(monkeypatch) -> None:
     config = _load_config_module(monkeypatch)
 
     common_model = config.build_common_model()
+    format_model = config.build_format_model()
     owasp_model = config.build_owasp_model()
 
     assert common_model.extra_body["chat_template_kwargs"]["enable_thinking"] is True
     assert common_model.extra_body["thinking_token_budget"] == 2048
+    assert format_model.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
     assert owasp_model.extra_body == {
         "chat_template_kwargs": {"enable_thinking": False},
     }

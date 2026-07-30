@@ -19,8 +19,19 @@ def test_stage_name_from_log_label() -> None:
     assert stage_name_from_log_label("dispatcher_result_json") == "dispatcher"
     assert stage_name_from_log_label("doc_search_result_json") == "doc_search"
     assert stage_name_from_log_label("kb_answer_result_json") == "kb_answer"
-    assert stage_name_from_log_label("product_info_result_json") == "product_info"
-    assert stage_name_from_log_label("product_filter_result_json") == "product_filter"
+    assert (
+        stage_name_from_log_label("product_info_content_result_json")
+        == "product_info_content"
+    )
+    assert stage_name_from_log_label("product_info_result_json") == "product_info_format"
+    assert (
+        stage_name_from_log_label("product_filter_content_result_json")
+        == "product_filter_content"
+    )
+    assert (
+        stage_name_from_log_label("product_filter_result_json")
+        == "product_filter_format"
+    )
     assert stage_name_from_log_label("unknown") is None
 
 

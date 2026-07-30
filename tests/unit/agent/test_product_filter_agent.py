@@ -24,7 +24,7 @@ def _load_module():
     config_stub = types.ModuleType("agent.config")
     config_stub.DBHUB_MCP_TIMEOUT_SEC = 30.0
     config_stub.DBHUB_MCP_TOKEN = ""
-    config_stub.DBHUB_MCP_URL = ""
+    config_stub.DBHUB_MCP_URL = "http://dbhub.test/mcp"
     config_stub.PRODUCT_FILTER_TEMPERATURE = 0.0
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -230,12 +230,24 @@ def test_product_filter_contract_rejects_info_mode() -> None:
 
 
 @pytest.mark.unit
-def test_product_filter_factory_uses_response_schema() -> None:
-    agent = product_filter.create_product_filter_agent(model="model")
+def test_product_filter_factories_split_tools_and_response_schema() -> None:
+    content_agent = product_filter.create_product_filter_content_agent(
+        model="content-model"
+    )
+    format_agent = product_filter.create_product_filter_format_agent(
+        model="format-model"
+    )
 
-    assert agent.name == "product_filter_agent"
-    assert agent.output_key == "product_filter_result_json"
-    assert agent.output_schema is product_filter.ProductFilterResponseSchema
+    assert content_agent.name == "product_filter_content_agent"
+    assert content_agent.output_key == "product_filter_content_result_json"
+    assert len(content_agent.tools) == 1
+    assert getattr(content_agent, "output_schema", None) is None
+
+    assert format_agent.name == "product_filter_format_agent"
+    assert format_agent.output_key == "product_filter_result_json"
+    assert format_agent.tools == []
+    assert format_agent.output_schema is product_filter.ProductFilterResponseSchema
+    assert format_agent.generate_content_config["temperature"] == 0.0
 
 
 @pytest.mark.unit

@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator, Callable, Dict, Mapping
 
 from google.adk.agents import InvocationContext, LlmAgent
 from google.adk.events import Event
+from pydantic import BaseModel
 
 from utils.logger import setup_logger
 from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
@@ -313,9 +314,15 @@ async def run_json_leaf_agent(
     agent: LlmAgent,
     output_key: str,
     parsed_state_key: str,
-    validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+    validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]] | None,
     log_label: str,
     validation_error_user_message: str,
+    response_schema: type[BaseModel] | None = None,
+    tool_calls_state_key: str | None = None,
+    tool_events_state_key: str | None = None,
+    validation_tool_calls_state_key: str | None = None,
+    validation_tool_events_state_key: str | None = None,
+    require_non_empty_object: bool = False,
 ) -> AsyncGenerator[Event, None]:
     _doc_timing = log_label == "doc_search_result_json"
     stage_name = stage_name_from_log_label(log_label)
@@ -396,7 +403,13 @@ async def run_json_leaf_agent(
             ctx.session.state.get("doc_search_rerank_only"),
             tool_calls.count("kb_search"),
         )
-        
+
+    # Content-agent evidence must survive the later tool-free formatting call.
+    if tool_calls_state_key:
+        ctx.session.state[tool_calls_state_key] = list(tool_calls)
+    if tool_events_state_key:
+        ctx.session.state[tool_events_state_key] = list(tool_event_summaries)
+
     # Достаем сырой результат без жесткого каста к str на первом шаге
     raw_payload = ctx.session.state.get(output_key)
     # Защита от пустого ответа LLM (raw=None)
@@ -443,11 +456,29 @@ async def run_json_leaf_agent(
                     extracted = dict(parsed_literal)
                 else:
                     raise ValueError("Parsed literal from string is not a dictionary")
+        if require_non_empty_object and not extracted:
+            raise ValueError("Parsed JSON object is empty")
         logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
         validator_context = dict(getattr(ctx.session, "state", {}) or {})
-        validator_context["_adk_tool_calls"] = tool_calls
-        validator_context["_adk_tool_event_summaries"] = tool_event_summaries
-        parsed = validator(extracted, validator_context)
+        validation_tool_calls = tool_calls
+        validation_tool_events = tool_event_summaries
+        if validation_tool_calls_state_key:
+            validation_tool_calls = list(
+                ctx.session.state.get(validation_tool_calls_state_key) or []
+            )
+        if validation_tool_events_state_key:
+            validation_tool_events = list(
+                ctx.session.state.get(validation_tool_events_state_key) or []
+            )
+        validator_context["_adk_tool_calls"] = validation_tool_calls
+        validator_context["_adk_tool_event_summaries"] = validation_tool_events
+
+        # ADK's output_schema constrains generation; this is the single explicit
+        # application-boundary structural validation before legacy semantics.
+        schema_data = extracted
+        if response_schema is not None:
+            schema_data = response_schema.model_validate(extracted).model_dump()
+        parsed = validator(schema_data, validator_context) if validator else schema_data
     except DocSearchRetryableValidationError:
         raise
     except Exception as exc:
