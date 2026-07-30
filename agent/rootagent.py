@@ -109,6 +109,7 @@ def is_response_schema_configuration_error(exc: Exception) -> bool:
 async def is_history_empty_by_global_id(global_user_id: str) -> bool:
     """Одним запросом находит platform_user_id по UUID в user_accounts 
     и проверяет, пуста ли его история в chat_history."""
+    conn = None
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         # Вложенный запрос: извлекаем platform_user_id по UUID и проверяем историю
@@ -122,11 +123,13 @@ async def is_history_empty_by_global_id(global_user_id: str) -> bool:
                 WHERE user_id = $1
             );
         """, global_user_id)
-        await conn.close()
         return count == 0  # Если 0, значит история пуста (был /reset)
     except Exception as e:
         logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
         return False
+    finally:
+        if conn:
+            await conn.close()
 
 @dataclass
 class PipelineContext:
@@ -459,13 +462,11 @@ class RootAgent(BaseAgent):
 
     def _append_recent_message(self, ctx: InvocationContext, role: str, text: str) -> None:
         """Добавляет сообщение в bounded history, игнорируя пустые записи."""
-        normalized_role = str(role or "").strip()
-        normalized_text = str(text or "").strip()
-        if normalized_role in {"user", "assistant"} or not normalized_text:
-            return
-        history = self._get_recent_messages(ctx)
-        history.append({"role": normalized_role, "text": normalized_text})
-        self._store_recent_messages(ctx, history)
+        role, text = str(role or "").strip(), str(text or "").strip()
+        if role in {"user", "assistant"} and text:
+            history = self._get_recent_messages(ctx)
+            history.append({"role": role, "text": text})
+            self._store_recent_messages(ctx, history)
 
     def _prepare_owasp_input(self, ctx: InvocationContext, user_text: str) -> None:
         """
