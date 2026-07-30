@@ -5,7 +5,7 @@
 import copy
 import json
 import time
-import ast
+import re
 import os
 from typing import Any, AsyncGenerator, Callable, Dict, Mapping
 
@@ -317,6 +317,7 @@ async def run_json_leaf_agent(
     log_label: str,
     validation_error_user_message: str,
 ) -> AsyncGenerator[Event, None]:
+    # МЕТРИКИ И ТАЙМИНГИ
     _doc_timing = log_label == "doc_search_result_json"
     stage_name = stage_name_from_log_label(log_label)
     _t_llm0 = time.monotonic()
@@ -333,7 +334,7 @@ async def run_json_leaf_agent(
         tool_calls.extend(_extract_function_call_names(event))
         tool_event_summaries.extend(_extract_tool_event_summaries(event))
         # блок диагностики мыслей
-        SHOW_LLM_RAW = bool(os.getenv("SHOW_LLM_RAW", False))
+        SHOW_LLM_RAW = os.getenv("SHOW_LLM_RAW", "False").lower() == "true"
         if SHOW_LLM_RAW:
             raw_text_parts = []
             if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
@@ -347,6 +348,7 @@ async def run_json_leaf_agent(
             kb_search_response_texts.extend(
                 _extract_kb_search_response_texts_from_event(event)
             )
+        # Считаем TTFT и токены
         if ttft_ms is None and event_has_model_output(event):
             ttft_ms = int((time.monotonic() - _t_llm0) * 1000.0)
         usage = getattr(event, "usage_metadata", None)
@@ -433,16 +435,25 @@ async def run_json_leaf_agent(
         else:
             # Ветка 3: Если вернулась строка (старый формат из промпта)
             raw_str = str(raw_payload or "").strip()
+            # 1. Удаляем Markdown-обертку кода (```json ... ``` или ``` ... ```)
+            cleaned = re.sub(r'```(?:json)?\s*(.*?)\s*```', r'\1', raw_str, flags=re.DOTALL)
+            
+            # 2. Ищем первую валидную JSON-структуру ({...} или [...]) внутри текста рассуждений
+            match = re.search(r'(\{.*\}|\[.*\])', cleaned, flags=re.DOTALL)
+            json_str = match.group(1) if match else cleaned
             try:
-                # Шаг А: Стандартный строгий JSON (для двойных кавычек)
-                extracted = extract_json(raw_str)
-            except Exception:
-                # Шаг Б: Если упал, пробуем безопасно распарсить одинарные кавычки 
-                parsed_literal = ast.literal_eval(raw_str)
-                if isinstance(parsed_literal, (dict, Mapping)):
-                    extracted = dict(parsed_literal)
-                else:
-                    raise ValueError("Parsed literal from string is not a dictionary")
+                # 3. Парсим через стандартный json.loads
+                extracted = json.loads(json_str)
+                if not isinstance(extracted, (dict, Mapping)):
+                    raise ValueError("Parsed JSON is not a dictionary/mapping")
+            except Exception as json_err:
+                # Фолбек на extract_json, если стандартный парсер не справился
+                try:
+                    extracted = extract_json(raw_str)
+                    if not isinstance(extracted, (dict, Mapping)):
+                        raise ValueError()
+                except Exception:
+                    raise ValueError(f"Failed to extract valid JSON from LLM output. Error: {json_err}")
         logger.debug("%s extracted: %s", log_label, json.dumps(extracted, ensure_ascii=False))
         validator_context = dict(getattr(ctx.session, "state", {}) or {})
         validator_context["_adk_tool_calls"] = tool_calls
