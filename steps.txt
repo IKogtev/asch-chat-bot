@@ -891,3 +891,19 @@ wrong example is:
 • КВ: 1.5
 • Дата продукта: не указано
 • Ликвидность: Средняя
+=======
+Our target is define output schema for all agents and take control function to LLM + google ADK with retry loop.
+Now we defined output schema for all agents (for exampt product_info and product_filter), but it work only as validation without output correction.
+Lets research this problem.
+Starting questions:
+- is output schema for agents product_info and product_filter is optimal (has only nessesary points) ?
+- Is duplicating functions in output schema control and classic validation in Python (from prev releases) ?
+=========
+type corrected plan:
+- we need not to keep local db, we recreate it
+- branch name fo migration is "adk-136"
+=========
+My solution is:
+1. separate product_info and product_filter agents into two parts (..._content_agent and ..._format_agent). In 1 we call tools in 2 we format final answer (as you describe later)
+2. retain output_schema and the legacy validators, but explicitly run ProductInfoResponseSchema.model_validate(extracted) or ProductFilterResponseSchema.model_validate(extracted) before semantic validation. If correction is desired, add one bounded application-level retry containing the validation error.
+Write plan as .md file in docs
