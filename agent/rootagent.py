@@ -22,7 +22,7 @@ from .helpers import extract_json, truncate_for_log, format_text_answer, format_
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
-from .agents.kb_answer_agent import validate_kb_answer_result
+from .agents.kb_answer_agent import run_kb_agent_with_self_correction
 from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_filter_agent import validate_product_filter_result
@@ -2021,17 +2021,16 @@ class RootAgent(BaseAgent):
         ctx.session.state["kb_answer_collection"] = self.kb_collection
         ctx.session.state["intent"] = intent
 
-        async for event in self._run_json_leaf_agent(
+        async for event in run_kb_agent_with_self_correction(
+            orchestrator=self,
             ctx=ctx,
             agent=self.kb_answer_agent,
             output_key="kb_answer_result_json",
             parsed_state_key="_kb_answer_result_parsed",
-            validator=validate_kb_answer_result,
-            log_label="kb_answer_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            max_retries=3,
         ):
             yield event
-
         kb_answer = self._get_required_state_dict(ctx, "_kb_answer_result_parsed")
         ctx.session.state["_root_final_text"] = format_text_answer(kb_answer["message"])
 

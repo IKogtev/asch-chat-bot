@@ -1,6 +1,6 @@
 import re
-from typing import Any, Dict, Literal
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Literal, AsyncGenerator
+from pydantic import BaseModel, Field, ValidationError
 
 from google.adk.agents import LlmAgent
 from google.genai.types import GenerateContentConfig
@@ -32,7 +32,7 @@ class KbAnswerResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
     mode: Literal["text_answer", "no_data"] = Field(description="Режим ответа")
     message: str = Field(description="Текст ответа на русском языке")
-    source: Literal["faq_search", "kb_search", "faq_search+kb_search"] = Field(description="Источник данных")
+    source: Literal["faq_search", "kb_search", "faq_search+kb_search", "none"] = Field(description="Источник данных")
 
     @classmethod
     def model_validate_json(
@@ -167,6 +167,90 @@ def validate_kb_answer_result(data: Dict[str, Any], context: Dict[str, Any]) -> 
         "source": source,
     }
 
+# Двухэтапная валидация: Pydantic + Бизнес-логика
+def parse_and_validate_kb_output(raw_output: Any, context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Парсит сырой ответ LLM через 2 барьера качества:
+    1. Pydantic-схема (очистка markdown, синтаксис JSON, типы).
+    2. Семантическая бизнес-логика (validate_kb_answer_result).
+    """
+    if not raw_output:
+        raise ValueError("Получен пустой результат (None/empty) от kb_answer_agent")
+
+    # Этап 1: Pydantic-валидация и очистка Markdown
+    if isinstance(raw_output, (str, bytes, bytearray)):
+        validated_schema = KbAnswerResponseSchema.model_validate_json(raw_output)
+        payload = validated_schema.model_dump()
+    elif isinstance(raw_output, dict):
+        validated_schema = KbAnswerResponseSchema.model_validate(raw_output)
+        payload = validated_schema.model_dump()
+    else:
+        raise ValueError(f"Неподдерживаемый тип данных ответа: {type(raw_output).__name__}")
+
+    # Этап 2: Семантическая валидация бизнес-правил
+    return validate_kb_answer_result(payload, context)
+
+# Функция выполнения агента с петлей самоисправления (Self-Correction Loop)
+async def run_kb_agent_with_self_correction(
+    orchestrator: Any,
+    ctx: Any,  # InvocationContext
+    agent: Any,
+    output_key: str = "kb_answer_result_json",
+    parsed_state_key: str = "_kb_answer_result_parsed",
+    validation_error_user_message: str = "",
+    max_retries: int = 3,
+) -> AsyncGenerator[Any, None]:
+    """
+    Обёртка с петлей самоисправления (Self-Correction Loop) 
+    для асинхронного выполнения leaf-агентов через генератор событий.
+    """
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("Попытка генерации %s: %d/%d", agent.name, attempt, max_retries)
+
+            # Запускаем генерацию через твой _run_json_leaf_agent
+            # и пробрасываем 2-этапный валидатор (parse_and_validate_kb_output)
+            async for event in orchestrator._run_json_leaf_agent(
+                ctx=ctx,
+                agent=agent,
+                output_key=output_key,
+                parsed_state_key=parsed_state_key,
+                validator=lambda raw, c=ctx.session.state: parse_and_validate_kb_output(raw, c),
+                log_label=output_key,
+                validation_error_user_message=validation_error_user_message,
+            ):
+                yield event
+
+            # Если всё прошло успешно — очищаем служебный фидбек и завершаем генератор
+            ctx.session.state.pop("self_correction_feedback", None)
+            return
+
+        except Exception as err:
+            last_error = err
+            logger.warning(
+                "Сбой валидации %s на попытке %d/%d: %s",
+                agent.name,
+                attempt,
+                max_retries,
+                err,
+            )
+
+            if attempt == max_retries:
+                logger.error("Превышено количество попыток самоисправления для %s", agent.name)
+                raise last_error
+
+            # Формируем фидбек об ошибке для модели на следующий виток
+            raw_bad_json = ctx.session.state.get(output_key, "")
+            feedback_prompt = (
+                f"ОШИБКА ВАЛИДАЦИИ ИТОГОВОГО JSON (Попытка {attempt}):\n"
+                f"'{err}'\n\n"
+                f"Твой предыдущий отданный ответ: {raw_bad_json}\n\n"
+                f"ВНИМАНИЕ: Инструменты faq_search или kb_search УЖЕ были вызваны. "
+                f"НЕ ВЫЗЫВАЙ ИХ ПОВТОРНО! Сформируй только исправленный валидный JSON по схеме."
+            )
+            ctx.session.state["self_correction_feedback"] = feedback_prompt
 
 def create_kb_answer_agent(model: LiteLlm) -> LlmAgent:
     """
@@ -296,38 +380,26 @@ If multiple definitions are present and context does not disambiguate them, do n
    - в message кратко скажи, что точный ответ не найден
 
 6. Для intent=kb_answer запрещено отвечать без обращения к faq_search
-7. Верни ТОЛЬКО сырой JSON. Категорически запрещено использовать markdown-обертки (```json или ```). Твой ответ должен начинаться с '{' и заканчиваться на '}'.
-
-Формат ответа:
-{{
-  "status": "ok",
-  "mode": "text_answer",
-  "message": "краткий ответ",
-  "source": "faq_search"
-}}
 """
     prompt_file = "kb_answer_agent_prompt.md"
     instruction = load_prompt(prompt_file, fallback)
     name = "kb_answer_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params: Dict[str, Any] = {
-        "response_mime_type": "application/json"
-    }
-
+    config_params: Dict[str, Any] = {}
     if KB_ANSWER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")
         config_params["temperature"] = KB_ANSWER_TEMPERATURE
     else:
         logger.debug(f"Agent {name} temperature set to -1 so google adk decide himself")
-
+    # 2. Если словарь пуст, передаем None, чтобы не ломать tools
+    generate_config = GenerateContentConfig(**config_params) if config_params else None
     agent = LlmAgent(
         name=name,
         model=model,
         instruction=instruction,
         tools=tools,
         output_key="kb_answer_result_json",
-        output_schema=KbAnswerResponseSchema,
-        generate_content_config=GenerateContentConfig(**config_params),
+        generate_content_config=generate_config,
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent
