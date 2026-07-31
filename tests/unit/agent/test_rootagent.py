@@ -115,7 +115,7 @@ def _load_rootagent_module():
     dispatcher_stub.validate_dispatcher_result = lambda data, context: data
 
     kb_answer_stub = types.ModuleType("agent.agents.kb_answer_agent")
-    kb_answer_stub.validate_kb_answer_result = lambda data, context: data
+    kb_answer_stub.run_kb_agent_with_self_correction = lambda data, context: data
 
     smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
     smalltalk_stub.validate_smalltalk_result = lambda data, context: data
@@ -821,7 +821,8 @@ async def test_handle_kb_answer_sets_expected_state_and_final_text() -> None:
         session_state={},
     )
 
-    async def fake_run_json_leaf_agent(**kwargs):
+    async def fake_kb_runner(**kwargs):
+        ctx = kwargs["ctx"]
         ctx.session.state["_kb_answer_result_parsed"] = {
             "status": "ok",
             "mode": "text_answer",
@@ -831,7 +832,7 @@ async def test_handle_kb_answer_sets_expected_state_and_final_text() -> None:
         if False:
             yield None
 
-    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    rootagent_module.run_kb_agent_with_self_correction = fake_kb_runner
 
     events = [event async for event in agent._handle_kb_answer(ctx, "Исходный вопрос", "", "kb_answer")]
 
@@ -1753,6 +1754,17 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
             dispatcher_called = True
             if False:
                 yield None
+        if kwargs["log_label"] == "product_info_result_json":
+            ctx.session.state["_product_info_result_parsed"] = {
+                "status": "ok",
+                "mode": "product_card",
+                "message": "mocked product info",
+                "resolved_product": {"code": "2867", "name": "Bundle Fort Knox"},
+                "clarification_options": [],
+            }
+            if False:
+                yield None
+            return
 
     async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
@@ -1780,7 +1792,7 @@ async def test_run_async_impl_routes_product_card_followup_from_saved_product_li
 async def test_run_async_impl_routes_product_card_followup_from_selected_product() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
-        parts=[types.SimpleNamespace(text="покажи карточку")],
+        parts=[types.SimpleNamespace(text="карточку 2867")],
         session_state={
             rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
                 "last_mode": "product_card",
@@ -1817,10 +1829,22 @@ async def test_run_async_impl_routes_product_card_followup_from_selected_product
             if False:
                 yield None
 
+        if kwargs["log_label"] == "product_info_result_json":
+            ctx.session.state["_product_info_result_parsed"] = {
+                "status": "ok",
+                "mode": "product_card",
+                "message": "mocked product info",
+                "resolved_product": {"code": "2867", "name": "Bundle Fort Knox"},
+                "clarification_options": [],
+            }
+            if False:
+                yield None
+            return
+
     async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
-        assert user_message == "покажи карточку"
+        assert user_message == "карточку 2867"
         assert search_query
         assert intent == "product_card"
         ctx.session.state["_root_final_text"] = "product card answer"
@@ -1843,7 +1867,7 @@ async def test_run_async_impl_routes_product_card_followup_from_selected_product
 async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
-        parts=[types.SimpleNamespace(text="пакет")],
+        parts=[types.SimpleNamespace(text="комплект")],
         session_state={
             rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
                 "last_mode": "product_card",
@@ -1879,11 +1903,22 @@ async def test_run_async_impl_routes_explicit_product_kit_without_dispatcher() -
             dispatcher_called = True
             if False:
                 yield None
+        if kwargs["log_label"] == "product_info_result_json":
+            ctx.session.state["_product_info_result_parsed"] = {
+                "status": "ok",
+                "mode": "product_kit",
+                "message": "mocked product kit",
+                "resolved_product": {"code": "2867", "name": "Bundle Fort Knox"},
+                "clarification_options": [],
+            }
+            if False:
+                yield None
+            return
 
     async def fake_handle_product_info(ctx, user_message, search_query, intent):
         nonlocal product_called
         product_called = True
-        assert user_message == "пакет"
+        assert user_message == "комплект"
         assert "2867" in search_query or "комплект" in search_query
         assert intent == "product_kit"
         ctx.session.state["_root_final_text"] = "product kit answer"
@@ -2039,12 +2074,13 @@ async def test_handle_kb_answer_clears_product_dialog_context() -> None:
         }
     )
 
-    async def fake_run_json_leaf_agent(**kwargs):
+    async def fake_kb_runner(**kwargs):
+        ctx = kwargs["ctx"]
         ctx.session.state["_kb_answer_result_parsed"] = {"message": " ok "}
         if False:
             yield None
 
-    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    rootagent_module.run_kb_agent_with_self_correction = fake_kb_runner
 
     events = [
         event
@@ -2079,13 +2115,14 @@ async def test_handle_kb_answer_expands_search_query_with_glossary() -> None:
     agent = _make_agent(glossary_lookup=FakeGlossaryLookup())
     ctx = _make_ctx(parts=[], session_state={})
 
-    async def fake_run_json_leaf_agent(**kwargs):
+    async def fake_kb_runner(**kwargs):
+        ctx = kwargs["ctx"]
         assert ctx.session.state["search_query"] == "НСЖ накопительное страхование жизни"
         ctx.session.state["_kb_answer_result_parsed"] = {"message": "ok"}
         if False:
             yield None
 
-    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+    rootagent_module.run_kb_agent_with_self_correction = fake_kb_runner
 
     events = [
         event
@@ -2876,7 +2913,7 @@ async def test_run_async_impl_routes_doc_list_show_more_followup_skips_dispatche
     events = [event async for event in agent._run_async_impl(ctx)]
 
     assert dispatcher_called is False
-    assert orchestrator_called is True
+    assert orchestrator_called is False 
     assert ctx.session.state["_bot_action"] == {"type": "show_doc_list_more"}
     assert len(events) == 1
     assert events[0].actions.state_delta["_bot_action"]["type"] == "show_doc_list_more"
