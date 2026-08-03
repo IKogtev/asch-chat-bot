@@ -893,7 +893,6 @@ async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
             "status": "ok",
             "mode": "product_card",
             "message": " Product selection answer ",
-            "used_tables": ["products"],
             "resolved_product": {
                 "code": "2832",
                 "name": "Fort Knox",
@@ -939,7 +938,6 @@ async def test_handle_product_info_appends_clarification_options() -> None:
             "status": "ok",
             "mode": "needs_clarification",
             "message": "Choose product",
-            "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [
                 {"code": "8958", "name": "Bundle Fort Knox 3+12 months"},
@@ -1006,7 +1004,6 @@ async def test_handle_product_filter_stores_products_and_adds_followup_question(
             "status": "ok",
             "mode": "product_filter",
             "message": "Найдено продуктов: 1.\n2867 - Bundle Fort Knox 3+36 месяцев",
-            "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [],
             "products": [
@@ -1087,7 +1084,6 @@ async def test_product_format_retry_does_not_repeat_content_stage() -> None:
         ctx.session.state["_product_info_result_parsed"] = {
             "mode": "product_card",
             "message": "Карточка продукта",
-            "used_tables": ["products"],
             "resolved_product": {"code": "2832", "name": "Fort Knox"},
             "clarification_options": [],
         }
@@ -1173,7 +1169,6 @@ async def test_handle_product_filter_attribute_values_stores_context_and_adds_fo
             "status": "ok",
             "mode": "product_attribute_values",
             "message": "Available values:\n- RUB\n- CNY",
-            "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [],
             "products": [],
@@ -1227,7 +1222,6 @@ async def test_handle_product_info_sets_bot_action_for_product_kit() -> None:
             "status": "ok",
             "mode": "product_kit",
             "message": " Kit answer ",
-            "used_tables": ["products"],
             "resolved_product": {
                 "code": "2832",
                 "name": "Fort Knox",
@@ -1289,7 +1283,6 @@ async def test_handle_product_filter_keeps_context_for_product_compare() -> None
             "status": "ok",
             "mode": "product_compare",
             "message": " Compare answer ",
-            "used_tables": ["products"],
             "comparison": [],
             "clarification_options": [],
         }

@@ -225,9 +225,18 @@ def test_product_filter_response_schema_rejects_non_list_field_values(
 
 @pytest.mark.unit
 def test_product_filter_contract_requires_attribute_values() -> None:
-    with pytest.raises(ValueError, match="requires attribute_values"):
+    with pytest.raises(ValueError, match="requires attribute_name"):
         product_filter.validate_product_filter_result(
             {"mode": "product_attribute_values", "message": "Значения"},
+            SQL_CONTEXT,
+        )
+
+
+@pytest.mark.unit
+def test_product_filter_contract_requires_products() -> None:
+    with pytest.raises(ValueError, match="requires products"):
+        product_filter.validate_product_filter_result(
+            {"mode": "product_filter", "message": "Найдены продукты"},
             SQL_CONTEXT,
         )
 
@@ -269,12 +278,33 @@ def test_product_filter_response_schema_restricts_mode() -> None:
 
 
 @pytest.mark.unit
-def test_product_filter_response_schema_omits_status() -> None:
+def test_product_filter_response_schema_contains_only_used_fields() -> None:
     schema = product_filter.ProductFilterResponseSchema.model_json_schema()
     response = product_filter.ProductFilterResponseSchema(
         mode="product_filter",
         message="x",
     )
 
-    assert "status" not in schema["properties"]
-    assert "status" not in response.model_dump()
+    expected_fields = {
+        "mode",
+        "message",
+        "resolved_product",
+        "clarification_options",
+        "products",
+        "attribute_name",
+        "attribute_column",
+        "attribute_values",
+    }
+    assert set(schema["properties"]) == expected_fields
+    assert set(response.model_dump()) == expected_fields
+    assert schema["properties"]["message"]["minLength"] == 1
+
+
+@pytest.mark.unit
+def test_product_filter_response_schema_rejects_unsupported_product_fields() -> None:
+    with pytest.raises(Exception, match="unsupported fields"):
+        product_filter.ProductFilterResponseSchema(
+            mode="product_filter",
+            message="Найдены продукты",
+            products=[{"code": "8914", "name": "Продукт", "unknown": "x"}],
+        )

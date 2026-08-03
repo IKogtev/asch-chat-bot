@@ -15,39 +15,41 @@ PRODUCT_INFO_MODES = {"product_card", "product_kit", "needs_clarification", "no_
 
 class ProductInfoResponseSchema(BaseModel):
     mode: Literal["product_card", "product_kit", "needs_clarification", "no_data"] = Field(
-        description="Режим: product_card, product_kit, needs_clarification или no_data."
+        description=(
+            "Итог обработки: product_card — карточка продукта; product_kit — "
+            "комплект документов; needs_clarification — требуется выбор продукта; "
+            "no_data — подтверждённые данные не найдены."
+        )
     )
     message: str = Field(
-        description="Краткий ответ пользователю на русском языке."
-    )
-    used_tables: list[str] = Field(
-        default_factory=list,
-        description="Таблицы, использованные в SQL текущего запуска.",
+        min_length=1,
+        description=(
+            "Непустой финальный ответ пользователю на русском языке, составленный "
+            "только по данным content-агента."
+        ),
     )
     resolved_product: dict[str, str] | None = Field(
         default=None,
-        description="Подтверждённые code, name и при наличии folder_kit; обязателен для карточки и комплекта.",
+        description=(
+            "Подтверждённый продукт только с полями code, name и необязательным "
+            "folder_kit. Обязателен для product_card и product_kit; иначе null."
+        ),
     )
     clarification_options: list[dict[str, str]] = Field(
         default_factory=list,
-        description="Варианты с code, name, term и currency; обязателен при needs_clarification.",
+        description=(
+            "Варианты выбора только с полями code, name и необязательными term, "
+            "currency. Непустой список обязателен только при needs_clarification."
+        ),
     )
-    products: list[dict[str, str]] = Field(
-        default_factory=list,
-        description="Не используется для карточки и комплекта: пустой список.",
-    )
-    attribute_name: str = Field(
-        default="",
-        description="Не используется для карточки и комплекта: пустая строка.",
-    )
-    attribute_column: str = Field(
-        default="",
-        description="Не используется для карточки и комплекта: пустая строка.",
-    )
-    attribute_values: list[str] = Field(
-        default_factory=list,
-        description="Не используется для карточки и комплекта: пустой список.",
-    )
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message must be non-empty")
+        return value
 
     @field_validator("resolved_product", mode="before")
     @classmethod
@@ -63,6 +65,33 @@ class ProductInfoResponseSchema(BaseModel):
         if not isinstance(parsed, dict):
             raise ValueError("resolved_product must be a JSON object")
         return parsed
+
+    @field_validator("resolved_product")
+    @classmethod
+    def validate_resolved_product(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        allowed_fields = {"code", "name", "folder_kit"}
+        if not set(value).issubset(allowed_fields):
+            raise ValueError("resolved_product contains unsupported fields")
+        return {key: item.strip() for key, item in value.items() if item.strip()}
+
+    @field_validator("clarification_options")
+    @classmethod
+    def validate_clarification_options(
+        cls,
+        value: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        allowed_fields = {"code", "name", "term", "currency"}
+        normalized: list[dict[str, str]] = []
+        for option in value:
+            if not set(option).issubset(allowed_fields):
+                raise ValueError("clarification option contains unsupported fields")
+            item = {key: field.strip() for key, field in option.items() if field.strip()}
+            if not item.get("code") or not item.get("name"):
+                raise ValueError("clarification option requires non-empty code and name")
+            normalized.append(item)
+        return normalized
 
 
 def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -90,6 +119,16 @@ def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) 
             data=data,
             fields=("mode", "resolved_product"),
         )
+    if mode in {"product_card", "product_kit"} and (
+        not resolved_product.get("code") or not resolved_product.get("name")
+    ):
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem=f"mode={mode!r} requires resolved_product.code and resolved_product.name",
+            data=data,
+            fields=("mode", "resolved_product"),
+        )
     if mode == "product_kit" and not resolved_product.get("code"):
         raise build_validation_error(
             agent=agent_name,
@@ -103,6 +142,17 @@ def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) 
             agent=agent_name,
             stage="semantics",
             problem="mode='needs_clarification' requires clarification_options",
+            data=data,
+            fields=("mode", "clarification_options"),
+        )
+    if mode == "needs_clarification" and any(
+        not option.get("code") or not option.get("name")
+        for option in clarification_options
+    ):
+        raise build_validation_error(
+            agent=agent_name,
+            stage="semantics",
+            problem="clarification options require code and name",
             data=data,
             fields=("mode", "clarification_options"),
         )
@@ -123,7 +173,7 @@ def validate_product_info_result(data: Dict[str, Any], context: Dict[str, Any]) 
             stage="tool_usage",
             problem="required tool 'execute_sql' was not called",
             data=data,
-            fields=("mode", "used_tables"),
+            fields=("mode",),
         )
 
     logger.debug(

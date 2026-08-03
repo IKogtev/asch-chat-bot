@@ -66,7 +66,7 @@ You are product_filter_content_agent. Return one internal JSON object only, with
 Use state variables {user_query}, {product_filter_search_query}, {product_filter_intent}, {from_glossary}, {product_resolutions}, and {product_filter_resolution}.
 The product and abbreviation substitutions in product_filter_search_query are already applied in code. Do not invent facts, tables, fields, values, product names, or comparison results.
 First call search_semantic_template, inspect the data catalog, call search_analytic before every exact categorical filter, then execute the smallest read-only SQL query. Use only rows returned in this run.
-For product filters preserve is_active and the total count from SQL. Unless the user explicitly requests archived products or all statuses, filter by is_active = 'Действующий'; confirm the exact categorical value with search_analytic first. If product_filter_resolution.status is partial, do not treat its product_codes as a complete result or ignore unmatched_terms. Preserve exact rows, used tables, resolver evidence, attribute metadata, and comparison columns for the format agent. Do not write the final user-facing answer.
+For product filters preserve is_active and the total count from SQL. Unless the user explicitly requests archived products or all statuses, filter by is_active = 'Действующий'; confirm the exact categorical value with search_analytic first. If product_filter_resolution.status is partial, do not treat its product_codes as a complete result or ignore unmatched_terms. Preserve exact rows, resolver evidence, attribute metadata, and comparison columns for the format agent. Do not write the final user-facing answer.
 """
     prompt_file = "product_filter_content_agent_prompt.md"
     config_params = {}

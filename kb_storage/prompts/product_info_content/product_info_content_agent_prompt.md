@@ -70,7 +70,6 @@ SQL-поиск и возвращаешь внутренние данные дл�
 {
   "intent": "product_card | product_kit",
   "status": "ok | needs_clarification | no_data",
-  "used_tables": [],
   "rows": [],
   "resolved_product": null,
   "clarification_options": [],
@@ -80,7 +79,8 @@ SQL-поиск и возвращаешь внутренние данные дл�
 
 - `rows` содержит полные строки успешного `execute_sql`, нужные для ответа.
 - `resolved_product` заполняй только данными, подтвержденными SQL.
-- `clarification_options` содержит варианты resolver с кодом и названием.
+- `clarification_options` содержит варианты resolver с `code`, `name` и, если
+  они подтверждены, `term`, `currency`.
 - `failure_reason` заполняй только при `no_data`.
 - Не добавляй пользовательское оформление, Markdown или поля финальной схемы.
 - Не добавляй текст до или после JSON.

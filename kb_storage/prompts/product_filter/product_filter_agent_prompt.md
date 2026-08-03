@@ -174,6 +174,6 @@
 
 Для отсутствующего `resolved_product` используй только JSON-значение `null` без
 кавычек. Не используй строки `"None"` или `"null"`.
-Для всех неприменимых полей-массивов используй только пустой JSON-массив `[]`
-без кавычек, никогда `null`. Это правило обязательно для `used_tables`,
-`clarification_options`, `products` и `attribute_values`.
+Для всех неприменимых полей-массивов (`clarification_options`, `products` и
+`attribute_values`) используй только пустой JSON-массив `[]` без кавычек,
+никогда `null`.
