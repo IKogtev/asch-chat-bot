@@ -17,9 +17,9 @@
    lowest supported value). Content agents retain reasoning because they must
    select tools, form SQL, and interpret tool results.
 
-## Current implementation
+## Baseline before implementation
 
-The repository currently has:
+Before these changes, the repository had:
 
 - `product_info_agent` and `product_filter_agent`, each combining DBHub tools
   with an ADK `output_schema`;
@@ -36,40 +36,36 @@ The repository currently has:
 
 The following sections list only changes required from that state.
 
-## 1. Split each existing factory into two agents
+## 1. Separate agent factories and contracts into focused modules
 
-Modify `agent/agents/product_info_agent.py`:
+Replace the two combined production modules with this flat structure:
 
-- replace `create_product_info_agent()` with:
-  - `create_product_info_content_agent()`;
-  - `create_product_info_format_agent()`;
-- move the existing DBHub tool setup and `PRODUCT_INFO_TOOL_FILTER` use into
-  `product_info_content_agent`;
-- set its output key to `product_info_content_result_json`;
-- do not set `output_schema` on the content agent;
-- configure `product_info_format_agent` without tools;
-- keep its output key as the existing public key
-  `product_info_result_json`;
-- keep `ProductInfoResponseSchema` and `validate_product_info_result()` in this
-  module and assign `ProductInfoResponseSchema` only to the format agent.
+```text
+agent/agents/
+  product_info_content_agent.py
+  product_info_format_agent.py
+  product_info_contract.py
+  product_filter_content_agent.py
+  product_filter_format_agent.py
+  product_filter_contract.py
+  product_result_validation.py
+```
 
-Modify `agent/agents/product_filter_agent.py` in the same way:
+For each route:
 
-- replace `create_product_filter_agent()` with:
-  - `create_product_filter_content_agent()`;
-  - `create_product_filter_format_agent()`;
-- keep DBHub tools only on `product_filter_content_agent`;
-- set its output key to `product_filter_content_result_json`;
-- set no `output_schema` on the content agent;
-- keep `product_filter_format_agent` tool-free;
-- keep its output key as `product_filter_result_json`;
-- retain `ProductFilterResponseSchema` and
-  `validate_product_filter_result()` and assign the schema only to the format
-  agent.
+- the content-agent module owns the DBHub tool setup, route tool filter,
+  content prompt, internal output key, and content factory;
+- the format-agent module owns the tool-free format prompt, public output key,
+  `output_schema`, temperature `0`, and format factory;
+- the contract module owns the response schema and legacy semantic validator;
+- the format-agent module imports its schema from the contract module;
+- `RootAgent` imports both schemas and legacy validators from the contract
+  modules.
 
-Do not create additional Python modules for the four agents. Keeping the two
-current route modules minimizes imports and preserves the existing locations of
-the schemas and legacy validators.
+Delete `product_info_agent.py` and `product_filter_agent.py` after all runtime
+and test imports use the focused modules. Do not add compatibility re-export
+modules: they would preserve ambiguous ownership and create two import paths
+for the same contract.
 
 ## 2. Replace the two combined prompts with four stage prompts
 
@@ -206,7 +202,7 @@ attempt counter with the other turn-scoped state.
 
 Modify `agent/start_agent.py`:
 
-- import the four new factory functions from the two existing route modules;
+- import each factory from its matching content-agent or format-agent module;
 - construct all four agents with the current common model;
 - inject all four into `RootAgent`;
 - remove construction and injection of the two combined agents.
@@ -222,11 +218,12 @@ filter tuning variables.
 Modify:
 
 - `tests/unit/agent/test_product_info_agent.py`:
-  verify the content agent has DBHub tools and no schema, the format agent has
-  no tools and retains `ProductInfoResponseSchema`, and retain existing schema
-  and validator tests;
+  load the info contract, content-agent, and format-agent modules; verify the
+  content agent has DBHub tools and no schema, the format agent has no tools
+  and retains `ProductInfoResponseSchema`, and retain existing contract tests;
 - `tests/unit/agent/test_product_filter_agent.py`:
-  add the equivalent assertions and retain current contract tests;
+  load the filter contract, content-agent, and format-agent modules; add the
+  equivalent assertions and retain current contract tests;
 - `tests/unit/agent/test_json_leaf_runner.py`:
   verify explicit Pydantic validation runs before semantic validation, invalid
   structure does not reach the semantic validator, each validator is called
@@ -262,7 +259,8 @@ Then run:
 
 ## Completion criteria
 
-- Both current combined factories are replaced by content/format factory pairs.
+- The two combined route modules are replaced by six focused content-agent,
+  format-agent, and contract modules.
 - Only content agents have DBHub tools.
 - Only format agents have the retained `output_schema`.
 - Both final payloads pass explicit `model_validate()` before their retained

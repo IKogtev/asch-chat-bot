@@ -66,19 +66,29 @@ def _load_start_agent_module(monkeypatch):
     smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
     smalltalk_stub.create_smalltalk_agent = _agent_factory("smalltalk_agent")
 
-    product_info_stub = types.ModuleType("agent.agents.product_info_agent")
-    product_info_stub.create_product_info_content_agent = _agent_factory(
+    product_info_content_stub = types.ModuleType(
+        "agent.agents.product_info_content_agent"
+    )
+    product_info_content_stub.create_product_info_content_agent = _agent_factory(
         "product_info_content_agent"
     )
-    product_info_stub.create_product_info_format_agent = _agent_factory(
+    product_info_format_stub = types.ModuleType(
+        "agent.agents.product_info_format_agent"
+    )
+    product_info_format_stub.create_product_info_format_agent = _agent_factory(
         "product_info_format_agent"
     )
 
-    product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
-    product_filter_stub.create_product_filter_content_agent = _agent_factory(
+    product_filter_content_stub = types.ModuleType(
+        "agent.agents.product_filter_content_agent"
+    )
+    product_filter_content_stub.create_product_filter_content_agent = _agent_factory(
         "product_filter_content_agent"
     )
-    product_filter_stub.create_product_filter_format_agent = _agent_factory(
+    product_filter_format_stub = types.ModuleType(
+        "agent.agents.product_filter_format_agent"
+    )
+    product_filter_format_stub.create_product_filter_format_agent = _agent_factory(
         "product_filter_format_agent"
     )
 
@@ -93,8 +103,10 @@ def _load_start_agent_module(monkeypatch):
         "agent.agents.doc_search_orchestrator": doc_orchestrator_stub,
         "agent.agents.kb_answer_agent": kb_answer_stub,
         "agent.agents.smalltalk_agent": smalltalk_stub,
-        "agent.agents.product_info_agent": product_info_stub,
-        "agent.agents.product_filter_agent": product_filter_stub,
+        "agent.agents.product_info_content_agent": product_info_content_stub,
+        "agent.agents.product_info_format_agent": product_info_format_stub,
+        "agent.agents.product_filter_content_agent": product_filter_content_stub,
+        "agent.agents.product_filter_format_agent": product_filter_format_stub,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 

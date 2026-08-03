@@ -4,7 +4,12 @@ from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
 
-from ..config import OWASP_MAX_OUTPUT_TOKENS, OWASP_TEMPERATURE, OWASP_TOP_P
+from ..config import (
+    OWASP_MAX_OUTPUT_TOKENS,
+    OWASP_TEMPERATURE,
+    OWASP_TOP_K,
+    OWASP_TOP_P,
+)
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -147,6 +152,7 @@ def create_owasp_agent(model: LiteLlm) -> LlmAgent:
     generate_content_config = GenerateContentConfig(
         temperature=OWASP_TEMPERATURE,
         top_p=OWASP_TOP_P,
+        top_k=OWASP_TOP_K,
         max_output_tokens=OWASP_MAX_OUTPUT_TOKENS,
     )
     agent = LlmAgent(

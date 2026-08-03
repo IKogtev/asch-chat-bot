@@ -120,7 +120,7 @@ def _load_rootagent_module():
     smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
     smalltalk_stub.validate_smalltalk_result = lambda data, context: data
 
-    product_info_stub = types.ModuleType("agent.agents.product_info_agent")
+    product_info_stub = types.ModuleType("agent.agents.product_info_contract")
     product_info_stub.ProductInfoResponseSchema = type(
         "ProductInfoResponseSchema",
         (),
@@ -128,7 +128,7 @@ def _load_rootagent_module():
     )
     product_info_stub.validate_product_info_result = lambda data, context: data
 
-    product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
+    product_filter_stub = types.ModuleType("agent.agents.product_filter_contract")
     product_filter_stub.ProductFilterResponseSchema = type(
         "ProductFilterResponseSchema",
         (),
@@ -226,8 +226,8 @@ def _load_rootagent_module():
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
     sys.modules["agent.agents.smalltalk_agent"] = smalltalk_stub
-    sys.modules["agent.agents.product_info_agent"] = product_info_stub
-    sys.modules["agent.agents.product_filter_agent"] = product_filter_stub
+    sys.modules["agent.agents.product_info_contract"] = product_info_stub
+    sys.modules["agent.agents.product_filter_contract"] = product_filter_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
     sys.modules["agent.product_resolver_service"] = product_resolver_stub
     sys.modules["asyncpg"] = asyncpg_stub
