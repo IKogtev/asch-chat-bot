@@ -736,11 +736,18 @@ class RootAgent(BaseAgent):
             resolved_product = product_result.get("resolved_product")
             products = self._normalize_dialog_products([resolved_product])
             if products:
-                previous = self._get_product_dialog_context(ctx)
+                selected_product = products[0]
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
                     "last_mode": "product_kit",
-                    "products": previous.get("products") or products,
-                    "selected_product": products[0],
+                    # A resolved kit replaces stale selections restored from an older turn.
+                    "products": [
+                        {
+                            key: selected_product[key]
+                            for key in ("code", "name")
+                            if selected_product.get(key)
+                        }
+                    ],
+                    "selected_product": selected_product,
                 }
             return
 
@@ -1622,6 +1629,85 @@ class RootAgent(BaseAgent):
             }
         )
 
+    @staticmethod
+    def _merge_non_empty_payload_fields(
+        context: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> None:
+        """Fill missing fallback context without replacing validated state."""
+        for key in ("mode", "resolved_product", "clarification_options", "products"):
+            if not context.get(key) and payload.get(key):
+                context[key] = payload[key]
+
+    @staticmethod
+    def _build_verified_product_kit_result(
+        ctx: InvocationContext,
+    ) -> Dict[str, Any] | None:
+        """Build a deterministic kit result from resolver and SQL-backed content evidence."""
+        state = ctx.session.state
+        if state.get("product_info_intent") != "product_kit":
+            return None
+
+        content = state.get("_product_info_content_result_parsed")
+        resolution = state.get("product_resolution")
+        tool_calls = set(state.get("_product_info_content_tool_calls") or [])
+        if (
+            not isinstance(content, dict)
+            or content.get("status") != "ok"
+            or not isinstance(resolution, dict)
+            or resolution.get("status") != "resolved"
+            or "execute_sql" not in tool_calls
+        ):
+            return None
+
+        resolved = content.get("resolved_product")
+        resolved = resolved if isinstance(resolved, dict) else {}
+        rows = content.get("rows")
+        rows = rows if isinstance(rows, list) else []
+
+        resolution_code = str(
+            resolution.get("product_code") or resolution.get("code") or ""
+        ).strip()
+        content_code = str(resolved.get("code") or "").strip()
+        if resolution_code and content_code and resolution_code != content_code:
+            return None
+        product_code = content_code or resolution_code
+
+        matching_row: Dict[str, Any] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_code = str(row.get("code") or "").strip()
+            if product_code and row_code == product_code:
+                matching_row = row
+                break
+
+        if not matching_row:
+            return None
+
+        product_name = str(
+            matching_row.get("name") or ""
+        ).strip()
+        folder_kit = str(
+            matching_row.get("folder_kit") or ""
+        ).strip()
+        if not product_code or not product_name:
+            return None
+
+        candidate = {
+            "mode": "product_kit",
+            "message": f"Комплект для продукта «{product_name}».",
+            "resolved_product": {
+                "code": product_code,
+                "name": product_name,
+                **({"folder_kit": folder_kit} if folder_kit else {}),
+            },
+            "clarification_options": [],
+        }
+        validator_context = dict(state)
+        validator_context["_adk_tool_calls"] = list(tool_calls)
+        return validate_product_info_result(candidate, validator_context)
+
     def _extract_ranks_with_words(self, text: str) -> List[int]:
         ranks = extract_download_ranks(text)
         if ranks: 
@@ -1708,6 +1794,17 @@ class RootAgent(BaseAgent):
                 return
             except AgentValidationFailure as exc:
                 if attempt == 2:
+                    if log_label == "product_info_result_json":
+                        recovered = self._build_verified_product_kit_result(ctx)
+                        if recovered is not None:
+                            # Kit delivery must not depend on a second free-form formatting attempt.
+                            ctx.session.state[output_key] = recovered
+                            ctx.session.state[parsed_state_key] = recovered
+                            logger.warning(
+                                "%s recovered deterministically from verified kit evidence",
+                                log_label,
+                            )
+                            return
                     raise
 
                 # The retry changes only formatting; content evidence and SQL
@@ -2094,13 +2191,8 @@ class RootAgent(BaseAgent):
             if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
                 try:
                     payload = extract_json(exc.raw)
-                    # Дополняем контекст данными из payload (они могут быть свежее state)
-                    context.setdefault("resolved_product", payload.get("resolved_product"))
-                    context.setdefault(
-                        "clarification_options",
-                        payload.get("clarification_options") or [],
-                    )
-                    context.setdefault("mode", payload.get("mode", ""))
+                    # Raw fields can be newer than parsed state when validation failed.
+                    self._merge_non_empty_payload_fields(context, payload)
                 except Exception:
                     pass
             

@@ -95,13 +95,100 @@ def test_product_filter_contract_normalizes_products() -> None:
     result = product_filter.validate_product_filter_result(
         {
             "mode": "product_filter",
-            "message": "Найдены продукты",
+            "message": "Найдено продуктов: 1. 2867 - Fort Knox",
             "products": [{"code": 2867, "name": " Fort Knox ", "is_active": "Действующий"}],
         },
         SQL_CONTEXT,
     )
 
     assert result["products"] == [{"code": "2867", "name": "Fort Knox", "is_active": "Действующий"}]
+    assert result["message"] == "Найдено продуктов: 1.\n2867 - Fort Knox"
+
+
+@pytest.mark.unit
+def test_product_filter_contract_sorts_product_lines_by_code() -> None:
+    result = product_filter.validate_product_filter_result(
+        {
+            "mode": "product_filter",
+            "message": (
+                "Найдено продуктов: 2. "
+                "8992 - Чистый процент 1 год (ПСЖ) "
+                "2851 - АльфаЗдоровье 5 лет (НСЖ Здоровье)"
+            ),
+            "products": [
+                {"code": "8992", "name": "Чистый процент 1 год"},
+                {"code": "2851", "name": "АльфаЗдоровье 5 лет"},
+            ],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert result["message"] == (
+        "Найдено продуктов: 2.\n"
+        "2851 - АльфаЗдоровье 5 лет (НСЖ Здоровье)\n"
+        "8992 - Чистый процент 1 год (ПСЖ)"
+    )
+    assert [product["code"] for product in result["products"]] == ["2851", "8992"]
+
+
+@pytest.mark.unit
+def test_product_filter_contract_allows_same_code_with_different_names() -> None:
+    result = product_filter.validate_product_filter_result(
+        {
+            "mode": "product_filter",
+            "message": (
+                "Найдено продуктов: 2. "
+                "8914 - Фиксированный доход 2 года "
+                "8914 - Фиксированный доход 1 год"
+            ),
+            "products": [
+                {"code": "8914", "name": "Фиксированный доход 2 года"},
+                {"code": "8914", "name": "Фиксированный доход 1 год"},
+            ],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert result["message"] == (
+        "Найдено продуктов: 2.\n"
+        "8914 - Фиксированный доход 1 год\n"
+        "8914 - Фиксированный доход 2 года"
+    )
+    assert [product["name"] for product in result["products"]] == [
+        "Фиксированный доход 1 год",
+        "Фиксированный доход 2 года",
+    ]
+
+
+@pytest.mark.unit
+def test_product_filter_contract_rejects_missing_product_line() -> None:
+    with pytest.raises(ValueError, match="exactly one line for every product"):
+        product_filter.validate_product_filter_result(
+            {
+                "mode": "product_filter",
+                "message": "Найдено продуктов: 2. 2851 - АльфаЗдоровье 5 лет",
+                "products": [
+                    {"code": "2851", "name": "АльфаЗдоровье 5 лет"},
+                    {"code": "8992", "name": "Чистый процент 1 год"},
+                ],
+            },
+            SQL_CONTEXT,
+        )
+
+
+@pytest.mark.unit
+def test_product_filter_contract_rejects_mismatched_product_count() -> None:
+    with pytest.raises(ValueError, match="product count must match"):
+        product_filter.validate_product_filter_result(
+            {
+                "mode": "product_filter",
+                "message": "Найдено продуктов: 99. 2851 - АльфаЗдоровье 5 лет",
+                "products": [
+                    {"code": "2851", "name": "АльфаЗдоровье 5 лет"},
+                ],
+            },
+            SQL_CONTEXT,
+        )
 
 
 @pytest.mark.unit
@@ -242,6 +329,52 @@ def test_product_filter_contract_requires_products() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "products",
+    [
+        [],
+        [{"code": "2851", "name": "АльфаЗдоровье 5 лет"}],
+        [
+            {"code": "8914", "name": "Фиксированный доход 1 год"},
+            {"code": "8914", "name": "Фиксированный доход 2 года"},
+        ],
+    ],
+)
+def test_product_filter_contract_requires_two_distinct_comparison_products(
+    products: list[dict[str, str]],
+) -> None:
+    with pytest.raises(ValueError, match="exactly two products with distinct codes"):
+        product_filter.validate_product_filter_result(
+            {
+                "mode": "product_compare",
+                "message": "Сравнение продуктов",
+                "products": products,
+            },
+            SQL_CONTEXT,
+        )
+
+
+@pytest.mark.unit
+def test_product_filter_contract_accepts_two_distinct_comparison_products() -> None:
+    result = product_filter.validate_product_filter_result(
+        {
+            "mode": "product_compare",
+            "message": "Сравнение продуктов",
+            "products": [
+                {"code": "8914", "name": "Фиксированный доход 1 год"},
+                {"code": "8959", "name": "Фиксированный доход и Альфа-Вклад"},
+            ],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert [product["code"] for product in result["products"]] == [
+        "8914",
+        "8959",
+    ]
+
+
+@pytest.mark.unit
 def test_product_filter_contract_rejects_info_mode() -> None:
     with pytest.raises(ValueError, match="invalid mode"):
         product_filter.validate_product_filter_result(
@@ -269,6 +402,21 @@ def test_product_filter_factories_split_tools_and_response_schema() -> None:
     assert format_agent.tools == []
     assert format_agent.output_schema is product_filter.ProductFilterResponseSchema
     assert format_agent.generate_content_config["temperature"] == 0.0
+
+
+@pytest.mark.unit
+def test_product_filter_format_prompt_requires_sorted_product_lines() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_filter_format"
+        / "product_filter_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "используй `\\n`" in prompt
+    assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
 
 
 @pytest.mark.unit

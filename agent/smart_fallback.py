@@ -169,6 +169,17 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
             "• название или код неизвестны — «Покажи активные продукты» и выбери нужный.\n\n"
             "Если ошибка повторится, используй команду /reset"
         )
+
+    if mode in {"product_card", "product_kit"} and isinstance(resolved_product, dict):
+        product_name = str(
+            resolved_product.get("name") or resolved_product.get("code") or ""
+        ).strip()
+        if product_name:
+            action = "комплект" if mode == "product_kit" else "карточку"
+            return (
+                f"Нашла продукт «{product_name}», но не смогла оформить {action}.\n\n"
+                "Попробуй повторить запрос. Если ошибка повторится, используй команду /reset"
+            )
     
     # Если ошибка в resolved_product — продукт не найден
     if "resolved_product" in validation_error:
@@ -191,12 +202,12 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
 def _product_not_found_fallback(search_query: str) -> str:
     """Универсальный fallback, когда продукт не найден."""
     return (
-        "🔎 Не могу найти продукт по запросу.\n\n"
+        f"🔎 Не могу найти продукт по запросу «{_truncate(search_query, 100)}».\n\n"
         "Уточни цель:\n"
-        "• документы — «Найди документы по 8837»;\n"
-        "• карточка или параметры — «Покажи параметры 8837»;\n"
-        "• комплект — «Дай комплект по 8837».\n"
-        "Для неактивного продукта добавь «архив». Не знаешь код — «Покажи активные продукты».n\n"
+        "• документы — «Найди документы по коду продукта»;\n"
+        "• карточка или параметры — «Покажи параметры по коду продукта»;\n"
+        "• комплект — «Дай комплект по коду продукта».\n"
+        "Для неактивного продукта добавь «архив». Не знаешь код — «Покажи активные продукты».\n\n"
         "Если поиск снова не сработает, используй команду /reset"
     )
 

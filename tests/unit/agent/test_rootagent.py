@@ -1160,6 +1160,144 @@ async def test_product_format_retry_stops_after_second_failure() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_product_format_second_failure_recovers_verified_product_kit() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+    format_calls = 0
+
+    async def fake_prepare_product_resolution_state(ctx, query, intent):
+        ctx.session.state["product_resolution"] = {
+            "status": "resolved",
+            "product_code": "8916",
+            "product_name": "Защищенный капитал 2 года",
+        }
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        nonlocal format_calls
+        if kwargs["output_key"] == "product_info_content_result_json":
+            ctx.session.state["_product_info_content_result_parsed"] = {
+                "status": "ok",
+                "rows": [
+                    {
+                        "code": "8916",
+                        "name": "Защищенный капитал 2 года",
+                        "folder_kit": "НСЖ/ЗК 2 года 23% (8916) 21.05.26",
+                    }
+                ],
+                "resolved_product": {
+                    "code": "8916",
+                    "name": "Защищенный капитал 2 года",
+                },
+            }
+            ctx.session.state["_product_info_content_tool_calls"] = ["execute_sql"]
+            if False:
+                yield None
+            return
+
+        format_calls += 1
+        raise rootagent_module.AgentValidationFailure(
+            log_label="product_info_result_json",
+            validation_error="message is required",
+            raw=(
+                '{"mode":"product_kit","message":"",'
+                '"resolved_product":{"code":"8916",'
+                '"name":"Защищенный капитал 2 года"}}'
+            ),
+            user_message=rootagent_module.VALIDATION_ERROR_USER_MESSAGE,
+        )
+        if False:
+            yield None
+
+    agent._prepare_product_resolution_state = fake_prepare_product_resolution_state
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_product_info(
+            ctx,
+            "нужен комплект по ЗК 2 года",
+            "ЗК 2 года",
+            "product_kit",
+        )
+    ]
+
+    assert events == []
+    assert format_calls == 2
+    assert ctx.session.state["_root_final_text"] == (
+        "Комплект для продукта «Защищенный капитал 2 года»."
+    )
+    assert ctx.session.state["_bot_action"] == {
+        "type": "send_product_kit",
+        "product_code": "8916",
+        "product_name": "Защищенный капитал 2 года",
+        "folder_kit": "НСЖ/ЗК 2 года 23% (8916) 21.05.26",
+    }
+    assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
+        "last_mode": "product_kit",
+        "products": [{"code": "8916", "name": "Защищенный капитал 2 года"}],
+        "selected_product": {
+            "code": "8916",
+            "name": "Защищенный капитал 2 года",
+            "folder_kit": "НСЖ/ЗК 2 года 23% (8916) 21.05.26",
+        },
+    }
+
+
+@pytest.mark.unit
+def test_product_kit_recovery_rejects_unrelated_sql_row() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "product_info_intent": "product_kit",
+            "product_resolution": {
+                "status": "resolved",
+                "product_code": "8916",
+                "product_name": "Защищенный капитал 2 года",
+            },
+            "_product_info_content_result_parsed": {
+                "status": "ok",
+                "rows": [
+                    {
+                        "code": "9999",
+                        "name": "Другой продукт",
+                        "folder_kit": "Другой комплект",
+                    }
+                ],
+            },
+            "_product_info_content_tool_calls": ["execute_sql"],
+        }
+    )
+
+    assert agent._build_verified_product_kit_result(ctx) is None
+
+
+@pytest.mark.unit
+def test_merge_non_empty_payload_fields_replaces_only_empty_context() -> None:
+    context = {
+        "mode": "",
+        "resolved_product": None,
+        "clarification_options": [],
+        "products": [{"code": "existing"}],
+    }
+    payload = {
+        "mode": "product_kit",
+        "resolved_product": {"code": "8916", "name": "Продукт"},
+        "clarification_options": [{"code": "8916", "name": "Продукт"}],
+        "products": [{"code": "replacement"}],
+    }
+
+    RootAgent._merge_non_empty_payload_fields(context, payload)
+
+    assert context == {
+        "mode": "product_kit",
+        "resolved_product": {"code": "8916", "name": "Продукт"},
+        "clarification_options": [{"code": "8916", "name": "Продукт"}],
+        "products": [{"code": "existing"}],
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_handle_product_filter_attribute_values_stores_context_and_adds_followup_question() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
@@ -1211,8 +1349,8 @@ async def test_handle_product_info_sets_bot_action_for_product_kit() -> None:
         session_state={
             rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
                 "last_mode": "product_card",
-                "products": [{"code": "2832", "name": "Fort Knox"}],
-                "selected_product": {"code": "2832", "name": "Fort Knox"},
+                "products": [{"code": "9999", "name": "Stale product"}],
+                "selected_product": {"code": "9999", "name": "Stale product"},
             }
         }
     )
