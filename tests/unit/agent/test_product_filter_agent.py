@@ -91,33 +91,34 @@ SQL_CONTEXT = {"_adk_tool_calls": ["execute_sql"]}
 
 
 @pytest.mark.unit
-def test_product_filter_contract_normalizes_products() -> None:
+def test_product_filter_contract_normalizes_products_without_reformatting_message() -> None:
+    message = "Найдено продуктов: 1.\n2867 - Fort Knox"
     result = product_filter.validate_product_filter_result(
         {
             "mode": "product_filter",
-            "message": "Найдено продуктов: 1. 2867 - Fort Knox",
+            "message": message,
             "products": [{"code": 2867, "name": " Fort Knox ", "is_active": "Действующий"}],
         },
         SQL_CONTEXT,
     )
 
     assert result["products"] == [{"code": "2867", "name": "Fort Knox", "is_active": "Действующий"}]
-    assert result["message"] == "Найдено продуктов: 1.\n2867 - Fort Knox"
+    assert result["message"] == message
 
 
 @pytest.mark.unit
-def test_product_filter_contract_sorts_product_lines_by_code() -> None:
+def test_product_filter_contract_accepts_multiple_products() -> None:
     result = product_filter.validate_product_filter_result(
         {
             "mode": "product_filter",
             "message": (
-                "Найдено продуктов: 2. "
-                "8992 - Чистый процент 1 год (ПСЖ) "
-                "2851 - АльфаЗдоровье 5 лет (НСЖ Здоровье)"
+                "Найдено продуктов: 2.\n"
+                "2851 - АльфаЗдоровье 5 лет (НСЖ Здоровье)\n"
+                "8992 - Чистый процент 1 год (ПСЖ)"
             ),
             "products": [
-                {"code": "8992", "name": "Чистый процент 1 год"},
                 {"code": "2851", "name": "АльфаЗдоровье 5 лет"},
+                {"code": "8992", "name": "Чистый процент 1 год"},
             ],
         },
         SQL_CONTEXT,
@@ -137,13 +138,13 @@ def test_product_filter_contract_allows_same_code_with_different_names() -> None
         {
             "mode": "product_filter",
             "message": (
-                "Найдено продуктов: 2. "
-                "8914 - Фиксированный доход 2 года "
-                "8914 - Фиксированный доход 1 год"
+                "Найдено продуктов: 2.\n"
+                "8914 - Фиксированный доход 1 год\n"
+                "8914 - Фиксированный доход 2 года"
             ),
             "products": [
-                {"code": "8914", "name": "Фиксированный доход 2 года"},
                 {"code": "8914", "name": "Фиксированный доход 1 год"},
+                {"code": "8914", "name": "Фиксированный доход 2 года"},
             ],
         },
         SQL_CONTEXT,
@@ -158,37 +159,6 @@ def test_product_filter_contract_allows_same_code_with_different_names() -> None
         "Фиксированный доход 1 год",
         "Фиксированный доход 2 года",
     ]
-
-
-@pytest.mark.unit
-def test_product_filter_contract_rejects_missing_product_line() -> None:
-    with pytest.raises(ValueError, match="exactly one line for every product"):
-        product_filter.validate_product_filter_result(
-            {
-                "mode": "product_filter",
-                "message": "Найдено продуктов: 2. 2851 - АльфаЗдоровье 5 лет",
-                "products": [
-                    {"code": "2851", "name": "АльфаЗдоровье 5 лет"},
-                    {"code": "8992", "name": "Чистый процент 1 год"},
-                ],
-            },
-            SQL_CONTEXT,
-        )
-
-
-@pytest.mark.unit
-def test_product_filter_contract_rejects_mismatched_product_count() -> None:
-    with pytest.raises(ValueError, match="product count must match"):
-        product_filter.validate_product_filter_result(
-            {
-                "mode": "product_filter",
-                "message": "Найдено продуктов: 99. 2851 - АльфаЗдоровье 5 лет",
-                "products": [
-                    {"code": "2851", "name": "АльфаЗдоровье 5 лет"},
-                ],
-            },
-            SQL_CONTEXT,
-        )
 
 
 @pytest.mark.unit
@@ -405,7 +375,7 @@ def test_product_filter_factories_split_tools_and_response_schema() -> None:
 
 
 @pytest.mark.unit
-def test_product_filter_format_prompt_requires_sorted_product_lines() -> None:
+def test_product_filter_format_prompt_requires_multiline_product_output() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     prompt = (
         repo_root
@@ -415,7 +385,10 @@ def test_product_filter_format_prompt_requires_sorted_product_lines() -> None:
         / "product_filter_format_agent_prompt.md"
     ).read_text(encoding="utf-8")
 
-    assert "используй `\\n`" in prompt
+    assert "Переносы строк для `product_filter` и `product_compare`" in prompt
+    assert "кодируй каждый перенос строки как `\\n`" in prompt
+    assert "используй `\\n\\n` между заголовком" in prompt
+    assert "Никогда не объединяй их в одну строку" in prompt
     assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
 
 

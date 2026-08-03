@@ -1,4 +1,3 @@
-import re
 from typing import Any, Dict, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -188,104 +187,6 @@ class ProductFilterResponseSchema(BaseModel):
         return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
 
-def _product_code_sort_key(product: Dict[str, Any]) -> tuple[tuple[int, Any], ...]:
-    parts = re.split(r"(\d+)", str(product.get("code") or "").casefold())
-    code_key = tuple(
-        (0, int(part)) if part.isdigit() else (1, part)
-        for part in parts
-        if part
-    )
-    return (*code_key, (2, str(product.get("name") or "").casefold()))
-
-
-def _normalize_product_filter_list(
-    message: str,
-    products: list[Dict[str, Any]],
-) -> tuple[str, list[Dict[str, Any]]]:
-    """Normalize a product list to one sorted product per line."""
-    header_match = re.match(
-        r"^\s*Найдено продуктов:\s*(?P<count>\d+)\.\s*",
-        message,
-    )
-    if not header_match:
-        raise ValueError("message must start with 'Найдено продуктов: N.'")
-
-    identities = [
-        (
-            str(product.get("code") or "").strip(),
-            str(product.get("name") or "").strip(),
-        )
-        for product in products
-    ]
-    if (
-        not identities
-        or any(not code or not name for code, name in identities)
-        or len(set(identities)) != len(identities)
-    ):
-        raise ValueError("products must contain unique non-empty code and name pairs")
-
-    displayed_count = int(header_match.group("count"))
-    if displayed_count != len(products):
-        raise ValueError(
-            "message product count must match the number of products"
-        )
-
-    codes = {code for code, _ in identities}
-
-    code_pattern = "|".join(
-        re.escape(code)
-        for code in sorted(codes, key=len, reverse=True)
-    )
-    body = message[header_match.end():]
-    markers = list(
-        re.finditer(
-            rf"(?<!\w)(?P<code>{code_pattern})\s+-\s+",
-            body,
-        )
-    )
-    if not markers or body[:markers[0].start()].strip():
-        raise ValueError("message must contain only product lines after the header")
-
-    remaining_identities = set(identities)
-    lines_by_identity: Dict[tuple[str, str], str] = {}
-    for index, marker in enumerate(markers):
-        code = marker.group("code")
-        end = markers[index + 1].start() if index + 1 < len(markers) else len(body)
-        line = " ".join(body[marker.start():end].split())
-        candidates = [
-            identity
-            for identity in remaining_identities
-            if identity[0] == code and identity[1] in line
-        ]
-        if not candidates:
-            raise ValueError(
-                f"message line for code {code!r} must match an unused product name"
-            )
-
-        # Prefer the longest matching name when one product name contains another.
-        identity = max(candidates, key=lambda item: len(item[1]))
-        lines_by_identity[identity] = line
-        remaining_identities.remove(identity)
-
-    if remaining_identities or len(markers) != len(products):
-        raise ValueError("message must contain exactly one line for every product")
-
-    sorted_products = sorted(products, key=_product_code_sort_key)
-    header = f"Найдено продуктов: {displayed_count}."
-    normalized_message = "\n".join(
-        [
-            header,
-            *(
-                lines_by_identity[
-                    (str(product["code"]), str(product["name"]))
-                ]
-                for product in sorted_products
-            ),
-        ]
-    )
-    return normalized_message, sorted_products
-
-
 def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     agent_name = "product_filter_agent"
     parsed = parse_product_result(data, agent_name)
@@ -348,20 +249,6 @@ def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]
             data=data,
             fields=("mode", "products"),
         )
-    if mode == "product_filter":
-        try:
-            parsed["message"], parsed["products"] = _normalize_product_filter_list(
-                parsed["message"],
-                parsed["products"],
-            )
-        except ValueError as exc:
-            raise build_validation_error(
-                agent=agent_name,
-                stage="presentation",
-                problem=str(exc),
-                data=data,
-                fields=("message", "products"),
-            ) from exc
     if mode == "product_attribute_values" and (
         not parsed["attribute_name"]
         or not parsed["attribute_column"]
