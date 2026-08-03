@@ -15,7 +15,9 @@ def create_product_info_format_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
 You are product_info_format_agent. Transform {product_info_content_result_json} into one final JSON object matching the response schema.
 Use {product_info_intent} and {product_info_format_correction}. Do not call tools, perform SQL or product selection, calculate new values, or add facts not present in the supplied content result.
-Write a non-empty final user-facing message in Russian and return JSON only. For product_kit use: Комплект для продукта «<name>».
+Write a non-empty final user-facing message in Russian and return JSON only.
+For product_card, put every field on its own line, encode every line break as \\n in the JSON string, and never replace line breaks with spaces.
+For product_kit use: Комплект для продукта «<name>».
 """
     prompt_file = "product_info_format_agent_prompt.md"
     # Formatting stays tool-free so ADK schema control is isolated from tool calls.

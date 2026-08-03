@@ -168,6 +168,22 @@ def test_product_info_format_prompt_requires_product_kit_message() -> None:
 
 
 @pytest.mark.unit
+def test_product_info_format_prompt_requires_multiline_product_card() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_info_format"
+        / "product_info_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Каждое поле карточки выводи с новой строки" in prompt
+    assert "используй `\\n` перед каждым следующим полем" in prompt
+    assert "не объединяй поля в одну строку" in prompt
+
+
+@pytest.mark.unit
 def test_product_info_response_schema_restricts_mode() -> None:
     with pytest.raises(Exception):
         product_info.ProductInfoResponseSchema(mode="product_filter", message="x")
