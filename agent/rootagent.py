@@ -2063,7 +2063,6 @@ class RootAgent(BaseAgent):
                     else "_product_filter_result_parsed"
                 )
                 parsed = ctx.session.state.get(parsed_key) or {}
-                context["used_tables"] = parsed.get("used_tables") or []
                 context["mode"] = parsed.get("mode", "")
                 context["resolved_product"] = parsed.get("resolved_product")
                 context["clarification_options"] = parsed.get("clarification_options") or []
@@ -2102,7 +2101,6 @@ class RootAgent(BaseAgent):
                         payload.get("clarification_options") or [],
                     )
                     context.setdefault("mode", payload.get("mode", ""))
-                    context.setdefault("used_tables", payload.get("used_tables") or [])
                 except Exception:
                     pass
             

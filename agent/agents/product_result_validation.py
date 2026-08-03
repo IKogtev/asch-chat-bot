@@ -16,22 +16,6 @@ def normalize_optional_text(value: Any) -> str:
     return str(value).strip()
 
 
-def normalize_used_tables(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        item = value.strip()
-        return [item] if item else []
-    if isinstance(value, list):
-        return [
-            normalized
-            for item in value
-            if (normalized := normalize_optional_text(item))
-        ]
-    normalized = normalize_optional_text(value)
-    return [normalized] if normalized else []
-
-
 def normalize_product(
     value: Any,
     field_keys: tuple[str, ...] = PRODUCT_FIELD_KEYS,
@@ -106,7 +90,7 @@ def normalize_tool_calls(value: Any) -> set[str]:
 
 
 def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any]:
-    """Validate common fields and normalize the shared product result shape."""
+    """Validate and normalize fields shared by both final product contracts."""
     if not isinstance(data, dict):
         raise build_validation_error(
             agent=agent_name,
@@ -116,24 +100,19 @@ def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any
 
     mode = normalize_optional_text(data.get("mode"))
     message = normalize_optional_text(data.get("message"))
-    used_tables = normalize_used_tables(data.get("used_tables"))
-    attribute_name = normalize_optional_text(data.get("attribute_name"))
-    attribute_column = normalize_optional_text(data.get("attribute_column"))
 
     try:
         resolved_product = normalize_product(data.get("resolved_product"))
         clarification_options = normalize_clarification_options(
             data.get("clarification_options")
         )
-        products = normalize_products(data.get("products"))
-        attribute_values = normalize_text_list(data.get("attribute_values"), "attribute_values")
     except (TypeError, ValueError) as exc:
         raise build_validation_error(
             agent=agent_name,
             stage="basic_fields",
             problem=str(exc),
             data=data,
-            fields=("resolved_product", "clarification_options", "products", "attribute_values"),
+            fields=("resolved_product", "clarification_options"),
         ) from exc
 
     if not message:
@@ -148,11 +127,6 @@ def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any
     return {
         "mode": mode,
         "message": message,
-        "used_tables": used_tables,
         "resolved_product": resolved_product,
         "clarification_options": clarification_options,
-        "products": products,
-        "attribute_name": attribute_name,
-        "attribute_column": attribute_column,
-        "attribute_values": attribute_values,
     }

@@ -78,7 +78,6 @@ SQL-поиск и возвращаешь внутренние данные дл�
 {
   "intent": "product_filter | product_compare | product_attribute_values",
   "status": "ok | needs_clarification | no_data",
-  "used_tables": [],
   "rows": [],
   "total_count": null,
   "display_columns": [],

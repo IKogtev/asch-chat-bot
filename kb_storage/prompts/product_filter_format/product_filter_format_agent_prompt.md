@@ -23,8 +23,6 @@
 - Для `status="no_data"` используй `mode="no_data"` и кратко объясни
   `failure_reason` по-русски.
 
-Всегда передавай `used_tables` из внутренних данных.
-
 ## `product_filter`
 
 - В начале `message` укажи количество только из `total_count`:
@@ -49,6 +47,8 @@
 ## `product_compare`
 
 - Используй две переданные SQL-строки и `column_business_names`.
+- Передай обе сравниваемые строки в `products`, используя только поля `code`,
+  `name`, `term`, `currency`, `folder_kit`, `is_active`.
 - Формируй `message` строго в формате:
 
   `У двух продуктов отличаются следующие свойства:
@@ -75,7 +75,9 @@
 
 ## Финальный объект
 
-Ответ пользователю всегда пиши по-русски. Верни только один JSON-объект по
-переданной схеме ответа, без Markdown и комментариев. Для отсутствующего
-`resolved_product` используй `null`; для неприменимых списков используй `[]`;
-для неприменимых `attribute_name` и `attribute_column` используй `""`.
+Ответ пользователю всегда пиши по-русски. Верни только один JSON-объект с
+полями `mode`, `message`, `resolved_product`, `clarification_options`,
+`products`, `attribute_name`, `attribute_column`, `attribute_values`, без
+Markdown и комментариев. Для отсутствующего `resolved_product` используй
+`null`; для неприменимых списков используй `[]`; для неприменимых
+`attribute_name` и `attribute_column` используй `""`.

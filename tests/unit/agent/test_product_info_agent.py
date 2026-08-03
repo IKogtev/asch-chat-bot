@@ -97,14 +97,18 @@ def test_product_info_contract_accepts_card() -> None:
         {
             "mode": "product_card",
             "message": "Карточка продукта",
-            "used_tables": "products",
             "resolved_product": {"code": 2832, "name": "Fort Knox"},
         },
         SQL_CONTEXT,
     )
 
     assert "status" not in result
-    assert result["used_tables"] == ["products"]
+    assert set(result) == {
+        "mode",
+        "message",
+        "resolved_product",
+        "clarification_options",
+    }
     assert result["resolved_product"] == {"code": "2832", "name": "Fort Knox"}
 
 
@@ -155,15 +159,38 @@ def test_product_info_response_schema_restricts_mode() -> None:
 
 
 @pytest.mark.unit
-def test_product_info_response_schema_omits_status() -> None:
+def test_product_info_response_schema_contains_only_used_fields() -> None:
     schema = product_info.ProductInfoResponseSchema.model_json_schema()
     response = product_info.ProductInfoResponseSchema(
         mode="product_card",
         message="x",
     )
 
-    assert "status" not in schema["properties"]
-    assert "status" not in response.model_dump()
+    expected_fields = {
+        "mode",
+        "message",
+        "resolved_product",
+        "clarification_options",
+    }
+    assert set(schema["properties"]) == expected_fields
+    assert set(response.model_dump()) == expected_fields
+    assert schema["properties"]["message"]["minLength"] == 1
+
+
+@pytest.mark.unit
+def test_product_info_response_schema_rejects_whitespace_message() -> None:
+    with pytest.raises(Exception, match="message must be non-empty"):
+        product_info.ProductInfoResponseSchema(mode="no_data", message="   ")
+
+
+@pytest.mark.unit
+def test_product_info_response_schema_rejects_unsupported_product_fields() -> None:
+    with pytest.raises(Exception, match="unsupported fields"):
+        product_info.ProductInfoResponseSchema(
+            mode="product_card",
+            message="Карточка продукта",
+            resolved_product={"code": "8914", "name": "Продукт", "term": "1 год"},
+        )
 
 
 @pytest.mark.unit
