@@ -8,7 +8,7 @@ import pytest
 
 def _load_module():
     repo_root = Path(__file__).resolve().parents[3]
-    module_path = repo_root / "agent" / "agents" / "product_info_agent.py"
+    agents_path = repo_root / "agent" / "agents"
 
     agent_pkg = types.ModuleType("agent")
     agent_pkg.__path__ = [str(repo_root / "agent")]
@@ -67,12 +67,24 @@ def _load_module():
     }.items():
         sys.modules[name] = module
 
-    spec = importlib.util.spec_from_file_location("agent.agents.product_info_agent", module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    def load(name: str):
+        module_path = agents_path / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(f"agent.agents.{name}", module_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    contract = load("product_info_contract")
+    content = load("product_info_content_agent")
+    formatter = load("product_info_format_agent")
+    return types.SimpleNamespace(
+        ProductInfoResponseSchema=contract.ProductInfoResponseSchema,
+        validate_product_info_result=contract.validate_product_info_result,
+        create_product_info_content_agent=content.create_product_info_content_agent,
+        create_product_info_format_agent=formatter.create_product_info_format_agent,
+    )
 
 
 product_info = _load_module()

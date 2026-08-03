@@ -58,18 +58,44 @@ def test_dialog_memory_max_turns_reads_env(monkeypatch) -> None:
 
 
 @pytest.mark.unit
+def test_owasp_generation_settings_defaults_support_thinking(monkeypatch) -> None:
+    for name in (
+        "OWASP_TEMPERATURE",
+        "OWASP_TOP_P",
+        "OWASP_TOP_K",
+        "OWASP_MAX_OUTPUT_TOKENS",
+        "OWASP_THINKING_TOKEN_BUDGET",
+        "OWASP_ENABLE_THINKING",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = _load_config_module(monkeypatch)
+
+    assert config.OWASP_TEMPERATURE == 0.6
+    assert config.OWASP_TOP_P == 0.95
+    assert config.OWASP_TOP_K == 20
+    assert config.OWASP_MAX_OUTPUT_TOKENS == 2304
+    assert config.OWASP_THINKING_TOKEN_BUDGET == 2048
+    assert config.OWASP_ENABLE_THINKING is True
+
+
+@pytest.mark.unit
 def test_owasp_generation_settings_read_environment(monkeypatch) -> None:
     monkeypatch.setenv("ROOT_TEMPERATURE", "0.8")
     monkeypatch.setenv("OWASP_TEMPERATURE", "0.2")
     monkeypatch.setenv("OWASP_TOP_P", "0.8")
+    monkeypatch.setenv("OWASP_TOP_K", "20")
     monkeypatch.setenv("OWASP_MAX_OUTPUT_TOKENS", "128")
+    monkeypatch.setenv("OWASP_THINKING_TOKEN_BUDGET", "512")
     monkeypatch.setenv("OWASP_ENABLE_THINKING", "false")
 
     config = _load_config_module(monkeypatch)
 
     assert config.OWASP_TEMPERATURE == 0.2
     assert config.OWASP_TOP_P == 0.8
+    assert config.OWASP_TOP_K == 20
     assert config.OWASP_MAX_OUTPUT_TOKENS == 128
+    assert config.OWASP_THINKING_TOKEN_BUDGET == 512
     assert config.OWASP_ENABLE_THINKING is False
 
 
@@ -89,4 +115,18 @@ def test_owasp_model_disables_thinking(monkeypatch) -> None:
     }
     assert owasp_model.extra_body == {
         "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+@pytest.mark.unit
+def test_owasp_model_enables_thinking_with_its_token_budget(monkeypatch) -> None:
+    monkeypatch.setenv("OWASP_ENABLE_THINKING", "true")
+    monkeypatch.setenv("OWASP_THINKING_TOKEN_BUDGET", "1536")
+    config = _load_config_module(monkeypatch)
+
+    owasp_model = config.build_owasp_model()
+
+    assert owasp_model.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": True},
+        "thinking_token_budget": 1536,
     }

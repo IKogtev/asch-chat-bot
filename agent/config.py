@@ -35,9 +35,11 @@ LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", 4096))
 # AGENT TEMPERATURES
 # =============================================================================
 ROOT_TEMPERATURE = float(os.getenv("ROOT_TEMPERATURE", 0.0))
-OWASP_TEMPERATURE = float(os.getenv("OWASP_TEMPERATURE", ROOT_TEMPERATURE))
-OWASP_TOP_P = float(os.getenv("OWASP_TOP_P", 0.8))
-OWASP_MAX_OUTPUT_TOKENS = int(os.getenv("OWASP_MAX_OUTPUT_TOKENS", 128))
+OWASP_TEMPERATURE = float(os.getenv("OWASP_TEMPERATURE", 0.6))
+OWASP_TOP_P = float(os.getenv("OWASP_TOP_P", 0.95))
+OWASP_TOP_K = int(os.getenv("OWASP_TOP_K", 20))
+OWASP_MAX_OUTPUT_TOKENS = int(os.getenv("OWASP_MAX_OUTPUT_TOKENS", 2304))
+OWASP_THINKING_TOKEN_BUDGET = int(os.getenv("OWASP_THINKING_TOKEN_BUDGET", 2048))
 OWASP_ENABLE_THINKING = os.getenv("OWASP_ENABLE_THINKING", "true").strip().lower() == "true"
 DISPATCHER_TEMPERATURE = float(os.getenv("DISPATCHER_TEMPERATURE", ROOT_TEMPERATURE))
 DOC_SEARCH_TEMPERATURE = float(os.getenv("DOC_SEARCH_TEMPERATURE", ROOT_TEMPERATURE))
@@ -105,12 +107,12 @@ logger = setup_logger("agent_chain", "agent.log")
 from google.adk.models.lite_llm import LiteLlm
 from typing import Any, Dict, List, Optional, Protocol
 
-def _build_model(*, enable_thinking: bool) -> LiteLlm:
+def _build_model(*, enable_thinking: bool, thinking_token_budget: int = 2048) -> LiteLlm:
     extra_body: Dict[str, Any] = {
         "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }
     if enable_thinking:
-        extra_body["thinking_token_budget"] = 2048
+        extra_body["thinking_token_budget"] = thinking_token_budget
 
     return LiteLlm(
         model=LLM_API_MODEL,
@@ -140,7 +142,10 @@ def build_owasp_model() -> LiteLlm:
     """
     Создает отдельную LiteLlm с настройкой thinking mode для OWASP-классификатора.
     """
-    return _build_model(enable_thinking=OWASP_ENABLE_THINKING)
+    return _build_model(
+        enable_thinking=OWASP_ENABLE_THINKING,
+        thinking_token_budget=OWASP_THINKING_TOKEN_BUDGET,
+    )
 
 # =============================================================================
 # KB BACKEND PROTOCOL & STUB

@@ -24,11 +24,11 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
-from .agents.product_filter_agent import (
+from .agents.product_filter_contract import (
     ProductFilterResponseSchema,
     validate_product_filter_result,
 )
-from .agents.product_info_agent import (
+from .agents.product_info_contract import (
     ProductInfoResponseSchema,
     validate_product_info_result,
 )

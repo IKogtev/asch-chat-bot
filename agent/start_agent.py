@@ -14,14 +14,10 @@ from .agents.doc_search_agent import create_doc_search_agent
 from .agents.doc_search_orchestrator import create_doc_search_orchestrator
 from .agents.kb_answer_agent import create_kb_answer_agent
 from .agents.smalltalk_agent import create_smalltalk_agent
-from .agents.product_filter_agent import (
-    create_product_filter_content_agent,
-    create_product_filter_format_agent,
-)
-from .agents.product_info_agent import (
-    create_product_info_content_agent,
-    create_product_info_format_agent,
-)
+from .agents.product_filter_content_agent import create_product_filter_content_agent
+from .agents.product_filter_format_agent import create_product_filter_format_agent
+from .agents.product_info_content_agent import create_product_info_content_agent
+from .agents.product_info_format_agent import create_product_info_format_agent
 
 def build_agent_chain() -> RootAgent:
     """
