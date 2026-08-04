@@ -471,10 +471,6 @@ class RootAgent(BaseAgent):
                 "_product_info_content_tool_events",
                 "_product_filter_content_tool_calls",
                 "_product_filter_content_tool_events",
-                "product_info_format_correction",
-                "product_filter_format_correction",
-                "_product_info_format_attempt",
-                "_product_filter_format_attempt",
                 "_root_final_text",
                 "_bot_action",
                 "product_resolution",
@@ -1639,75 +1635,6 @@ class RootAgent(BaseAgent):
             if not context.get(key) and payload.get(key):
                 context[key] = payload[key]
 
-    @staticmethod
-    def _build_verified_product_kit_result(
-        ctx: InvocationContext,
-    ) -> Dict[str, Any] | None:
-        """Build a deterministic kit result from resolver and SQL-backed content evidence."""
-        state = ctx.session.state
-        if state.get("product_info_intent") != "product_kit":
-            return None
-
-        content = state.get("_product_info_content_result_parsed")
-        resolution = state.get("product_resolution")
-        tool_calls = set(state.get("_product_info_content_tool_calls") or [])
-        if (
-            not isinstance(content, dict)
-            or content.get("status") != "ok"
-            or not isinstance(resolution, dict)
-            or resolution.get("status") != "resolved"
-            or "execute_sql" not in tool_calls
-        ):
-            return None
-
-        resolved = content.get("resolved_product")
-        resolved = resolved if isinstance(resolved, dict) else {}
-        rows = content.get("rows")
-        rows = rows if isinstance(rows, list) else []
-
-        resolution_code = str(
-            resolution.get("product_code") or resolution.get("code") or ""
-        ).strip()
-        content_code = str(resolved.get("code") or "").strip()
-        if resolution_code and content_code and resolution_code != content_code:
-            return None
-        product_code = content_code or resolution_code
-
-        matching_row: Dict[str, Any] = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_code = str(row.get("code") or "").strip()
-            if product_code and row_code == product_code:
-                matching_row = row
-                break
-
-        if not matching_row:
-            return None
-
-        product_name = str(
-            matching_row.get("name") or ""
-        ).strip()
-        folder_kit = str(
-            matching_row.get("folder_kit") or ""
-        ).strip()
-        if not product_code or not product_name:
-            return None
-
-        candidate = {
-            "mode": "product_kit",
-            "message": f"Комплект для продукта «{product_name}».",
-            "resolved_product": {
-                "code": product_code,
-                "name": product_name,
-                **({"folder_kit": folder_kit} if folder_kit else {}),
-            },
-            "clarification_options": [],
-        }
-        validator_context = dict(state)
-        validator_context["_adk_tool_calls"] = list(tool_calls)
-        return validate_product_info_result(candidate, validator_context)
-
     def _extract_ranks_with_words(self, text: str) -> List[int]:
         ranks = extract_download_ranks(text)
         if ranks: 
@@ -1756,79 +1683,6 @@ class RootAgent(BaseAgent):
             require_non_empty_object=require_non_empty_object,
         ):
             yield event
-
-    async def _run_product_format_agent(
-        self,
-        *,
-        ctx: InvocationContext,
-        agent: LlmAgent,
-        output_key: str,
-        parsed_state_key: str,
-        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
-        response_schema: type[Any],
-        log_label: str,
-        correction_state_key: str,
-        attempt_state_key: str,
-        validation_tool_calls_state_key: str,
-        validation_tool_events_state_key: str,
-    ) -> AsyncGenerator[Event, None]:
-        """Запускает форматирование с одним ограниченным повтором."""
-        ctx.session.state[correction_state_key] = ""
-
-        for attempt in (1, 2):
-            ctx.session.state[attempt_state_key] = attempt
-            try:
-                async for event in self._run_json_leaf_agent(
-                    ctx=ctx,
-                    agent=agent,
-                    output_key=output_key,
-                    parsed_state_key=parsed_state_key,
-                    validator=validator,
-                    response_schema=response_schema,
-                    log_label=log_label,
-                    validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-                    validation_tool_calls_state_key=validation_tool_calls_state_key,
-                    validation_tool_events_state_key=validation_tool_events_state_key,
-                ):
-                    yield event
-                return
-            except AgentValidationFailure as exc:
-                if attempt == 2:
-                    if log_label == "product_info_result_json":
-                        recovered = self._build_verified_product_kit_result(ctx)
-                        if recovered is not None:
-                            # Kit delivery must not depend on a second free-form formatting attempt.
-                            ctx.session.state[output_key] = recovered
-                            ctx.session.state[parsed_state_key] = recovered
-                            logger.warning(
-                                "%s recovered deterministically from verified kit evidence",
-                                log_label,
-                            )
-                            return
-                    raise
-
-                # The retry changes only formatting; content evidence and SQL
-                # results remain exactly the same as on the first attempt.
-                ctx.session.state[correction_state_key] = json.dumps(
-                    {
-                        "validation_error": truncate_for_log(
-                            exc.validation_error,
-                            1500,
-                        ),
-                        "invalid_payload": truncate_for_log(exc.raw, 3000),
-                        "instruction": (
-                            "Return one corrected object using only the unchanged "
-                            "content evidence."
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-                self._clear_state_keys(ctx, [output_key, parsed_state_key])
-                logger.info(
-                    "%s retrying format after validation failure: %s",
-                    log_label,
-                    truncate_for_log(exc.validation_error, 500),
-                )
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         user_text = self._extract_user_text(ctx)
@@ -1907,10 +1761,6 @@ class RootAgent(BaseAgent):
                     "_product_info_content_tool_events",
                     "_product_filter_content_tool_calls",
                     "_product_filter_content_tool_events",
-                    "product_info_format_correction",
-                    "product_filter_format_correction",
-                    "_product_info_format_attempt",
-                    "_product_filter_format_attempt",
                     "_root_final_text",
                     "_bot_action",
                     "_from_glossary",
@@ -2432,7 +2282,7 @@ class RootAgent(BaseAgent):
         ):
             yield event
 
-        async for event in self._run_product_format_agent(
+        async for event in self._run_json_leaf_agent(
             ctx=ctx,
             agent=self.product_filter_format_agent,
             output_key="product_filter_result_json",
@@ -2440,8 +2290,7 @@ class RootAgent(BaseAgent):
             validator=validate_product_filter_result,
             response_schema=ProductFilterResponseSchema,
             log_label="product_filter_result_json",
-            correction_state_key="product_filter_format_correction",
-            attempt_state_key="_product_filter_format_attempt",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
             validation_tool_calls_state_key="_product_filter_content_tool_calls",
             validation_tool_events_state_key="_product_filter_content_tool_events",
         ):
@@ -2503,7 +2352,7 @@ class RootAgent(BaseAgent):
         ):
             yield event
 
-        async for event in self._run_product_format_agent(
+        async for event in self._run_json_leaf_agent(
             ctx=ctx,
             agent=self.product_info_format_agent,
             output_key="product_info_result_json",
@@ -2511,8 +2360,7 @@ class RootAgent(BaseAgent):
             validator=validate_product_info_result,
             response_schema=ProductInfoResponseSchema,
             log_label="product_info_result_json",
-            correction_state_key="product_info_format_correction",
-            attempt_state_key="_product_info_format_attempt",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
             validation_tool_calls_state_key="_product_info_content_tool_calls",
             validation_tool_events_state_key="_product_info_content_tool_events",
         ):

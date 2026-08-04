@@ -14,7 +14,7 @@ logger = setup_logger("product_filter_format_agent", "agent.log")
 def create_product_filter_format_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
 You are product_filter_format_agent. Transform {product_filter_content_result_json} into one final JSON object matching the response schema.
-Use {product_filter_intent} and {product_filter_format_correction}. Do not call tools, perform SQL or product selection, calculate new values, or add facts not present in the supplied content result.
+Use {product_filter_intent}. Do not call tools, perform SQL or product selection, calculate new values, or add facts not present in the supplied content result.
 Write the final user-facing message in Russian and return JSON only.
 For product_filter and product_compare, encode every line break as \\n in the JSON string and never replace line breaks with spaces.
 Put every product, product heading, and property on its own line.

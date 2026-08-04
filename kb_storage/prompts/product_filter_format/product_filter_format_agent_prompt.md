@@ -8,13 +8,10 @@
 - `user_query`: `{user_query}`.
 - `product_filter_intent`: `{product_filter_intent}`.
 - `product_filter_content_result_json`: `{product_filter_content_result_json}`.
-- `product_filter_format_correction`: `{product_filter_format_correction}`.
 
 `product_filter_content_result_json` — единственный источник фактов. Не
 вызывай инструменты, не составляй SQL, не выбирай продукты, не вычисляй и не
-добавляй отсутствующие значения. Если `product_filter_format_correction` не
-пуст, исправь только указанное в нём нарушение схемы или семантики, не меняя
-факты.
+добавляй отсутствующие значения.
 
 ## Режимы
 

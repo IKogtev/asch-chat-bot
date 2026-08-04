@@ -8,12 +8,10 @@
 - `user_query`: `{user_query}`.
 - `product_info_intent`: `{product_info_intent}`.
 - `product_info_content_result_json`: `{product_info_content_result_json}`.
-- `product_info_format_correction`: `{product_info_format_correction}`.
 
 `product_info_content_result_json` — единственный источник фактов. Не вызывай
 инструменты, не составляй SQL, не выбирай другой продукт, не вычисляй и не
-добавляй отсутствующие значения. Если передана коррекция, исправь только
-указанное нарушение схемы или семантики, не меняя факты.
+добавляй отсутствующие значения.
 
 ## Режимы
 
