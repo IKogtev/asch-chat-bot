@@ -24,14 +24,8 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import validate_kb_answer_result
 from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
-from .agents.product_filter_contract import (
-    ProductFilterResponseSchema,
-    validate_product_filter_result,
-)
-from .agents.product_info_contract import (
-    ProductInfoResponseSchema,
-    validate_product_info_result,
-)
+from .agents.product_filter_contract import validate_product_filter_result
+from .agents.product_info_contract import validate_product_info_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import generate_agent_fallback
@@ -2288,7 +2282,6 @@ class RootAgent(BaseAgent):
             output_key="product_filter_result_json",
             parsed_state_key="_product_filter_result_parsed",
             validator=validate_product_filter_result,
-            response_schema=ProductFilterResponseSchema,
             log_label="product_filter_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
             validation_tool_calls_state_key="_product_filter_content_tool_calls",
@@ -2358,7 +2351,6 @@ class RootAgent(BaseAgent):
             output_key="product_info_result_json",
             parsed_state_key="_product_info_result_parsed",
             validator=validate_product_info_result,
-            response_schema=ProductInfoResponseSchema,
             log_label="product_info_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
             validation_tool_calls_state_key="_product_info_content_tool_calls",

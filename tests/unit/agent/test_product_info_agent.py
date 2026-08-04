@@ -80,7 +80,6 @@ def _load_module():
     content = load("product_info_content_agent")
     formatter = load("product_info_format_agent")
     return types.SimpleNamespace(
-        ProductInfoResponseSchema=contract.ProductInfoResponseSchema,
         validate_product_info_result=contract.validate_product_info_result,
         create_product_info_content_agent=content.create_product_info_content_agent,
         create_product_info_format_agent=formatter.create_product_info_format_agent,
@@ -136,7 +135,7 @@ def test_product_info_rejects_filter_mode() -> None:
 
 
 @pytest.mark.unit
-def test_product_info_factories_split_tools_and_response_schema() -> None:
+def test_product_info_factories_split_tools_without_response_schema() -> None:
     content_agent = product_info.create_product_info_content_agent(model="content-model")
     format_agent = product_info.create_product_info_format_agent(model="format-model")
 
@@ -148,7 +147,7 @@ def test_product_info_factories_split_tools_and_response_schema() -> None:
     assert format_agent.name == "product_info_format_agent"
     assert format_agent.output_key == "product_info_result_json"
     assert format_agent.tools == []
-    assert format_agent.output_schema is product_info.ProductInfoResponseSchema
+    assert getattr(format_agent, "output_schema", None) is None
     assert format_agent.generate_content_config["temperature"] == 0.0
 
 
@@ -181,71 +180,7 @@ def test_product_info_format_prompt_requires_multiline_product_card() -> None:
     assert "Каждое поле карточки выводи с новой строки" in prompt
     assert "используй `\\n` перед каждым следующим полем" in prompt
     assert "не объединяй поля в одну строку" in prompt
-
-
-@pytest.mark.unit
-def test_product_info_response_schema_restricts_mode() -> None:
-    with pytest.raises(Exception):
-        product_info.ProductInfoResponseSchema(mode="product_filter", message="x")
-
-
-@pytest.mark.unit
-def test_product_info_response_schema_contains_only_used_fields() -> None:
-    schema = product_info.ProductInfoResponseSchema.model_json_schema()
-    response = product_info.ProductInfoResponseSchema(
-        mode="product_card",
-        message="x",
-    )
-
-    expected_fields = {
-        "mode",
-        "message",
-        "resolved_product",
-        "clarification_options",
-    }
-    assert set(schema["properties"]) == expected_fields
-    assert set(response.model_dump()) == expected_fields
-    assert schema["properties"]["message"]["minLength"] == 1
-
-
-@pytest.mark.unit
-def test_product_info_response_schema_rejects_whitespace_message() -> None:
-    with pytest.raises(Exception, match="message must be non-empty"):
-        product_info.ProductInfoResponseSchema(mode="no_data", message="   ")
-
-
-@pytest.mark.unit
-def test_product_info_response_schema_rejects_unsupported_product_fields() -> None:
-    with pytest.raises(Exception, match="unsupported fields"):
-        product_info.ProductInfoResponseSchema(
-            mode="product_card",
-            message="Карточка продукта",
-            resolved_product={"code": "8914", "name": "Продукт", "term": "1 год"},
-        )
-
-
-@pytest.mark.unit
-def test_product_info_response_schema_parses_json_string_resolved_product() -> None:
-    response = product_info.ProductInfoResponseSchema(
-        mode="product_card",
-        message="Карточка продукта",
-        resolved_product='{"code": "8914", "name": "Фиксированный доход 1 год"}',
-    )
-
-    assert response.resolved_product == {
-        "code": "8914",
-        "name": "Фиксированный доход 1 год",
-    }
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("resolved_product", ["not-json", '["8914"]'])
-def test_product_info_response_schema_rejects_non_object_resolved_product(
-    resolved_product: str,
-) -> None:
-    with pytest.raises(Exception, match="resolved_product must be a JSON object"):
-        product_info.ProductInfoResponseSchema(
-            mode="product_card",
-            message="Карточка продукта",
-            resolved_product=resolved_product,
-        )
+    assert "Не оборачивай JSON в Markdown-блоки" in prompt
+    assert "Объект должен содержать ровно четыре ключа" in prompt
+    assert "Запрещено:" in prompt
+    assert "Перед ответом молча проверь" in prompt

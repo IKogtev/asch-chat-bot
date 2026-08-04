@@ -79,7 +79,6 @@ def _load_module():
     content = load("product_filter_content_agent")
     formatter = load("product_filter_format_agent")
     return types.SimpleNamespace(
-        ProductFilterResponseSchema=contract.ProductFilterResponseSchema,
         validate_product_filter_result=contract.validate_product_filter_result,
         create_product_filter_content_agent=content.create_product_filter_content_agent,
         create_product_filter_format_agent=formatter.create_product_filter_format_agent,
@@ -163,17 +162,17 @@ def test_product_filter_contract_allows_same_code_with_different_names() -> None
 
 @pytest.mark.unit
 def test_product_filter_contract_normalizes_nullable_fields() -> None:
-    payload = product_filter.ProductFilterResponseSchema(
-        mode="needs_clarification",
-        message="Уточните продукт",
-        clarification_options=[
+    payload = {
+        "mode": "needs_clarification",
+        "message": "Уточните продукт",
+        "clarification_options": [
             {"code": "8914", "name": "Фиксированный доход 1 год"},
             {
                 "code": "8959",
                 "name": "Фиксированный доход 1 год + Альфа-Вклад Актив",
             },
         ],
-        products=[
+        "products": [
             {
                 "code": "8914",
                 "name": "Фиксированный доход 1 год",
@@ -182,9 +181,9 @@ def test_product_filter_contract_normalizes_nullable_fields() -> None:
                 "folder_kit": None,
             }
         ],
-        attribute_name=None,
-        attribute_column=None,
-    ).model_dump()
+        "attribute_name": None,
+        "attribute_column": None,
+    }
 
     result = product_filter.validate_product_filter_result(payload, {})
 
@@ -201,83 +200,6 @@ def test_product_filter_contract_normalizes_nullable_fields() -> None:
     ]
     assert result["attribute_name"] == ""
     assert result["attribute_column"] == ""
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_rejects_noncanonical_clarification_options() -> None:
-    with pytest.raises(Exception):
-        product_filter.ProductFilterResponseSchema(
-            mode="needs_clarification",
-            message="Уточните продукт",
-            clarification_options=[
-                {
-                    "product_code": "8914",
-                    "canonical_name": "Фиксированный доход 1 год",
-                }
-            ],
-        )
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_keeps_clarification_options_inline() -> None:
-    schema = product_filter.ProductFilterResponseSchema.model_json_schema()
-    clarification_schema = schema["properties"]["clarification_options"]
-
-    assert "$defs" not in schema
-    assert "$ref" not in str(clarification_schema)
-    assert clarification_schema["items"]["type"] == "object"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("resolved_product", ["None", " none ", "null"])
-def test_product_filter_response_schema_normalizes_absent_resolved_product(
-    resolved_product: str,
-) -> None:
-    response = product_filter.ProductFilterResponseSchema(
-        mode="product_filter",
-        message="Найдены продукты",
-        resolved_product=resolved_product,
-    )
-
-    assert response.resolved_product is None
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_rejects_other_resolved_product_strings() -> None:
-    with pytest.raises(Exception):
-        product_filter.ProductFilterResponseSchema(
-            mode="product_filter",
-            message="Найдены продукты",
-            resolved_product="not-a-product",
-        )
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_normalizes_null_list_fields() -> None:
-    response = product_filter.ProductFilterResponseSchema(
-        mode="product_compare",
-        message="Сравнение продуктов",
-        clarification_options=None,
-        attribute_values=None,
-    )
-
-    assert response.clarification_options == []
-    assert response.attribute_values == []
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("field_name", ["clarification_options", "attribute_values"])
-def test_product_filter_response_schema_rejects_non_list_field_values(
-    field_name: str,
-) -> None:
-    payload = {
-        "mode": "product_compare",
-        "message": "Сравнение продуктов",
-        field_name: "None",
-    }
-
-    with pytest.raises(Exception):
-        product_filter.ProductFilterResponseSchema(**payload)
 
 
 @pytest.mark.unit
@@ -354,7 +276,7 @@ def test_product_filter_contract_rejects_info_mode() -> None:
 
 
 @pytest.mark.unit
-def test_product_filter_factories_split_tools_and_response_schema() -> None:
+def test_product_filter_factories_split_tools_without_response_schema() -> None:
     content_agent = product_filter.create_product_filter_content_agent(
         model="content-model"
     )
@@ -370,7 +292,7 @@ def test_product_filter_factories_split_tools_and_response_schema() -> None:
     assert format_agent.name == "product_filter_format_agent"
     assert format_agent.output_key == "product_filter_result_json"
     assert format_agent.tools == []
-    assert format_agent.output_schema is product_filter.ProductFilterResponseSchema
+    assert getattr(format_agent, "output_schema", None) is None
     assert format_agent.generate_content_config["temperature"] == 0.0
 
 
@@ -390,42 +312,7 @@ def test_product_filter_format_prompt_requires_multiline_product_output() -> Non
     assert "используй `\\n\\n` между заголовком" in prompt
     assert "Никогда не объединяй их в одну строку" in prompt
     assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_restricts_mode() -> None:
-    with pytest.raises(Exception):
-        product_filter.ProductFilterResponseSchema(mode="product_kit", message="x")
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_contains_only_used_fields() -> None:
-    schema = product_filter.ProductFilterResponseSchema.model_json_schema()
-    response = product_filter.ProductFilterResponseSchema(
-        mode="product_filter",
-        message="x",
-    )
-
-    expected_fields = {
-        "mode",
-        "message",
-        "resolved_product",
-        "clarification_options",
-        "products",
-        "attribute_name",
-        "attribute_column",
-        "attribute_values",
-    }
-    assert set(schema["properties"]) == expected_fields
-    assert set(response.model_dump()) == expected_fields
-    assert schema["properties"]["message"]["minLength"] == 1
-
-
-@pytest.mark.unit
-def test_product_filter_response_schema_rejects_unsupported_product_fields() -> None:
-    with pytest.raises(Exception, match="unsupported fields"):
-        product_filter.ProductFilterResponseSchema(
-            mode="product_filter",
-            message="Найдены продукты",
-            products=[{"code": "8914", "name": "Продукт", "unknown": "x"}],
-        )
+    assert "Не оборачивай JSON в Markdown-блоки" in prompt
+    assert "Объект должен содержать ровно эти ключи" in prompt
+    assert "Запрещено:" in prompt
+    assert "Перед ответом молча проверь" in prompt

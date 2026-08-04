@@ -121,19 +121,9 @@ def _load_rootagent_module():
     smalltalk_stub.validate_smalltalk_result = lambda data, context: data
 
     product_info_stub = types.ModuleType("agent.agents.product_info_contract")
-    product_info_stub.ProductInfoResponseSchema = type(
-        "ProductInfoResponseSchema",
-        (),
-        {},
-    )
     product_info_stub.validate_product_info_result = lambda data, context: data
 
     product_filter_stub = types.ModuleType("agent.agents.product_filter_contract")
-    product_filter_stub.ProductFilterResponseSchema = type(
-        "ProductFilterResponseSchema",
-        (),
-        {},
-    )
     product_filter_stub.validate_product_filter_result = lambda data, context: data
 
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
@@ -884,7 +874,7 @@ async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
         assert kwargs["agent"] is agent.product_info_format_agent
         assert kwargs["output_key"] == "product_info_result_json"
         assert kwargs["parsed_state_key"] == "_product_info_result_parsed"
-        assert kwargs["response_schema"] is rootagent_module.ProductInfoResponseSchema
+        assert "response_schema" not in kwargs
         assert (
             kwargs["validation_tool_calls_state_key"]
             == "_product_info_content_tool_calls"
@@ -995,7 +985,7 @@ async def test_handle_product_filter_stores_products_and_adds_followup_question(
             return
 
         assert kwargs["agent"] is agent.product_filter_format_agent
-        assert kwargs["response_schema"] is rootagent_module.ProductFilterResponseSchema
+        assert "response_schema" not in kwargs
         assert (
             kwargs["validation_tool_calls_state_key"]
             == "_product_filter_content_tool_calls"
