@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 OWASP_INVALID_CONTRACT_USER_MESSAGE = (
     "Извините, ваш запрос не может быть обработан. Пожалуйста, переформулируйте вопрос."
@@ -169,7 +169,6 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
     mode = context.get("mode", "")
     resolved_product = context.get("resolved_product")
     clarification_options = context.get("clarification_options") or []
-    used_tables = context.get("used_tables") or []
     
     # Если ошибка в tool_usage — агент не вызвал execute_sql
     if "tool_usage" in validation_error:
@@ -188,10 +187,21 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
             "• название или код неизвестны — «Покажи активные продукты» и выбери нужный.\n\n"
             "Если ошибка повторится, используй команду /reset"
         )
+
+    if mode in {"product_card", "product_kit"} and isinstance(resolved_product, dict):
+        product_name = str(
+            resolved_product.get("name") or resolved_product.get("code") or ""
+        ).strip()
+        if product_name:
+            action = "комплект" if mode == "product_kit" else "карточку"
+            return (
+                f"Нашла продукт «{product_name}», но не смогла оформить {action}.\n\n"
+                "Попробуй повторить запрос. Если ошибка повторится, используй команду /reset"
+            )
     
     # Если ошибка в resolved_product — продукт не найден
     if "resolved_product" in validation_error:
-        return _product_not_found_fallback(search_query, used_tables)
+        return _product_not_found_fallback(search_query)
     
     # Если ошибка в clarification_options
     if "clarification_options" in validation_error:
@@ -204,22 +214,18 @@ def _product_selection_validation_fallback(user_text: str, context: Dict) -> str
         )
     
     # Общий случай для product_selection
-    return _product_not_found_fallback(search_query, used_tables)
+    return _product_not_found_fallback(search_query)
 
 
-def _product_not_found_fallback(search_query: str, used_tables: List[str]) -> str:
+def _product_not_found_fallback(search_query: str) -> str:
     """Универсальный fallback, когда продукт не найден."""
-    tables_hint = ""
-    if used_tables:
-        tables_hint = f"{' '.join(used_tables[:2])})"
-    
     return (
-        f"🔎 Не могу найти продукт по запросу{tables_hint}.\n\n"
+        f"🔎 Не могу найти продукт по запросу «{_truncate(search_query, 100)}».\n\n"
         "Уточни цель:\n"
-        "• документы — «Найди документы по 8837»;\n"
-        "• карточка или параметры — «Покажи параметры 8837»;\n"
-        "• комплект — «Дай комплект по 8837».\n"
-        "Для неактивного продукта добавь «архив». Не знаешь код — «Покажи активные продукты».n\n"
+        "• документы — «Найди документы по коду продукта»;\n"
+        "• карточка или параметры — «Покажи параметры по коду продукта»;\n"
+        "• комплект — «Дай комплект по коду продукта».\n"
+        "Для неактивного продукта добавь «архив». Не знаешь код — «Покажи активные продукты».\n\n"
         "Если поиск снова не сработает, используй команду /reset"
     )
 
@@ -251,7 +257,7 @@ def _generate_no_data_fallback(
         )
     
     if agent_name in {"product_info", "product_filter"}:
-        return _product_not_found_fallback(search_query, context.get("used_tables") or [])
+        return _product_not_found_fallback(search_query)
     
     return (
         f"❓ Не нашла данные по запросу «{_truncate(search_query, 100)}»\n\n"

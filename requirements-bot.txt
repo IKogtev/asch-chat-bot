@@ -1,7 +1,7 @@
 # Core dependencies
 aiogram>=3.0.0
-google-adk==1.26.0
-litellm==1.81.15
+google-adk==1.36.2
+litellm==1.83.7
 
 # Database
 python-dotenv==1.0.1

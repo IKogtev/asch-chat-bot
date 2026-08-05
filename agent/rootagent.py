@@ -25,8 +25,8 @@ from .agents.dispatcher_agent import validate_dispatcher_result
 from .agents.kb_answer_agent import run_kb_agent_with_self_correction
 from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
-from .agents.product_filter_agent import validate_product_filter_result
-from .agents.product_info_agent import validate_product_info_result
+from .agents.product_filter_contract import validate_product_filter_result
+from .agents.product_info_contract import validate_product_info_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import (
@@ -108,8 +108,12 @@ STATE_KEYS_TO_CLEAR = [
     "from_glossary", "_owasp_result_parsed",
     "_dispatcher_result_parsed", "_doc_search_result_parsed",
     "_kb_answer_result_parsed", "_smalltalk_result_parsed",
+    "_product_info_content_result_parsed", "_product_filter_content_result_parsed",
     "_product_info_result_parsed", "_product_filter_result_parsed",
+    "product_info_content_result_json", "product_filter_content_result_json",
     "product_info_result_json", "product_filter_result_json",
+    "_product_info_content_tool_calls", "_product_info_content_tool_events",
+    "_product_filter_content_tool_calls", "_product_filter_content_tool_events",
     "_root_final_text", "_bot_action", "product_resolution",
     "product_resolutions", "product_filter_resolution",
     "owasp_current_user_message", "owasp_recent_messages_json",
@@ -180,8 +184,10 @@ class RootAgent(BaseAgent):
     doc_search_orchestrator: DocSearchOrchestrator
     kb_answer_agent: LlmAgent
     smalltalk_agent: LlmAgent
-    product_info_agent: LlmAgent
-    product_filter_agent: LlmAgent
+    product_info_content_agent: LlmAgent
+    product_info_format_agent: LlmAgent
+    product_filter_content_agent: LlmAgent
+    product_filter_format_agent: LlmAgent
     glossary_lookup: GlossaryLookup
     product_resolver: ProductResolverService
     faq_collection: str
@@ -201,8 +207,10 @@ class RootAgent(BaseAgent):
         doc_search_orchestrator: DocSearchOrchestrator,
         kb_answer_agent: LlmAgent,
         smalltalk_agent: LlmAgent,
-        product_info_agent: LlmAgent,
-        product_filter_agent: LlmAgent,
+        product_info_content_agent: LlmAgent,
+        product_info_format_agent: LlmAgent,
+        product_filter_content_agent: LlmAgent,
+        product_filter_format_agent: LlmAgent,
         glossary_lookup: GlossaryLookup | None = None,
         product_resolver: ProductResolverService | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
@@ -215,8 +223,10 @@ class RootAgent(BaseAgent):
             doc_search_orchestrator=doc_search_orchestrator,
             kb_answer_agent=kb_answer_agent,
             smalltalk_agent=smalltalk_agent,
-            product_info_agent=product_info_agent,
-            product_filter_agent=product_filter_agent,
+            product_info_content_agent=product_info_content_agent,
+            product_info_format_agent=product_info_format_agent,
+            product_filter_content_agent=product_filter_content_agent,
+            product_filter_format_agent=product_filter_format_agent,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             product_resolver=product_resolver or ProductResolverService(),
             faq_collection=faq_collection,
@@ -227,8 +237,10 @@ class RootAgent(BaseAgent):
                 doc_search_orchestrator,
                 kb_answer_agent,
                 smalltalk_agent,
-                product_info_agent,
-                product_filter_agent,
+                product_info_content_agent,
+                product_info_format_agent,
+                product_filter_content_agent,
+                product_filter_format_agent,
             ],
         )
 
@@ -661,14 +673,22 @@ class RootAgent(BaseAgent):
 
         if mode in {"product_card", "product_kit"}:
             if products := self._normalize_dialog_products([product_result.get("resolved_product")]):
-                previous = self._get_product_dialog_context(ctx)
+                selected_product = products[0]
+                if mode == "product_card":
+                    previous = self._get_product_dialog_context(ctx)
+                    target_products = previous.get("products") or products
+                else:
+                    # A resolved kit replaces stale selections restored from an older turn.
+                    target_products = [
+                        {k: selected_product[k] for k in ("code", "name") if selected_product.get(k)}
+                    ]
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
                     "last_mode": mode,
-                    "products": previous.get("products") or products,
-                    "selected_product": products[0],
+                    "products": target_products,
+                    "selected_product": selected_product,
                 }
             return
-            
+
         if mode == "no_data":
             self._clear_product_dialog_context(ctx)
             return
@@ -1478,6 +1498,16 @@ class RootAgent(BaseAgent):
             }
         )
 
+    @staticmethod
+    def _merge_non_empty_payload_fields(
+        context: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> None:
+        """Fill missing fallback context without replacing validated state."""
+        for key in ("mode", "resolved_product", "clarification_options", "products"):
+            if not context.get(key) and payload.get(key):
+                context[key] = payload[key]
+
     def _extract_ranks_with_words(self, text: str) -> List[int]:
         ranks = extract_download_ranks(text)
         if ranks: 
@@ -1499,9 +1529,15 @@ class RootAgent(BaseAgent):
         agent: LlmAgent,
         output_key: str,
         parsed_state_key: str,
-        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+        validator: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]] | None,
         log_label: str,
         validation_error_user_message: str,
+        response_schema: type[Any] | None = None,
+        tool_calls_state_key: str | None = None,
+        tool_events_state_key: str | None = None,
+        validation_tool_calls_state_key: str | None = None,
+        validation_tool_events_state_key: str | None = None,
+        require_non_empty_object: bool = False,
     ) -> AsyncGenerator[Event, None]:
         """Запускает leaf-агента с JSON-валидацией через `json_leaf_runner`."""
         async for event in run_json_leaf_agent(
@@ -1512,6 +1548,12 @@ class RootAgent(BaseAgent):
             validator=validator,
             log_label=log_label,
             validation_error_user_message=validation_error_user_message,
+            response_schema=response_schema,
+            tool_calls_state_key=tool_calls_state_key,
+            tool_events_state_key=tool_events_state_key,
+            validation_tool_calls_state_key=validation_tool_calls_state_key,
+            validation_tool_events_state_key=validation_tool_events_state_key,
+            require_non_empty_object=require_non_empty_object,
         ):
             yield event
 
@@ -1854,7 +1896,6 @@ class RootAgent(BaseAgent):
                     else "_product_filter_result_parsed"
                 )
                 parsed = ctx.session.state.get(parsed_key) or {}
-                context["used_tables"] = parsed.get("used_tables") or []
                 context["mode"] = parsed.get("mode", "")
                 context["resolved_product"] = parsed.get("resolved_product")
                 context["clarification_options"] = parsed.get("clarification_options") or []
@@ -1881,14 +1922,8 @@ class RootAgent(BaseAgent):
             if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
                 try:
                     payload = extract_json(exc.raw)
-                    # Дополняем контекст данными из payload (они могут быть свежее state)
-                    context.setdefault("resolved_product", payload.get("resolved_product"))
-                    context.setdefault(
-                        "clarification_options",
-                        payload.get("clarification_options") or [],
-                    )
-                    context.setdefault("mode", payload.get("mode", ""))
-                    context.setdefault("used_tables", payload.get("used_tables") or [])
+                    # Raw fields can be newer than parsed state when validation failed.
+                    self._merge_non_empty_payload_fields(context, payload)
                 except Exception:
                     pass
             # Пытаемся извлечь сообщение из сырого ответа 
@@ -2109,12 +2144,28 @@ class RootAgent(BaseAgent):
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
-            agent=self.product_filter_agent,
+            agent=self.product_filter_content_agent,
+            output_key="product_filter_content_result_json",
+            parsed_state_key="_product_filter_content_result_parsed",
+            validator=None,
+            log_label="product_filter_content_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            tool_calls_state_key="_product_filter_content_tool_calls",
+            tool_events_state_key="_product_filter_content_tool_events",
+            require_non_empty_object=True,
+        ):
+            yield event
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.product_filter_format_agent,
             output_key="product_filter_result_json",
             parsed_state_key="_product_filter_result_parsed",
             validator=validate_product_filter_result,
             log_label="product_filter_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            validation_tool_calls_state_key="_product_filter_content_tool_calls",
+            validation_tool_events_state_key="_product_filter_content_tool_events",
         ):
             yield event
 
@@ -2157,12 +2208,28 @@ class RootAgent(BaseAgent):
 
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
-            agent=self.product_info_agent,
+            agent=self.product_info_content_agent,
+            output_key="product_info_content_result_json",
+            parsed_state_key="_product_info_content_result_parsed",
+            validator=None,
+            log_label="product_info_content_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            tool_calls_state_key="_product_info_content_tool_calls",
+            tool_events_state_key="_product_info_content_tool_events",
+            require_non_empty_object=True,
+        ):
+            yield event
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.product_info_format_agent,
             output_key="product_info_result_json",
             parsed_state_key="_product_info_result_parsed",
             validator=validate_product_info_result,
             log_label="product_info_result_json",
             validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            validation_tool_calls_state_key="_product_info_content_tool_calls",
+            validation_tool_events_state_key="_product_info_content_tool_events",
         ):
             yield event
 

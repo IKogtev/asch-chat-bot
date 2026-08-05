@@ -8,7 +8,7 @@ import pytest
 
 def _load_module():
     repo_root = Path(__file__).resolve().parents[3]
-    module_path = repo_root / "agent" / "agents" / "product_info_agent.py"
+    agents_path = repo_root / "agent" / "agents"
 
     agent_pkg = types.ModuleType("agent")
     agent_pkg.__path__ = [str(repo_root / "agent")]
@@ -25,7 +25,7 @@ def _load_module():
     config_stub = types.ModuleType("agent.config")
     config_stub.DBHUB_MCP_TIMEOUT_SEC = 30.0
     config_stub.DBHUB_MCP_TOKEN = ""
-    config_stub.DBHUB_MCP_URL = ""
+    config_stub.DBHUB_MCP_URL = "http://dbhub.test/mcp"
     config_stub.PRODUCT_INFO_TEMPERATURE = 0.0
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -67,12 +67,23 @@ def _load_module():
     }.items():
         sys.modules[name] = module
 
-    spec = importlib.util.spec_from_file_location("agent.agents.product_info_agent", module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    def load(name: str):
+        module_path = agents_path / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(f"agent.agents.{name}", module_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    contract = load("product_info_contract")
+    content = load("product_info_content_agent")
+    formatter = load("product_info_format_agent")
+    return types.SimpleNamespace(
+        validate_product_info_result=contract.validate_product_info_result,
+        create_product_info_content_agent=content.create_product_info_content_agent,
+        create_product_info_format_agent=formatter.create_product_info_format_agent,
+    )
 
 
 product_info = _load_module()
@@ -85,14 +96,18 @@ def test_product_info_contract_accepts_card() -> None:
         {
             "mode": "product_card",
             "message": "Карточка продукта",
-            "used_tables": "products",
             "resolved_product": {"code": 2832, "name": "Fort Knox"},
         },
         SQL_CONTEXT,
     )
 
     assert "status" not in result
-    assert result["used_tables"] == ["products"]
+    assert set(result) == {
+        "mode",
+        "message",
+        "resolved_product",
+        "clarification_options",
+    }
     assert result["resolved_product"] == {"code": "2832", "name": "Fort Knox"}
 
 
@@ -120,54 +135,52 @@ def test_product_info_rejects_filter_mode() -> None:
 
 
 @pytest.mark.unit
-def test_product_info_factory_uses_response_schema() -> None:
-    agent = product_info.create_product_info_agent(model="model")
+def test_product_info_factories_split_tools_without_response_schema() -> None:
+    content_agent = product_info.create_product_info_content_agent(model="content-model")
+    format_agent = product_info.create_product_info_format_agent(model="format-model")
 
-    assert agent.name == "product_info_agent"
-    assert agent.output_key == "product_info_result_json"
-    assert agent.output_schema is product_info.ProductInfoResponseSchema
+    assert content_agent.name == "product_info_content_agent"
+    assert content_agent.output_key == "product_info_content_result_json"
+    assert len(content_agent.tools) == 1
+    assert getattr(content_agent, "output_schema", None) is None
 
-
-@pytest.mark.unit
-def test_product_info_response_schema_restricts_mode() -> None:
-    with pytest.raises(Exception):
-        product_info.ProductInfoResponseSchema(mode="product_filter", message="x")
-
-
-@pytest.mark.unit
-def test_product_info_response_schema_omits_status() -> None:
-    schema = product_info.ProductInfoResponseSchema.model_json_schema()
-    response = product_info.ProductInfoResponseSchema(
-        mode="product_card",
-        message="x",
-    )
-
-    assert "status" not in schema["properties"]
-    assert "status" not in response.model_dump()
+    assert format_agent.name == "product_info_format_agent"
+    assert format_agent.output_key == "product_info_result_json"
+    assert format_agent.tools == []
+    assert getattr(format_agent, "output_schema", None) is None
+    assert format_agent.generate_content_config["temperature"] == 0.0
 
 
 @pytest.mark.unit
-def test_product_info_response_schema_parses_json_string_resolved_product() -> None:
-    response = product_info.ProductInfoResponseSchema(
-        mode="product_card",
-        message="Карточка продукта",
-        resolved_product='{"code": "8914", "name": "Фиксированный доход 1 год"}',
-    )
+def test_product_info_format_prompt_requires_product_kit_message() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_info_format"
+        / "product_info_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
 
-    assert response.resolved_product == {
-        "code": "8914",
-        "name": "Фиксированный доход 1 год",
-    }
+    assert "`message` должен быть непустым" in prompt
+    assert "Комплект для продукта «<name>»." in prompt
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("resolved_product", ["not-json", '["8914"]'])
-def test_product_info_response_schema_rejects_non_object_resolved_product(
-    resolved_product: str,
-) -> None:
-    with pytest.raises(Exception, match="resolved_product must be a JSON object"):
-        product_info.ProductInfoResponseSchema(
-            mode="product_card",
-            message="Карточка продукта",
-            resolved_product=resolved_product,
-        )
+def test_product_info_format_prompt_requires_multiline_product_card() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_info_format"
+        / "product_info_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Каждое поле карточки выводи с новой строки" in prompt
+    assert "используй `\\n` перед каждым следующим полем" in prompt
+    assert "не объединяй поля в одну строку" in prompt
+    assert "Не оборачивай JSON в Markdown-блоки" in prompt
+    assert "Объект должен содержать ровно четыре ключа" in prompt
+    assert "Запрещено:" in prompt
+    assert "Перед ответом молча проверь" in prompt

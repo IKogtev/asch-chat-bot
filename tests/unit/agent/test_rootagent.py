@@ -120,10 +120,10 @@ def _load_rootagent_module():
     smalltalk_stub = types.ModuleType("agent.agents.smalltalk_agent")
     smalltalk_stub.validate_smalltalk_result = lambda data, context: data
 
-    product_info_stub = types.ModuleType("agent.agents.product_info_agent")
+    product_info_stub = types.ModuleType("agent.agents.product_info_contract")
     product_info_stub.validate_product_info_result = lambda data, context: data
 
-    product_filter_stub = types.ModuleType("agent.agents.product_filter_agent")
+    product_filter_stub = types.ModuleType("agent.agents.product_filter_contract")
     product_filter_stub.validate_product_filter_result = lambda data, context: data
 
     product_resolver_stub = types.ModuleType("agent.product_resolver_service")
@@ -216,8 +216,8 @@ def _load_rootagent_module():
     sys.modules["agent.agents.dispatcher_agent"] = dispatcher_stub
     sys.modules["agent.agents.kb_answer_agent"] = kb_answer_stub
     sys.modules["agent.agents.smalltalk_agent"] = smalltalk_stub
-    sys.modules["agent.agents.product_info_agent"] = product_info_stub
-    sys.modules["agent.agents.product_filter_agent"] = product_filter_stub
+    sys.modules["agent.agents.product_info_contract"] = product_info_stub
+    sys.modules["agent.agents.product_filter_contract"] = product_filter_stub
     sys.modules["agent.agents.doc_search_orchestrator"] = doc_search_stub
     sys.modules["agent.product_resolver_service"] = product_resolver_stub
     sys.modules["asyncpg"] = asyncpg_stub
@@ -281,8 +281,10 @@ def _make_agent(**kwargs) -> RootAgent:
         doc_search_orchestrator=fake_doc_orchestrator,
         kb_answer_agent=fake_subagent,
         smalltalk_agent=fake_subagent,
-        product_info_agent=fake_subagent,
-        product_filter_agent=fake_subagent,
+        product_info_content_agent=fake_subagent,
+        product_info_format_agent=fake_subagent,
+        product_filter_content_agent=fake_subagent,
+        product_filter_format_agent=fake_subagent,
         **kwargs,
     )
 
@@ -854,16 +856,34 @@ async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
         user_state={"first_name": "Ivan"},
         session_state={},
     )
+    calls = []
 
     async def fake_run_json_leaf_agent(**kwargs):
-        assert kwargs["agent"] is agent.product_info_agent
+        calls.append(kwargs["output_key"])
+        if kwargs["output_key"] == "product_info_content_result_json":
+            assert kwargs["agent"] is agent.product_info_content_agent
+            assert kwargs["validator"] is None
+            ctx.session.state["_product_info_content_result_parsed"] = {
+                "status": "ok",
+                "rows": [{"code": "2832", "name": "Fort Knox"}],
+            }
+            ctx.session.state["_product_info_content_tool_calls"] = ["execute_sql"]
+            if False:
+                yield None
+            return
+
+        assert kwargs["agent"] is agent.product_info_format_agent
         assert kwargs["output_key"] == "product_info_result_json"
         assert kwargs["parsed_state_key"] == "_product_info_result_parsed"
+        assert "response_schema" not in kwargs
+        assert (
+            kwargs["validation_tool_calls_state_key"]
+            == "_product_info_content_tool_calls"
+        )
         ctx.session.state["_product_info_result_parsed"] = {
             "status": "ok",
             "mode": "product_card",
             "message": " Product selection answer ",
-            "used_tables": ["products"],
             "resolved_product": {
                 "code": "2832",
                 "name": "Fort Knox",
@@ -892,6 +912,10 @@ async def test_handle_product_info_sets_expected_state_and_final_text() -> None:
     assert ctx.session.state["product_info_intent"] == "product_card"
     assert ctx.session.state["_root_final_text"].startswith("Product selection answer")
     assert "_bot_action" not in ctx.session.state
+    assert calls == [
+        "product_info_content_result_json",
+        "product_info_result_json",
+    ]
 
 
 @pytest.mark.unit
@@ -905,7 +929,6 @@ async def test_handle_product_info_appends_clarification_options() -> None:
             "status": "ok",
             "mode": "needs_clarification",
             "message": "Choose product",
-            "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [
                 {"code": "8958", "name": "Bundle Fort Knox 3+12 months"},
@@ -946,13 +969,32 @@ async def test_handle_product_info_appends_clarification_options() -> None:
 async def test_handle_product_filter_stores_products_and_adds_followup_question() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
+    calls = []
 
     async def fake_run_json_leaf_agent(**kwargs):
+        calls.append(kwargs["output_key"])
+        if kwargs["output_key"] == "product_filter_content_result_json":
+            assert kwargs["agent"] is agent.product_filter_content_agent
+            assert kwargs["validator"] is None
+            ctx.session.state["_product_filter_content_result_parsed"] = {
+                "status": "ok",
+                "rows": [{"code": "2867"}],
+            }
+            ctx.session.state["_product_filter_content_tool_calls"] = ["execute_sql"]
+            if False:
+                yield None
+            return
+
+        assert kwargs["agent"] is agent.product_filter_format_agent
+        assert "response_schema" not in kwargs
+        assert (
+            kwargs["validation_tool_calls_state_key"]
+            == "_product_filter_content_tool_calls"
+        )
         ctx.session.state["_product_filter_result_parsed"] = {
             "status": "ok",
             "mode": "product_filter",
             "message": "Найдено продуктов: 1.\n2867 - Bundle Fort Knox 3+36 месяцев",
-            "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [],
             "products": [
@@ -991,6 +1033,35 @@ async def test_handle_product_filter_stores_products_and_adds_followup_question(
         ],
         "selected_product": None,
     }
+    assert calls == [
+        "product_filter_content_result_json",
+        "product_filter_result_json",
+    ]
+
+
+@pytest.mark.unit
+def test_merge_non_empty_payload_fields_replaces_only_empty_context() -> None:
+    context = {
+        "mode": "",
+        "resolved_product": None,
+        "clarification_options": [],
+        "products": [{"code": "existing"}],
+    }
+    payload = {
+        "mode": "product_kit",
+        "resolved_product": {"code": "8916", "name": "Продукт"},
+        "clarification_options": [{"code": "8916", "name": "Продукт"}],
+        "products": [{"code": "replacement"}],
+    }
+
+    RootAgent._merge_non_empty_payload_fields(context, payload)
+
+    assert context == {
+        "mode": "product_kit",
+        "resolved_product": {"code": "8916", "name": "Продукт"},
+        "clarification_options": [{"code": "8916", "name": "Продукт"}],
+        "products": [{"code": "existing"}],
+    }
 
 
 @pytest.mark.unit
@@ -1004,7 +1075,6 @@ async def test_handle_product_filter_attribute_values_stores_context_and_adds_fo
             "status": "ok",
             "mode": "product_attribute_values",
             "message": "Available values:\n- RUB\n- CNY",
-            "used_tables": ["products"],
             "resolved_product": None,
             "clarification_options": [],
             "products": [],
@@ -1047,8 +1117,8 @@ async def test_handle_product_info_sets_bot_action_for_product_kit() -> None:
         session_state={
             rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
                 "last_mode": "product_card",
-                "products": [{"code": "2832", "name": "Fort Knox"}],
-                "selected_product": {"code": "2832", "name": "Fort Knox"},
+                "products": [{"code": "9999", "name": "Stale product"}],
+                "selected_product": {"code": "9999", "name": "Stale product"},
             }
         }
     )
@@ -1058,7 +1128,6 @@ async def test_handle_product_info_sets_bot_action_for_product_kit() -> None:
             "status": "ok",
             "mode": "product_kit",
             "message": " Kit answer ",
-            "used_tables": ["products"],
             "resolved_product": {
                 "code": "2832",
                 "name": "Fort Knox",
@@ -1120,7 +1189,6 @@ async def test_handle_product_filter_keeps_context_for_product_compare() -> None
             "status": "ok",
             "mode": "product_compare",
             "message": " Compare answer ",
-            "used_tables": ["products"],
             "comparison": [],
             "clarification_options": [],
         }
