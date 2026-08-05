@@ -342,7 +342,9 @@ class RootAgent(BaseAgent):
             ctx.session.state["last_user_query"] = user_text
             ctx.session.state["last_route"] = dispatch.get("route", "")
             ctx.session.state["last_intent"] = dispatch.get("intent", "")
-            ctx.session.state["last_search_query"] = dispatch.get("search_query", "")
+            dispatch_search_query = str(dispatch.get("search_query") or "").strip()
+            if dispatch_search_query:
+                ctx.session.state["last_search_query"] = dispatch_search_query
             
             # Автоматически управляем списком документов
             if dispatch.get("route") == "doc_search":
@@ -503,6 +505,275 @@ class RootAgent(BaseAgent):
             history = self._get_recent_messages(ctx)
             history.append({"role": role, "text": text})
             self._store_recent_messages(ctx, history)
+
+    @staticmethod
+    def _truncate_prompt_text(text: str, limit: int = 2500) -> str:
+        text = str(text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "..."
+
+    def _format_recent_messages_for_prompt(
+        self,
+        messages: List[Dict[str, str]],
+        max_messages: int = 6,
+    ) -> str:
+        """
+        Форматирует bounded history для передачи в prompt агентов.
+        """
+        lines: List[str] = []
+        for message in messages[-max_messages:]:
+            role = str(message.get("role") or "").strip()
+            text = self._truncate_prompt_text(message.get("text"))
+            if not text:
+                continue
+            if role == "user":
+                lines.append(f"Пользователь: {text}")
+            elif role == "assistant":
+                lines.append(f"Ассистент: {text}")
+
+        return "\n".join(lines) if lines else "Контекста нет"
+
+    def _prepare_dialog_context_state(self, ctx: InvocationContext) -> None:
+        """
+        Готовит общий контекст диалога для dispatcher, smalltalk, kb_answer
+        и других leaf-агентов.
+        """
+        # Подтягиваем профиль, чтобы smalltalk мог использовать {first_name}
+        for key, value in self._get_user_profile(ctx).items():
+            if key not in ctx.session.state or ctx.session.state.get(key) in (None, ""):
+                ctx.session.state[key] = value
+        if not ctx.session.state.get("first_name"):
+            ctx.session.state["first_name"] = "unknown"
+        recent_messages = self._get_recent_messages(ctx)[-3:]
+        product_context = self._get_product_dialog_context(ctx)
+        ctx.session.state["dialog_recent_messages"] = (
+            self._format_recent_messages_for_prompt(recent_messages)
+        )
+        ctx.session.state["product_dialog_context_json"] = (
+            json.dumps(product_context, ensure_ascii=False)
+            if product_context
+            else "{}"
+        )
+        dialog_context = {
+            "recent_messages": recent_messages,
+            "last_route": str(ctx.session.state.get("last_route") or ""),
+            "last_intent": str(ctx.session.state.get("last_intent") or ""),
+            "last_search_query": str(ctx.session.state.get("last_search_query") or ""),
+            "last_product": str(ctx.session.state.get("last_product") or ""),
+            "last_document_list": str(ctx.session.state.get("last_document_list") or "")[:500],
+            "product_dialog_context": product_context,
+        }
+        ctx.session.state["dialog_context_json"] = json.dumps(
+            dialog_context,
+            ensure_ascii=False,
+        )
+
+    def _set_last_product_from_result(
+        self,
+        ctx: InvocationContext,
+        product_result: Dict[str, Any],
+        source_mode: str | None = None,
+    ) -> None:
+        """
+        Сохраняет last_product и selected_product из результата продуктового агента.
+        """
+        resolved = product_result.get("resolved_product") or {}
+        code = str(resolved.get("code") or "").strip()
+        name = str(resolved.get("name") or "").strip()
+        folder_kit = str(resolved.get("folder_kit") or "").strip()
+        if not (code or name):
+            return
+        label = f"{name} (код {code})" if code and name else (name or code)
+        ctx.session.state["last_product"] = label
+        context = self._get_product_dialog_context(ctx)
+        context["selected_product"] = {
+            "code": code,
+            "name": name,
+            "folder_kit": folder_kit,
+        }
+        if source_mode:
+            context["last_mode"] = source_mode
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = context
+        logger.info(
+            "last_product updated from product agent: source_mode=%s product=%s",
+            source_mode,
+            label,
+        )
+
+    def _apply_smalltalk_product_selection(
+        self,
+        ctx: InvocationContext,
+        smalltalk_result: Dict[str, Any],
+    ) -> None:
+        """
+        Если smalltalk_agent выбрал продукт, сохраняем его в last_product
+        и в _product_dialog_context.selected_product.
+        """
+        selected = smalltalk_result.get("selected_product")
+        if not isinstance(selected, dict):
+            selected = {}
+        code = str(
+            smalltalk_result.get("selected_product_code")
+            or selected.get("code")
+            or ""
+        ).strip()
+        name = str(
+            smalltalk_result.get("selected_product_name")
+            or selected.get("name")
+            or ""
+        ).strip()
+        folder_kit = str(
+            smalltalk_result.get("selected_product_folder_kit")
+            or selected.get("folder_kit")
+            or ""
+        ).strip()
+        if not (code or name):
+            return
+        label = f"{name} (код {code})" if code and name else (name or code)
+        ctx.session.state["last_product"] = label
+        context = self._get_product_dialog_context(ctx)
+        context["selected_product"] = {
+            "code": code,
+            "name": name,
+            "folder_kit": folder_kit,
+        }
+        if not context.get("last_mode"):
+            context["last_mode"] = "smalltalk_product_selection"
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = context
+        logger.info(
+            "smalltalk selected product saved: code=%s name=%s label=%s",
+            code,
+            name,
+            label,
+        )
+
+    def _contextual_smalltalk_followup_dispatch(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+    ) -> Dict[str, Any] | None:
+        """
+        Контекстный smalltalk follow-up:
+        - где меньше рисков после сравнения продуктов;
+        - там доллары? после карточки продукта;
+        - короткие уточнения по прошлому продуктовому контексту.
+        """
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized:
+            return None
+        # Не перехватываем документы, комплект и объяснения для KB.
+        if RE_DOC_CONTEXT_REQUEST.search(normalized):
+            return None
+        if RE_EXPLICIT_KIT.search(normalized):
+            return None
+        if RE_KB_EXPLANATION_REQUEST.search(normalized):
+            return None
+        # Если пользователь явно указал новый продукт, лучше отдать dispatcher/product agents.
+        if self._extract_product_codes(user_text):
+            return None
+        # Не перехватываем явные запросы карточки/параметров/документов
+        # Если есть слова "покажи карточку", "дай комплект", "найди документы" и т.д.,
+        # это полноценный запрос, а не follow-up уточнение.
+        explicit_request_markers = re.compile(
+            r"\b(покажи|дай|дать|найди|открой|выведи|карточк|параметр|свойств|"
+            r"характеристик|подробн|расскаж|презентац|презентер|памятк|инструкц|"
+            r"регламент|шаблон|документ|файл|материал)\b"
+        )
+        if explicit_request_markers.search(normalized):
+            return None
+        context = self._get_product_dialog_context(ctx)
+        last_route = str(ctx.session.state.get("last_route") or "")
+        last_mode = str(context.get("last_mode") or "")
+        products = self._normalize_dialog_products(context.get("products"))
+        # 1. После сравнения продуктов: "Где меньше рисков?", "Какой лучше?"
+        if (
+            last_mode in {"product_compare", "product_filter"}
+            and len(products) >= 2
+            and RE_SMALLTALK_CHOICE_FOLLOWUP.search(normalized)
+        ):
+            logger.info("Contextual smalltalk short-circuit: product choice follow-up")
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "smalltalk",
+                    "intent": "smalltalk",
+                    "reason": "smalltalk_other",
+                    "search_query": "",
+                },
+                dict(ctx.session.state),
+            )
+        # 2. После карточки продукта: "Там доллары?", "Он рублёвый?", "Срок 3 года?"
+        selected = (
+            self._get_selected_product_from_context(ctx)
+            or self._get_last_product_from_state(ctx)
+        )
+        if (
+            selected
+            and last_route in {"product_info", "product_filter"}
+            and len(normalized.split()) <= 6
+            and RE_SMALLTALK_CLARIFICATION_FOLLOWUP.search(normalized)
+        ):
+            # Проверяем, что запрос не упоминает ДРУГОЙ продукт
+            selected_name = str(selected.get("name") or "").lower()
+            selected_code = str(selected.get("code") or "").strip()
+            # Извлекаем возможные названия продуктов из запроса
+            # Если в запросе есть "зк", "фн" и т.д., проверяем, совпадает ли это с selected_product
+            product_abbreviations = {
+                "зк": "защищенный капитал",
+                "фн": "fort knox",
+                "пф": "путь к успеху",
+                "снг": "сна",
+                "дсг": "дсж",
+            }
+            # Проверяем, упоминается ли в запросе продукт, отличный от selected
+            mentions_different_product = False
+            for abbrev, full_name in product_abbreviations.items():
+                if re.search(rf"\b{abbrev}\b", normalized):
+                    # Если аббревиатура есть в запросе, проверяем, совпадает ли она с selected_product
+                    if (
+                        selected_name
+                        and full_name not in selected_name
+                        and abbrev not in selected_name
+                        and selected_code not in normalized
+                    ):
+                        mentions_different_product = True
+                        break
+            # Также проверяем явные упоминания других продуктов по названию
+            other_product_patterns = [
+                r"\b(защищенн\w* капитал|fort\s*knox|форт\s*нокс|unit\s*linked|юнит\s*линкед|"
+                r"альфа\s*kids|альфа\s*баланс|альфа\s*инвестиции|деньги\s+в\s+резерве|"
+                r"путь\s+к\s+успеху|фиксированн\w*\s+доход)\b"
+            ]
+            for pattern in other_product_patterns:
+                match = re.search(pattern, normalized, re.IGNORECASE)
+                if match:
+                    found_product = match.group(0).lower()
+                    # Если найденный продукт не совпадает с selected_product
+                    if (
+                        selected_name
+                        and found_product not in selected_name
+                        and selected_name not in found_product
+                    ):
+                        mentions_different_product = True
+                        break
+            if mentions_different_product:
+                logger.info(
+                    "Contextual smalltalk short-circuit SKIPPED: query mentions different product"
+                )
+                return None
+            logger.info("Contextual smalltalk short-circuit: product clarification follow-up")
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "smalltalk",
+                    "intent": "smalltalk",
+                    "reason": "smalltalk_other",
+                    "search_query": "",
+                },
+                dict(ctx.session.state),
+            )
+        return None
 
     def _prepare_owasp_input(self, ctx: InvocationContext, user_text: str) -> None:
         """
@@ -674,9 +945,15 @@ class RootAgent(BaseAgent):
         if mode in {"product_card", "product_kit"}:
             if products := self._normalize_dialog_products([product_result.get("resolved_product")]):
                 selected_product = products[0]
+                # Извлекаем все атрибуты из текста карточки
+                # (Валюта: Доллары, Риск: Без риска, Срок: Среднесрочный и т.д.)
+                message = str(product_result.get("message") or "")
+                card_attributes = self._extract_product_attributes_from_text(message)
+
+                enriched_product: Dict[str, Any] = {**selected_product, **card_attributes}
                 if mode == "product_card":
                     previous = self._get_product_dialog_context(ctx)
-                    target_products = previous.get("products") or products
+                    target_products = previous.get("products") or enriched_product
                 else:
                     # A resolved kit replaces stale selections restored from an older turn.
                     target_products = [
@@ -687,6 +964,12 @@ class RootAgent(BaseAgent):
                     "products": target_products,
                     "selected_product": selected_product,
                 }
+                if card_attributes:
+                    logger.info(
+                        "product_card: enriched selected_product with %d attributes: %s",
+                        len(card_attributes),
+                        list(card_attributes.keys())[:15],
+                    )
             return
 
         if mode == "no_data":
@@ -732,7 +1015,31 @@ class RootAgent(BaseAgent):
             resolved_product = product_result.get("resolved_product")
             products = self._normalize_dialog_products(product_result.get("products") or [])
             previous = self._get_product_dialog_context(ctx)
-            
+            # Fallback: если агент не вернул products в ответе,
+            # берём уже resolved продукты из product_resolutions
+            if not products:
+                products = self._resolved_products_from_resolutions(ctx)
+                if products:
+                    logger.info(
+                        "product_compare: products restored from product_resolutions: %s",
+                        [(p.get("code"), p.get("name")) for p in products],
+                    )
+            # Обогащаем каждый продукт атрибутами из message сравнения
+            # (риск, выплаты, валюта, доход и т.д.)
+            message = str(product_result.get("message") or "")
+            if products and message:
+                products = self._enrich_compare_products_with_attributes(message, products)
+                logger.info(
+                    "product_compare: products enriched with attributes: %s",
+                    [
+                        {
+                            "code": p.get("code"),
+                            "name": p.get("name"),
+                            "attrs": [k for k in p.keys() if k not in ("code", "name")],
+                        }
+                        for p in products
+                    ],
+                )
             # Если агент явно выбрал один продукт (например, ответил на вопрос "где меньше рисков")
             if resolved_product and (resolved_product.get("code") or resolved_product.get("name")):
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
@@ -897,6 +1204,134 @@ class RootAgent(BaseAgent):
             products.append(product)
         return products
 
+    @staticmethod
+    def _extract_product_attributes_from_text(text: str) -> Dict[str, str]:
+        """
+        Извлекает пары "Ключ: Значение" из текста карточки или блока сравнения.
+        
+        Поддерживает форматы:
+        - "Ключ: Значение"           (product_card)
+        - "• Ключ: Значение"         (product_compare, блоки "Одинаковые свойства")
+        - "- Ключ: Значение"
+        
+        Возвращает dict {название_атрибута: значение}.
+        Игнорирует служебные поля (Код, Продукт, Название).
+        """
+        if not text:
+            return {}
+        attributes: Dict[str, str] = {}
+        # Паттерн: опциональный маркер (•/-/*), затем ключ (2..80 символов), ":", значение
+        pattern = re.compile(
+            r"(?:^|\n)\s*(?:[•\-\*]\s*)?([^:\n]{2,80}?)\s*:\s*([^\n•\-]+)",
+            re.UNICODE,
+        )
+        skip_keys = {
+            "код", "продукт", "название", "имя", "code", "name",
+            "дата ввода", "дата", "folder_kit",
+        }
+        for match in pattern.finditer(text):
+            key = RE_CLEAN_SPACES.sub(" ", match.group(1)).strip()
+            value = match.group(2).strip()
+            if not key or not value:
+                continue
+            # Отсекаем хвостовые маркеры списка, если попали
+            value = re.sub(r"\s*[•\-\*]\s*$", "", value).strip()
+            if not value:
+                continue
+            # Пропускаем идентификаторы — они уже есть в code/name
+            if key.lower() in skip_keys:
+                continue
+            # Защита от мусорных "ключей" (например, "📂 Могу также прислать" — без ":" не пройдёт, но подстрахуемся)
+            if len(key) < 3:
+                continue
+            attributes[key] = value
+        return attributes
+
+    def _enrich_compare_products_with_attributes(
+        self,
+        message: str,
+        products: List[Dict[str, str]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Для режима product_compare извлекает атрибуты каждого продукта
+        и общие свойства из message и добавляет их к product dict.
+        Формат message:
+            "7695 - Юнит Линк Ежемесячный доход
+            • Уровень риска продукта: Низкий
+            • Тип выплат: Ежемесячные выплаты
+
+            7695 - Юнит Линк Стратегия роста
+            • Уровень риска продукта: Высокий
+            • Тип выплат: Без выплат
+
+            Одинаковые свойства:
+            • Тип продукта: Unit Linked
+            • Валюта: Рубли
+            ..."
+        """
+        if not message or not products:
+            return products
+        # 1) Общие свойства — секция "Одинаковые свойства:"
+        common_attributes: Dict[str, str] = {}
+        common_match = re.search(
+            r"Одинаковые\s+свойства\s*:\s*([\s\S]*?)$",
+            message,
+            re.IGNORECASE,
+        )
+        if common_match:
+            common_attributes = self._extract_product_attributes_from_text(
+                common_match.group(1)
+            )
+        # 2) Секция различающихся свойств (если есть заголовок — ограничим ею поиск блоков продуктов)
+        diff_section_end = len(message)
+        diff_match = re.search(
+            r"Одинаковые\s+свойства\s*:",
+            message,
+            re.IGNORECASE,
+        )
+        if diff_match:
+            diff_section_end = diff_match.start()
+        diff_text = message[:diff_section_end]
+        enriched: List[Dict[str, Any]] = []
+        for product in products:
+            code = str(product.get("code") or "").strip()
+            name = str(product.get("name") or "").strip()
+            product_attrs: Dict[str, str] = {}
+            # 3) Ищем блок этого продукта в секции различий
+            patterns_to_try: List[str] = []
+            if code and name:
+                patterns_to_try.append(
+                    rf"{re.escape(code)}\s*[-–—]\s*{re.escape(name)}"
+                )
+            if name:
+                patterns_to_try.append(re.escape(name))
+            if code:
+                patterns_to_try.append(rf"\b{re.escape(code)}\b")
+            block_text = ""
+            for pattern in patterns_to_try:
+                match = re.search(pattern, diff_text, re.IGNORECASE)
+                if not match:
+                    continue
+                start_pos = match.end()
+                # Граница блока: следующий "код -" или конец diff_text
+                end_patterns = [
+                    r"\n\d{3,}\s*[-–—]",
+                    r"\n\s*\n",  # пустая строка как разделитель
+                ]
+                end_pos = len(diff_text)
+                for ep in end_patterns:
+                    end_match = re.search(ep, diff_text[start_pos:])
+                    if end_match:
+                        end_pos = min(end_pos, start_pos + end_match.start())
+                block_text = diff_text[start_pos:end_pos]
+                break
+            if block_text:
+                product_attrs = self._extract_product_attributes_from_text(block_text)
+            # 4) Объединяем: общие + индивидуальные (индивидуальные имеют приоритет)
+            merged = {**common_attributes, **product_attrs}
+            enriched.append({**product, **merged})
+        return enriched
+    
     def _match_clarification_option(
         self,
         ctx: InvocationContext,
@@ -1144,7 +1579,7 @@ class RootAgent(BaseAgent):
             # ЕСЛИ ПОЛЬЗОВАТЕЛЬ ЯВНО УКАЗАЛ НОВЫЙ ПРОДУКТ, ОТДАЕМ ДИСПЕТЧЕРУ
             if not self._is_blind_followup(user_text):
                 return None
-            # ИСПРАВЛЕНИЕ: Извлекаем продукт из контекста диалога (selected_product)
+            # Извлекаем продукт из контекста диалога (selected_product)
             product = self._find_product_in_dialog_context(
                 ctx,
                 user_text,
@@ -1161,10 +1596,21 @@ class RootAgent(BaseAgent):
               logger.debug("DEBUG: _get_last_product_from_state returned: %s", product)
 
             if product:
-                code = product.get("code") or ""
-                name = product.get("name") or ""
-                query = f"скачать комплект документов по продукту {code or name}".strip()
-                logger.info("Explicit kit dispatch: found product code=%s name=%s", code, name)
+                code = str(product.get("code") or "").strip()
+                name = str(product.get("name") or "").strip()
+                if code and name:
+                    product_label = f"{name} (код {code})"
+                else:
+                    product_label = name or code
+
+                query = f"скачать комплект документов по продукту {product_label}".strip()
+
+                logger.info(
+                    "Explicit kit dispatch: found product code=%s name=%s label=%s",
+                    code,
+                    name,
+                    product_label,
+                )
             else:
                 logger.warning("Explicit kit dispatch: product NOT found in context, using raw query")
                 query = user_text
@@ -1203,9 +1649,13 @@ class RootAgent(BaseAgent):
                 product = self._get_last_product_from_state(ctx)
 
             if product:
-                code = product.get("code") or ""
-                name = product.get("name") or ""
-                query = f"скачать комплект документов по продукту {code or name}".strip()
+                code = str(product.get("code") or "").strip()
+                name = str(product.get("name") or "").strip()
+                if code and name:
+                    product_label = f"{name} (код {code})"
+                else:
+                    product_label = name or code
+                query = f"скачать комплект документов по продукту {product_label}".strip()
                 logger.info("Explicit confirmation kit dispatch short-circuit: found product code=%s name=%s", code, name)
                 return validate_dispatcher_result(
                     {
@@ -1587,7 +2037,6 @@ class RootAgent(BaseAgent):
                         for key, value in latest_cached_state.items():
                             ctx.session.state[key] = value
         await self._trim_dialog_memory(ctx)
-
         # Инициализируем переменные контекста, если их нет в state
         for key in [
             "last_user_query", 
@@ -1599,12 +2048,11 @@ class RootAgent(BaseAgent):
         ]:
             if key not in ctx.session.state:
                 ctx.session.state[key] = ""
-
         # Сбрасываем служебное состояние текущего шага
         self._reset_turn_state(ctx)
         ctx.session.state["user_query"] = user_text
+        self._prepare_dialog_context_state(ctx)
         self._prepare_owasp_input(ctx, user_text)
-
         return PipelineContext(
             ctx=ctx,
             user_text=user_text,
@@ -1680,6 +2128,7 @@ class RootAgent(BaseAgent):
         # Последовательность проверок по приоритету
         resolvers = (
             ("explicit_intent", self._get_explicit_intent_dispatch),
+            ("contextual_smalltalk", self._contextual_smalltalk_followup_dispatch),
             ("product_followup", self._product_followup_dispatch),
             ("doc_list_followup", self._doc_list_followup_dispatch),
         )
@@ -1703,8 +2152,10 @@ class RootAgent(BaseAgent):
     async def _run_llm_dispatcher(self, pipeline_ctx: PipelineContext) -> AsyncGenerator[Event, None]:
         """Основной вызов LLM-диспетчера роутинга."""
         ctx = pipeline_ctx.ctx
-
-        ctx.session.state["dispatcher_user_query"] = pipeline_ctx.user_text
+        user_text = pipeline_ctx.user_text
+        # На всякий случай обновляем общий контекст перед dispatcher
+        self._prepare_dialog_context_state(ctx)
+        ctx.session.state["dispatcher_user_query"] = user_text
         ctx.session.state.pop("dispatcher_result_json", None)
         ctx.session.state.pop("_dispatcher_result_parsed", None)
 
@@ -2069,6 +2520,12 @@ class RootAgent(BaseAgent):
             search_query: Нормализованный поисковый запрос.
             intent: Тип запроса (kb_answer, smalltalk).
         """
+        # Общий контекст уже подготовлен в _prepare_pipeline_context,
+        # но можно обновить на всякий случай.
+        self._prepare_dialog_context_state(ctx)
+        # Если после KB-ответа вы хотите сбросить продуктовый контекст,
+        # делаем это ПОСЛЕ того, как общий контекст уже записан.
+        self._clear_product_dialog_context(ctx)
         effective_search_query = await self._prepare_leaf_query(ctx, search_query, user_message)
         logger.info(
             "kb_answer route: query=%s intent=%s",
@@ -2107,6 +2564,8 @@ class RootAgent(BaseAgent):
             truncate_for_log(user_message, 300),
             intent,
         )
+        # Обновляем общий контекст на текущий ход
+        self._prepare_dialog_context_state(ctx)
         ctx.session.state["intent"] = intent
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
@@ -2120,6 +2579,8 @@ class RootAgent(BaseAgent):
             yield event
 
         smalltalk = self._get_required_state_dict(ctx, "_smalltalk_result_parsed")
+        # Если smalltalk выбрал продукт, root сохраняет его в last_product.
+        self._apply_smalltalk_product_selection(ctx, smalltalk)
         ctx.session.state["_root_final_text"] = format_text_answer(smalltalk["message"])
 
     async def _handle_product_filter(
@@ -2184,6 +2645,12 @@ class RootAgent(BaseAgent):
             product_result
         )
         self._store_product_dialog_context(ctx, product_result)
+        # сохраняем last_product, если агент выбрал конкретный продукт
+        self._set_last_product_from_result(
+            ctx,
+            product_result,
+            product_result.get("mode"),
+        )
         ctx.session.state.pop("_bot_action", None)
 
     async def _handle_product_info(
@@ -2248,6 +2715,12 @@ class RootAgent(BaseAgent):
             product_result
         )
         self._store_product_dialog_context(ctx, product_result)
+        # сохраняем last_product после карточки / комплекта
+        self._set_last_product_from_result(
+            ctx,
+            product_result,
+            product_result.get("mode"),
+        )
 
         if product_result["mode"] == "product_kit":
             resolved_product = product_result.get("resolved_product") or {}
