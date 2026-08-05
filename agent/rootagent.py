@@ -29,7 +29,10 @@ from .agents.product_filter_agent import validate_product_filter_result
 from .agents.product_info_agent import validate_product_info_result
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
-from .smart_fallback import generate_agent_fallback
+from .smart_fallback import (
+    generate_agent_fallback, OWASP_INVALID_CONTRACT_USER_MESSAGE, 
+    VALIDATION_ERROR_USER_MESSAGE, RESPONSE_SCHEMA_CONFIGURATION_ERROR_MESSAGE
+)
 from .stage_metrics import (
     STAGE_METRICS_STATE_KEY,
     TIMING_STATE_DELTA_KEY,
@@ -38,23 +41,7 @@ from .stage_metrics import (
 
 logger = setup_logger("root_agent", "agent.log")
 
-OWASP_INVALID_CONTRACT_USER_MESSAGE = (
-    "Извините, ваш запрос не может быть обработан. Пожалуйста, переформулируйте вопрос."
-)
-
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
-VALIDATION_ERROR_USER_MESSAGE = (
-    "Я не смогла корректно обработать запрос.\n\n"
-    "Попробуйте:\n"
-    "• уточнить формулировку вопроса;\n"
-    "• задать вопрос другими словами;\n"
-    "• использовать /reset если диалог зашел в тупик;\n"
-    "• подождать и задать вопрос позже"
-)
-RESPONSE_SCHEMA_CONFIGURATION_ERROR_MESSAGE = (
-    "Сервис временно недоступен из-за внутренней ошибки конфигурации. "
-    "Переформулирование запроса или /reset не поможет. Попробуйте позже."
-)
 OWASP_CONTEXT_WINDOW = 4
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
@@ -78,13 +65,47 @@ RE_EXPLICIT_FILTER = re.compile(r"\b(архивные|все продукты|с
 RE_CONFIRMATION_WORDS = {"давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"}
 RE_PRODUCT_NAME_TRIM = re.compile(r"(?i)^(найди|покажи|выведи|открой|документы|доки|по|для|скачать|файл|файлы|материалы|презентацию|презентер|памятку|инструкцию|регламент|шаблон|список)\s+")
 
+# Выделенные регулярки для Приоритета 1 (Сравнения и Команды)
+RE_COMPARISON = re.compile(
+    r"\b(сравни|сравнить|чем\s+отличается|чем\s+отличаются|в\s+чем\s+разница|какая\s+разница|отличия|сравни\s+с|по\s+сравнению|чем\s+лучше|разница\s+между)\b",
+    re.IGNORECASE,
+)
+RE_COMMAND_VERBS = re.compile(
+    r"\b(покаж\w*|найди|найд\w*|открой|выведи|расскаж\w*|дай|пришли|отправ\w*|скач\w*|скинь|кидай|хочу|нужен|сравни|сравнит\w*)\b",
+    re.IGNORECASE,
+)
+
+# регулярки для smalltalk по контексту:
+RE_SMALLTALK_CHOICE_FOLLOWUP = re.compile(
+    r"\b(где меньше|меньше рисков|рисков меньше|какой лучше|что выбрать|выбери|"
+    r"порекомендуй|рекомендуешь|лучше выбрать|меньше риск|более надежн|"
+    r"надежнее|какой продукт|какой пакет|что посоветуешь)\b"
+)
+
+RE_SMALLTALK_CLARIFICATION_FOLLOWUP = re.compile(
+    r"\b(там|в нем|в нём|в ней|в этом|нем|нём|ней|этом|о нем|о нём|о ней|"
+    r"валюта|валют|доллар|рубл|срок|риск|выплат|гарант|доход|капитал|"
+    r"зк|фн|пф|снг|дсг|что ли|правда|точно)\b"
+)
+
+RE_KB_EXPLANATION_REQUEST = re.compile(
+    r"\b(объясн|как объяснить|как сказать|как ответить|аргумент|возражен|"
+    r"клиент переживает|клиент боится|что сказать клиенту|показать клиенту|"
+    r"почему это|зачем это|как это преподнести)\b"
+)
+
+RE_DOC_CONTEXT_REQUEST = re.compile(
+    r"\b(документ|документы|документами|материал|материалы|файл|файлы|"
+    r"справк|лиценз|что показать|что дать|нужны документы|показать список|"
+    r"что показать клиенту|что дать клиенту)\b"
+)
 # Полный список ключей состояния, очищаемых перед каждым ходом
 STATE_KEYS_TO_CLEAR = [
     "user_query", "search_query", "faq_collection", "kb_answer_collection", "intent",
     "dispatcher_user_query", "doc_search_query", "doc_search_intent",
     "product_info_search_query", "product_info_intent",
     "product_filter_search_query", "product_filter_intent",
-    "from_glossary", "_from_glossary", "_owasp_result_parsed",
+    "from_glossary", "_owasp_result_parsed",
     "_dispatcher_result_parsed", "_doc_search_result_parsed",
     "_kb_answer_result_parsed", "_smalltalk_result_parsed",
     "_product_info_result_parsed", "_product_filter_result_parsed",
@@ -93,6 +114,9 @@ STATE_KEYS_TO_CLEAR = [
     "product_resolutions", "product_filter_resolution",
     "owasp_current_user_message", "owasp_recent_messages_json",
     STAGE_METRICS_STATE_KEY,
+    "dialog_recent_messages",
+    "dialog_context_json",
+    "product_dialog_context_json",
 ]
 
 def is_bot_user_profile_injection_message(text: str) -> bool:

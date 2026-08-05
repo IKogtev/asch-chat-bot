@@ -20,10 +20,24 @@ ASSISTANT_CAPABILITIES_ANSWER = "Я умею искать документы и 
 # Объявляем схему как Pydantic-класс
 class SmalltalkResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    mode: Literal["text_answer"] = Field(description="Всегда text_answer")
-    message: str = Field(description="Ответ пользователю")
-    source: Literal["none"] = Field(description="Источник всегда none")
-
+    mode: Literal[
+        "smalltalk",
+        "context_answer",
+        "product_selection",
+    ] = Field(description="Режим smalltalk-ответа")
+    message: str = Field(description="Текст ответа")
+    selected_product_code: str = Field(
+        default="",
+        description="Код продукта, если smalltalk выбрал продукт из контекста",
+    )
+    selected_product_name: str = Field(
+        default="",
+        description="Название продукта, если smalltalk выбрал продукт из контекста",
+    )
+    selected_product_folder_kit: str = Field(
+        default="",
+        description="Папка/идентификатор комплекта продукта, если известно",
+    )
 
 def validate_smalltalk_result(data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -33,7 +47,6 @@ def validate_smalltalk_result(data: Dict[str, Any], context: Dict[str, Any]) -> 
     - `status="ok"`;
     - `mode` `text_answer`
     - `message` обязателен и не должен быть пустым;
-    - `source` `none`.
     При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
     пригодным для логирования и локализации сбоя на этапе отладки.
     """
@@ -48,7 +61,10 @@ def validate_smalltalk_result(data: Dict[str, Any], context: Dict[str, Any]) -> 
     status = str(data.get("status", "")).strip()
     mode = str(data.get("mode", "")).strip()
     message = str(data.get("message", "")).strip()
-    source = str(data.get("source", "")).strip()
+
+    selected_product_code = str(data.get("selected_product_code", "")).strip()
+    selected_product_name = str(data.get("selected_product_name", "")).strip()
+    selected_product_folder_kit = str(data.get("selected_product_folder_kit", "")).strip()
 
     if status != "ok":
         raise build_validation_error(
@@ -57,12 +73,8 @@ def validate_smalltalk_result(data: Dict[str, Any], context: Dict[str, Any]) -> 
             problem="status must be ok",
         )
 
-    if mode != "text_answer":
-        raise build_validation_error(
-            agent=agent_name,
-            stage="mode",
-            problem="mode must be text_answer",
-        )
+    if mode not in {"smalltalk", "context_answer", "product_selection"}:
+        mode = "smalltalk"
 
     if not message:
         raise build_validation_error(
@@ -71,18 +83,13 @@ def validate_smalltalk_result(data: Dict[str, Any], context: Dict[str, Any]) -> 
             problem="message is empty",
         )
 
-    if source != "none":
-        raise build_validation_error(
-            agent=agent_name,
-            stage="source",
-            problem="source must be none",
-        )
-
     return {
         "status": "ok",
-        "mode": "text_answer",
+        "mode": mode,
         "message": message,
-        "source": "none",
+        "selected_product_code": selected_product_code,
+        "selected_product_name": selected_product_name,
+        "selected_product_folder_kit": selected_product_folder_kit,
     }
 
 

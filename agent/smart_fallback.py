@@ -1,5 +1,23 @@
 from typing import Optional, Dict, Any, List
 
+OWASP_INVALID_CONTRACT_USER_MESSAGE = (
+    "Извините, ваш запрос не может быть обработан. Пожалуйста, переформулируйте вопрос."
+)
+
+VALIDATION_ERROR_USER_MESSAGE = (
+    "Я не смогла корректно обработать запрос.\n\n"
+    "Попробуйте:\n"
+    "• уточнить формулировку вопроса;\n"
+    "• задать вопрос другими словами;\n"
+    "• использовать /reset если диалог зашел в тупик;\n"
+    "• подождать и задать вопрос позже"
+)
+
+RESPONSE_SCHEMA_CONFIGURATION_ERROR_MESSAGE = (
+    "Сервис временно недоступен из-за внутренней ошибки конфигурации. "
+    "Переформулирование запроса или /reset не поможет. Попробуйте позже."
+)
+
 def generate_agent_fallback(
     user_text: str,
     error_type: str,
