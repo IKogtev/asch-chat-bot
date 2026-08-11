@@ -75,7 +75,7 @@ class _FakeTelegramMessage:
     def __init__(self):
         self.documents = []
 
-    async def answer_document(self, document):
+    async def answer_document(self, document, **kwargs):
         self.documents.append(document)
 
 
@@ -97,7 +97,12 @@ def _load_cancel_user_request(extra_globals: dict):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_bot_response_sends_telegram_document_from_message() -> None:
-    bot_response_cls = _load_bot_response({"FSInputFile": _FakeFSInputFile})
+    bot_response_cls = _load_bot_response(
+        {
+            "FSInputFile": _FakeFSInputFile,
+            "logger": _build_logger(),
+        }
+    )
     message = _FakeTelegramMessage()
     bot_response = bot_response_cls(message, "telegram")
 
