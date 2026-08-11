@@ -42,7 +42,7 @@ from .stage_metrics import (
 logger = setup_logger("root_agent", "agent.log")
 
 BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
-OWASP_CONTEXT_WINDOW = 4
+OWASP_CONTEXT_WINDOW = 6
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
@@ -77,9 +77,14 @@ RE_COMMAND_VERBS = re.compile(
 
 # регулярки для smalltalk по контексту:
 RE_SMALLTALK_CHOICE_FOLLOWUP = re.compile(
-    r"\b(где меньше|меньше рисков|рисков меньше|какой лучше|что выбрать|выбери|"
-    r"порекомендуй|рекомендуешь|лучше выбрать|меньше риск|более надежн|"
-    r"надежнее|какой продукт|какой пакет|что посоветуешь)\b"
+    r"^\s*(?:ну|а|и|так|тогда|подскажи|скажи|пожалуйста)?\s*"
+    r"(?:"
+    r"где меньше рисков|где рисков меньше|какой лучше|какой из продуктов лучше|какой из пакетов лучше|"
+    r"что выбрать|что из этого выбрать|выбери|порекомендуй|рекомендуешь|лучше выбрать|лучше взять|"
+    r"меньше риск|меньше рисков|более надежн\w*|надежнее|что посоветуешь|"
+    r"какой продукт лучше|какой продукт выбрать|какой пакет лучше|какой пакет выбрать"
+    r")\s*[?!.]*\s*$",
+    re.IGNORECASE,
 )
 
 RE_SMALLTALK_CLARIFICATION_FOLLOWUP = re.compile(
@@ -194,6 +199,7 @@ class RootAgent(BaseAgent):
     kb_collection: str
 
     MAX_HISTORY_PER_USER: ClassVar[int] = 3  # Сколько последних запросов хранить для ОДНОГО пользователя
+    MAX_DIALOG_TURNS_HARD_LIMIT: ClassVar[int]=3
     # Глобальный кэш для сохранения контекста при 409 Conflict (сплите сессий)
     # Ключом будет базовый session_id, значением — словарь с контекстом
     # Глобальное хранилище: { clean_id: deque([state1, state2, ...]) }
@@ -455,9 +461,10 @@ class RootAgent(BaseAgent):
 
     async def _trim_dialog_memory(self, ctx: InvocationContext) -> None:
         events = list(getattr(ctx.session, "events", None) or [])
+        effective_max = min(AGENT_DIALOG_MEMORY_MAX_TURNS, self.MAX_DIALOG_TURNS_HARD_LIMIT)
         retained_events = self._retained_dialog_memory_events(
             events,
-            AGENT_DIALOG_MEMORY_MAX_TURNS,
+            effective_max,
         )
         if len(retained_events) == len(events):
             return
@@ -545,7 +552,7 @@ class RootAgent(BaseAgent):
                 ctx.session.state[key] = value
         if not ctx.session.state.get("first_name"):
             ctx.session.state["first_name"] = "unknown"
-        recent_messages = self._get_recent_messages(ctx)[-3:]
+        recent_messages = self._get_recent_messages(ctx)[-6:]
         product_context = self._get_product_dialog_context(ctx)
         ctx.session.state["dialog_recent_messages"] = (
             self._format_recent_messages_for_prompt(recent_messages)
@@ -692,7 +699,8 @@ class RootAgent(BaseAgent):
         products = self._normalize_dialog_products(context.get("products"))
         # 1. После сравнения продуктов: "Где меньше рисков?", "Какой лучше?"
         if (
-            last_mode in {"product_compare", "product_filter"}
+            last_route in {"product_info", "product_filter"}
+            and last_mode in {"product_compare", "product_filter"}
             and len(products) >= 2
             and RE_SMALLTALK_CHOICE_FOLLOWUP.search(normalized)
         ):

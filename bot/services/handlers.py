@@ -5,6 +5,7 @@ from urllib.parse import quote
 from aiogram.types import ( FSInputFile, ReplyKeyboardRemove,
     ReplyKeyboardMarkup, KeyboardButton
     ) 
+from aiogram.exceptions import TelegramNetworkError
 import tempfile
 from datetime import datetime
 from utils import setup_logger
@@ -1281,16 +1282,35 @@ class BotResponse:
         return self.event.message
 
     async def _send_document(self, path, filename):
+        """
+        Отправляет документ в источник с повторными попытками
+        при временных сетевых ошибках.
+        """
         msg = self._get_message()
-
-        if self.is_tg:
-            return await msg.answer_document(
-                FSInputFile(path, filename=filename)
-            )
-
-        return await msg.answer(
-            attachments=[InputMedia(path=path)]
-        )
+        max_attempts = 3
+        retry_delays = (1, 2)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if self.is_tg:
+                    return await msg.answer_document(
+                        FSInputFile(path, filename=filename),
+                        request_timeout=120,
+                    )
+                return await msg.answer(
+                    attachments=[InputMedia(path=path)]
+                )
+            except Exception as e:
+                if attempt >= max_attempts:
+                    raise
+                delay = retry_delays[attempt - 1]
+                logger.warning(
+                    f"Ошибка отправки документа {filename!r} "
+                    f"через {'Telegram' if self.is_tg else 'MAX'}: "
+                    f"{type(e).__name__}: {e}. "
+                    f"Попытка {attempt + 1}/{max_attempts} "
+                    f"через {delay} сек."
+                )
+                await asyncio.sleep(delay)
 
     async def answer_callback(self, text=None, show_alert=False):
         """Для всплывающих окон в TG или уведомлений в Max"""
