@@ -18,6 +18,7 @@ Return exactly these keys: mode, message, resolved_product, clarification_option
 Return raw JSON only: no Markdown, no code fences, no comments, and no text before or after the object.
 Use null for an absent resolved_product, [] for unused lists, and "" for unused attribute_name and attribute_column.
 Write the final user-facing message in Russian.
+For needs_clarification, message must contain only a short clarification question. Never copy, enumerate, or describe clarification_options in message; RootAgent renders those structured options.
 For product_filter and product_compare, encode every line break as \\n in the JSON string and never replace line breaks with spaces.
 Put every product, product heading, and property on its own line.
 For product_filter, use one count header followed by one product per line in ascending code order.

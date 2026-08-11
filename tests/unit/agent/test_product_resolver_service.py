@@ -23,22 +23,34 @@ class FakeProductResolver(ProductResolverService):
         self.exact = exact or {}
         self.tokens = tokens or {}
         self.fuzzy = fuzzy or {}
+        self.search_calls: list[tuple[str, str]] = []
 
     async def _search_exact(self, query: str) -> list[ProductCandidate]:
+        self.search_calls.append(("exact", query))
         return self.exact.get(query, [])
 
     async def _search_tokens(self, query: str) -> list[ProductCandidate]:
+        self.search_calls.append(("tokens", query))
         return self.tokens.get(query, [])
 
     async def _search_fuzzy(self, query: str) -> list[ProductCandidate]:
+        self.search_calls.append(("fuzzy", query))
         return self.fuzzy.get(query, [])
 
 
-def candidate(code: str, name: str, *, score: float = 1.0, priority: int = 100) -> ProductCandidate:
+def candidate(
+    code: str,
+    name: str,
+    *,
+    score: float = 1.0,
+    priority: int = 100,
+    is_active: str = "",
+) -> ProductCandidate:
     return ProductCandidate(
         product_code=code,
         canonical_name=name,
         alias=name,
+        is_active=is_active,
         normalized_alias=ProductResolverService.normalize_product_text(name),
         match_type="test",
         score=score,
@@ -76,6 +88,70 @@ async def test_resolve_product_returns_ambiguous_for_multiple_token_matches() ->
 
     assert result.status == "ambiguous"
     assert [item.product_code for item in result.options or []] == ["2832", "2867"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_prefers_active_product_for_duplicate_code() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "8914": [
+                candidate("8914", "Fort Knox 1 год", is_active="Архивный"),
+                candidate(
+                    "8914",
+                    "Фиксированный доход 1 год",
+                    is_active="Действующий",
+                ),
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product("8914")
+
+    assert result.status == "resolved"
+    assert result.product_name == "Фиксированный доход 1 год"
+    assert result.is_active == "Действующий"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_honors_explicit_archived_status() -> None:
+    candidates = [
+        candidate("8914", "Fort Knox 1 год", is_active="Архивный"),
+        candidate(
+            "8914",
+            "Фиксированный доход 1 год",
+            is_active="Действующий",
+        ),
+    ]
+    resolver = FakeProductResolver(exact={"8914": candidates})
+
+    result = await resolver.resolve_product("архивный 8914")
+
+    assert result.status == "resolved"
+    assert result.product_name == "Fort Knox 1 год"
+    assert result.is_active == "Архивный"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_keeps_same_code_active_names_ambiguous() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "7695": [
+                candidate("7695", "Юнит Линк Активные облигации", is_active="Действующий"),
+                candidate("7695", "Юнит Линк Стратегия роста", is_active="Действующий"),
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product("7695")
+
+    assert result.status == "ambiguous"
+    assert [item.canonical_name for item in result.options or []] == [
+        "Юнит Линк Активные облигации",
+        "Юнит Линк Стратегия роста",
+    ]
 
 
 @pytest.mark.unit
@@ -212,6 +288,43 @@ async def test_resolve_product_filter_returns_multiple_candidates() -> None:
     assert result.product_codes == ["2832", "2867"]
     assert [item.product_code for item in result.products or []] == ["2832", "2867"]
     assert result.matched_terms == ["fort knox"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_stops_after_successful_exact_stage() -> None:
+    resolver = FakeProductResolver(
+        exact={"8914": [candidate("8914", "Fort Knox 1 год")]},
+    )
+
+    result = await resolver.resolve_product_filter("8914")
+
+    assert result.status == "resolved"
+    assert resolver.search_calls == [("exact", "8914")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_applies_duplicate_code_status_preference() -> None:
+    duplicate_code_candidates = [
+        candidate("8914", "Fort Knox 1 год", is_active="Архивный"),
+        candidate(
+            "8914",
+            "Фиксированный доход 1 год",
+            is_active="Действующий",
+        ),
+    ]
+    resolver = FakeProductResolver(exact={"8914": duplicate_code_candidates})
+
+    default_result = await resolver.resolve_product_filter("8914")
+    archived_result = await resolver.resolve_product_filter("архивный 8914")
+
+    assert [item.canonical_name for item in default_result.products or []] == [
+        "Фиксированный доход 1 год"
+    ]
+    assert [item.canonical_name for item in archived_result.products or []] == [
+        "Fort Knox 1 год"
+    ]
 
 
 @pytest.mark.unit

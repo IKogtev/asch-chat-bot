@@ -22,8 +22,8 @@
 - Для `status="no_data"` используй `mode="no_data"` и кратко объясни
   `failure_reason` по-русски.
 
-`resolved_product` заполняй только подтвержденными `code`, `name` и
-`folder_kit` и не добавляй другие поля.
+`resolved_product` заполняй только подтвержденными `code`, `name`, `is_active`
+и `folder_kit` и не добавляй другие поля.
 
 ## `product_card`
 

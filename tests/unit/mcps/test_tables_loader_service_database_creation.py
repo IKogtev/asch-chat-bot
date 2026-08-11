@@ -66,6 +66,39 @@ def test_database_url_helpers_use_postgres_maintenance_database(monkeypatch) -> 
 
 
 @pytest.mark.unit
+def test_product_search_dictionary_keeps_same_code_products_and_status(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    module.pd = real_pandas
+    service = module.TablesLoaderService(
+        "postgresql://aszh-bot:secret@postgres:5432/nstya_data",
+        ".",
+    )
+    products = real_pandas.DataFrame(
+        [
+            {
+                "code": "8914",
+                "name": "Фиксированный доход 1 год",
+                "is_active": "Действующий",
+            },
+            {
+                "code": "8914",
+                "name": "Fort Knox 1 год",
+                "is_active": "Архивный",
+            },
+        ]
+    )
+
+    dictionary = service._build_product_search_dictionary(products)
+    canonical = dictionary[dictionary["match_type"] == "canonical"]
+
+    assert list(canonical["product_code"]) == ["8914", "8914"]
+    assert list(canonical["canonical_name"]) == [
+        "Фиксированный доход 1 год",
+        "Fort Knox 1 год",
+    ]
+    assert list(canonical["is_active"]) == ["Действующий", "Архивный"]
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_ensure_database_exists_creates_missing_database(monkeypatch) -> None:
     module = _load_tables_loader_module(monkeypatch)

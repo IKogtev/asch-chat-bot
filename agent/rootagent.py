@@ -582,16 +582,20 @@ class RootAgent(BaseAgent):
         code = str(resolved.get("code") or "").strip()
         name = str(resolved.get("name") or "").strip()
         folder_kit = str(resolved.get("folder_kit") or "").strip()
+        is_active = str(resolved.get("is_active") or "").strip()
         if not (code or name):
             return
         label = f"{name} (код {code})" if code and name else (name or code)
         ctx.session.state["last_product"] = label
         context = self._get_product_dialog_context(ctx)
-        context["selected_product"] = {
+        selected_product = {
             "code": code,
             "name": name,
             "folder_kit": folder_kit,
         }
+        if is_active:
+            selected_product["is_active"] = is_active
+        context["selected_product"] = selected_product
         if source_mode:
             context["last_mode"] = source_mode
         ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = context
@@ -826,7 +830,8 @@ class RootAgent(BaseAgent):
             option_code = str(option.get("code") or "").strip()
             term = str(option.get("term") or "").strip()
             currency = str(option.get("currency") or "").strip()
-            details = [item for item in (term, currency) if item]
+            is_active = str(option.get("is_active") or "").strip() or "Статус не указан"
+            details = [item for item in (is_active, term, currency) if item]
             label = f"{option_code} {name}".strip() if (option_code and name) else (option_code or name)
             return f"{label} - {', '.join(details)}" if details else label
         return str(option or "").strip()
@@ -850,6 +855,12 @@ class RootAgent(BaseAgent):
                 message = message + f"\n\n {PRODUCT_CARD_KIT_OFFER}"
             return message
         if mode == "needs_clarification":
+            # Structured options are rendered below; keep only the question from
+            # an older or non-conforming formatter response to avoid two lists.
+            message = next(
+                (line.strip() for line in message.splitlines() if line.strip()),
+                message,
+            )
             options = [
                 cls._format_clarification_option(option)
                 for option in product_result.get("clarification_options") or []
@@ -878,7 +889,7 @@ class RootAgent(BaseAgent):
             if not isinstance(item, dict):
                 continue
             product: Dict[str, str] = {}
-            for key in ("code", "name", "term", "currency", "folder_kit"):
+            for key in ("code", "name", "term", "currency", "folder_kit", "is_active"):
                 text = str(item.get(key) or "").strip()
                 if text:
                     product[key] = text
@@ -1151,9 +1162,11 @@ class RootAgent(BaseAgent):
         codes = set(self._extract_product_codes(user_text))
 
         if codes:
-            for product in products:
-                if product.get("code") in codes:
-                    return product
+            code_matches = [
+                product for product in products if product.get("code") in codes
+            ]
+            if len(code_matches) == 1:
+                return code_matches[0]
 
         normalized = self._normalize_product_dialog_text(user_text)
         matches = []
@@ -1184,23 +1197,30 @@ class RootAgent(BaseAgent):
             return []
 
         products: List[Dict[str, str]] = []
-        seen_codes: set[str] = set()
+        seen_identities: set[tuple[str, str, str]] = set()
         for item in items:
             if not isinstance(item, dict) or item.get("status") != "resolved":
                 continue
             code = str(item.get("product_code") or "").strip()
             name = str(item.get("product_name") or "").strip()
+            is_active = str(item.get("is_active") or "").strip()
             if not code and not name:
                 continue
-            if code and code in seen_codes:
+            identity = (
+                code,
+                self._normalize_product_dialog_text(name),
+                self._normalize_product_dialog_text(is_active),
+            )
+            if identity in seen_identities:
                 continue
-            if code:
-                seen_codes.add(code)
+            seen_identities.add(identity)
             product: Dict[str, str] = {}
             if code:
                 product["code"] = code
             if name:
                 product["name"] = name
+            if is_active:
+                product["is_active"] = is_active
             products.append(product)
         return products
 
@@ -1349,9 +1369,9 @@ class RootAgent(BaseAgent):
         codes = self._extract_product_codes(user_text)
         if len(codes) == 1:
             code = codes[0]
-            for option in options:
-                if option.get("code") == code:
-                    return option
+            code_matches = [option for option in options if option.get("code") == code]
+            if len(code_matches) == 1:
+                return code_matches[0]
         normalized = self._normalize_product_dialog_text(user_text)
         matches: List[Dict[str, str]] = []
         for option in options:
@@ -1397,16 +1417,32 @@ class RootAgent(BaseAgent):
             resolved = self._normalize_dialog_products(
                 context.get("compare_resolved_products") or []
             )
-            codes: List[str] = []
-            for product in resolved:
-                product_code = str(product.get("code") or "").strip()
-                if product_code and product_code not in codes:
-                    codes.append(product_code)
-            if code and code not in codes:
-                codes.append(code)
+            identities: List[Dict[str, str]] = []
+            seen_identities: set[tuple[str, str, str]] = set()
+            for product in [*resolved, selected]:
+                identity = (
+                    str(product.get("code") or "").strip(),
+                    self._normalize_product_dialog_text(product.get("name", "")),
+                    self._normalize_product_dialog_text(product.get("is_active", "")),
+                )
+                if identity in seen_identities:
+                    continue
+                seen_identities.add(identity)
+                identities.append(product)
 
-            if len(codes) >= 2:
-                query = f"сравни продукты {codes[0]} и {codes[1]}"
+            if len(identities) >= 2:
+                labels = []
+                for product in identities[:2]:
+                    product_name = str(product.get("name") or "").strip()
+                    product_code = str(product.get("code") or "").strip()
+                    is_active = str(product.get("is_active") or "").strip()
+                    label = " ".join(
+                        part for part in (product_code, product_name) if part
+                    )
+                    if is_active:
+                        label = f"{is_active} {label}"
+                    labels.append(label)
+                query = f"сравни продукты {labels[0]} и {labels[1]}"
             else:
                 original = str(context.get("original_search_query") or "").strip()
                 selected_label = code or name
@@ -1434,8 +1470,12 @@ class RootAgent(BaseAgent):
 
         intent = "product_kit" if pending_intent == "product_kit" else "product_card"
         query_action = "скачать комплект документов по продукту" if intent == "product_kit" else "показать карточку продукта"
+        status = str(selected.get("is_active") or "").strip()
+        selected_label = name or code
+        if status:
+            selected_label = f"{status} {selected_label}"
         return validate_dispatcher_result(
-            {"status": "ok", "route": "product_info", "intent": intent, "reason": f"{intent}_clarification_followup", "search_query": f"{query_action} {code or name}"},
+            {"status": "ok", "route": "product_info", "intent": intent, "reason": f"{intent}_clarification_followup", "search_query": f"{query_action} {selected_label}"},
             dict(ctx.session.state),
         )
 
@@ -1461,8 +1501,12 @@ class RootAgent(BaseAgent):
             if isinstance(option, dict):
                 code = str(option.get("product_code") or "").strip()
                 name = str(option.get("canonical_name") or "").strip()
+                is_active = str(option.get("is_active") or "").strip()
                 if code and name:
-                    canonical_options.append({"code": code, "name": name})
+                    canonical = {"code": code, "name": name}
+                    if is_active:
+                        canonical["is_active"] = is_active
+                    canonical_options.append(canonical)
         return {**data, "options": canonical_options}
 
     @staticmethod
@@ -1486,7 +1530,7 @@ class RootAgent(BaseAgent):
         return {**data, "items": unique_items}
 
     @staticmethod
-    def _product_resolution_dedup_key(item: Dict[str, Any]) -> tuple[str, str] | None:
+    def _product_resolution_dedup_key(item: Dict[str, Any]) -> tuple[str, str, str] | None:
         product_code = str(item.get("product_code", "")).strip()
         if not product_code:
             return None
@@ -1505,17 +1549,34 @@ class RootAgent(BaseAgent):
                     or ""
                 ).strip()
         normalized_name = " ".join(name.casefold().split())
-        return product_code, normalized_name
+        status = str(item.get("is_active") or "").strip()
+        if not status and isinstance(options, list) and options:
+            first_option = options[0]
+            if isinstance(first_option, dict):
+                status = str(first_option.get("is_active") or "").strip()
+        return product_code, normalized_name, " ".join(status.casefold().split())
 
     @staticmethod
     def _product_filter_resolution_to_state(value: Any) -> Dict[str, Any]:
         data = RootAgent._to_dict(value)
         if not data:
             return {}
+        products = []
+        for item in data.get("products") or []:
+            if not isinstance(item, dict):
+                continue
+            product = {
+                "code": str(item.get("product_code") or "").strip(),
+                "name": str(item.get("canonical_name") or "").strip(),
+                "is_active": str(item.get("is_active") or "").strip(),
+            }
+            if product["code"] and product["name"]:
+                products.append({key: value for key, value in product.items() if value})
         return {
             "status": data.get("status"),
             "query": data.get("query"),
             "product_codes": data.get("product_codes") or [],
+            "products": products,
             "matched_terms": data.get("matched_terms") or [],
             "unmatched_terms": data.get("unmatched_terms") or [],
             "error": data.get("error"),
@@ -1729,7 +1790,7 @@ class RootAgent(BaseAgent):
         )
         asks_card = bool(
             re.search(
-                r"\b(параметр|карточк|свойств|характеристик|подробн|покаж|расскаж)\b",
+                r"\b(параметр\w*|карточк\w*|свойств\w*|характеристик\w*|подробн\w*|покаж\w*|расскаж\w*)\b",
                 normalized,
             )
         )
@@ -1751,13 +1812,23 @@ class RootAgent(BaseAgent):
 
         if not asks_kit and not asks_card and not asks_doc:
             return None
+
+        explicit_product = None
         # Если это не слепой follow-up (пользователь явно указал продукт),
-        # отдаем запрос диспетчеру, чтобы он не подменял его старым контекстом
+        # используем RAM-контекст только при единственном совпадении по коду.
+        # Одинаковый код у нескольких продуктов не должен выбирать первый элемент.
         if not self._is_blind_followup(user_text):
-            return None
+            if context and self._extract_product_codes(user_text):
+                explicit_product = self._find_product_in_dialog_context(
+                    ctx,
+                    user_text,
+                    allow_selected_product=False,
+                )
+            if not explicit_product:
+                return None
         # 1. Сначала пытаемся найти продукт стандартным путем через RAM-контекст модулей
-        product = None
-        if context:
+        product = explicit_product
+        if context and not product:
             product = self._find_product_in_dialog_context(
                 ctx,
                 user_text,
@@ -1842,8 +1913,18 @@ class RootAgent(BaseAgent):
         else:     
             code = product.get("code") or ""
             name = product.get("name") or ""
-            logger.info("Product followup dispatch: found product code=%s name=%s", code, name)
-            search_target = code if code else name
+            status = product.get("is_active") or ""
+            logger.info(
+                "Product followup dispatch: found product code=%s name=%s is_active=%s",
+                code,
+                name,
+                status,
+            )
+            search_target = name or code
+            if code and name:
+                search_target = f"{name} (код {code})"
+            if status:
+                search_target = f"{status} {search_target}"
         # Если в итоге мы смогли определить цель поиска
         if search_target:
             if asks_doc:
@@ -2211,7 +2292,9 @@ class RootAgent(BaseAgent):
             if product := (self._get_selected_product_from_context(ctx) or self._get_last_product_from_state(ctx)):
                 code, name = product.get("code") or "", product.get("name") or ""
                 # Переопределяем абстрактное "нем" на жесткий поисковый запрос для агента продуктов
-                dispatch["search_query"] = f"продукт {code or name}".strip()
+                status = product.get("is_active") or ""
+                target = name or code
+                dispatch["search_query"] = f"продукт {status} {target}".strip()
                 ctx.session.state["last_search_query"] = dispatch["search_query"]
 
     async def _execute_target_agent(

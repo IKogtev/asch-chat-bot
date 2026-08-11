@@ -907,3 +907,8 @@ My solution is:
 1. separate product_info and product_filter agents into two parts (..._content_agent and ..._format_agent). In 1 we call tools in 2 we format final answer (as you describe later)
 2. retain output_schema and the legacy validators, but explicitly run ProductInfoResponseSchema.model_validate(extracted) or ProductFilterResponseSchema.model_validate(extracted) before semantic validation. If correction is desired, add one bounded application-level retry containing the validation error.
 Write plan as .md file in docs
+=========
+Analize local log and research solving for next problems:
+1. We can have some products in list with identical code, but different name. All products scenarios should work correctly with it. We must choose active products with high priority (by default).
+2. If we have clarification case between 2 products with identical code, but different active status, we should choose active product automaticlly, without clarification asking.
+Analyze current implementation and write plan for solving this problems.
