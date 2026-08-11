@@ -21,6 +21,7 @@ PRODUCT_SEARCH_TABLE = "product_search_dictionary"
 PRODUCT_SEARCH_COLUMNS = [
     "product_code",
     "canonical_name",
+    "is_active",
     "alias",
     "normalized_alias",
     "search_tokens",

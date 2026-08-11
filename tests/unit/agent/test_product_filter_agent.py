@@ -228,14 +228,14 @@ def test_product_filter_contract_requires_products() -> None:
         [{"code": "2851", "name": "АльфаЗдоровье 5 лет"}],
         [
             {"code": "8914", "name": "Фиксированный доход 1 год"},
-            {"code": "8914", "name": "Фиксированный доход 2 года"},
+            {"code": "8914", "name": "Фиксированный доход 1 год"},
         ],
     ],
 )
 def test_product_filter_contract_requires_two_distinct_comparison_products(
     products: list[dict[str, str]],
 ) -> None:
-    with pytest.raises(ValueError, match="exactly two products with distinct codes"):
+    with pytest.raises(ValueError, match="exactly two distinct product identities"):
         product_filter.validate_product_filter_result(
             {
                 "mode": "product_compare",
@@ -263,6 +263,34 @@ def test_product_filter_contract_accepts_two_distinct_comparison_products() -> N
     assert [product["code"] for product in result["products"]] == [
         "8914",
         "8959",
+    ]
+
+
+@pytest.mark.unit
+def test_product_filter_contract_accepts_same_code_comparison_products() -> None:
+    result = product_filter.validate_product_filter_result(
+        {
+            "mode": "product_compare",
+            "message": "Сравнение продуктов",
+            "products": [
+                {
+                    "code": "7695",
+                    "name": "Юнит Линк Активные облигации",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "7695",
+                    "name": "Юнит Линк Стратегия роста",
+                    "is_active": "Действующий",
+                },
+            ],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert [product["name"] for product in result["products"]] == [
+        "Юнит Линк Активные облигации",
+        "Юнит Линк Стратегия роста",
     ]
 
 
@@ -312,7 +340,27 @@ def test_product_filter_format_prompt_requires_multiline_product_output() -> Non
     assert "используй `\\n\\n` между заголовком" in prompt
     assert "Никогда не объединяй их в одну строку" in prompt
     assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
+    assert "Каждое свойство должно принадлежать ровно одной группе" in prompt
+    assert "### Пример отображения `product_compare`" in prompt
+    assert "`Активный продукт` нельзя выводить под каждым продуктом" in prompt
     assert "Не оборачивай JSON в Markdown-блоки" in prompt
     assert "Объект должен содержать ровно эти ключи" in prompt
     assert "Запрещено:" in prompt
     assert "Перед ответом молча проверь" in prompt
+
+
+@pytest.mark.unit
+def test_product_filter_content_prompt_rejects_ambiguous_comparison() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_filter_content"
+        / "product_filter_content_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Не выбирай первый, наиболее" in prompt
+    assert "Для `status=\"ok\"` верни ровно две SQL-строки" in prompt
+    assert "`clarification_options` пустым" in prompt
+    assert "содержит дополнительную строку" in prompt

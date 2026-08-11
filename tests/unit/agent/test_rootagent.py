@@ -931,10 +931,15 @@ async def test_handle_product_info_appends_clarification_options() -> None:
             "message": "Choose product",
             "resolved_product": None,
             "clarification_options": [
-                {"code": "8958", "name": "Bundle Fort Knox 3+12 months"},
+                {
+                    "code": "8958",
+                    "name": "Bundle Fort Knox 3+12 months",
+                    "is_active": "Действующий",
+                },
                 {
                     "code": "8793",
                     "name": "Fort Knox 6 months",
+                    "is_active": "Архивный",
                     "term": "short",
                     "currency": "RUB",
                 },
@@ -958,8 +963,8 @@ async def test_handle_product_info_appends_clarification_options() -> None:
     assert events == []
     assert ctx.session.state["_root_final_text"] == (
         "Choose product\n"
-        "8958 Bundle Fort Knox 3+12 months\n"
-        "8793 Fort Knox 6 months - short, RUB"
+        "8958 Bundle Fort Knox 3+12 months - Действующий\n"
+        "8793 Fort Knox 6 months - Архивный, short, RUB"
     )
     assert "_bot_action" not in ctx.session.state
 
@@ -1695,6 +1700,45 @@ async def test_run_async_impl_routes_product_card_followup_from_product_code_onl
 
 
 @pytest.mark.unit
+def test_format_product_answer_renders_clarification_options_once_with_status() -> None:
+    answer = RootAgent._format_product_answer(
+        {
+            "mode": "needs_clarification",
+            "message": (
+                "Уточните, пожалуйста, какой продукт вам нужен:\n\n"
+                "8914 - Фиксированный доход 1 год\n"
+                "8959 - Фиксированный доход 1 год + Альфа-Вклад Актив"
+            ),
+            "clarification_options": [
+                {
+                    "code": "8914",
+                    "name": "Фиксированный доход 1 год",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "8959",
+                    "name": "Фиксированный доход 1 год + Альфа-Вклад Актив",
+                    "is_active": "Архивный",
+                },
+            ],
+        }
+    )
+
+    assert answer == (
+        "Уточните, пожалуйста, какой продукт вам нужен:\n"
+        "8914 Фиксированный доход 1 год - Действующий\n"
+        "8959 Фиксированный доход 1 год + Альфа-Вклад Актив - Архивный"
+    )
+
+
+@pytest.mark.unit
+def test_format_clarification_option_always_renders_status() -> None:
+    assert RootAgent._format_clarification_option(
+        {"code": "8914", "name": "Фиксированный доход 1 год"}
+    ) == "8914 Фиксированный доход 1 год - Статус не указан"
+
+
+@pytest.mark.unit
 def test_store_needs_clarification_keeps_pending_compare_context() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
@@ -1781,7 +1825,129 @@ def test_product_followup_dispatch_resumes_compare_after_clarification_code() ->
     assert dispatch["route"] == "product_filter"
     assert dispatch["intent"] == "product_compare"
     assert dispatch["reason"] == "product_compare_clarification_followup"
-    assert dispatch["search_query"] == "сравни продукты 8941 и 8914"
+    assert dispatch["search_query"] == (
+        "сравни продукты 8941 Фиксированный доход 3 года + Альфа-Вклад Актив "
+        "и 8914 Фиксированный доход 1 год"
+    )
+
+
+@pytest.mark.unit
+def test_product_compare_clarification_preserves_selected_duplicate_name_code() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_intent": "product_compare",
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "needs_clarification",
+                "pending_intent": "product_compare",
+                "clarification_options": [
+                    {
+                        "code": "8859",
+                        "name": "Защищенный капитал 5 лет",
+                        "is_active": "Действующий",
+                    },
+                    {
+                        "code": "8885",
+                        "name": "Защищенный капитал 5 лет",
+                        "is_active": "Действующий",
+                    },
+                ],
+                "compare_resolved_products": [
+                    {
+                        "code": "8916",
+                        "name": "Защищенный капитал 2 года",
+                        "is_active": "Действующий",
+                    }
+                ],
+                "original_search_query": (
+                    "сравни защищенный капитал 2 года и 5 лет"
+                ),
+            },
+        }
+    )
+
+    dispatch = agent._product_followup_dispatch(ctx, "8885")
+
+    assert dispatch is not None
+    assert dispatch["reason"] == "product_compare_clarification_followup"
+    assert dispatch["search_query"] == (
+        "сравни продукты Действующий 8916 Защищенный капитал 2 года "
+        "и Действующий 8885 Защищенный капитал 5 лет"
+    )
+    assert "8859" not in dispatch["search_query"]
+
+
+@pytest.mark.unit
+def test_product_compare_clarification_supports_unique_name_without_code() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "last_intent": "product_compare",
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "needs_clarification",
+                "pending_intent": "product_compare",
+                "clarification_options": [
+                    {
+                        "name": "Защищенный капитал 5 лет",
+                        "is_active": "Действующий",
+                    }
+                ],
+                "compare_resolved_products": [
+                    {
+                        "name": "Защищенный капитал 2 года",
+                        "is_active": "Действующий",
+                    }
+                ],
+                "original_search_query": (
+                    "сравни защищенный капитал 2 года и 5 лет"
+                ),
+            },
+        }
+    )
+
+    dispatch = agent._product_followup_dispatch(
+        ctx,
+        "Защищенный капитал 5 лет",
+    )
+
+    assert dispatch is not None
+    assert dispatch["reason"] == "product_compare_clarification_followup"
+    assert dispatch["search_query"] == (
+        "сравни продукты Действующий Защищенный капитал 2 года "
+        "и Действующий Защищенный капитал 5 лет"
+    )
+
+
+@pytest.mark.unit
+def test_clarification_code_does_not_pick_first_duplicate_code() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "needs_clarification",
+                "clarification_options": [
+                    {
+                        "code": "7695",
+                        "name": "Юнит Линк Активные облигации",
+                        "is_active": "Действующий",
+                    },
+                    {
+                        "code": "7695",
+                        "name": "Юнит Линк Стратегия роста",
+                        "is_active": "Действующий",
+                    },
+                ],
+            }
+        }
+    )
+
+    assert agent._match_clarification_option(ctx, "7695") is None
+    selected = agent._match_clarification_option(ctx, "Юнит Линк Стратегия роста")
+    assert selected == {
+        "code": "7695",
+        "name": "Юнит Линк Стратегия роста",
+        "is_active": "Действующий",
+    }
 
 
 @pytest.mark.unit
@@ -2050,7 +2216,10 @@ async def test_run_async_impl_routes_product_kit_followup_from_selected_product(
         nonlocal product_called
         product_called = True
         assert user_message == "дай документы"
-        assert search_query == "скачать комплект документов по продукту 2867"
+        assert search_query == (
+            "скачать комплект документов по продукту "
+            "Bundle Fort Knox 3+36 месяцев (код 2867)"
+        )
         assert intent == "product_kit"
         ctx.session.state["_root_final_text"] = "product kit answer"
         if False:
@@ -2419,6 +2588,34 @@ def test_product_resolutions_dedup_key_keeps_same_code_with_different_names() ->
 
 
 @pytest.mark.unit
+def test_product_resolutions_keep_same_code_and_name_with_different_statuses() -> None:
+    state = RootAgent._product_resolutions_to_state(
+        {
+            "status": "resolved",
+            "items": [
+                {
+                    "status": "resolved",
+                    "product_code": "8914",
+                    "product_name": "Fort Knox 1 год",
+                    "is_active": "Действующий",
+                },
+                {
+                    "status": "resolved",
+                    "product_code": "8914",
+                    "product_name": "Fort Knox 1 год",
+                    "is_active": "Архивный",
+                },
+            ],
+        }
+    )
+
+    assert [item["is_active"] for item in state["items"]] == [
+        "Действующий",
+        "Архивный",
+    ]
+
+
+@pytest.mark.unit
 def test_product_resolutions_dedup_key_uses_option_name_fallback() -> None:
     state = RootAgent._product_resolutions_to_state(
         {
@@ -2485,7 +2682,11 @@ async def test_handle_product_filter_resolves_product_filter() -> None:
                     "query": query,
                     "product_codes": ["2832", "2867"],
                     "products": [
-                        {"product_code": "2832", "canonical_name": "Fort Knox"},
+                        {
+                            "product_code": "2832",
+                            "canonical_name": "Fort Knox",
+                            "is_active": "Действующий",
+                        },
                     ],
                     "matched_terms": ["products in USD"],
                     "error": None,
@@ -2502,7 +2703,13 @@ async def test_handle_product_filter_resolves_product_filter() -> None:
         assert ctx.session.state["product_resolution"] == {}
         assert ctx.session.state["product_resolutions"] == {}
         assert ctx.session.state["product_filter_resolution"]["product_codes"] == ["2832", "2867"]
-        assert "products" not in ctx.session.state["product_filter_resolution"]
+        assert ctx.session.state["product_filter_resolution"]["products"] == [
+            {
+                "code": "2832",
+                "name": "Fort Knox",
+                "is_active": "Действующий",
+            }
+        ]
         ctx.session.state["_product_filter_result_parsed"] = {
             "message": "ok",
             "mode": "no_data",

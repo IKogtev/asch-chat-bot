@@ -40,6 +40,7 @@ PRODUCT_SEARCH_TABLE = "product_search_dictionary"
 PRODUCT_SEARCH_COLUMNS = [
     "product_code",
     "canonical_name",
+    "is_active",
     "alias",
     "normalized_alias",
     "search_tokens",
@@ -320,6 +321,7 @@ class TablesLoaderService:
 
         product_code
         canonical_name
+        is_active
         alias
         normalized_alias
         match_type
@@ -334,6 +336,10 @@ class TablesLoaderService:
             products_df,
             ["name", "product_name"],
         )
+        status_column = self._first_existing_column(
+            products_df,
+            ["is_active"],
+        )
 
         if code_column is None or name_column is None:
             return pd.DataFrame(columns=PRODUCT_SEARCH_COLUMNS)
@@ -347,6 +353,9 @@ class TablesLoaderService:
             product_name = self._cell_to_text(
                 row.get(name_column)
             )
+            is_active = self._cell_to_text(
+                row.get(status_column)
+            ) if status_column else ""
             if not product_code or not product_name:
                 continue
             for alias, match_type, priority in self._generate_search_variants(
@@ -362,6 +371,7 @@ class TablesLoaderService:
                     {
                         "product_code": product_code,
                         "canonical_name": product_name,
+                        "is_active": is_active,
                         "alias": alias,
                         "normalized_alias": normalized_alias,
                         "search_tokens": search_tokens,
@@ -375,6 +385,8 @@ class TablesLoaderService:
         for row in rows:
             key = (
                 row["product_code"],
+                row["canonical_name"],
+                row["is_active"],
                 row["normalized_alias"],
             )
             if key in seen:
@@ -524,7 +536,11 @@ class TablesLoaderService:
                     await self._create_products_name_trgm_index(conn, df)
                 if product_search_df is not None:
                     await self._replace_table(conn, PRODUCT_SEARCH_TABLE, product_search_df)
-                    await self._create_indexes(conn, PRODUCT_SEARCH_TABLE, ["product_code", "normalized_alias",])
+                    await self._create_indexes(
+                        conn,
+                        PRODUCT_SEARCH_TABLE,
+                        ["product_code", "normalized_alias", "is_active"],
+                    )
                     await self._create_product_search_indexes(conn)
                 loaded_tables.append(
                     LoadedTable(
@@ -998,8 +1014,8 @@ class TablesLoaderService:
                 product_name=row.get(name_column) if name_column else "",
             )
             found_in_archive = False
-            product_status = str(row.get(is_active_column, "")).strip().lower() if is_active_column else ""
-            is_archived_product = (product_status == "архивный")
+            is_active_value = str(row.get(is_active_column, "")).strip().lower() if is_active_column else ""
+            is_archived_product = (is_active_value == "архивный")
             if resolution.folder_kit == NOT_FOUND_VALUE and is_archived_product and archive_root:
                 archive_resolution = resolve_product_kit_folder(
                     kits_root=archive_root,

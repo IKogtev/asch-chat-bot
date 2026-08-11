@@ -5,8 +5,8 @@ from typing import Any, Dict
 from .validation_utils import build_validation_error
 
 
-PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit")
-CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency")
+PRODUCT_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit", "is_active")
+CLARIFICATION_OPTION_FIELD_KEYS = ("code", "name", "term", "currency", "is_active")
 PRODUCT_LIST_FIELD_KEYS = ("code", "name", "term", "currency", "folder_kit", "is_active")
 
 

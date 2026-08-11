@@ -75,12 +75,21 @@ def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]
         )
     if mode == "product_compare" and (
         len(parsed["products"]) != 2
-        or len({product["code"] for product in parsed["products"]}) != 2
+        or len(
+            {
+                (
+                    product["code"],
+                    product["name"].casefold(),
+                    product.get("is_active", "").casefold(),
+                )
+                for product in parsed["products"]
+            }
+        ) != 2
     ):
         raise build_validation_error(
             agent=agent_name,
             stage="semantics",
-            problem="mode='product_compare' requires exactly two products with distinct codes",
+            problem="mode='product_compare' requires exactly two distinct product identities",
             data=data,
             fields=("mode", "products"),
         )
@@ -108,13 +117,14 @@ def validate_product_filter_result(data: Dict[str, Any], context: Dict[str, Any]
             fields=("mode", "clarification_options"),
         )
     if mode == "needs_clarification" and any(
-        set(option) != {"code", "name"}
+        not {"code", "name"}.issubset(option)
+        or not set(option).issubset({"code", "name", "is_active"})
         for option in parsed["clarification_options"]
     ):
         raise build_validation_error(
             agent=agent_name,
             stage="semantics",
-            problem="clarification options require only code and name",
+            problem="clarification options require code and name and may include is_active",
             data=data,
             fields=("mode", "clarification_options"),
         )
