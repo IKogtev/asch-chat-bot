@@ -2390,6 +2390,61 @@ class RootAgent(BaseAgent):
                 exc.log_label in {"product_info_result_json", "product_filter_result_json"}
                 and "tool_usage" in exc.validation_error
             )
+            # Если продуктовый агент упал на валидации, но в сыром ответе есть реальные продукты,
+            # сохраняем контекст, чтобы follow-up вопросы не теряли состояние диалога.
+            if (
+                exc.log_label in {"product_info_result_json", "product_filter_result_json"}
+                and not product_tool_usage_failure
+            ):
+                fallback_mode = str(payload.get("mode") or "").strip()
+                fallback_products = self._normalize_dialog_products(
+                    payload.get("products") or []
+                )
+                fallback_resolved = payload.get("resolved_product")
+
+                has_useful_product_context = (
+                    fallback_mode
+                    in {
+                        "product_compare",
+                        "product_filter",
+                        "product_card",
+                        "product_kit",
+                    }
+                    and (
+                        fallback_products
+                        or (
+                            isinstance(fallback_resolved, dict)
+                            and (
+                                fallback_resolved.get("code")
+                                or fallback_resolved.get("name")
+                            )
+                        )
+                    )
+                )
+                if has_useful_product_context:
+                    try:
+                        self._store_product_dialog_context(ctx, payload)
+
+                        if isinstance(fallback_resolved, dict) and (
+                            fallback_resolved.get("code")
+                            or fallback_resolved.get("name")
+                        ):
+                            self._set_last_product_from_result(
+                                ctx,
+                                payload,
+                                fallback_mode,
+                            )
+
+                        logger.info(
+                            "Fallback product dialog context saved after validation failure: "
+                            "mode=%s products_count=%s",
+                            fallback_mode,
+                            len(fallback_products),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to save fallback product dialog context"
+                        )
             legacy_message = (
                 self._fallback_product_message(exc.raw)
                 if (
