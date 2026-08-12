@@ -7,7 +7,14 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 from utils.logger import setup_logger
-from ..config import KBSEARCH_MCP_URL, MCP_TIMEOUT_SEC, MCP_TOKEN, DOC_SEARCH_TEMPERATURE
+from ..config import (
+    DOC_SEARCH_TEMPERATURE,
+    KBSEARCH_MCP_URL,
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_PRESENCE_PENALTY,
+    MCP_TIMEOUT_SEC,
+    MCP_TOKEN,
+)
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from ..tools.refreshing_mcp_toolset import RefreshingMcpToolset
@@ -348,7 +355,10 @@ For document search, glossary context must not erase document type, product name
     instruction = load_prompt(prompt_file, fallback)
     name = "doc_search_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params = {}
+    config_params = {
+        "presence_penalty": LLM_PRESENCE_PENALTY,
+        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+    }
     if DOC_SEARCH_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DOC_SEARCH_TEMPERATURE}")
         config_params["temperature"] = DOC_SEARCH_TEMPERATURE

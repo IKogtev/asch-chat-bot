@@ -8,6 +8,8 @@ from ..config import (
     DBHUB_MCP_TIMEOUT_SEC,
     DBHUB_MCP_TOKEN,
     DBHUB_MCP_URL,
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_PRESENCE_PENALTY,
     PRODUCT_INFO_TEMPERATURE,
 )
 from ..helpers import load_prompt
@@ -69,7 +71,10 @@ First call search_semantic_template, then inspect the catalog and execute the sm
 For product_card and product_kit use product_resolution only to identify the exact code, name, and is_active tuple; it is not a source of card facts. Query by all three identity fields, prefer the active match when status was not explicit, and preserve the exact SQL rows, resolved product, and clarification evidence for the format agent. Do not write the final user-facing answer.
 """
     prompt_file = "product_info_content_agent_prompt.md"
-    config_params = {}
+    config_params = {
+        "presence_penalty": LLM_PRESENCE_PENALTY,
+        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+    }
     if PRODUCT_INFO_TEMPERATURE != -1:
         config_params["temperature"] = PRODUCT_INFO_TEMPERATURE
     agent = LlmAgent(

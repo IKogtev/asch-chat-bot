@@ -4,7 +4,7 @@ from typing_extensions import Self
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
-from ..config import DISPATCHER_TEMPERATURE
+from ..config import DISPATCHER_TEMPERATURE, LLM_MAX_OUTPUT_TOKENS, LLM_PRESENCE_PENALTY
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -332,7 +332,10 @@ High-priority product-focus rule: if the latest user message is "Что сейч
     instruction = load_prompt(prompt_file, fallback)
     name = "dispatcher_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params = {}
+    config_params = {
+        "presence_penalty": LLM_PRESENCE_PENALTY,
+        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+    }
     if DISPATCHER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")    
         config_params["temperature"] = DISPATCHER_TEMPERATURE

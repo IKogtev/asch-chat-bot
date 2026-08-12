@@ -27,6 +27,8 @@ def _load_module():
     config_stub.DBHUB_MCP_TOKEN = ""
     config_stub.DBHUB_MCP_URL = "http://dbhub.test/mcp"
     config_stub.PRODUCT_INFO_TEMPERATURE = 0.0
+    config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
+    config_stub.LLM_PRESENCE_PENALTY = 1.5
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
     watcher_stub = types.ModuleType("agent.prompt_loader")
@@ -143,12 +145,16 @@ def test_product_info_factories_split_tools_without_response_schema() -> None:
     assert content_agent.output_key == "product_info_content_result_json"
     assert len(content_agent.tools) == 1
     assert getattr(content_agent, "output_schema", None) is None
+    assert content_agent.generate_content_config["presence_penalty"] == 1.5
+    assert content_agent.generate_content_config["max_output_tokens"] == 4096
 
     assert format_agent.name == "product_info_format_agent"
     assert format_agent.output_key == "product_info_result_json"
     assert format_agent.tools == []
     assert getattr(format_agent, "output_schema", None) is None
     assert format_agent.generate_content_config["temperature"] == 0.0
+    assert format_agent.generate_content_config["presence_penalty"] == 1.5
+    assert format_agent.generate_content_config["max_output_tokens"] == 4096
 
 
 @pytest.mark.unit

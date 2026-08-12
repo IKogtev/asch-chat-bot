@@ -7,6 +7,8 @@ from google.adk.models.lite_llm import LiteLlm
 
 from utils.logger import setup_logger
 from ..config import (
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_PRESENCE_PENALTY,
     SMALLTALK_TEMPERATURE,
 )
 from ..helpers import load_prompt
@@ -157,7 +159,10 @@ If multiple definitions are present and context does not disambiguate them, do n
     instruction = load_prompt(prompt_file, fallback)
     name = "smalltalk_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
-    config_params = {}
+    config_params = {
+        "presence_penalty": LLM_PRESENCE_PENALTY,
+        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+    }
     if SMALLTALK_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {SMALLTALK_TEMPERATURE}")
         config_params["temperature"] = SMALLTALK_TEMPERATURE

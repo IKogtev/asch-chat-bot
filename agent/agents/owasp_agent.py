@@ -5,6 +5,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
 
 from ..config import (
+    LLM_PRESENCE_PENALTY,
     OWASP_MAX_OUTPUT_TOKENS,
     OWASP_TEMPERATURE,
     OWASP_TOP_K,
@@ -153,6 +154,7 @@ def create_owasp_agent(model: LiteLlm) -> LlmAgent:
         temperature=OWASP_TEMPERATURE,
         top_p=OWASP_TOP_P,
         top_k=OWASP_TOP_K,
+        presence_penalty=LLM_PRESENCE_PENALTY,
         max_output_tokens=OWASP_MAX_OUTPUT_TOKENS,
     )
     agent = LlmAgent(
