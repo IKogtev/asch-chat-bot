@@ -58,6 +58,28 @@ def test_dialog_memory_max_turns_reads_env(monkeypatch) -> None:
 
 
 @pytest.mark.unit
+def test_shared_generation_settings_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS", raising=False)
+    monkeypatch.delenv("LLM_PRESENCE_PENALTY", raising=False)
+
+    config = _load_config_module(monkeypatch)
+
+    assert config.LLM_MAX_OUTPUT_TOKENS == 4096
+    assert config.LLM_PRESENCE_PENALTY == 1.5
+
+
+@pytest.mark.unit
+def test_shared_generation_settings_read_environment(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "3072")
+    monkeypatch.setenv("LLM_PRESENCE_PENALTY", "1.25")
+
+    config = _load_config_module(monkeypatch)
+
+    assert config.LLM_MAX_OUTPUT_TOKENS == 3072
+    assert config.LLM_PRESENCE_PENALTY == 1.25
+
+
+@pytest.mark.unit
 def test_owasp_generation_settings_defaults_support_thinking(monkeypatch) -> None:
     for name in (
         "OWASP_TEMPERATURE",

@@ -30,6 +30,7 @@ LLM_API_MODEL = os.getenv("LLM_API_MODEL", "litellm_proxy/nst-3").strip()
 LITELLM_REQUEST_TIMEOUT = float(os.getenv("LITELLM_REQUEST_TIMEOUT", "90"))
 LITELLM_NUM_RETRIES = int(os.getenv("LITELLM_NUM_RETRIES", "1"))
 LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", 4096))
+LLM_PRESENCE_PENALTY = float(os.getenv("LLM_PRESENCE_PENALTY", 1.5))
 
 # =============================================================================
 # AGENT TEMPERATURES

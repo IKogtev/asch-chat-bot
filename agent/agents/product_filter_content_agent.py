@@ -8,6 +8,8 @@ from ..config import (
     DBHUB_MCP_TIMEOUT_SEC,
     DBHUB_MCP_TOKEN,
     DBHUB_MCP_URL,
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_PRESENCE_PENALTY,
     PRODUCT_FILTER_TEMPERATURE,
 )
 from ..helpers import load_prompt
@@ -69,7 +71,10 @@ First call search_semantic_template, inspect the data catalog, call search_analy
 For product filters preserve is_active and the total count from SQL. Unless the user explicitly requests archived products or all statuses, filter by is_active = 'Действующий'; confirm the exact categorical value with search_analytic first. Treat products as distinct by code, name, and is_active, including comparisons where codes match. If product_filter_resolution.status is partial, do not treat its candidates as a complete result or ignore unmatched_terms. Preserve exact rows, resolver evidence, attribute metadata, and comparison columns for the format agent. Do not write the final user-facing answer.
 """
     prompt_file = "product_filter_content_agent_prompt.md"
-    config_params = {}
+    config_params = {
+        "presence_penalty": LLM_PRESENCE_PENALTY,
+        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+    }
     if PRODUCT_FILTER_TEMPERATURE != -1:
         config_params["temperature"] = PRODUCT_FILTER_TEMPERATURE
     agent = LlmAgent(

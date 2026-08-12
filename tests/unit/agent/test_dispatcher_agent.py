@@ -29,6 +29,11 @@ def _load_dispatcher_module():
     prompt_loader_stub = types.ModuleType("agent.prompt_loader")
     prompt_loader_stub.start_prompt_watcher = lambda *args, **kwargs: None
 
+    config_stub = types.ModuleType("agent.config")
+    config_stub.DISPATCHER_TEMPERATURE = 0.2
+    config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
+    config_stub.LLM_PRESENCE_PENALTY = 1.5
+
     adk_agents_stub = types.ModuleType("google.adk.agents")
     adk_agents_stub.LlmAgent = type("LlmAgent", (), {})
 
@@ -40,6 +45,7 @@ def _load_dispatcher_module():
     sys.modules["utils.logger"] = logger_stub
     sys.modules["agent.helpers"] = helpers_stub
     sys.modules["agent.prompt_loader"] = prompt_loader_stub
+    sys.modules["agent.config"] = config_stub
     sys.modules["google.adk.agents"] = adk_agents_stub
     sys.modules["google.adk.models.lite_llm"] = lite_llm_stub
 
