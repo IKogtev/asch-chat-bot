@@ -1032,7 +1032,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                             ranks,
                             turn_id,
                             start_time,
-                            platform,
+                            bot_res,
+                            platform
                         )
                     return
 

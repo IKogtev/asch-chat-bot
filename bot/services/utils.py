@@ -441,7 +441,9 @@ async def handle_download_by_ranks(
     ranks: list[int],
     turn_id: str,
     start_time: float,
-    platform: str = "telegram"
+    bot_res,
+    platform: str = "telegram",
+    
 ) -> bool:
     if not ranks:
         return False
@@ -514,16 +516,12 @@ async def handle_download_by_ranks(
                     file_path,
                     file_path.stat().st_size,
                 )
-                # --- РАЗВИЛКА ОТПРАВКИ ФАЙЛА ---
-                if platform == "telegram":
-                    await event.answer_document(
-                        FSInputFile(str(file_path), filename=file_path.name)
-                    )
-                else:
-                    await event.message.answer(
-                        attachments=[InputMedia(path=str(file_path))]
-                    )
-                
+                # --- ОТПРАВКА ФАЙЛА ---
+                await bot_res.send(
+                    "",
+                    is_doc={"path": str(file_path), "name": file_path.name},
+                )
+                                                
                 # Лог успешной загрузки
                 await eventlogger.log_event(
                     event_type="document_download",
