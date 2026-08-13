@@ -27,7 +27,8 @@ def _load_module():
     config_stub.DBHUB_MCP_TOKEN = ""
     config_stub.DBHUB_MCP_URL = "http://dbhub.test/mcp"
     config_stub.PRODUCT_FILTER_TEMPERATURE = 0.0
-    config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
+    config_stub.PRODUCT_CONTENT_MAX_OUTPUT_TOKENS = 6000
+    config_stub.PRODUCT_FORMATTER_MAX_OUTPUT_TOKENS = 6000
     config_stub.LLM_PRESENCE_PENALTY = 1.5
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -321,7 +322,7 @@ def test_product_filter_factories_split_tools_without_response_schema() -> None:
     assert len(content_agent.tools) == 1
     assert getattr(content_agent, "output_schema", None) is None
     assert content_agent.generate_content_config["presence_penalty"] == 1.5
-    assert content_agent.generate_content_config["max_output_tokens"] == 4096
+    assert content_agent.generate_content_config["max_output_tokens"] == 6000
 
     assert format_agent.name == "product_filter_format_agent"
     assert format_agent.include_contents == "none"
@@ -330,7 +331,7 @@ def test_product_filter_factories_split_tools_without_response_schema() -> None:
     assert getattr(format_agent, "output_schema", None) is None
     assert format_agent.generate_content_config["temperature"] == 0.0
     assert format_agent.generate_content_config["presence_penalty"] == 1.5
-    assert format_agent.generate_content_config["max_output_tokens"] == 4096
+    assert format_agent.generate_content_config["max_output_tokens"] == 6000
 
 
 @pytest.mark.unit
@@ -407,6 +408,8 @@ def test_product_filter_prompts_use_compact_comparison_contract() -> None:
     assert "Используй ровно два объекта из `products`" in format_prompt
     assert "`values[0]` относится к" in format_prompt
     assert "Затем сравни два подготовленных значения" in format_prompt
+    assert "Значение `Дата продукта` форматируй как `DD-MM-YYYY`" in format_prompt
+    assert "`2026-05-20T00:00:00.000Z` преобразуй в `20-05-2026`" in format_prompt
 
 
 @pytest.mark.unit

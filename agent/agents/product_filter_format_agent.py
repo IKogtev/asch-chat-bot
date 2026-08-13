@@ -3,7 +3,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
 
 from utils.logger import setup_logger
-from ..config import LLM_MAX_OUTPUT_TOKENS, LLM_PRESENCE_PENALTY
+from ..config import LLM_PRESENCE_PENALTY, PRODUCT_FORMATTER_MAX_OUTPUT_TOKENS
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 
@@ -37,7 +37,7 @@ Before returning, verify that the JSON parses, contains every required key, and 
         generate_content_config=GenerateContentConfig(
             temperature=0.0,
             presence_penalty=LLM_PRESENCE_PENALTY,
-            max_output_tokens=LLM_MAX_OUTPUT_TOKENS,
+            max_output_tokens=PRODUCT_FORMATTER_MAX_OUTPUT_TOKENS,
         ),
     )
     start_prompt_watcher(prompt_file, agent, logger)

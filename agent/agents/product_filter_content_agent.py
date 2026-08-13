@@ -8,8 +8,8 @@ from ..config import (
     DBHUB_MCP_TIMEOUT_SEC,
     DBHUB_MCP_TOKEN,
     DBHUB_MCP_URL,
-    LLM_MAX_OUTPUT_TOKENS,
     LLM_PRESENCE_PENALTY,
+    PRODUCT_CONTENT_MAX_OUTPUT_TOKENS,
     PRODUCT_FILTER_TEMPERATURE,
 )
 from ..helpers import load_prompt
@@ -73,7 +73,7 @@ For product filters preserve product identity, answer display values, and the to
     prompt_file = "product_filter_content_agent_prompt.md"
     config_params = {
         "presence_penalty": LLM_PRESENCE_PENALTY,
-        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+        "max_output_tokens": PRODUCT_CONTENT_MAX_OUTPUT_TOKENS,
     }
     if PRODUCT_FILTER_TEMPERATURE != -1:
         config_params["temperature"] = PRODUCT_FILTER_TEMPERATURE

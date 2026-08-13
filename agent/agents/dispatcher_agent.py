@@ -4,7 +4,7 @@ from typing_extensions import Self
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.genai.types import GenerateContentConfig
-from ..config import DISPATCHER_TEMPERATURE, LLM_MAX_OUTPUT_TOKENS, LLM_PRESENCE_PENALTY
+from ..config import DISPATCHER_MAX_OUTPUT_TOKENS, DISPATCHER_TEMPERATURE, LLM_PRESENCE_PENALTY
 from ..helpers import load_prompt
 from ..prompt_loader import start_prompt_watcher
 from utils.logger import setup_logger
@@ -334,7 +334,7 @@ High-priority product-focus rule: if the latest user message is "Что сейч
     # Конфигурация генерации с принудительным JSON Output и схемой данных
     config_params = {
         "presence_penalty": LLM_PRESENCE_PENALTY,
-        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+        "max_output_tokens": DISPATCHER_MAX_OUTPUT_TOKENS,
     }
     if DISPATCHER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DISPATCHER_TEMPERATURE}")    

@@ -17,7 +17,7 @@ from ..config import (
     MCP_TIMEOUT_SEC,
     MCP_TOKEN,
     KB_ANSWER_TEMPERATURE,
-    LLM_MAX_OUTPUT_TOKENS,
+    KB_ANSWER_MAX_OUTPUT_TOKENS,
     LLM_PRESENCE_PENALTY,
 )
 from ..helpers import load_prompt
@@ -389,7 +389,7 @@ If multiple definitions are present and context does not disambiguate them, do n
     # Конфигурация генерации с принудительным JSON Output и схемой данных
     config_params: Dict[str, Any] = {
         "presence_penalty": LLM_PRESENCE_PENALTY,
-        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+        "max_output_tokens": KB_ANSWER_MAX_OUTPUT_TOKENS,
     }
     if KB_ANSWER_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {KB_ANSWER_TEMPERATURE}")

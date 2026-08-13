@@ -27,7 +27,8 @@ def _load_module():
     config_stub.DBHUB_MCP_TOKEN = ""
     config_stub.DBHUB_MCP_URL = "http://dbhub.test/mcp"
     config_stub.PRODUCT_INFO_TEMPERATURE = 0.0
-    config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
+    config_stub.PRODUCT_CONTENT_MAX_OUTPUT_TOKENS = 6000
+    config_stub.PRODUCT_FORMATTER_MAX_OUTPUT_TOKENS = 6000
     config_stub.LLM_PRESENCE_PENALTY = 1.5
     helpers_stub = types.ModuleType("agent.helpers")
     helpers_stub.load_prompt = lambda *args, **kwargs: "prompt"
@@ -147,7 +148,7 @@ def test_product_info_factories_split_tools_without_response_schema() -> None:
     assert len(content_agent.tools) == 1
     assert getattr(content_agent, "output_schema", None) is None
     assert content_agent.generate_content_config["presence_penalty"] == 1.5
-    assert content_agent.generate_content_config["max_output_tokens"] == 4096
+    assert content_agent.generate_content_config["max_output_tokens"] == 6000
 
     assert format_agent.name == "product_info_format_agent"
     assert format_agent.include_contents == "none"
@@ -156,7 +157,7 @@ def test_product_info_factories_split_tools_without_response_schema() -> None:
     assert getattr(format_agent, "output_schema", None) is None
     assert format_agent.generate_content_config["temperature"] == 0.0
     assert format_agent.generate_content_config["presence_penalty"] == 1.5
-    assert format_agent.generate_content_config["max_output_tokens"] == 4096
+    assert format_agent.generate_content_config["max_output_tokens"] == 6000
 
 
 @pytest.mark.unit
@@ -192,3 +193,18 @@ def test_product_info_format_prompt_requires_multiline_product_card() -> None:
     assert "Объект должен содержать ровно четыре ключа" in prompt
     assert "Запрещено:" in prompt
     assert "Перед ответом молча проверь" in prompt
+
+
+@pytest.mark.unit
+def test_product_info_format_prompt_requires_dd_mm_yyyy_date() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_info_format"
+        / "product_info_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Значение `Дата ввода` форматируй как `DD-MM-YYYY`" in prompt
+    assert "`2026-05-20T00:00:00.000Z` преобразуй в `20-05-2026`" in prompt
