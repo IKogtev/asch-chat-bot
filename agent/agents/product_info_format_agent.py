@@ -29,6 +29,7 @@ Before returning, verify that the JSON parses, contains every required key, and 
         model=model,
         instruction=load_prompt(prompt_file, fallback),
         tools=[],
+        include_contents="none",
         output_key="product_info_result_json",
         generate_content_config=GenerateContentConfig(
             temperature=0.0,

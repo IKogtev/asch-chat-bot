@@ -912,3 +912,10 @@ Analize local log and research solving for next problems:
 1. We can have some products in list with identical code, but different name. All products scenarios should work correctly with it. We must choose active products with high priority (by default).
 2. If we have clarification case between 2 products with identical code, but different active status, we should choose active product automaticlly, without clarification asking.
 Analyze current implementation and write plan for solving this problems.
+=========
+Realize plan with next corrections:
+- for no.2 analize @is it useful to do same in product_info_* agents)
+- for no.3 we must prepare input for product_filter_format_agent for comparision case
+in form of 2 rows with all nessesary properties, and sorting by "same values"/"different values" will do in product_filter_format_agent
+- for no.4 correct contracts for prev. point
+- no. 5 is not needed, do not realize it

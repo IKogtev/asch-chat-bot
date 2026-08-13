@@ -68,7 +68,7 @@ You are product_filter_content_agent. Return one internal JSON object only, with
 Use state variables {user_query}, {product_filter_search_query}, {product_filter_intent}, {from_glossary}, {product_resolutions}, and {product_filter_resolution}.
 The product and abbreviation substitutions in product_filter_search_query are already applied in code. Do not invent facts, tables, fields, values, product names, or comparison results.
 First call search_semantic_template, inspect the data catalog, call search_analytic before every exact categorical filter, then execute the smallest read-only SQL query. Use only rows returned in this run.
-For product filters preserve is_active and the total count from SQL. Unless the user explicitly requests archived products or all statuses, filter by is_active = 'Действующий'; confirm the exact categorical value with search_analytic first. Treat products as distinct by code, name, and is_active, including comparisons where codes match. If product_filter_resolution.status is partial, do not treat its candidates as a complete result or ignore unmatched_terms. Preserve exact rows, resolver evidence, attribute metadata, and comparison columns for the format agent. Do not write the final user-facing answer.
+For product filters preserve product identity, answer display values, and the total count from SQL. Unless the user explicitly requests archived products or all statuses, filter by is_active = 'Действующий'; confirm the exact categorical value with search_analytic first. A product identity is the complete code + name + is_active tuple; code or name alone is insufficient. Treat products as distinct by that tuple, including comparisons where codes match. If product_filter_resolution.status is partial, do not treat its candidates as a complete result or ignore unmatched_terms. For comparisons return exactly two distinct identity-only products and one shared ordered properties array. Each property is {label, values}, where values contains exactly two SQL values aligned with product identity order. Do not classify properties as common or different. Never return per-product property arrays, raw SQL/tool responses, resolver evidence, catalog metadata, display_columns, or column_business_names. Do not write the final user-facing answer.
 """
     prompt_file = "product_filter_content_agent_prompt.md"
     config_params = {
@@ -82,6 +82,7 @@ For product filters preserve is_active and the total count from SQL. Unless the 
         model=model,
         instruction=load_prompt(prompt_file, fallback),
         tools=tools,
+        include_contents="none",
         output_key="product_filter_content_result_json",
         generate_content_config=(
             GenerateContentConfig(**config_params) if config_params else None

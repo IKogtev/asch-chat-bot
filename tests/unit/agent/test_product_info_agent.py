@@ -142,6 +142,7 @@ def test_product_info_factories_split_tools_without_response_schema() -> None:
     format_agent = product_info.create_product_info_format_agent(model="format-model")
 
     assert content_agent.name == "product_info_content_agent"
+    assert content_agent.include_contents == "none"
     assert content_agent.output_key == "product_info_content_result_json"
     assert len(content_agent.tools) == 1
     assert getattr(content_agent, "output_schema", None) is None
@@ -149,6 +150,7 @@ def test_product_info_factories_split_tools_without_response_schema() -> None:
     assert content_agent.generate_content_config["max_output_tokens"] == 4096
 
     assert format_agent.name == "product_info_format_agent"
+    assert format_agent.include_contents == "none"
     assert format_agent.output_key == "product_info_result_json"
     assert format_agent.tools == []
     assert getattr(format_agent, "output_schema", None) is None

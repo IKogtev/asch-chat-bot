@@ -82,6 +82,7 @@ For product_card and product_kit use product_resolution only to identify the exa
         model=model,
         instruction=load_prompt(prompt_file, fallback),
         tools=tools,
+        include_contents="none",
         output_key="product_info_content_result_json",
         generate_content_config=(
             GenerateContentConfig(**config_params) if config_params else None

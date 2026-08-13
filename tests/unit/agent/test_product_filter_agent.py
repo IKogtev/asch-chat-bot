@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -315,6 +316,7 @@ def test_product_filter_factories_split_tools_without_response_schema() -> None:
     )
 
     assert content_agent.name == "product_filter_content_agent"
+    assert content_agent.include_contents == "none"
     assert content_agent.output_key == "product_filter_content_result_json"
     assert len(content_agent.tools) == 1
     assert getattr(content_agent, "output_schema", None) is None
@@ -322,6 +324,7 @@ def test_product_filter_factories_split_tools_without_response_schema() -> None:
     assert content_agent.generate_content_config["max_output_tokens"] == 4096
 
     assert format_agent.name == "product_filter_format_agent"
+    assert format_agent.include_contents == "none"
     assert format_agent.output_key == "product_filter_result_json"
     assert format_agent.tools == []
     assert getattr(format_agent, "output_schema", None) is None
@@ -348,9 +351,14 @@ def test_product_filter_format_prompt_requires_multiline_product_output() -> Non
     assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
     assert "Каждое свойство должно принадлежать ровно одной группе" in prompt
     assert "### Пример отображения `product_compare`" in prompt
-    assert "`Активный продукт` нельзя выводить под каждым продуктом" in prompt
+    assert "Никогда не выводи одинаковое свойство под продуктами" in prompt
     assert "Не оборачивай JSON в Markdown-блоки" in prompt
     assert "Объект должен содержать ровно эти ключи" in prompt
+    assert "скопируй в финальный `products` ровно две" in prompt
+    assert "экземпляра продуктов, определенные комбинацией" in prompt
+    assert "скопируй входные\n  `attribute_name`, `attribute_column` и `attribute_values`" in prompt
+    assert "скопируй входные\n  `clarification_options`" in prompt
+    assert "Всегда используй `resolved_product=null`" in prompt
     assert "Запрещено:" in prompt
     assert "Перед ответом молча проверь" in prompt
 
@@ -367,6 +375,83 @@ def test_product_filter_content_prompt_rejects_ambiguous_comparison() -> None:
     ).read_text(encoding="utf-8")
 
     assert "Не выбирай первый, наиболее" in prompt
-    assert "Для `status=\"ok\"` верни ровно две SQL-строки" in prompt
+    assert "два различных экземпляра продуктов `code + name + is_active`" in prompt
     assert "`clarification_options` пустым" in prompt
-    assert "содержит дополнительную строку" in prompt
+    assert "Не сравнивай значения" in prompt
+
+
+@pytest.mark.unit
+def test_product_filter_prompts_use_compact_comparison_contract() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    content_prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_filter_content"
+        / "product_filter_content_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+    format_prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_filter_format"
+        / "product_filter_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert '"properties": []' in content_prompt
+    assert '"values": [значение_1, значение_2]' in content_prompt
+    assert "Не сравнивай значения" in content_prompt
+    assert '"rows": []' not in content_prompt
+    assert '"display_columns": []' not in content_prompt
+    assert '"column_business_names": {}' not in content_prompt
+    assert "Используй ровно два объекта из `products`" in format_prompt
+    assert "`values[0]` относится к" in format_prompt
+    assert "Затем сравни два подготовленных значения" in format_prompt
+
+
+@pytest.mark.unit
+def test_failed_comparison_fixture_uses_shared_property_matrix() -> None:
+    content_result = {
+        "intent": "product_compare",
+        "status": "ok",
+        "total_count": None,
+        "products": [
+            {
+                "code": "8859",
+                "name": "Защищенный капитал 5 лет",
+                "is_active": "Действующий",
+            },
+            {
+                "code": "8916",
+                "name": "Защищенный капитал 2 года",
+                "is_active": "Действующий",
+            },
+        ],
+        "properties": [
+            {"label": "КВ", "values": ["5", "3"]},
+            {"label": "Валюта", "values": ["Рубли", "Рубли"]},
+            {
+                "label": "Дата продукта",
+                "values": ["2026-05-21T00:00:00.000Z", "2026-07-13T00:00:00.000Z"],
+            },
+            {"label": "Условия КВ", "values": [None, None]},
+        ],
+        "clarification_options": [],
+        "attribute_name": "",
+        "attribute_column": "",
+        "attribute_values": [],
+        "failure_reason": "",
+    }
+    content_result = json.loads(json.dumps(content_result, ensure_ascii=False))
+
+    identities = [
+        (product["code"], product["name"], product["is_active"])
+        for product in content_result["products"]
+    ]
+    assert len(identities) == 2
+    assert len(set(identities)) == 2
+    assert all(len(prop["values"]) == len(identities) for prop in content_result["properties"])
+    assert content_result["properties"][0] == {"label": "КВ", "values": ["5", "3"]}
+    assert content_result["properties"][2]["values"][0] != content_result["properties"][2]["values"][1]
+    assert content_result["properties"][3]["values"] == [None, None]
+    assert [product["code"] for product in content_result["products"]] == ["8859", "8916"]

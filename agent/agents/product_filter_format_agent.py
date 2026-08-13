@@ -14,7 +14,7 @@ logger = setup_logger("product_filter_format_agent", "agent.log")
 def create_product_filter_format_agent(model: LiteLlm) -> LlmAgent:
     fallback = """
 You are product_filter_format_agent. Transform {product_filter_content_result_json} into exactly one valid JSON object.
-Use {product_filter_intent}. Do not call tools, perform SQL or product selection, calculate new values, or add facts not present in the supplied content result.
+Use {product_filter_intent}. Do not call tools, perform SQL or product selection, or add facts not present in the supplied content result. For product_compare, copy the two products, compare values[0] with values[1] for every shared property, and group their prepared values into different and common sections.
 Return exactly these keys: mode, message, resolved_product, clarification_options, products, attribute_name, attribute_column, attribute_values.
 Return raw JSON only: no Markdown, no code fences, no comments, and no text before or after the object.
 Use null for an absent resolved_product, [] for unused lists, and "" for unused attribute_name and attribute_column.
@@ -32,6 +32,7 @@ Before returning, verify that the JSON parses, contains every required key, and 
         model=model,
         instruction=load_prompt(prompt_file, fallback),
         tools=[],
+        include_contents="none",
         output_key="product_filter_result_json",
         generate_content_config=GenerateContentConfig(
             temperature=0.0,
