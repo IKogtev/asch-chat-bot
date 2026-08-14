@@ -172,7 +172,7 @@ DOCUMENT_ID И МЕТАДАННЫЕ — КРИТИЧЕСКИ ВАЖНО
 |-------------|-------------------|---------|
 | `document_id` | строка после **`DOCUMENT_ID:`** | Копируй **символ в символ**, включая префикс `doc_` и UUID целиком |
 | `source_name` | **`FILE_NAME:`** | Копируй дословно |
-| `source_path` | **`RELATIVE_PATH:`** | Копируй дословно или `null`, если в CONTEXT пусто |
+
 
 ### Запрещено для document_id
 
@@ -250,10 +250,9 @@ DOCUMENT_ID И МЕТАДАННЫЕ — КРИТИЧЕСКИ ВАЖНО
 **Каждый элемент `results`:**
 - `document_id` — **точная копия** `DOCUMENT_ID` из CONTEXT;
 - `source_name` — из `FILE_NAME`;
-- `source_path` — из `RELATIVE_PATH` или `null`;
 - `new_rank` — целое ≥ 1.
 
-Поля `snippet` и `is_relevant` **не передавай** — в `results` только релевантные документы.
+
 
 **Финальная проверка перед отправкой:**
 -  Каждый `document_id` найден в CONTEXT посимвольно
@@ -277,7 +276,8 @@ DOCUMENT_ID И МЕТАДАННЫЕ — КРИТИЧЕСКИ ВАЖНО
 ПРИМЕР СТРУКТУРЫ ОТВЕТА (НЕ КОПИРУЙ id И ИМЕНА — БЕРИ ИЗ CONTEXT)
 ==================================================
 
-Иллюстрация формы. Значения `document_id`, `source_name`, `source_path` **всегда** подставляй из реального CONTEXT текущего вызова `kb_search`.
+Иллюстрация формы. Значения `document_id` и `source_name` **всегда** подставляй из одного
+и того же блока реального CONTEXT текущего вызова `kb_search`.
 
 ```json
 {
@@ -288,13 +288,11 @@ DOCUMENT_ID И МЕТАДАННЫЕ — КРИТИЧЕСКИ ВАЖНО
     {
       "document_id": "<DOCUMENT_ID из rank [1]>",
       "source_name": "<FILE_NAME из rank [1]>",
-      "source_path": "<RELATIVE_PATH из rank [1]>",
       "new_rank": 1
     },
     {
       "document_id": "<DOCUMENT_ID из rank [2]>",
       "source_name": "<FILE_NAME из rank [2]>",
-      "source_path": "<RELATIVE_PATH из rank [2]>",
       "new_rank": 2
     }
   ]
@@ -304,6 +302,4 @@ DOCUMENT_ID И МЕТАДАННЫЕ — КРИТИЧЕСКИ ВАЖНО
 **Неправильно** (так делать нельзя):
 - `"document_id": "doc_123"` — выдуманный id
 - id с опечаткой относительно CONTEXT
-- элемент с `"is_relevant": false` в `results`
-- поле `snippet` в элементе `results`
 - id из примера выше вместо id из CONTEXT

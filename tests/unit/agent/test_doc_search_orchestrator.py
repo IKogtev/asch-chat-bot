@@ -124,6 +124,8 @@ def _load_doc_search_orchestrator_module():
     config_doc_search_stub.ACTIVE_DOCUMENTS_COLLECTION = "test_collection"
     config_doc_search_stub.DOC_SEARCH_PAGE_SIZE = 5
     config_doc_search_stub.DOC_SEARCH_TEMPERATURE = -1
+    config_doc_search_stub.DOC_SEARCH_PRESENCE_PENALTY = 0.0
+    config_doc_search_stub.DOC_SEARCH_MAX_OUTPUT_TOKENS = 6000
     config_doc_search_stub.LLM_MAX_OUTPUT_TOKENS = 4096
     config_doc_search_stub.LLM_PRESENCE_PENALTY = 1.5
 

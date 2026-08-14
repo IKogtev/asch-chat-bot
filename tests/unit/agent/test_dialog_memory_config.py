@@ -61,22 +61,30 @@ def test_dialog_memory_max_turns_reads_env(monkeypatch) -> None:
 def test_shared_generation_settings_defaults(monkeypatch) -> None:
     monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS", raising=False)
     monkeypatch.delenv("LLM_PRESENCE_PENALTY", raising=False)
+    monkeypatch.delenv("DOC_SEARCH_PRESENCE_PENALTY", raising=False)
+    monkeypatch.delenv("DOC_SEARCH_MAX_OUTPUT_TOKENS", raising=False)
 
     config = _load_config_module(monkeypatch)
 
     assert config.LLM_MAX_OUTPUT_TOKENS == 4096
     assert config.LLM_PRESENCE_PENALTY == 1.5
+    assert config.DOC_SEARCH_PRESENCE_PENALTY == 0.0
+    assert config.DOC_SEARCH_MAX_OUTPUT_TOKENS == 6000
 
 
 @pytest.mark.unit
 def test_shared_generation_settings_read_environment(monkeypatch) -> None:
     monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "3072")
     monkeypatch.setenv("LLM_PRESENCE_PENALTY", "1.25")
+    monkeypatch.setenv("DOC_SEARCH_PRESENCE_PENALTY", "0.25")
+    monkeypatch.setenv("DOC_SEARCH_MAX_OUTPUT_TOKENS", "8192")
 
     config = _load_config_module(monkeypatch)
 
     assert config.LLM_MAX_OUTPUT_TOKENS == 3072
     assert config.LLM_PRESENCE_PENALTY == 1.25
+    assert config.DOC_SEARCH_PRESENCE_PENALTY == 0.25
+    assert config.DOC_SEARCH_MAX_OUTPUT_TOKENS == 8192
 
 
 @pytest.mark.unit

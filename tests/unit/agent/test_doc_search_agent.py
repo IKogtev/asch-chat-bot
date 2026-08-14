@@ -28,6 +28,8 @@ def _load_doc_search_module():
     config_stub.MCP_TOKEN = ""
     config_stub.MCP_TIMEOUT_SEC = 30.0
     config_stub.DOC_SEARCH_TEMPERATURE = -1
+    config_stub.DOC_SEARCH_PRESENCE_PENALTY = 0.0
+    config_stub.DOC_SEARCH_MAX_OUTPUT_TOKENS = 6000
     config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
     config_stub.LLM_PRESENCE_PENALTY = 1.5
 
@@ -305,6 +307,36 @@ def test_validate_doc_search_result_accepts_relevant_without_is_relevant() -> No
     )
 
     assert result["results"][0]["document_id"] == "doc-1"
+    assert result["results"][0]["source_name"] == "file.pdf"
+    assert result["results"][0]["source_path"] == "/x/file.pdf"
+
+
+@pytest.mark.unit
+def test_validate_doc_search_result_uses_source_path_from_matching_kb_hit() -> None:
+    result = validate_doc_search_result(
+        {
+            "status": "ok",
+            "mode": "document_list",
+            "message": "",
+            "results": [
+                {
+                    "document_id": "doc-1",
+                    "source_name": "file.pdf",
+                    "source_path": "/model/invented/path.pdf",
+                    "new_rank": 1,
+                }
+            ],
+        },
+        KB_HITS_CONTEXT,
+    )
+
+    assert result["results"] == [
+        {
+            "document_id": "doc-1",
+            "source_name": "file.pdf",
+            "source_path": "/x/file.pdf",
+        }
+    ]
 
 
 @pytest.mark.unit

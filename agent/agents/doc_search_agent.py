@@ -8,10 +8,10 @@ from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 from utils.logger import setup_logger
 from ..config import (
+    DOC_SEARCH_MAX_OUTPUT_TOKENS,
+    DOC_SEARCH_PRESENCE_PENALTY,
     DOC_SEARCH_TEMPERATURE,
     KBSEARCH_MCP_URL,
-    LLM_MAX_OUTPUT_TOKENS,
-    LLM_PRESENCE_PENALTY,
     MCP_TIMEOUT_SEC,
     MCP_TOKEN,
 )
@@ -72,7 +72,8 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     - каждый `document_id` должен быть из `_doc_search_kb_hits`, если kb_search вернул документы;
       при неверных id на попытке 1 — retry; на финальной попытке — отбрасываются;
     - `snippet` игнорируется (не сохраняется);
-    - `source_path` приводится к строке или `None`.
+    - `source_path` подставляется из `_doc_search_kb_hits` по `document_id`;
+      значение из ответа модели не используется.
 
     При нарушении контракта выбрасывает `ValueError` с диагностическим описанием,
     пригодным для логирования и локализации сбоя на этапе отладки.
@@ -81,6 +82,11 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     agent_name = "doc_search_agent"
     kb_hits = _kb_hits_from_context(context)
     allowed_ids = allowed_document_ids(kb_hits)
+    kb_hits_by_id = {
+        str(hit.get("document_id") or "").strip(): hit
+        for hit in kb_hits
+        if str(hit.get("document_id") or "").strip()
+    }
     kb_was_nonempty = bool(allowed_ids)
     attempt = int(context.get("doc_search_attempt") or 1)
     allowed_modes = ("document_list", "no_data", "info", "app_command")
@@ -199,7 +205,8 @@ def validate_doc_search_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 invalid_reasons.append(f"item[{index}] missing source_name")
                 continue
 
-            path_raw = item.get("source_path") or item.get("relative_path")
+            kb_hit = kb_hits_by_id.get(document_id)
+            path_raw = kb_hit.get("source_path") if kb_hit else None
             relevant_items.append(
                 {
                     "document_id": document_id,
@@ -331,7 +338,8 @@ For document search, glossary context must not erase document type, product name
 5. Возвращай только JSON без markdown fences.
 6. При mode=document_list список пользователю не показываешь: JSON уходит в БД, первую порцию и кнопки рисует UI бота. Поле message можно оставить пустой строкой или заполнить служебно — на экран оно не выводится как список документов.
 7. В results включай только релевантные документы из CONTEXT kb_search; document_id должен совпадать с DOCUMENT_ID из CONTEXT.
-8. У каждого элемента results обязателен new_rank (целое ≥ 1); snippet и is_relevant не передавай.
+8. У каждого элемента results обязательны source_name и new_rank (целое ≥ 1); source_path,
+   snippet и is_relevant не передавай. source_path приложение подставит само по document_id.
 9. Если пользователь указал тип материала (презентер, сториз, ПФ и т.д.), в results только файлы с совпадением типа в FILE_NAME.
 10. Если {doc_search_rerank_only}=true — kb_search не вызывай, переранжируй по CONTEXT из предыдущего вызова. Причина повтора: {doc_search_retry_reason}.
 
@@ -344,7 +352,6 @@ For document search, glossary context must not erase document type, product name
     {
       "document_id": "...",
       "source_name": "...",
-      "source_path": null,
       "new_rank": 1
     }
   ]
@@ -356,8 +363,8 @@ For document search, glossary context must not erase document type, product name
     name = "doc_search_agent"
     # Конфигурация генерации с принудительным JSON Output и схемой данных
     config_params = {
-        "presence_penalty": LLM_PRESENCE_PENALTY,
-        "max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+        "presence_penalty": DOC_SEARCH_PRESENCE_PENALTY,
+        "max_output_tokens": DOC_SEARCH_MAX_OUTPUT_TOKENS,
     }
     if DOC_SEARCH_TEMPERATURE != -1:
         logger.debug(f"Agent {name} it's temperature: {DOC_SEARCH_TEMPERATURE}")
