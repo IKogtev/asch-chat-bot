@@ -129,6 +129,27 @@ def test_product_info_contract_keeps_folder_kit_exception() -> None:
 
 
 @pytest.mark.unit
+def test_product_info_contract_supplies_clarification_message_when_formatter_omits_it() -> None:
+    result = product_info.validate_product_info_result(
+        {
+            "mode": "needs_clarification",
+            "message": "",
+            "clarification_options": [
+                {"code": "8914", "name": "Фиксированный доход 1 год"},
+                {
+                    "code": "8959",
+                    "name": "Фиксированный доход 1 год + Альфа-Вклад Актив",
+                },
+            ],
+        },
+        SQL_CONTEXT,
+    )
+
+    assert result["message"] == "Нашла несколько подходящих продуктов. Уточни, какой нужен:"
+    assert len(result["clarification_options"]) == 2
+
+
+@pytest.mark.unit
 def test_product_info_rejects_filter_mode() -> None:
     with pytest.raises(ValueError, match="invalid mode"):
         product_info.validate_product_info_result(

@@ -115,7 +115,9 @@ def parse_product_result(data: Dict[str, Any], agent_name: str) -> Dict[str, Any
             fields=("resolved_product", "clarification_options"),
         ) from exc
 
-    if not message:
+    if not message and mode == "needs_clarification" and clarification_options:
+        message = "Нашла несколько подходящих продуктов. Уточни, какой нужен:"
+    elif not message:
         raise build_validation_error(
             agent=agent_name,
             stage="basic_fields",

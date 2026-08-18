@@ -919,3 +919,12 @@ Realize plan with next corrections:
 in form of 2 rows with all nessesary properties, and sorting by "same values"/"different values" will do in product_filter_format_agent
 - for no.4 correct contracts for prev. point
 - no. 5 is not needed, do not realize it
+==========
+Check next rules about archive product searching:
+- by default search in active products
+- if one or more active products found, return only it, without archive products
+- if found exactly 1 active product - do not start clarification for card, file complect and compare
+- if no one active product found, then search in archive products
+- if user ask "найди архивный продукт ..." then search archive product
+Review realisation and type numbered list of deviations from this rules. Do not realize any changes, just analyze.
+
