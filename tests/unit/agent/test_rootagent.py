@@ -1071,7 +1071,7 @@ def test_merge_non_empty_payload_fields_replaces_only_empty_context() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_filter_attribute_values_stores_context_and_adds_followup_question() -> None:
+async def test_handle_product_filter_attribute_values_stores_context_and_formats_answer() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
 
@@ -1103,7 +1103,12 @@ async def test_handle_product_filter_attribute_values_stores_context_and_adds_fo
     ]
 
     assert events == []
-    assert rootagent_module.PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
+    assert ctx.session.state["_root_final_text"] == (
+        "Доступные значения свойства «currency»:\n"
+        "- RUB\n"
+        "- CNY\n\n"
+        f"{rootagent_module.PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION}"
+    )
     assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
         "last_mode": "product_attribute_values",
         "attribute_name": "currency",
@@ -1112,6 +1117,38 @@ async def test_handle_product_filter_attribute_values_stores_context_and_adds_fo
         "products": [],
         "selected_product": None,
     }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("attribute_values", "expected_values"),
+    [
+        (["RUB"], "- RUB"),
+        (["RUB", "CNY", " rub "], "- RUB\n- CNY"),
+    ],
+)
+def test_format_product_answer_renders_attribute_values_once(
+    attribute_values: list[str],
+    expected_values: str,
+) -> None:
+    answer = RootAgent._format_product_answer(
+        {
+            "mode": "product_attribute_values",
+            "message": (
+                "Могу показать продукты с этими свойствами. "
+                "Какое свойство вас интересует ?"
+            ),
+            "attribute_name": "Валюта",
+            "attribute_values": attribute_values,
+        }
+    )
+
+    assert answer == (
+        "Доступные значения свойства «Валюта»:\n"
+        f"{expected_values}\n\n"
+        f"{rootagent_module.PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION}"
+    )
+    assert answer.count(rootagent_module.PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION) == 1
 
 
 @pytest.mark.unit

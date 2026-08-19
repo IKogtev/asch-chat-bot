@@ -852,9 +852,18 @@ class RootAgent(BaseAgent):
             message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
             return message
 
-        if mode == "product_attribute_values" and PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION not in message:
-            message = "\n\n".join([message, PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION])
-            return message
+        if mode == "product_attribute_values":
+            attribute_name = str(product_result.get("attribute_name") or "").strip()
+            attribute_values = cls._normalize_attribute_values(
+                product_result.get("attribute_values")
+            )
+            lines = [
+                f"Доступные значения свойства «{attribute_name}»:",
+                *(f"- {value}" for value in attribute_values),
+                "",
+                PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION,
+            ]
+            return "\n".join(lines)
 
         if mode == "product_card":
             # Добавляем предложение, только если агент сам его ещё не добавил
@@ -2647,6 +2656,9 @@ class RootAgent(BaseAgent):
             # Распаковываем все поля профиля в корневой state.
             ctx.session.state[key] = value
         base_search_query = (search_query or user_message).strip()
+        if self._find_attribute_value_in_dialog_context(ctx, user_message) is not None:
+            ctx.session.state["from_glossary"] = []
+            return base_search_query
         return await self.glossary_lookup.expand_search_query(base_search_query)
 
     async def _handle_kb_answer(

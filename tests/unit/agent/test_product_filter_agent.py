@@ -365,6 +365,21 @@ def test_product_filter_format_prompt_requires_multiline_product_output() -> Non
 
 
 @pytest.mark.unit
+def test_product_filter_format_prompt_delegates_attribute_value_message() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_filter_format"
+        / "product_filter_format_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Используй в `message` точный служебный текст" in prompt
+    assert "итоговое\n  сообщение формирует `RootAgent`" in prompt
+
+
+@pytest.mark.unit
 def test_product_filter_content_prompt_rejects_ambiguous_comparison() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     prompt = (
