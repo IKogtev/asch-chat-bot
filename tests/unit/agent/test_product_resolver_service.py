@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Dict, List
 
 import pytest
 
+import agent.product_resolver_service as product_resolver_module
 from agent.product_resolver_service import (
+    ACTIVE_PRODUCT_STATUS,
+    ARCHIVED_PRODUCT_STATUS,
     ProductCandidate,
     ProductResolverService,
 )
@@ -25,17 +29,38 @@ class FakeProductResolver(ProductResolverService):
         self.fuzzy = fuzzy or {}
         self.search_calls: list[tuple[str, str]] = []
 
-    async def _search_exact(self, query: str) -> list[ProductCandidate]:
+    @staticmethod
+    def _filter_status(
+        candidates: List[ProductCandidate],
+        product_status: str | None,
+    ) -> List[ProductCandidate]:
+        if not product_status or not any(item.is_active for item in candidates):
+            return candidates
+        return [item for item in candidates if item.is_active == product_status]
+
+    async def _search_exact(
+        self,
+        query: str,
+        product_status: str | None = None,
+    ) -> list[ProductCandidate]:
         self.search_calls.append(("exact", query))
-        return self.exact.get(query, [])
+        return self._filter_status(self.exact.get(query, []), product_status)
 
-    async def _search_tokens(self, query: str) -> list[ProductCandidate]:
+    async def _search_tokens(
+        self,
+        query: str,
+        product_status: str | None = None,
+    ) -> list[ProductCandidate]:
         self.search_calls.append(("tokens", query))
-        return self.tokens.get(query, [])
+        return self._filter_status(self.tokens.get(query, []), product_status)
 
-    async def _search_fuzzy(self, query: str) -> list[ProductCandidate]:
+    async def _search_fuzzy(
+        self,
+        query: str,
+        product_status: str | None = None,
+    ) -> list[ProductCandidate]:
         self.search_calls.append(("fuzzy", query))
-        return self.fuzzy.get(query, [])
+        return self._filter_status(self.fuzzy.get(query, []), product_status)
 
 
 def candidate(
@@ -131,6 +156,153 @@ async def test_resolve_product_honors_explicit_archived_status() -> None:
     assert result.status == "resolved"
     assert result.product_name == "Fort Knox 1 год"
     assert result.is_active == "Архивный"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_checks_all_active_stages_before_archive_fallback() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "fort knox": [
+                candidate("2832", "Fort Knox", is_active=ARCHIVED_PRODUCT_STATUS)
+            ]
+        },
+        fuzzy={
+            "fort knox": [
+                candidate(
+                    "8914",
+                    "Фиксированный доход 1 год",
+                    score=0.9,
+                    is_active=ACTIVE_PRODUCT_STATUS,
+                )
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product("Fort Knox")
+
+    assert result.status == "resolved"
+    assert result.product_code == "8914"
+    assert result.is_active == ACTIVE_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_falls_back_to_archive_after_empty_active_pass() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "unit linked": [
+                candidate("7698", "Unit Linked", is_active=ARCHIVED_PRODUCT_STATUS)
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product("Unit Linked")
+
+    assert result.status == "resolved"
+    assert result.product_code == "7698"
+    assert result.is_active == ARCHIVED_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_recognizes_archive_noun_phrase() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "8914": [
+                candidate(
+                    "8914",
+                    "Фиксированный доход 1 год",
+                    is_active=ACTIVE_PRODUCT_STATUS,
+                ),
+                candidate(
+                    "8914",
+                    "Fort Knox 1 год",
+                    is_active=ARCHIVED_PRODUCT_STATUS,
+                ),
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product("найди продукт 8914 в архиве")
+
+    assert result.status == "resolved"
+    assert result.product_name == "Fort Knox 1 год"
+    assert result.is_active == ARCHIVED_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_removes_inflected_archive_modifier() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "fort knox": [
+                candidate(
+                    "8914",
+                    "Fort Knox 1 год",
+                    is_active=ARCHIVED_PRODUCT_STATUS,
+                )
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product("найди архивного Fort Knox")
+
+    assert result.status == "resolved"
+    assert result.product_code == "8914"
+    assert result.is_active == ARCHIVED_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_products_does_not_mix_archive_into_partial_active_result() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "product a": [
+                candidate("1001", "Product A", is_active=ACTIVE_PRODUCT_STATUS)
+            ],
+            "product b": [
+                candidate("1002", "Product B", is_active=ARCHIVED_PRODUCT_STATUS)
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_mentions(["Product A", "Product B"])
+
+    assert result.status == "partial"
+    assert result.items[0].status == "resolved"
+    assert result.items[0].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[1].status == "not_found"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_mentions_preserves_all_not_found_items() -> None:
+    resolver = FakeProductResolver()
+
+    result = await resolver.resolve_product_mentions(["Unknown A", "Unknown B"])
+
+    assert result.status == "not_found"
+    assert [item.mention for item in result.items] == ["Unknown A", "Unknown B"]
+    assert all(item.status == "not_found" for item in result.items)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_mentions_returns_structured_error() -> None:
+    class BrokenResolver(FakeProductResolver):
+        async def _search_exact(
+            self,
+            query: str,
+            product_status: str | None = None,
+        ) -> list[ProductCandidate]:
+            raise RuntimeError("db down")
+
+    result = await BrokenResolver().resolve_product_mentions(["Fort Knox"])
+
+    assert result.status == "error"
+    assert result.items[0].status == "error"
+    assert result.items[0].error == "RuntimeError"
 
 
 @pytest.mark.unit
@@ -272,6 +444,54 @@ async def test_resolve_products_resolves_compare_mentions() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_products_resolves_russian_compare_with_separator() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "fort knox": [candidate("2832", "Fort Knox")],
+            "unit linked": [candidate("7698", "Unit Linked")],
+        },
+    )
+
+    result = await resolver.resolve_products("сравни Fort Knox с Unit Linked")
+
+    assert result.status == "resolved"
+    assert [item.product_code for item in result.items] == ["2832", "7698"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_products_keeps_exact_name_with_conjunction_whole() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "жизнь и здоровье": [candidate("1001", "Жизнь и здоровье")],
+        },
+    )
+
+    result = await resolver.resolve_products("покажи Жизнь и здоровье")
+
+    assert result.status == "resolved"
+    assert len(result.items) == 1
+    assert result.items[0].product_code == "1001"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_keeps_exact_name_with_conjunction_whole() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "жизнь и здоровье": [candidate("1001", "Жизнь и здоровье")],
+        },
+    )
+
+    result = await resolver.resolve_product_filter("покажи Жизнь и здоровье")
+
+    assert result.status == "resolved"
+    assert result.product_codes == ["1001"]
+    assert result.unmatched_terms == [] or result.unmatched_terms is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_filter_returns_multiple_candidates() -> None:
     resolver = FakeProductResolver(
         tokens={
@@ -324,6 +544,36 @@ async def test_resolve_product_filter_applies_duplicate_code_status_preference()
     ]
     assert [item.canonical_name for item in archived_result.products or []] == [
         "Fort Knox 1 год"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_filter_checks_active_fuzzy_before_archive_fallback() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "unit linked": [
+                candidate("7698", "Unit Linked", is_active=ARCHIVED_PRODUCT_STATUS)
+            ]
+        },
+        fuzzy={
+            "unit linked": [
+                candidate(
+                    "9001",
+                    "Unit Linked Active",
+                    score=0.9,
+                    is_active=ACTIVE_PRODUCT_STATUS,
+                )
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product_filter("Unit Linked")
+
+    assert result.status == "resolved"
+    assert [item.product_code for item in result.products or []] == ["9001"]
+    assert [item.is_active for item in result.products or []] == [
+        ACTIVE_PRODUCT_STATUS
     ]
 
 
@@ -457,7 +707,11 @@ async def test_resolve_product_filter_returns_not_found_for_empty_matches() -> N
 @pytest.mark.asyncio
 async def test_resolve_product_filter_returns_error_on_search_failure() -> None:
     class BrokenResolver(FakeProductResolver):
-        async def _search_exact(self, query: str) -> list[ProductCandidate]:
+        async def _search_exact(
+            self,
+            query: str,
+            product_status: str | None = None,
+        ) -> list[ProductCandidate]:
             raise RuntimeError("db down")
 
     resolver = BrokenResolver()
@@ -472,7 +726,11 @@ async def test_resolve_product_filter_returns_error_on_search_failure() -> None:
 @pytest.mark.asyncio
 async def test_resolve_product_returns_error_on_search_failure() -> None:
     class BrokenResolver(FakeProductResolver):
-        async def _search_exact(self, query: str) -> list[ProductCandidate]:
+        async def _search_exact(
+            self,
+            query: str,
+            product_status: str | None = None,
+        ) -> list[ProductCandidate]:
             raise RuntimeError("db down")
 
     resolver = BrokenResolver()
@@ -484,17 +742,68 @@ async def test_resolve_product_returns_error_on_search_failure() -> None:
 
 
 @pytest.mark.unit
-def test_tokenize_product_text_adds_translit_and_known_word_variants() -> None:
-    tokens = ProductResolverService.tokenize_product_text("life плюс")
+@pytest.mark.asyncio
+async def test_search_queries_filter_status_before_limit_30(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingPool:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
 
-    assert "life" in tokens
-    assert "лайф" in tokens
-    assert "plus" in tokens
+        async def fetch(self, sql: str, *args: object) -> list[object]:
+            self.calls.append((sql, args))
+            return []
+
+    pool = RecordingPool()
+    resolver = ProductResolverService(database_url="postgresql://unused")
+
+    async def get_pool() -> RecordingPool:
+        return pool
+
+    monkeypatch.setattr(resolver, "_get_pool", get_pool)
+
+    await resolver._search_exact("8914", ACTIVE_PRODUCT_STATUS)
+    await resolver._search_tokens("fort knox", ACTIVE_PRODUCT_STATUS)
+    await resolver._search_fuzzy("fort knox", ACTIVE_PRODUCT_STATUS)
+
+    assert len(pool.calls) == 3
+    for sql, args in pool.calls:
+        assert "AND is_active = $" in sql
+        assert "PARTITION BY product_code, canonical_name, is_active" in sql
+        assert "LIMIT 30" in sql
+        assert sql.index("AND is_active = $") < sql.index("LIMIT 30")
+        assert args[-1] == ACTIVE_PRODUCT_STATUS
+    assert pool.calls[1][1][0] == "% fort %"
+    assert pool.calls[1][1][1] == "% форт %"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_resolve_product_combines_exact_and_token_matches() -> None:
+async def test_get_pool_creates_only_one_pool_for_concurrent_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_pools: list[object] = []
+    pool = object()
+
+    async def create_pool(database_url: str) -> object:
+        assert database_url == "postgresql://unused"
+        await asyncio.sleep(0)
+        created_pools.append(pool)
+        return pool
+
+    monkeypatch.setattr(product_resolver_module.asyncpg, "create_pool", create_pool)
+    resolver = ProductResolverService(database_url="postgresql://unused")
+
+    first, second = await asyncio.gather(resolver._get_pool(), resolver._get_pool())
+
+    assert first is pool
+    assert second is pool
+    assert created_pools == [pool]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_prefers_exact_match_over_token_matches() -> None:
     resolver = FakeProductResolver(
         exact={"форт нокс": [candidate("8841", "Fort Knox 3 месяца")]},
         tokens={
@@ -508,8 +817,8 @@ async def test_resolve_product_combines_exact_and_token_matches() -> None:
 
     result = await resolver.resolve_product("покажи продукты форт нокс")
 
-    assert result.status == "ambiguous"
-    assert [item.product_code for item in result.options or []] == ["8841", "8958", "2867"]
+    assert result.status == "resolved"
+    assert result.product_code == "8841"
 
 
 @pytest.mark.unit
@@ -532,28 +841,3 @@ def test_token_alternative_groups_keep_query_words_as_or_groups(
     assert len(groups) == len(expected_groups)
     for group, expected in zip(groups, expected_groups):
         assert expected <= group
-
-
-@pytest.mark.unit
-def test_tokenize_product_text_adds_bundle_fort_knox_plural_variants() -> None:
-    tokens = ProductResolverService.tokenize_product_text("Bundle Fort Knox 3+12 месяцев")
-
-    assert "bundle" in tokens
-    assert "бандл" in tokens
-    assert "бандлы" in tokens
-    assert "fort" in tokens
-    assert "форт" in tokens
-    assert "knox" in tokens
-    assert "нокс" in tokens
-    assert "ноксы" in tokens
-
-
-@pytest.mark.unit
-def test_tokenize_product_text_adds_alfa_kids_variants() -> None:
-    tokens = ProductResolverService.tokenize_product_text("Альфа Kids+ 5 лет")
-
-    assert "альфа" in tokens
-    assert "alfa" in tokens
-    assert "alpha" in tokens
-    assert "kids" in tokens
-    assert "кидс" in tokens

@@ -67,8 +67,8 @@ def create_product_info_content_agent(model: LiteLlm) -> LlmAgent:
 You are product_info_content_agent. Return one internal JSON object only, without markdown fences.
 Use state variables {user_query}, {product_info_search_query}, {product_info_intent}, {from_glossary}, and {product_resolution}.
 The product and abbreviation substitutions in product_info_search_query are already applied in code. Do not invent facts, tables, fields, values, or product names.
-First call search_semantic_template, then inspect the catalog and execute the smallest read-only SQL query. Use only rows returned in this run for a card or product details.
-For product_card and product_kit use product_resolution only to identify the exact code, name, and is_active tuple; it is not a source of card facts. Query by all three identity fields, prefer the active match when status was not explicit, and preserve the exact SQL rows, resolved product, and clarification evidence for the format agent. Do not write the final user-facing answer.
+First call search_semantic_template and never apply a template from another intent. If no matching product_card or product_kit template exists, continue with the existing scenario contract, inspect the catalog, and execute the smallest read-only SQL query. Use only rows returned in this run for a card or product details.
+For product_card and product_kit use product_resolution only to identify the exact code, name, and is_active tuple; it is not a source of card facts. The resolver has already completed an active-only pass and, only when it found no active match, an archived-only pass. Preserve its selected status and query by all three identity fields. Preserve the exact SQL rows, resolved product, and clarification evidence for the format agent. Do not write the final user-facing answer.
 """
     prompt_file = "product_info_content_agent_prompt.md"
     config_params = {

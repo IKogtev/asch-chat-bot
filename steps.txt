@@ -927,4 +927,8 @@ Check next rules about archive product searching:
 - if no one active product found, then search in archive products
 - if user ask "найди архивный продукт ..." then search archive product
 Review realisation and type numbered list of deviations from this rules. Do not realize any changes, just analyze.
+==========
+We have the semantic layer with filter templates for different user query: "C:\GitHub\asch-chat-bot\kb_storage\manager\tables\business layer_active.xlsx"
+But current version of product_*_agent_prompt contain hardcoded list of properties and filtering logic. We need to update prompts to use semantic layer templates instead of hardcoded logic.
+Analize semantic layer and prompts, prepare plan for this update. Do not realize any changes, just analyze.
 

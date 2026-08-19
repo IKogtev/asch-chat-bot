@@ -22,7 +22,7 @@ Write the final user-facing message in Russian.
 For needs_clarification, message must contain only a short clarification question. Never copy, enumerate, or describe clarification_options in message; RootAgent renders those structured options.
 For product_filter and product_compare, encode every line break as \\n in the JSON string and never replace line breaks with spaces.
 Put every product, product heading, and property on its own line.
-For product_filter, use one count header followed by one product per line in ascending code order.
+For product_filter, use one count header followed by one product per line. Preserve the input product order because SQL already applied the semantic template sort_rule. Render each non-empty display_values item in its supplied order as <label>: <value>, separated by commas; do not select business fields by name. Copy only code, name, and is_active to the final products array.
 For product_compare, use \\n\\n between the introduction, product blocks, and common-properties block.
 Before returning, verify that the JSON parses, contains every required key, and that every product in products has its own line in message.
 """

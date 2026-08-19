@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from dataclasses import asdict, dataclass
@@ -13,7 +14,6 @@ from utils.logger import setup_logger
 logger = setup_logger("product_resolver_service", "agent.log")
 
 PRODUCT_SEARCH_TABLE = "product_search_dictionary"
-PRODUCT_TABLE = "products"
 DEFAULT_DATABASE_URL = "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
 ACTIVE_PRODUCT_STATUS = "Действующий"
 ARCHIVED_PRODUCT_STATUS = "Архивный"
@@ -264,30 +264,22 @@ PRODUCT_QUERY_STOPWORDS = frozenset(
         "это",
     }
 )
-PRODUCT_FILTER_QUERY_MODIFIERS = frozenset(
-    {
-        "активная",
-        "активное",
-        "активные",
-        "активный",
-        "архивная",
-        "архивное",
-        "архивные",
-        "архивный",
-        "действующая",
-        "действующее",
-        "действующие",
-        "действующий",
-    }
-)
-
-COMPARE_SPLIT_RE = re.compile(
-    r"\s+(?:and|vs|versus|и|с|или)\s+|[,;/]+",
+PRODUCT_STATUS_MODIFIER_RE = re.compile(
+    r"^(?:активн\w*|архивн\w*|действующ\w*|архив(?:а|е|ом|у)?)$",
     flags=re.IGNORECASE,
 )
 
-# Символы валюты вырезаются normalize_product_text ([^a-zа-я0-9]),
-# поэтому $ / ¥ варианты иначе схлопываются в один ambiguous-набор.
+COMPARE_SPLIT_RE = re.compile(
+    r"\s+(?:and|vs|versus|и|или)\s+|[,;/]+",
+    flags=re.IGNORECASE,
+)
+RUSSIAN_COMPARE_WITH_RE = re.compile(
+    r"^\s*сравн(?:и|ите|ить)\s+(.+?)\s+с\s+(.+?)\s*$",
+    flags=re.IGNORECASE,
+)
+
+# Символы валюты вырезаются при нормализации текста,
+# поэтому варианты с $ и ¥ иначе схлопываются в один неоднозначный набор.
 CURRENCY_HINT_MARKERS: dict[str, tuple[str, ...]] = {
     "usd": (
         "$",
@@ -331,6 +323,8 @@ CURRENCY_HINT_MARKERS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+
+# Модели результатов, передаваемых в состояние агента.
 
 @dataclass(frozen=True)
 class ProductCandidate:
@@ -412,6 +406,7 @@ class ProductFilterResolveResult:
             "error": self.error,
         }
 
+
 class ProductResolverService:
     """
     Разрешает пользовательские названия продуктов в канонический product_code.
@@ -433,26 +428,76 @@ class ProductResolverService:
         self.fuzzy_threshold = fuzzy_threshold
         self.fuzzy_score_gap = fuzzy_score_gap
         self._pool: asyncpg.Pool | None = None
+        self._pool_lock = asyncio.Lock()
+
+    # Управление ресурсами PostgreSQL.
 
     async def _get_pool(self) -> asyncpg.Pool:
         """Лениво создает и возвращает пул подключений к PostgreSQL."""
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self.database_url)
+            async with self._pool_lock:
+                # Повторная проверка нужна после ожидания блокировки другим запросом.
+                if self._pool is None:
+                    self._pool = await asyncpg.create_pool(self.database_url)
         return self._pool
 
     async def close(self) -> None:
         """Закрывает пул подключений при остановке приложения или теста."""
-        if self._pool:
-            await self._pool.close()
+        async with self._pool_lock:
+            pool = self._pool
             self._pool = None
+            if pool is not None:
+                await pool.close()
 
-    async def _search_exact(self, query: str) -> list[ProductCandidate]:
+    # Низкоуровневый поиск кандидатов в справочнике продуктов.
+
+    async def _search_exact(
+        self,
+        query: str,
+        product_status: str | None = None,
+    ) -> list[ProductCandidate]:
         """Ищет точные совпадения по коду, нормализованному алиасу или алиасу."""
         pool = await self._get_pool()
         normalized_query = self.normalize_product_text(query)
+        status_condition = "AND is_active = $3" if product_status else ""
+        query_args = (
+            (query, normalized_query, product_status)
+            if product_status
+            else (query, normalized_query)
+        )
 
         rows = await pool.fetch(
             f"""
+            WITH matches AS (
+                SELECT
+                    product_code,
+                    canonical_name,
+                    is_active,
+                    alias,
+                    normalized_alias,
+                    match_type,
+                    priority,
+                    CASE
+                        WHEN product_code = $1 THEN 1000
+                        WHEN normalized_alias = $2 THEN 900
+                        WHEN alias = $1 THEN 850
+                        ELSE 0
+                    END AS score
+                FROM {PRODUCT_SEARCH_TABLE}
+                WHERE (
+                    product_code = $1
+                    OR normalized_alias = $2
+                    OR alias = $1
+                )
+                {status_condition}
+            ),
+            unique_products AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY product_code, canonical_name, is_active
+                    ORDER BY score DESC, priority DESC, normalized_alias, alias
+                ) AS product_rank
+                FROM matches
+            )
             SELECT
                 product_code,
                 canonical_name,
@@ -461,25 +506,21 @@ class ProductResolverService:
                 normalized_alias,
                 match_type,
                 priority,
-                CASE
-                    WHEN product_code = $1 THEN 1000
-                    WHEN normalized_alias = $2 THEN 900
-                    WHEN alias = $1 THEN 850
-                    ELSE 0
-                END AS score
-            FROM {PRODUCT_SEARCH_TABLE}
-            WHERE product_code = $1
-               OR normalized_alias = $2
-               OR alias = $1
+                score
+            FROM unique_products
+            WHERE product_rank = 1
             ORDER BY score DESC, priority DESC, canonical_name, is_active
-            LIMIT 20
+            LIMIT 30
             """,
-            query,
-            normalized_query,
+            *query_args,
         )
         return self._rows_to_candidates(rows)
 
-    async def _search_tokens(self, query: str) -> list[ProductCandidate]:
+    async def _search_tokens(
+        self,
+        query: str,
+        product_status: str | None = None,
+    ) -> list[ProductCandidate]:
         """Ищет продукты, у которых search_tokens содержит все смысловые токены запроса."""
         pool = await self._get_pool()
         token_groups = self._token_alternative_groups(query)
@@ -492,12 +533,40 @@ class ProductResolverService:
         for group in token_groups:
             group_conditions = []
             for token in group:
-                group_conditions.append(f"search_tokens ILIKE ${idx}")
-                values.append(f"%{token}%")
+                group_conditions.append(
+                    f"(' ' || search_tokens || ' ') ILIKE ${idx}"
+                )
+                values.append(f"% {token} %")
                 idx += 1
             conditions.append(f"({' OR '.join(group_conditions)})")
 
+        status_condition = ""
+        if product_status:
+            status_condition = f"AND is_active = ${idx}"
+            values.append(product_status)
+
         sql = f"""
+            WITH matches AS (
+                SELECT
+                    product_code,
+                    canonical_name,
+                    is_active,
+                    alias,
+                    normalized_alias,
+                    match_type,
+                    priority,
+                    700 AS score
+                FROM {PRODUCT_SEARCH_TABLE}
+                WHERE {' AND '.join(conditions)}
+                {status_condition}
+            ),
+            unique_products AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY product_code, canonical_name, is_active
+                    ORDER BY priority DESC, normalized_alias, alias
+                ) AS product_rank
+                FROM matches
+            )
             SELECT
                 product_code,
                 canonical_name,
@@ -506,23 +575,54 @@ class ProductResolverService:
                 normalized_alias,
                 match_type,
                 priority,
-                700 AS score
-            FROM {PRODUCT_SEARCH_TABLE}
-            WHERE {' AND '.join(conditions)}
+                score
+            FROM unique_products
+            WHERE product_rank = 1
             ORDER BY priority DESC, canonical_name, is_active, product_code
-            LIMIT 20
+            LIMIT 30
         """
 
         rows = await pool.fetch(sql, *values)
         return self._rows_to_candidates(rows)
 
-    async def _search_fuzzy(self, query: str) -> list[ProductCandidate]:
+    async def _search_fuzzy(
+        self,
+        query: str,
+        product_status: str | None = None,
+    ) -> list[ProductCandidate]:
         """Ищет похожие алиасы через pg_trgm similarity после точного и token-поиска."""
         pool = await self._get_pool()
         normalized_query = self.normalize_product_text(query)
+        status_condition = "AND is_active = $3" if product_status else ""
+        query_args = (
+            (normalized_query, self.fuzzy_threshold, product_status)
+            if product_status
+            else (normalized_query, self.fuzzy_threshold)
+        )
 
         rows = await pool.fetch(
             f"""
+            WITH matches AS (
+                SELECT
+                    product_code,
+                    canonical_name,
+                    is_active,
+                    alias,
+                    normalized_alias,
+                    match_type,
+                    priority,
+                    similarity(normalized_alias, $1) AS score
+                FROM {PRODUCT_SEARCH_TABLE}
+                WHERE similarity(normalized_alias, $1) > $2
+                {status_condition}
+            ),
+            unique_products AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY product_code, canonical_name, is_active
+                    ORDER BY score DESC, priority DESC, normalized_alias, alias
+                ) AS product_rank
+                FROM matches
+            )
             SELECT
                 product_code,
                 canonical_name,
@@ -531,16 +631,17 @@ class ProductResolverService:
                 normalized_alias,
                 match_type,
                 priority,
-                similarity(normalized_alias, $1) AS score
-            FROM {PRODUCT_SEARCH_TABLE}
-            WHERE similarity(normalized_alias, $1) > $2
+                score
+            FROM unique_products
+            WHERE product_rank = 1
             ORDER BY score DESC, priority DESC, canonical_name, is_active
-            LIMIT 20
+            LIMIT 30
             """,
-            normalized_query,
-            self.fuzzy_threshold,
+            *query_args,
         )
         return self._rows_to_candidates(rows)
+
+    # Разрешение одиночных и множественных продуктовых запросов.
 
     async def resolve_product(self, query: str) -> ProductResolveResult:
         """Разрешает один пользовательский запрос или упоминание продукта."""
@@ -549,7 +650,10 @@ class ProductResolverService:
             return ProductResolveResult(status="not_found", mention=mention)
 
         try:
-            return await self._resolve_product_safe(mention)
+            return await self._resolve_product_safe(
+                mention,
+                status_preference=self._detect_status_preference(mention),
+            )
         except Exception as exc:
             logger.warning("Product resolve failed: %s", exc, exc_info=True)
             return ProductResolveResult(
@@ -558,27 +662,54 @@ class ProductResolverService:
                 error=type(exc).__name__,
             )
 
-    async def _resolve_product_safe(self, mention: str) -> ProductResolveResult:
+    async def _resolve_product_safe(
+        self,
+        mention: str,
+        *,
+        status_preference: StatusPreference,
+    ) -> ProductResolveResult:
         """Выполняет каскад поиска без общего обработчика ошибок публичного метода."""
-        status_preference = self._detect_status_preference(mention)
-        for query in self._candidate_queries(mention):
-            exact = await self._search_exact(query)
-            token_matches = await self._search_tokens(query)
-            exact_token_result = self._result_from_candidates(
-                mention=mention,
-                candidates=[*exact, *token_matches],
-                allow_clear_top=False,
-                status_preference=status_preference,
-            )
-            if exact_token_result.status != "not_found":
-                return exact_token_result
+        for product_status in self._status_search_passes(status_preference):
+            result = await self._resolve_product_for_status(mention, product_status)
+            if result.status != "not_found":
+                return result
+        return ProductResolveResult(status="not_found", mention=mention)
 
-            fuzzy_matches = await self._search_fuzzy(query)
+    async def _resolve_product_for_status(
+        self,
+        mention: str,
+        product_status: str | None,
+    ) -> ProductResolveResult:
+        """Ищет продукт во всех стадиях для одного выбранного статуса."""
+        pass_preference = self._preference_for_product_status(product_status)
+        for query in self._candidate_queries(mention):
+            exact = await self._search_exact(query, product_status)
+            exact_result = self._result_from_candidates(
+                mention=mention,
+                candidates=exact,
+                allow_clear_top=False,
+                status_preference=pass_preference,
+            )
+            # Точное совпадение имеет приоритет над расширяющим поиском по токенам.
+            if exact_result.status != "not_found":
+                return exact_result
+
+            token_matches = await self._search_tokens(query, product_status)
+            token_result = self._result_from_candidates(
+                mention=mention,
+                candidates=token_matches,
+                allow_clear_top=False,
+                status_preference=pass_preference,
+            )
+            if token_result.status != "not_found":
+                return token_result
+
+            fuzzy_matches = await self._search_fuzzy(query, product_status)
             fuzzy_result = self._result_from_candidates(
                 mention=mention,
                 candidates=fuzzy_matches,
                 allow_clear_top=True,
-                status_preference=status_preference,
+                status_preference=pass_preference,
             )
             if fuzzy_result.status != "not_found":
                 return fuzzy_result
@@ -588,16 +719,49 @@ class ProductResolverService:
     async def resolve_product_mentions(
         self,
         mentions: list[str],
+        *,
+        status_preference: StatusPreference = None,
     ) -> ProductMultiResolveResult:
         """Разрешает уже выделенный список упоминаний продуктов."""
-        results = [
-            await self.resolve_product(mention)
-            for mention in self._deduplicate_mentions(mentions)
+        normalized_mentions = self._deduplicate_mentions(mentions)
+        last_results = [
+            ProductResolveResult(status="not_found", mention=mention)
+            for mention in normalized_mentions
         ]
-        return ProductMultiResolveResult(
-            status=self._multi_status(results),
-            items=results,
-        )
+        for product_status in self._status_search_passes(status_preference):
+            pass_preference = self._preference_for_product_status(product_status)
+            results: list[ProductResolveResult] = []
+            for mention in normalized_mentions:
+                try:
+                    results.append(
+                        await self._resolve_product_safe(
+                            mention,
+                            status_preference=pass_preference,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Product mention resolve failed: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        ProductResolveResult(
+                            status="error",
+                            mention=mention,
+                            error=type(exc).__name__,
+                        )
+                    )
+                    return ProductMultiResolveResult(status="error", items=results)
+
+            last_results = results
+            result = ProductMultiResolveResult(
+                status=self._multi_status(results),
+                items=results,
+            )
+            if result.status != "not_found":
+                return result
+        return ProductMultiResolveResult(status="not_found", items=last_results)
 
     async def resolve_products(
         self,
@@ -609,8 +773,42 @@ class ProductResolverService:
         mentions = self.extract_product_mentions(query)
         if expected_count == 1 and len(mentions) != 1:
             mentions = [query]
-        return await self.resolve_product_mentions(mentions)
+        elif len(mentions) > 1:
+            # Сначала проверяем, не является ли вся фраза единым названием с союзом.
+            status_preference = self._detect_status_preference(query)
+            try:
+                for product_status in self._status_search_passes(status_preference):
+                    whole_result = await self._resolve_exact_whole_phrase(
+                        query,
+                        product_status,
+                    )
+                    if whole_result.status != "not_found":
+                        return ProductMultiResolveResult(
+                            status=whole_result.status,
+                            items=[whole_result],
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Whole product phrase resolve failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return ProductMultiResolveResult(
+                    status="error",
+                    items=[
+                        ProductResolveResult(
+                            status="error",
+                            mention=query,
+                            error=type(exc).__name__,
+                        )
+                    ],
+                )
+        return await self.resolve_product_mentions(
+            mentions,
+            status_preference=self._detect_status_preference(query),
+        )
 
+    # Разрешение фильтров, которые могут вернуть несколько продуктов.
 
     async def resolve_product_filter(self, query: str) -> ProductFilterResolveResult:
         """Разрешает запрос фильтра в набор подходящих продуктов без требования единственности."""
@@ -621,10 +819,21 @@ class ProductResolverService:
             return ProductFilterResolveResult(status="not_found", query=normalized_query)
 
         try:
-            result = await self._resolve_product_filter_safe(
-                normalized_query,
-                status_preference=self._detect_status_preference(normalized_query),
+            status_preference = self._detect_status_preference(normalized_query)
+            result = ProductFilterResolveResult(
+                status="not_found",
+                query=normalized_query,
             )
+            for product_status in self._status_search_passes(status_preference):
+                result = await self._resolve_product_filter_safe(
+                    normalized_query,
+                    status_preference=self._preference_for_product_status(
+                        product_status
+                    ),
+                    product_status=product_status,
+                )
+                if result.products:
+                    break
             logger.debug(
                 "resolve_product_filter result status=%s product_codes=%s matched_terms=%s "
                 "unmatched_terms=%s products=%s error=%s",
@@ -650,14 +859,30 @@ class ProductResolverService:
         *,
         allow_multi: bool = True,
         status_preference: StatusPreference,
+        product_status: str | None,
     ) -> ProductFilterResolveResult:
         """Выполняет каскад поиска для product_filter и возвращает набор кандидатов."""
         mentions = self.extract_product_mentions(query)
         if allow_multi and len(mentions) > 1:
+            # Точное полное название с союзом не должно превращаться в список продуктов.
+            whole_result = await self._resolve_exact_whole_phrase(
+                query,
+                product_status,
+            )
+            whole_products = whole_result.options or []
+            if whole_products:
+                return ProductFilterResolveResult(
+                    status="resolved",
+                    query=query,
+                    product_codes=[item.product_code for item in whole_products],
+                    products=whole_products,
+                    matched_terms=[query],
+                )
             return await self._resolve_product_filter_multi(
                 query,
                 mentions,
                 status_preference=status_preference,
+                product_status=product_status,
             )
 
         candidate_queries = self._candidate_queries(query)
@@ -667,6 +892,7 @@ class ProductResolverService:
                 query,
                 candidate_query,
                 status_preference=status_preference,
+                product_status=product_status,
             )
             if result is not None:
                 return result
@@ -678,6 +904,7 @@ class ProductResolverService:
         mentions: list[str],
         *,
         status_preference: StatusPreference,
+        product_status: str | None,
     ) -> ProductFilterResolveResult:
         """Разрешает каждое упоминание отдельно и объединяет наборы кандидатов."""
         logger.debug("resolve_product_filter multi_mentions=%s", mentions)
@@ -687,12 +914,13 @@ class ProductResolverService:
         for mention in mentions:
             if not self._remove_filter_modifiers(mention):
                 continue
-            # Не даём mention снова уйти в multi: иначе фраза с кодами
+            # Не даём упоминанию снова уйти в множественный разбор: иначе фраза с кодами
             # (например «бандлы 8965 7698») рекурсивно извлекает саму себя.
             mention_result = await self._resolve_product_filter_safe(
                 mention,
                 allow_multi=False,
                 status_preference=status_preference,
+                product_status=product_status,
             )
             if mention_result.products:
                 all_products.extend(mention_result.products)
@@ -725,6 +953,7 @@ class ProductResolverService:
         candidate_query: str,
         *,
         status_preference: StatusPreference,
+        product_status: str | None,
     ) -> ProductFilterResolveResult | None:
         """Ищет кандидатов для одной поисковой строки; None, если совпадений нет."""
         for stage, search in (
@@ -733,7 +962,7 @@ class ProductResolverService:
             ("fuzzy", self._search_fuzzy),
         ):
             products = self._prepare_candidates(
-                await search(candidate_query),
+                await search(candidate_query, product_status),
                 status_preference=status_preference,
             )
             logger.debug(
@@ -753,6 +982,26 @@ class ProductResolverService:
                 )
         return None
 
+    async def _resolve_exact_whole_phrase(
+        self,
+        query: str,
+        product_status: str | None,
+    ) -> ProductResolveResult:
+        """Проверяет полную фразу как одно название без разбиения по союзам."""
+        status_preference = self._preference_for_product_status(product_status)
+        for candidate_query in self._whole_phrase_queries(query):
+            result = self._result_from_candidates(
+                mention=query,
+                candidates=await self._search_exact(candidate_query, product_status),
+                allow_clear_top=False,
+                status_preference=status_preference,
+            )
+            if result.status != "not_found":
+                return result
+        return ProductResolveResult(status="not_found", mention=query)
+
+    # Подготовка кандидатов и служебных данных для журналирования.
+
     @staticmethod
     def _candidate_summary(candidates: list[ProductCandidate]) -> list[dict[str, object]]:
         """Возвращает компактное представление кандидатов для debug-логов."""
@@ -769,6 +1018,8 @@ class ProductResolverService:
             for candidate in candidates[:10]
         ]
 
+    # Разбор пользовательского текста и выделение продуктовых упоминаний.
+
     @classmethod
     def extract_product_mentions(cls, query: str) -> list[str]:
         """Извлекает отдельные продуктовые упоминания из запроса, включая сравнение."""
@@ -777,16 +1028,21 @@ class ProductResolverService:
             return []
 
         code_mentions = re.findall(r"\b\d{3,}(?:\+\d{3,})?\b", text)
+        compare_with_match = RUSSIAN_COMPARE_WITH_RE.match(text)
+        if compare_with_match:
+            raw_parts = list(compare_with_match.groups())
+        else:
+            raw_parts = COMPARE_SPLIT_RE.split(text)
         parts = [
             cls._remove_query_noise(part)
-            for part in COMPARE_SPLIT_RE.split(text)
+            for part in raw_parts
         ]
         mentions: list[str] = []
         for part in parts:
             if not part:
                 continue
-            # Коды уже идут отдельными mentions — убираем их из текстовой части,
-            # иначе остаётся исходная фраза и multi рекурсивно зацикливается.
+            # Коды уже идут отдельными упоминаниями — убираем их из текстовой части,
+            # иначе исходная фраза рекурсивно возвращается в множественный разбор.
             if code_mentions:
                 part_without_codes = re.sub(
                     r"\b\d{3,}(?:\+\d{3,})?\b",
@@ -898,11 +1154,14 @@ class ProductResolverService:
         cls,
         value: str,
     ) -> StatusPreference:
-        """Extracts an explicit catalog-status request without treating product names as status filters."""
+        """Определяет явно запрошенный статус каталога, не путая его с названием."""
         normalized = cls.normalize_product_text(value)
         if re.search(r"\b(?:все|оба|любой)\s+(?:статус|статусы|статуса)\b", normalized):
             return "all"
-        if re.search(r"\bархивн\w*\b", normalized):
+        if re.search(r"\bархивн\w*\b", normalized) or re.search(
+            r"\b(?:в|из)\s+архив(?:а|е)?\b",
+            normalized,
+        ):
             return "archived"
         if re.search(r"\bдействующ\w*\b", normalized):
             return "active"
@@ -912,7 +1171,7 @@ class ProductResolverService:
         ):
             return "active"
 
-        # A bare status plus a numeric code is also an explicit status request.
+        # Отдельное указание статуса рядом с кодом тоже считается явным запросом.
         without_codes = re.sub(r"\b\d{3,}(?:\+\d{3,})?\b", " ", normalized)
         remaining = [
             token
@@ -924,21 +1183,47 @@ class ProductResolverService:
             return "active"
         return None
 
+    # Правила проходов по статусам и окончательного отбора кандидатов.
+
+    @staticmethod
+    def _status_search_passes(
+        preference: StatusPreference,
+    ) -> tuple[str | None, ...]:
+        """Возвращает последовательность полных поисковых проходов по статусам."""
+        if preference == "active":
+            return (ACTIVE_PRODUCT_STATUS,)
+        if preference == "archived":
+            return (ARCHIVED_PRODUCT_STATUS,)
+        if preference == "all":
+            return (None,)
+        return (ACTIVE_PRODUCT_STATUS, ARCHIVED_PRODUCT_STATUS)
+
+    @staticmethod
+    def _preference_for_product_status(
+        product_status: str | None,
+    ) -> StatusPreference:
+        """Преобразует SQL-статус прохода в правило подготовки кандидатов."""
+        if product_status == ACTIVE_PRODUCT_STATUS:
+            return "active"
+        if product_status == ARCHIVED_PRODUCT_STATUS:
+            return "archived"
+        return "all"
+
     @classmethod
     def _filter_candidates_by_status_preference(
         cls,
         candidates: list[ProductCandidate],
         preference: StatusPreference,
     ) -> list[ProductCandidate]:
-        """Applies explicit status filters and otherwise prefers active matches before ambiguity."""
+        """Применяет явный статус или отдает приоритет действующим продуктам."""
         if not candidates:
             return candidates
         if preference == "all":
             return candidates
 
         candidates_with_status = [item for item in candidates if item.is_active]
-        # Some imported catalogs may have an empty status column. In that case,
-        # preserve the previous resolution behavior instead of dropping matches.
+        # В импортированном каталоге статус может быть пустым. В таком случае
+        # сохраняем найденные совпадения, а не отбрасываем их без объяснения.
         if not candidates_with_status:
             return candidates
 
@@ -985,6 +1270,8 @@ class ProductResolverService:
             options=[candidate],
         )
 
+    # Нормализация запросов, удаление шума и подготовка токенов поиска.
+
     @staticmethod
     def _unique_products(candidates: list[ProductCandidate]) -> list[ProductCandidate]:
         """Удаляет дубли алиасов, сохраняя разные продукты с одинаковым кодом."""
@@ -1015,15 +1302,32 @@ class ProductResolverService:
         return cls._deduplicate_query_candidates(candidates)
 
     @classmethod
-    def _remove_query_noise(cls, value: str) -> str:
+    def _remove_query_noise(
+        cls,
+        value: str,
+        *,
+        preserve_connectors: bool = False,
+    ) -> str:
         """Удаляет русские служебные слова, не относящиеся к названию продукта."""
         normalized = cls.normalize_product_text(value)
+        preserved = {"and", "и", "или"} if preserve_connectors else set()
         tokens = [
             token
             for token in normalized.split()
-            if token not in PRODUCT_QUERY_STOPWORDS
+            if token not in PRODUCT_QUERY_STOPWORDS or token in preserved
         ]
         return " ".join(tokens).strip()
+
+    @classmethod
+    def _whole_phrase_queries(cls, query: str) -> list[str]:
+        """Формирует варианты целого названия, сохраняя союзы внутри него."""
+        cleaned = cls._remove_query_noise(query, preserve_connectors=True)
+        return cls._deduplicate_query_candidates(
+            [
+                cls._remove_filter_modifiers(cleaned),
+                str(query or "").strip(),
+            ]
+        )
 
     @staticmethod
     def _remove_filter_modifiers(value: str) -> str:
@@ -1031,7 +1335,7 @@ class ProductResolverService:
         tokens = [
             token
             for token in str(value or "").split()
-            if token not in PRODUCT_FILTER_QUERY_MODIFIERS
+            if not PRODUCT_STATUS_MODIFIER_RE.fullmatch(token)
         ]
         return " ".join(tokens).strip()
 
@@ -1098,35 +1402,6 @@ class ProductResolverService:
         return "".join(CYR_TO_LAT.get(char, char) for char in value)
 
     @classmethod
-    def tokenize_product_text(cls, value: str) -> list[str]:
-        """Возвращает уникальные поисковые токены с транслитерацией и алиасами продуктов."""
-        normalized = cls.normalize_product_text(value)
-        tokens = [token for token in normalized.split() if token]
-        product_words = cls._normalized_common_product_words()
-        reverse_product_words = {
-            alias: key
-            for key, value in product_words.items()
-            for alias in value.split()
-        }
-        result = []
-
-        if normalized in product_words:
-            result.extend(product_words[normalized].split())
-        if normalized in reverse_product_words:
-            result.extend(reverse_product_words[normalized].split())
-
-        for token in tokens:
-            result.append(token)
-            translit = cls.transliterate_ru_to_en(token)
-            if translit != token:
-                result.append(translit)
-            if token in product_words:
-                result.extend(product_words[token].split())
-            if token in reverse_product_words:
-                result.extend(reverse_product_words[token].split())
-        return sorted(set(result))
-
-    @classmethod
     def _token_alternative_groups(cls, value: str) -> list[list[str]]:
         """Группирует формы каждого токена запроса для поиска через OR внутри токена."""
         normalized = cls.normalize_product_text(value)
@@ -1170,31 +1445,3 @@ class ProductResolverService:
             cls.normalize_product_text(key): cls.normalize_product_text(value)
             for key, value in COMMON_PRODUCT_WORDS.items()
         }
-    
-    async def fetch_product_full_details(self, product_code: str) -> dict[str, str | None]:
-        """
-        получение деталей уточнения из таблицы products по product_code.
-        """
-        if not product_code:
-            return {}
-            
-        pool = await self._get_pool()
-        try:
-            # Идем в главную таблицу products и забираем folder_kit если понадобяться ещё поля сможем взять отсюда
-            row = await pool.fetchrow(
-                f"""
-                SELECT folder_kit 
-                FROM {PRODUCT_TABLE} 
-                WHERE code = $1 
-                LIMIT 1
-                """,
-                str(product_code).strip()
-            )
-            if row:
-                return {
-                    "folder_kit": str(row.get("folder_kit") or "").strip() or None
-                }
-        except Exception as exc:
-            logger.warning("Не удалось получить детали для code=%s: %s", product_code, exc)
-            
-        return {}

@@ -382,6 +382,24 @@ def test_product_filter_content_prompt_rejects_ambiguous_comparison() -> None:
 
 
 @pytest.mark.unit
+def test_product_filter_content_prompt_requires_status_fallback_and_full_identity() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_filter_content"
+        / "product_filter_content_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "при полном отсутствии совпадений — по\nархивным" in prompt
+    assert "полной комбинации `code + name + is_active`" in prompt
+    assert "`code IN (...)`" in prompt
+    assert "этот запрос вернул ноль строк" in prompt
+    assert "Не объединяй результаты\n  двух статусов" in prompt
+
+
+@pytest.mark.unit
 def test_product_filter_prompts_use_compact_comparison_contract() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     content_prompt = (

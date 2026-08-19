@@ -197,6 +197,22 @@ def test_product_info_format_prompt_requires_product_kit_message() -> None:
 
 
 @pytest.mark.unit
+def test_product_info_content_prompt_preserves_resolver_status_and_identity() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    prompt = (
+        repo_root
+        / "kb_storage"
+        / "prompts"
+        / "product_info_content"
+        / "product_info_content_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "при полном отсутствии совпадений — по\nархивным" in prompt
+    assert "Не меняй выбранный им\nстатус" in prompt
+    assert "по `code`, `name` и\n  `is_active`" in prompt
+
+
+@pytest.mark.unit
 def test_product_info_format_prompt_requires_multiline_product_card() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     prompt = (
