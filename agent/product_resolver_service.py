@@ -972,6 +972,16 @@ class ProductResolverService:
                 len(products),
                 self._candidate_summary(products),
             )
+            if products and not self.has_strong_filter_identity_evidence(
+                [candidate_query],
+                products,
+            ):
+                logger.debug(
+                    "resolve_product_filter ignored weak identity stage=%s query=%r",
+                    stage,
+                    candidate_query,
+                )
+                continue
             if products:
                 return ProductFilterResolveResult(
                     status="resolved",
@@ -1017,6 +1027,48 @@ class ProductResolverService:
             }
             for candidate in candidates[:10]
         ]
+
+    @classmethod
+    def has_strong_filter_identity_evidence(
+        cls,
+        matched_terms: list[str],
+        products: list[ProductCandidate] | list[dict[str, object]],
+    ) -> bool:
+        """Проверяет, что resolver нашел идентификатор продукта, а не свойство."""
+        normalized_terms = [
+            cls.normalize_product_text(term)
+            for term in matched_terms
+            if cls.normalize_product_text(term)
+        ]
+        for term in normalized_terms:
+            if len(term.split()) >= 2:
+                return True
+            for product in products:
+                if isinstance(product, ProductCandidate):
+                    code = product.product_code
+                    names = (
+                        product.canonical_name,
+                        product.alias,
+                        product.normalized_alias,
+                    )
+                else:
+                    code = str(
+                        product.get("product_code") or product.get("code") or ""
+                    ).strip()
+                    names = (
+                        str(
+                            product.get("canonical_name")
+                            or product.get("name")
+                            or ""
+                        ),
+                        str(product.get("alias") or ""),
+                        str(product.get("normalized_alias") or ""),
+                    )
+                if term == cls.normalize_product_text(code) or any(
+                    term == cls.normalize_product_text(name) for name in names if name
+                ):
+                    return True
+        return False
 
     # Разбор пользовательского текста и выделение продуктовых упоминаний.
 

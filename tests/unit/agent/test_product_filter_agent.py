@@ -412,6 +412,8 @@ def test_product_filter_content_prompt_requires_status_fallback_and_full_identit
     assert "`code IN (...)`" in prompt
     assert "этот запрос вернул ноль строк" in prompt
     assert "Не объединяй результаты\n  двух статусов" in prompt
+    assert "Для фильтра только по свойству" in prompt
+    assert "не используй `product_filter_resolution.product_codes`" in prompt
 
 
 @pytest.mark.unit

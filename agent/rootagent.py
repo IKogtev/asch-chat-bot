@@ -1599,6 +1599,24 @@ class RootAgent(BaseAgent):
             "error": data.get("error"),
         }
 
+    @staticmethod
+    def _has_strong_product_filter_identity(state: Dict[str, Any]) -> bool:
+        def normalize(value: Any) -> str:
+            return " ".join(re.findall(r"\w+", str(value or "").casefold()))
+
+        products = state.get("products") or []
+        for raw_term in state.get("matched_terms") or []:
+            term = normalize(raw_term)
+            if len(term.split()) >= 2:
+                return True
+            for product in products:
+                if term and term in {
+                    normalize(product.get("code")),
+                    normalize(product.get("name")),
+                }:
+                    return True
+        return False
+
     async def _prepare_product_resolution_state(
         self,
         ctx: InvocationContext,
@@ -1611,9 +1629,24 @@ class RootAgent(BaseAgent):
 
         if intent == "product_filter":
             result = await self.product_resolver.resolve_product_filter(query)
-            ctx.session.state["product_filter_resolution"] = self._product_filter_resolution_to_state(
-                result
-            )
+            resolution_state = self._product_filter_resolution_to_state(result)
+            if resolution_state.get("products") and not self._has_strong_product_filter_identity(
+                resolution_state
+            ):
+                logger.debug(
+                    "Ignoring product_filter resolution without strong product identity: %s",
+                    resolution_state,
+                )
+                resolution_state = {
+                    "status": "not_found",
+                    "query": resolution_state.get("query") or query,
+                    "product_codes": [],
+                    "products": [],
+                    "matched_terms": [],
+                    "unmatched_terms": [],
+                    "error": None,
+                }
+            ctx.session.state["product_filter_resolution"] = resolution_state
             logger.debug(
                 "product_filter_resolution state: %s",
                 ctx.session.state["product_filter_resolution"],

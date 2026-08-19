@@ -512,6 +512,28 @@ async def test_resolve_product_filter_returns_multiple_candidates() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_resolve_product_filter_rejects_single_property_token_match() -> None:
+    resolver = FakeProductResolver(
+        tokens={
+            "активные": [
+                candidate(
+                    "7695",
+                    "Юнит Линк Активные облигации",
+                    is_active=ACTIVE_PRODUCT_STATUS,
+                )
+            ]
+        },
+    )
+
+    result = await resolver.resolve_product_filter("активные продукты")
+
+    assert result.status == "not_found"
+    assert result.product_codes == [] or result.product_codes is None
+    assert result.products == [] or result.products is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_resolve_product_filter_stops_after_successful_exact_stage() -> None:
     resolver = FakeProductResolver(
         exact={"8914": [candidate("8914", "Fort Knox 1 год")]},

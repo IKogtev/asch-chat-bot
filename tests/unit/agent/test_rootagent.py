@@ -2712,12 +2712,12 @@ async def test_handle_product_filter_resolves_product_filter() -> None:
             raise AssertionError("resolve_products must not be called")
 
         async def resolve_product_filter(self, query):
-            assert query == "products in USD"
+            assert query == "Fort Knox products"
             return types.SimpleNamespace(
                 to_dict=lambda: {
                     "status": "resolved",
                     "query": query,
-                    "product_codes": ["2832", "2867"],
+                    "product_codes": ["2832"],
                     "products": [
                         {
                             "product_code": "2832",
@@ -2725,7 +2725,7 @@ async def test_handle_product_filter_resolves_product_filter() -> None:
                             "is_active": "Действующий",
                         },
                     ],
-                    "matched_terms": ["products in USD"],
+                    "matched_terms": ["Fort Knox"],
                     "error": None,
                 }
             )
@@ -2739,7 +2739,7 @@ async def test_handle_product_filter_resolves_product_filter() -> None:
     async def fake_run_json_leaf_agent(**kwargs):
         assert ctx.session.state["product_resolution"] == {}
         assert ctx.session.state["product_resolutions"] == {}
-        assert ctx.session.state["product_filter_resolution"]["product_codes"] == ["2832", "2867"]
+        assert ctx.session.state["product_filter_resolution"]["product_codes"] == ["2832"]
         assert ctx.session.state["product_filter_resolution"]["products"] == [
             {
                 "code": "2832",
@@ -2761,13 +2761,57 @@ async def test_handle_product_filter_resolves_product_filter() -> None:
         async for event in agent._handle_product_filter(
             ctx,
             "show products",
-            "products in USD",
+            "Fort Knox products",
             "product_filter",
         )
     ]
 
     assert events == []
     assert ctx.session.state["product_filter_resolution"]["status"] == "resolved"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_prepare_product_filter_resolution_discards_weak_identity() -> None:
+    class FakeProductResolver:
+        async def resolve_product_filter(self, query):
+            return types.SimpleNamespace(
+                to_dict=lambda: {
+                    "status": "resolved",
+                    "query": query,
+                    "product_codes": ["7695"],
+                    "products": [
+                        {
+                            "product_code": "7695",
+                            "canonical_name": "Юнит Линк Активные облигации",
+                            "is_active": "Действующий",
+                        }
+                    ],
+                    "matched_terms": ["активные"],
+                    "unmatched_terms": [],
+                    "error": None,
+                }
+            )
+
+    agent = _make_agent(product_resolver=FakeProductResolver())
+    ctx = _make_ctx(parts=[], session_state={})
+
+    await agent._prepare_product_resolution_state(
+        ctx,
+        "активные продукты",
+        "product_filter",
+    )
+
+    assert ctx.session.state["product_filter_resolution"] == {
+        "status": "not_found",
+        "query": "активные продукты",
+        "product_codes": [],
+        "products": [],
+        "matched_terms": [],
+        "unmatched_terms": [],
+        "error": None,
+    }
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
