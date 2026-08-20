@@ -51,6 +51,9 @@ PRODUCT_FILTER_FOLLOWUP_QUESTION = (
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство тебя интересует ?"
 )
+PRODUCT_COMPARE_CLARIFICATION_QUESTION = (
+    "Какой из продуктов вы хотите сравнить с \"{label}\":"
+)
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 
 # Скомпилированные регулярные выражения (оптимизация производительности)
@@ -845,7 +848,47 @@ class RootAgent(BaseAgent):
         return str(option or "").strip()
 
     @classmethod
-    def _format_product_answer(cls, product_result: Dict[str, Any]) -> str:
+    def _product_dialog_identity(cls, product: Dict[str, Any]) -> tuple[str, str, str]:
+        """Ключ экземпляра продукта для compare: код, имя и статус."""
+        return (
+            str(product.get("code") or product.get("product_code") or "").strip(),
+            cls._normalize_product_dialog_text(
+                str(product.get("name") or product.get("product_name") or "")
+            ),
+            cls._normalize_product_dialog_text(str(product.get("is_active") or "")),
+        )
+
+    @classmethod
+    def _exclude_resolved_identities(
+        cls,
+        options: List[Any],
+        resolved: List[Dict[str, str]] | None,
+    ) -> List[Any]:
+        """Убирает уже найденные экземпляры из списка уточнения."""
+        if not options or not resolved:
+            return options
+        banned = {
+            cls._product_dialog_identity(item)
+            for item in resolved
+            if isinstance(item, dict)
+            and (item.get("code") or item.get("name") or item.get("product_code") or item.get("product_name"))
+        }
+        if not banned:
+            return options
+        filtered: List[Any] = []
+        for option in options:
+            if isinstance(option, dict) and cls._product_dialog_identity(option) in banned:
+                continue
+            filtered.append(option)
+        return filtered
+
+    @classmethod
+    def _format_product_answer(
+        cls,
+        product_result: Dict[str, Any],
+        *,
+        resolved_products: List[Dict[str, str]] | None = None,
+    ) -> str:
         message = format_text_answer(product_result["message"])
         mode = product_result.get("mode")
         if mode == "product_filter" and PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
@@ -878,16 +921,40 @@ class RootAgent(BaseAgent):
                 (line.strip() for line in message.splitlines() if line.strip()),
                 message,
             )
+            raw_options = cls._exclude_resolved_identities(
+                list(product_result.get("clarification_options") or []),
+                resolved_products,
+            )
             options = [
                 cls._format_clarification_option(option)
-                for option in product_result.get("clarification_options") or []
+                for option in raw_options
             ]
             options = [option for option in options if option]
             if not options:
                 return message
-            return_message = "\n".join([message, *options])
-            return return_message
+            compare_question = cls._compare_one_sided_clarification_question(
+                resolved_products
+            )
+            if compare_question:
+                return "\n".join([compare_question, "", *options])
+            return "\n".join([message, *options])
         return message
+
+    @classmethod
+    def _compare_one_sided_clarification_question(
+        cls,
+        resolved_products: List[Dict[str, str]] | None,
+    ) -> str | None:
+        """Вопрос уточнения, если в сравнении уже найден ровно один продукт."""
+        if not resolved_products or len(resolved_products) != 1:
+            return None
+        product = resolved_products[0]
+        code = str(product.get("code") or "").strip()
+        name = str(product.get("name") or "").strip()
+        label = f"{name} ({code})".strip()
+        if not label:
+            return None
+        return PRODUCT_COMPARE_CLARIFICATION_QUESTION.format(label=label)
 
     @staticmethod
     def _normalize_product_dialog_text(text: str) -> str:
@@ -1027,6 +1094,10 @@ class RootAgent(BaseAgent):
             if not compare_resolved:
                 compare_resolved = self._normalize_dialog_products(
                     previous.get("compare_resolved_products") or []
+                )
+            if pending_intent == "product_compare":
+                options = self._normalize_dialog_products(
+                    self._exclude_resolved_identities(options, compare_resolved)
                 )
             ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
                 "last_mode": "needs_clarification",
@@ -1202,6 +1273,28 @@ class RootAgent(BaseAgent):
                 return products[0]
 
         return None
+
+    def _resolved_products_for_clarification_filter(
+        self,
+        ctx: InvocationContext,
+    ) -> List[Dict[str, str]]:
+        """Уже найденные продукты compare, которые нельзя снова предлагать в уточнении."""
+        previous = self._get_product_dialog_context(ctx)
+        pending_intent = str(
+            ctx.session.state.get("product_info_intent")
+            or ctx.session.state.get("product_filter_intent")
+            or ctx.session.state.get("last_intent")
+            or previous.get("pending_intent")
+            or ""
+        ).strip()
+        if pending_intent != "product_compare":
+            return []
+        compare_resolved = self._resolved_products_from_resolutions(ctx)
+        if compare_resolved:
+            return compare_resolved
+        return self._normalize_dialog_products(
+            previous.get("compare_resolved_products") or []
+        )
 
     def _resolved_products_from_resolutions(
         self,
@@ -2833,7 +2926,8 @@ class RootAgent(BaseAgent):
             ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
 
         ctx.session.state["_root_final_text"] = self._format_product_answer(
-            product_result
+            product_result,
+            resolved_products=self._resolved_products_for_clarification_filter(ctx),
         )
         self._store_product_dialog_context(ctx, product_result)
         # сохраняем last_product, если агент выбрал конкретный продукт
@@ -2903,7 +2997,8 @@ class RootAgent(BaseAgent):
             ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = current_context
 
         ctx.session.state["_root_final_text"] = self._format_product_answer(
-            product_result
+            product_result,
+            resolved_products=self._resolved_products_for_clarification_filter(ctx),
         )
         self._store_product_dialog_context(ctx, product_result)
         # сохраняем last_product после карточки / комплекта

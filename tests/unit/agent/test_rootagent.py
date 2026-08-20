@@ -1825,6 +1825,218 @@ def test_store_needs_clarification_keeps_pending_compare_context() -> None:
 
 
 @pytest.mark.unit
+def test_store_needs_clarification_excludes_resolved_identity_from_options() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "product_filter_intent": "product_compare",
+            "product_resolutions": {
+                "status": "ambiguous",
+                "items": [
+                    {
+                        "status": "resolved",
+                        "product_code": "8941",
+                        "product_name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                        "is_active": "Действующий",
+                    },
+                    {"status": "ambiguous", "options": []},
+                ],
+            },
+        }
+    )
+
+    agent._store_product_dialog_context(
+        ctx,
+        {
+            "mode": "needs_clarification",
+            "clarification_options": [
+                {
+                    "code": "8941",
+                    "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "8914",
+                    "name": "Фиксированный доход 1 год",
+                    "is_active": "Действующий",
+                },
+            ],
+        },
+    )
+
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert [item["code"] for item in stored["clarification_options"]] == ["8914"]
+    assert [item["code"] for item in stored["products"]] == ["8914"]
+    assert stored["compare_resolved_products"][0]["code"] == "8941"
+
+
+@pytest.mark.unit
+def test_store_needs_clarification_keeps_same_code_with_different_identity() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "product_filter_intent": "product_compare",
+            "product_resolutions": {
+                "status": "ambiguous",
+                "items": [
+                    {
+                        "status": "resolved",
+                        "product_code": "8914",
+                        "product_name": "Фиксированный доход 1 год",
+                        "is_active": "Действующий",
+                    },
+                    {"status": "ambiguous", "options": []},
+                ],
+            },
+        }
+    )
+
+    agent._store_product_dialog_context(
+        ctx,
+        {
+            "mode": "needs_clarification",
+            "clarification_options": [
+                {
+                    "code": "8914",
+                    "name": "Фиксированный доход 1 год",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "8914",
+                    "name": "Fort Knox 1 год",
+                    "is_active": "Архивный",
+                },
+            ],
+        },
+    )
+
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["clarification_options"] == [
+        {
+            "code": "8914",
+            "name": "Fort Knox 1 год",
+            "is_active": "Архивный",
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_store_needs_clarification_does_not_filter_options_for_product_card() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "product_info_intent": "product_card",
+            "product_resolutions": {
+                "status": "resolved",
+                "items": [
+                    {
+                        "status": "resolved",
+                        "product_code": "8941",
+                        "product_name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                        "is_active": "Действующий",
+                    }
+                ],
+            },
+        }
+    )
+
+    agent._store_product_dialog_context(
+        ctx,
+        {
+            "mode": "needs_clarification",
+            "clarification_options": [
+                {
+                    "code": "8941",
+                    "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "8914",
+                    "name": "Фиксированный доход 1 год",
+                    "is_active": "Действующий",
+                },
+            ],
+        },
+    )
+
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert [item["code"] for item in stored["clarification_options"]] == ["8941", "8914"]
+
+
+@pytest.mark.unit
+def test_format_product_answer_asks_which_product_to_compare_with_resolved() -> None:
+    answer = RootAgent._format_product_answer(
+        {
+            "mode": "needs_clarification",
+            "message": "Какие именно продукты вы хотите сравнить?",
+            "clarification_options": [
+                {
+                    "code": "8914",
+                    "name": "Фиксированный доход 1 год",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "8959",
+                    "name": "Фиксированный доход 1 год + Альфа-Вклад Актив",
+                    "is_active": "Действующий",
+                },
+            ],
+        },
+        resolved_products=[
+            {
+                "code": "8856",
+                "name": "Фиксированный доход 18 месяцев",
+                "is_active": "Действующий",
+            }
+        ],
+    )
+
+    assert answer == (
+        "Какой из продуктов вы хотите сравнить с 8856 Фиксированный доход 18 месяцев:\n"
+        "\n"
+        "8914 Фиксированный доход 1 год - Действующий\n"
+        "8959 Фиксированный доход 1 год + Альфа-Вклад Актив - Действующий"
+    )
+
+
+@pytest.mark.unit
+def test_format_product_answer_excludes_resolved_identity_from_options() -> None:
+    answer = RootAgent._format_product_answer(
+        {
+            "mode": "needs_clarification",
+            "message": "Уточните, пожалуйста, какой продукт сравнить:",
+            "clarification_options": [
+                {
+                    "code": "8941",
+                    "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                    "is_active": "Действующий",
+                },
+                {
+                    "code": "8914",
+                    "name": "Фиксированный доход 1 год",
+                    "is_active": "Действующий",
+                },
+            ],
+        },
+        resolved_products=[
+            {
+                "code": "8941",
+                "name": "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                "is_active": "Действующий",
+            }
+        ],
+    )
+
+    assert answer == (
+        "Какой из продуктов вы хотите сравнить с "
+        "8941 Фиксированный доход 3 года + Альфа-Вклад Актив:\n"
+        "\n"
+        "8914 Фиксированный доход 1 год - Действующий"
+    )
+    assert answer.count("8941") == 1
+
+
+@pytest.mark.unit
 def test_product_followup_dispatch_resumes_compare_after_clarification_code() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
