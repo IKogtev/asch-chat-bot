@@ -10,6 +10,7 @@ from agent.product_resolver_service import (
     ACTIVE_PRODUCT_STATUS,
     ARCHIVED_PRODUCT_STATUS,
     ProductCandidate,
+    ProductResolveResult,
     ProductResolverService,
 )
 
@@ -303,6 +304,134 @@ async def test_resolve_product_mentions_returns_structured_error() -> None:
     assert result.status == "error"
     assert result.items[0].status == "error"
     assert result.items[0].error == "RuntimeError"
+
+
+@pytest.mark.unit
+def test_exclude_resolved_identity_from_other_mention_options() -> None:
+    fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    results = ProductResolverService._exclude_resolved_from_ambiguous_mentions(
+        [
+            ProductResolverService._resolved_result("Product A", fd3),
+            ProductResolveResult(
+                status="ambiguous",
+                mention="Product B",
+                options=[
+                    candidate(
+                        "8941",
+                        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                        is_active=ACTIVE_PRODUCT_STATUS,
+                    ),
+                    fd1,
+                ],
+            ),
+        ]
+    )
+
+    assert results[0].status == "resolved"
+    assert results[1].status == "resolved"
+    assert results[1].product_code == "8914"
+    assert results[1].product_name == "Фиксированный доход 1 год"
+
+
+@pytest.mark.unit
+def test_exclude_resolved_keeps_same_code_with_different_identity() -> None:
+    active_fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fort_knox = candidate(
+        "8914",
+        "Fort Knox 1 год",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    results = ProductResolverService._exclude_resolved_from_ambiguous_mentions(
+        [
+            ProductResolverService._resolved_result("Product A", active_fd1),
+            ProductResolveResult(
+                status="ambiguous",
+                mention="Product B",
+                options=[
+                    candidate(
+                        "8914",
+                        "Фиксированный доход 1 год",
+                        is_active=ACTIVE_PRODUCT_STATUS,
+                    ),
+                    archived_fort_knox,
+                ],
+            ),
+        ]
+    )
+
+    assert results[1].status == "resolved"
+    assert results[1].product_code == "8914"
+    assert results[1].product_name == "Fort Knox 1 год"
+    assert results[1].is_active == ARCHIVED_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+def test_exclude_resolved_marks_mention_not_found_when_only_duplicate_remains() -> None:
+    fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    results = ProductResolverService._exclude_resolved_from_ambiguous_mentions(
+        [
+            ProductResolverService._resolved_result("Product A", fd3),
+            ProductResolveResult(
+                status="ambiguous",
+                mention="Product B",
+                options=[
+                    candidate(
+                        "8941",
+                        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                        is_active=ACTIVE_PRODUCT_STATUS,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    assert results[0].status == "resolved"
+    assert results[1].status == "not_found"
+    assert results[1].mention == "Product B"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_mentions_excludes_resolved_identity_from_other_options() -> None:
+    fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={"product a": [fd3]},
+        tokens={"product b": [fd3, fd1]},
+    )
+
+    result = await resolver.resolve_product_mentions(["Product A", "Product B"])
+
+    assert result.status == "resolved"
+    assert result.items[0].product_code == "8941"
+    assert result.items[1].status == "resolved"
+    assert result.items[1].product_code == "8914"
+    assert result.items[1].product_name == "Фиксированный доход 1 год"
 
 
 @pytest.mark.unit

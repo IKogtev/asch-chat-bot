@@ -754,6 +754,7 @@ class ProductResolverService:
                     )
                     return ProductMultiResolveResult(status="error", items=results)
 
+            results = self._exclude_resolved_from_ambiguous_mentions(results)
             last_results = results
             result = ProductMultiResolveResult(
                 status=self._multi_status(results),
@@ -761,7 +762,10 @@ class ProductResolverService:
             )
             if result.status != "not_found":
                 return result
-        return ProductMultiResolveResult(status="not_found", items=last_results)
+        return ProductMultiResolveResult(
+            status="not_found",
+            items=self._exclude_resolved_from_ambiguous_mentions(last_results),
+        )
 
     async def resolve_products(
         self,
@@ -1417,6 +1421,78 @@ class ProductResolverService:
             seen.add(key)
             result.append(value)
         return result
+
+    @classmethod
+    def _product_identity(
+        cls,
+        *,
+        product_code: str | None = "",
+        product_name: str | None = "",
+        is_active: str | None = "",
+    ) -> tuple[str, str, str]:
+        """Ключ экземпляра продукта: код, нормализованное имя и статус."""
+        return (
+            str(product_code or "").strip(),
+            " ".join(str(product_name or "").casefold().split()),
+            str(is_active or "").strip(),
+        )
+
+    @classmethod
+    def _candidate_identity(cls, candidate: ProductCandidate) -> tuple[str, str, str]:
+        """Ключ экземпляра из поискового кандидата."""
+        return cls._product_identity(
+            product_code=candidate.product_code,
+            product_name=candidate.canonical_name,
+            is_active=candidate.is_active,
+        )
+
+    @classmethod
+    def _exclude_resolved_from_ambiguous_mentions(
+        cls,
+        results: list[ProductResolveResult],
+    ) -> list[ProductResolveResult]:
+        """Убирает уже разрешенные экземпляры из options соседних ambiguous-упоминаний."""
+        resolved_identities = {
+            cls._product_identity(
+                product_code=item.product_code,
+                product_name=item.product_name,
+                is_active=item.is_active,
+            )
+            for item in results
+            if item.status == "resolved" and (item.product_code or item.product_name)
+        }
+        if not resolved_identities:
+            return results
+
+        updated: list[ProductResolveResult] = []
+        for item in results:
+            if item.status != "ambiguous" or not item.options:
+                updated.append(item)
+                continue
+            remaining = [
+                option
+                for option in item.options
+                if cls._candidate_identity(option) not in resolved_identities
+            ]
+            if len(remaining) == len(item.options):
+                updated.append(item)
+                continue
+            if len(remaining) == 1:
+                updated.append(cls._resolved_result(item.mention, remaining[0]))
+                continue
+            if not remaining:
+                updated.append(
+                    ProductResolveResult(status="not_found", mention=item.mention)
+                )
+                continue
+            updated.append(
+                ProductResolveResult(
+                    status="ambiguous",
+                    mention=item.mention,
+                    options=remaining,
+                )
+            )
+        return updated
 
     @staticmethod
     def _multi_status(
