@@ -920,7 +920,10 @@ class RootAgent(BaseAgent):
             products = product_result.get("products")
             product_count = len(products) if isinstance(products, list) else 0
             if product_count == 1:
-                return PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION
+                message = message.replace(PRODUCT_FILTER_FOLLOWUP_QUESTION, PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION).strip()
+                if PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION not in message:
+                    message = "\n\n".join([message, PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION])
+                return message
             if PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
                 message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
             return message
