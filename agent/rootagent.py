@@ -54,6 +54,22 @@ PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
 PRODUCT_COMPARE_CLARIFICATION_QUESTION = (
     "Какой из продуктов вы хотите сравнить с \"{label}\":"
 )
+PRODUCT_COMPARE_NOT_FOUND_IN_ARCHIVE = "Не удалось найти в архиве «{label}»."
+PRODUCT_COMPARE_NOT_FOUND = "Не удалось найти «{label}»."
+PRODUCT_COMPARE_FALLBACK_CANDIDATES = (
+    "Не найден «{label}» {requested_place}, вот кандидаты среди {fallback_place}:"
+)
+PRODUCT_COMPARE_FALLBACK_FOUND = (
+    "Не найден «{label}» {requested_place}, найден среди {fallback_place}:"
+)
+COMPARE_MENTION_STATUS_TOKEN_RE = re.compile(
+    r"^(?:активн\w*|архивн\w*|действующ\w*|архив(?:а|е|ом|у)?)$",
+    flags=re.IGNORECASE,
+)
+COMPARE_MENTION_ARCHIVED_RE = re.compile(
+    r"\bархивн\w*\b|\b(?:в|из)\s+архив(?:а|е)?\b|\bархив(?:а|е|ом|у)\b",
+    flags=re.IGNORECASE,
+)
 DOC_LIST_FOLLOWUP_INTENTS = frozenset({"file_download", "show_more", "show_all"})
 
 # Скомпилированные регулярные выражения (оптимизация производительности)
@@ -593,6 +609,14 @@ class RootAgent(BaseAgent):
         name = str(resolved.get("name") or "").strip()
         folder_kit = str(resolved.get("folder_kit") or "").strip()
         is_active = str(resolved.get("is_active") or "").strip()
+        if not (code or name) and str(product_result.get("mode") or "") == "product_filter":
+            products = self._normalize_dialog_products(product_result.get("products"))
+            if len(products) == 1:
+                resolved = products[0]
+                code = str(resolved.get("code") or "").strip()
+                name = str(resolved.get("name") or "").strip()
+                folder_kit = str(resolved.get("folder_kit") or "").strip()
+                is_active = str(resolved.get("is_active") or "").strip()
         if not (code or name):
             return
         label = f"{name} (код {code})" if code and name else (name or code)
@@ -956,6 +980,137 @@ class RootAgent(BaseAgent):
             return None
         return PRODUCT_COMPARE_CLARIFICATION_QUESTION.format(label=label)
 
+    @classmethod
+    def _compare_mention_display_label(cls, mention: str) -> str:
+        """Название упоминания без статусного слова, для сообщения пользователю."""
+        tokens = [
+            token
+            for token in str(mention or "").split()
+            if token and not COMPARE_MENTION_STATUS_TOKEN_RE.fullmatch(token)
+        ]
+        label = " ".join(tokens).strip() or str(mention or "").strip()
+        if label and label[0].islower():
+            return label[0].upper() + label[1:]
+        return label
+
+    @classmethod
+    def _compare_mention_is_archived(cls, mention: str) -> bool:
+        return bool(
+            COMPARE_MENTION_ARCHIVED_RE.search(
+                cls._normalize_product_dialog_text(mention)
+            )
+        )
+
+    @classmethod
+    def _compare_not_found_message(cls, resolutions: Dict[str, Any] | None) -> str | None:
+        """Сообщение, если в сравнении есть not_found и нет ambiguous."""
+        items = resolutions.get("items") if isinstance(resolutions, dict) else None
+        if not isinstance(items, list) or not items:
+            return None
+        statuses = [str(item.get("status") or "") for item in items if isinstance(item, dict)]
+        if "error" in statuses or "ambiguous" in statuses:
+            return None
+        missing = [
+            item
+            for item in items
+            if isinstance(item, dict) and item.get("status") == "not_found"
+        ]
+        if not missing:
+            return None
+        lines = []
+        for item in missing:
+            mention = str(item.get("mention") or "").strip()
+            label = cls._compare_mention_display_label(mention) or "продукт"
+            template = (
+                PRODUCT_COMPARE_NOT_FOUND_IN_ARCHIVE
+                if cls._compare_mention_is_archived(mention)
+                else PRODUCT_COMPARE_NOT_FOUND
+            )
+            lines.append(template.format(label=label))
+        return "\n".join(lines)
+
+    @classmethod
+    def _compare_status_places(cls, requested_status: str | None) -> tuple[str, str]:
+        if requested_status == "archived":
+            return "в архиве", "действующих"
+        return "в действующих", "архивных"
+
+    @classmethod
+    def _compare_fallback_clarification(
+        cls,
+        resolutions: Dict[str, Any] | None,
+    ) -> Dict[str, Any] | None:
+        """Уточнение, если продукт нашёлся только в другом каталоге и вариантов несколько."""
+        items = resolutions.get("items") if isinstance(resolutions, dict) else None
+        if not isinstance(items, list) or not items:
+            return None
+        fallback_items = [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and item.get("status") == "ambiguous"
+            and item.get("found_via_fallback")
+        ]
+        if not fallback_items:
+            return None
+        messages: List[str] = []
+        options: List[Dict[str, str]] = []
+        for item in fallback_items:
+            mention = str(item.get("mention") or "").strip()
+            label = cls._compare_mention_display_label(mention) or "продукт"
+            requested_place, fallback_place = cls._compare_status_places(
+                item.get("requested_status")
+            )
+            messages.append(
+                PRODUCT_COMPARE_FALLBACK_CANDIDATES.format(
+                    label=label,
+                    requested_place=requested_place,
+                    fallback_place=fallback_place,
+                )
+            )
+            options.extend(cls._normalize_dialog_products(item.get("options") or []))
+        if not options:
+            return None
+        return {
+            "mode": "needs_clarification",
+            "message": "\n".join(messages),
+            "clarification_options": options,
+            "resolved_product": None,
+            "products": [],
+        }
+
+    @classmethod
+    def _compare_fallback_notice(cls, resolutions: Dict[str, Any] | None) -> str | None:
+        """Предупреждение, если сравнение идёт с продуктом из другого каталога."""
+        items = resolutions.get("items") if isinstance(resolutions, dict) else None
+        if not isinstance(items, list):
+            return None
+        lines: List[str] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("status") != "resolved":
+                continue
+            if not item.get("found_via_fallback"):
+                continue
+            mention = str(item.get("mention") or "").strip()
+            label = cls._compare_mention_display_label(mention) or "продукт"
+            requested_place, fallback_place = cls._compare_status_places(
+                item.get("requested_status")
+            )
+            candidate = cls._format_clarification_option(
+                {
+                    "code": item.get("product_code") or "",
+                    "name": item.get("product_name") or "",
+                    "is_active": item.get("is_active") or "",
+                }
+            )
+            header = PRODUCT_COMPARE_FALLBACK_FOUND.format(
+                label=label,
+                requested_place=requested_place,
+                fallback_place=fallback_place,
+            )
+            lines.append("\n".join([header, candidate] if candidate else [header]))
+        return "\n\n".join(lines) if lines else None
+
     @staticmethod
     def _normalize_product_dialog_text(text: str) -> str:
         return RE_CLEAN_SPACES.sub(" ", str(text or "").lower().replace("ё", "е")).strip()
@@ -1031,7 +1186,7 @@ class RootAgent(BaseAgent):
                 ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
                     "last_mode": "product_filter",
                     "products": products,
-                    "selected_product": None,
+                    "selected_product": products[0] if len(products) == 1 else None,
                 }
             else:
                 self._clear_product_dialog_context(ctx)
@@ -1830,8 +1985,11 @@ class RootAgent(BaseAgent):
                 dict(ctx.session.state),
             )
 
-        # 2. Явный запрос списка/архива/фильтра
-        if RE_EXPLICIT_FILTER.search(normalized):
+        # 2. Явный запрос списка/архива/фильтра.
+        # «сравни архивные A и B» — сравнение, не список архивных продуктов.
+        if RE_EXPLICIT_FILTER.search(normalized) and not RE_COMPARISON.search(
+            normalized
+        ):
             return validate_dispatcher_result(
                 {
                     "status": "ok",
@@ -2887,6 +3045,32 @@ class RootAgent(BaseAgent):
         ctx.session.state["product_filter_search_query"] = effective_search_query
         await self._prepare_product_resolution_state(ctx, effective_search_query, intent)
 
+        if intent == "product_compare":
+            resolutions = ctx.session.state.get("product_resolutions")
+            fallback_clarification = self._compare_fallback_clarification(resolutions)
+            if fallback_clarification:
+                ctx.session.state["_root_final_text"] = self._format_product_answer(
+                    fallback_clarification
+                )
+                self._store_product_dialog_context(ctx, fallback_clarification)
+                ctx.session.state.pop("_bot_action", None)
+                return
+            missing_message = self._compare_not_found_message(resolutions)
+            if missing_message:
+                product_result = {
+                    "mode": "no_data",
+                    "message": missing_message,
+                    "clarification_options": [],
+                    "resolved_product": None,
+                    "products": [],
+                }
+                ctx.session.state["_root_final_text"] = self._format_product_answer(
+                    product_result
+                )
+                self._store_product_dialog_context(ctx, product_result)
+                ctx.session.state.pop("_bot_action", None)
+                return
+
         async for event in self._run_json_leaf_agent(
             ctx=ctx,
             agent=self.product_filter_content_agent,
@@ -2929,6 +3113,14 @@ class RootAgent(BaseAgent):
             product_result,
             resolved_products=self._resolved_products_for_clarification_filter(ctx),
         )
+        if intent == "product_compare":
+            fallback_notice = self._compare_fallback_notice(
+                ctx.session.state.get("product_resolutions")
+            )
+            if fallback_notice:
+                ctx.session.state["_root_final_text"] = "\n\n".join(
+                    [fallback_notice, ctx.session.state["_root_final_text"]]
+                )
         self._store_product_dialog_context(ctx, product_result)
         # сохраняем last_product, если агент выбрал конкретный продукт
         self._set_last_product_from_result(

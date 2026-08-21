@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
 import asyncpg
@@ -268,6 +268,45 @@ PRODUCT_STATUS_MODIFIER_RE = re.compile(
     r"^(?:активн\w*|архивн\w*|действующ\w*|архив(?:а|е|ом|у)?)$",
     flags=re.IGNORECASE,
 )
+COMPARE_MENTION_ARCHIVE_RE = re.compile(
+    r"\bархив(?:а|е|ом|у)\b",
+    flags=re.IGNORECASE,
+)
+# «год» / «года» без числа вроде «на год» → «1 год»; «3 года» и «три года» не трогаем.
+BARE_YEAR_UNIT_RE = re.compile(
+    r"(?<!\d )(?<!\d)\bгод(?:а|у)?\b",
+    flags=re.IGNORECASE,
+)
+DURATION_UNITS_RE = r"(?:год(?:а|у)?|лет|месяц(?:а|ев)?|мес|year|years|month|months)"
+DURATION_NUMBER_WORDS = {
+    "тридцать шесть": "36",
+    "двадцать четыре": "24",
+    "восемнадцать": "18",
+    "двенадцать": "12",
+    "одиннадцать": "11",
+    "пятнадцать": "15",
+    "тридцать": "30",
+    "двадцать": "20",
+    "десять": "10",
+    "девять": "9",
+    "восемь": "8",
+    "семь": "7",
+    "шесть": "6",
+    "пять": "5",
+    "четыре": "4",
+    "три": "3",
+    "два": "2",
+    "один": "1"
+}
+DURATION_NUMBER_WORD_RE = re.compile(
+    r"\b("
+    + "|".join(
+        re.escape(word)
+        for word in sorted(DURATION_NUMBER_WORDS, key=len, reverse=True)
+    )
+    + rf")\b(?=\s+{DURATION_UNITS_RE}\b)",
+    flags=re.IGNORECASE,
+)
 
 COMPARE_SPLIT_RE = re.compile(
     r"\s+(?:and|vs|versus|и|или)\s+|[,;/]+",
@@ -353,6 +392,8 @@ class ProductResolveResult:
     is_active: str | None = None
     options: list[ProductCandidate] | None = None
     error: str | None = None
+    requested_status: StatusPreference = None
+    found_via_fallback: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """Преобразует результат в JSON-совместимый словарь."""
@@ -364,6 +405,8 @@ class ProductResolveResult:
             "is_active": self.is_active,
             "options": [candidate.to_dict() for candidate in self.options or []],
             "error": self.error,
+            "requested_status": self.requested_status,
+            "found_via_fallback": self.found_via_fallback,
         }
 
 
@@ -667,13 +710,68 @@ class ProductResolverService:
         mention: str,
         *,
         status_preference: StatusPreference,
+        announce_fallback: bool = False,
     ) -> ProductResolveResult:
         """Выполняет каскад поиска без общего обработчика ошибок публичного метода."""
-        for product_status in self._status_search_passes(status_preference):
-            result = await self._resolve_product_for_status(mention, product_status)
-            if result.status != "not_found":
-                return result
-        return ProductResolveResult(status="not_found", mention=mention)
+        if not announce_fallback:
+            for product_status in self._status_search_passes(status_preference):
+                result = await self._resolve_product_for_status(mention, product_status)
+                if result.status != "not_found":
+                    return result
+            return ProductResolveResult(status="not_found", mention=mention)
+
+        primary_status, fallback_status = self._compare_search_catalogs(
+            status_preference
+        )
+        requested_status = (
+            "archived" if primary_status == ARCHIVED_PRODUCT_STATUS else "active"
+        )
+        if primary_status is None and fallback_status is None:
+            result = await self._resolve_product_for_status(mention, None)
+            return self._with_status_meta(
+                result,
+                requested_status=None,
+                found_via_fallback=False,
+            )
+
+        primary = await self._resolve_product_for_status(mention, primary_status)
+        if primary.status != "not_found" or fallback_status is None:
+            return self._with_status_meta(
+                primary,
+                requested_status=requested_status,
+                found_via_fallback=False,
+            )
+
+        fallback = await self._resolve_product_for_status(mention, fallback_status)
+        return self._with_status_meta(
+            fallback,
+            requested_status=requested_status,
+            found_via_fallback=fallback.status != "not_found",
+        )
+
+    @staticmethod
+    def _compare_search_catalogs(
+        preference: StatusPreference,
+    ) -> tuple[str | None, str | None]:
+        """Основной каталог и запасной (архив ↔ действующие)."""
+        if preference == "all":
+            return (None, None)
+        if preference == "archived":
+            return (ARCHIVED_PRODUCT_STATUS, ACTIVE_PRODUCT_STATUS)
+        return (ACTIVE_PRODUCT_STATUS, ARCHIVED_PRODUCT_STATUS)
+
+    @staticmethod
+    def _with_status_meta(
+        result: ProductResolveResult,
+        *,
+        requested_status: StatusPreference,
+        found_via_fallback: bool,
+    ) -> ProductResolveResult:
+        return replace(
+            result,
+            requested_status=requested_status,
+            found_via_fallback=found_via_fallback,
+        )
 
     async def _resolve_product_for_status(
         self,
@@ -716,55 +814,78 @@ class ProductResolverService:
 
         return ProductResolveResult(status="not_found", mention=mention)
 
+    async def _resolve_mentions_with_preferences(
+        self,
+        mentions: list[str],
+        preferences: list[StatusPreference],
+        *,
+        announce_fallback: bool = False,
+    ) -> ProductMultiResolveResult:
+        """Разрешает каждое упоминание со своим статусом, без общего прохода."""
+        results: list[ProductResolveResult] = []
+        for mention, preference in zip(mentions, preferences):
+            try:
+                results.append(
+                    await self._resolve_product_safe(
+                        mention,
+                        status_preference=preference,
+                        announce_fallback=announce_fallback,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Product mention resolve failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                results.append(
+                    ProductResolveResult(
+                        status="error",
+                        mention=mention,
+                        error=type(exc).__name__,
+                    )
+                )
+                return ProductMultiResolveResult(status="error", items=results)
+
+        results = self._exclude_resolved_from_ambiguous_mentions(results)
+        return ProductMultiResolveResult(
+            status=self._multi_status(results),
+            items=results,
+        )
+
     async def resolve_product_mentions(
         self,
         mentions: list[str],
         *,
         status_preference: StatusPreference = None,
+        shared_status_preference: StatusPreference = None,
     ) -> ProductMultiResolveResult:
         """Разрешает уже выделенный список упоминаний продуктов."""
         normalized_mentions = self._deduplicate_mentions(mentions)
-        last_results = [
-            ProductResolveResult(status="not_found", mention=mention)
+        mention_preferences = [
+            self._detect_compare_mention_status_preference(mention)
             for mention in normalized_mentions
         ]
-        for product_status in self._status_search_passes(status_preference):
-            pass_preference = self._preference_for_product_status(product_status)
-            results: list[ProductResolveResult] = []
-            for mention in normalized_mentions:
-                try:
-                    results.append(
-                        await self._resolve_product_safe(
-                            mention,
-                            status_preference=pass_preference,
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Product mention resolve failed: %s",
-                        exc,
-                        exc_info=True,
-                    )
-                    results.append(
-                        ProductResolveResult(
-                            status="error",
-                            mention=mention,
-                            error=type(exc).__name__,
-                        )
-                    )
-                    return ProductMultiResolveResult(status="error", items=results)
-
-            results = self._exclude_resolved_from_ambiguous_mentions(results)
-            last_results = results
-            result = ProductMultiResolveResult(
-                status=self._multi_status(results),
-                items=results,
-            )
-            if result.status != "not_found":
-                return result
-        return ProductMultiResolveResult(
-            status="not_found",
-            items=self._exclude_resolved_from_ambiguous_mentions(last_results),
+        shared_preference = shared_status_preference
+        if shared_preference is None and any(
+            self._has_plural_archived_modifier(mention)
+            for mention in normalized_mentions
+        ):
+            shared_preference = "archived"
+        if shared_preference is not None:
+            mention_preferences = [
+                preference or shared_preference
+                for preference in mention_preferences
+            ]
+        elif (
+            status_preference is not None
+            and all(preference is None for preference in mention_preferences)
+        ):
+            mention_preferences = [status_preference] * len(mention_preferences)
+        return await self._resolve_mentions_with_preferences(
+            normalized_mentions,
+            mention_preferences,
+            announce_fallback=True,
         )
 
     async def resolve_products(
@@ -807,9 +928,27 @@ class ProductResolverService:
                         )
                     ],
                 )
+        mention_has_status = any(
+            self._detect_compare_mention_status_preference(mention) is not None
+            for mention in mentions
+        )
+        shared_status_preference = (
+            "archived"
+            if self._has_plural_archived_modifier(query)
+            else None
+        )
         return await self.resolve_product_mentions(
             mentions,
-            status_preference=self._detect_status_preference(query),
+            status_preference=(
+                None
+                if (
+                    len(mentions) > 1
+                    or mention_has_status
+                    or shared_status_preference is not None
+                )
+                else self._detect_status_preference(query)
+            ),
+            shared_status_preference=shared_status_preference,
         )
 
     # Разрешение фильтров, которые могут вернуть несколько продуктов.
@@ -1206,6 +1345,27 @@ class ProductResolverService:
         return candidates[0].score - candidates[1].score >= self.fuzzy_score_gap
 
     @classmethod
+    def _has_plural_archived_modifier(cls, value: str) -> bool:
+        """Множественное «архивные» — общий статус пары в сравнении."""
+        return bool(
+            re.search(r"\bархивные\b", cls.normalize_product_text(value))
+        )
+
+    @classmethod
+    def _detect_compare_mention_status_preference(
+        cls,
+        value: str,
+    ) -> StatusPreference:
+        """Статус одного упоминания в сравнении, включая «из архива» / «в архиве»."""
+        preference = cls._detect_status_preference(value)
+        if preference is not None:
+            return preference
+        # После вырезания стоп-слов «из»/«в» остаётся «архива» / «архиве».
+        if COMPARE_MENTION_ARCHIVE_RE.search(cls.normalize_product_text(value)):
+            return "archived"
+        return None
+
+    @classmethod
     def _detect_status_preference(
         cls,
         value: str,
@@ -1348,12 +1508,13 @@ class ProductResolverService:
     @classmethod
     def _candidate_queries(cls, query: str) -> list[str]:
         """Формирует варианты поискового запроса: очищенный, исходный и выделенные части."""
+        query = cls._normalize_query_duration(str(query or "").strip())
         cleaned_query = cls._remove_query_noise(query)
         candidates = [
             cleaned_query,
             cls._remove_filter_modifiers(cleaned_query),
         ]
-        candidates.append(str(query or "").strip())
+        candidates.append(query)
         candidates.extend(cls.extract_product_mentions(query))
         return cls._deduplicate_query_candidates(candidates)
 
@@ -1372,16 +1533,31 @@ class ProductResolverService:
             for token in normalized.split()
             if token not in PRODUCT_QUERY_STOPWORDS or token in preserved
         ]
-        return " ".join(tokens).strip()
+        return cls._normalize_query_duration(" ".join(tokens).strip())
+
+    @classmethod
+    def _normalize_query_duration(cls, value: str) -> str:
+        """Приводит срок к виду каталога: «три года» → «3 года», голое «год» → «1 год»."""
+        text = str(value or "").strip().replace("ё", "е").replace("Ё", "Е")
+        if not text:
+            return text
+
+        def _digit_for_word(match: re.Match[str]) -> str:
+            word = match.group(1).casefold()
+            return DURATION_NUMBER_WORDS.get(word, match.group(1))
+
+        text = DURATION_NUMBER_WORD_RE.sub(_digit_for_word, text)
+        return BARE_YEAR_UNIT_RE.sub("1 год", text)
 
     @classmethod
     def _whole_phrase_queries(cls, query: str) -> list[str]:
         """Формирует варианты целого названия, сохраняя союзы внутри него."""
+        query = cls._normalize_query_duration(str(query or "").strip())
         cleaned = cls._remove_query_noise(query, preserve_connectors=True)
         return cls._deduplicate_query_candidates(
             [
                 cls._remove_filter_modifiers(cleaned),
-                str(query or "").strip(),
+                query,
             ]
         )
 
@@ -1478,20 +1654,28 @@ class ProductResolverService:
                 updated.append(item)
                 continue
             if len(remaining) == 1:
-                updated.append(cls._resolved_result(item.mention, remaining[0]))
+                updated.append(
+                    replace(
+                        cls._resolved_result(item.mention, remaining[0]),
+                        requested_status=item.requested_status,
+                        found_via_fallback=item.found_via_fallback,
+                    )
+                )
                 continue
             if not remaining:
                 updated.append(
-                    ProductResolveResult(status="not_found", mention=item.mention)
+                    replace(
+                        item,
+                        status="not_found",
+                        product_code=None,
+                        product_name=None,
+                        is_active=None,
+                        options=None,
+                        found_via_fallback=False,
+                    )
                 )
                 continue
-            updated.append(
-                ProductResolveResult(
-                    status="ambiguous",
-                    mention=item.mention,
-                    options=remaining,
-                )
-            )
+            updated.append(replace(item, options=remaining))
         return updated
 
     @staticmethod
