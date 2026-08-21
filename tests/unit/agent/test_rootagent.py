@@ -990,7 +990,7 @@ async def test_handle_product_info_appends_clarification_options() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_product_filter_stores_products_and_adds_followup_question() -> None:
+async def test_handle_product_filter_stores_single_product_without_followup_question() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
     calls = []
@@ -1046,7 +1046,7 @@ async def test_handle_product_filter_stores_products_and_adds_followup_question(
     ]
 
     assert events == []
-    assert rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
+    assert rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION not in ctx.session.state["_root_final_text"] and rootagent_module.PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
     assert ctx.session.state["last_product"] == (
         "Bundle Fort Knox 3+36 месяцев (код 2867)"
     )
@@ -1117,6 +1117,7 @@ async def test_handle_product_filter_does_not_select_among_several_products() ->
     stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
     assert stored["selected_product"] is None
     assert len(stored["products"]) == 2
+    assert rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION in ctx.session.state["_root_final_text"]
 
 
 @pytest.mark.unit
@@ -1225,6 +1226,48 @@ async def test_handle_product_filter_attribute_values_stores_context_and_formats
         "products": [],
         "selected_product": None,
     }
+
+
+@pytest.mark.unit
+def test_format_product_answer_skips_filter_followup_for_single_product() -> None:
+    answer = RootAgent._format_product_answer(
+        {
+            "mode": "product_filter",
+            "message": (
+                "Найдено продуктов: 1.\n"
+                "7698 - Архивный. Unit Linked Стратегия роста"
+            ),
+            "products": [
+                {
+                    "code": "7698",
+                    "name": "Unit Linked Стратегия роста",
+                    "is_active": "Архивный",
+                }
+            ],
+        }
+    )
+
+    assert answer == (
+        "Найдено продуктов: 1.\n"
+        "7698 - Архивный. Unit Linked Стратегия роста"
+    )
+    assert rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION not in answer and rootagent_module.PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION in answer
+
+
+@pytest.mark.unit
+def test_format_product_answer_keeps_filter_followup_for_several_products() -> None:
+    answer = RootAgent._format_product_answer(
+        {
+            "mode": "product_filter",
+            "message": "Найдено продуктов: 2.",
+            "products": [
+                {"code": "7698", "name": "Unit Linked Стратегия роста"},
+                {"code": "7695", "name": "Юнит Линк Стратегия роста"},
+            ],
+        }
+    )
+
+    assert answer.endswith(rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION)
 
 
 @pytest.mark.unit

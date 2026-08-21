@@ -48,6 +48,7 @@ PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
     "Могу показать карточку продукта или скачать комплект. Какой продукт тебя интересует ?"
 )
+PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION = "Могу показать карточку продукта или скачать комплект."
 PRODUCT_ATTRIBUTE_FOLLOWUP_QUESTION = (
     "Могу показать продукты с этими свойствами. Какое свойство тебя интересует ?"
 )
@@ -915,8 +916,13 @@ class RootAgent(BaseAgent):
     ) -> str:
         message = format_text_answer(product_result["message"])
         mode = product_result.get("mode")
-        if mode == "product_filter" and PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
-            message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
+        if mode == "product_filter":
+            products = product_result.get("products")
+            product_count = len(products) if isinstance(products, list) else 0
+            if product_count == 1:
+                return PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION
+            if PRODUCT_FILTER_FOLLOWUP_QUESTION not in message:
+                message = "\n\n".join([message, PRODUCT_FILTER_FOLLOWUP_QUESTION])
             return message
 
         if mode == "product_attribute_values":
