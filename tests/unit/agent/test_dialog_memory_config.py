@@ -104,7 +104,7 @@ def test_owasp_generation_settings_defaults_support_thinking(monkeypatch) -> Non
     assert config.OWASP_TEMPERATURE == 0.6
     assert config.OWASP_TOP_P == 0.95
     assert config.OWASP_TOP_K == 20
-    assert config.OWASP_MAX_OUTPUT_TOKENS == 2304
+    assert config.OWASP_MAX_OUTPUT_TOKENS == 3000
     assert config.OWASP_THINKING_TOKEN_BUDGET == 2048
     assert config.OWASP_ENABLE_THINKING is True
 
@@ -115,7 +115,7 @@ def test_owasp_generation_settings_read_environment(monkeypatch) -> None:
     monkeypatch.setenv("OWASP_TEMPERATURE", "0.2")
     monkeypatch.setenv("OWASP_TOP_P", "0.8")
     monkeypatch.setenv("OWASP_TOP_K", "20")
-    monkeypatch.setenv("OWASP_MAX_OUTPUT_TOKENS", "128")
+    monkeypatch.setenv("OWASP_MAX_OUTPUT_TOKENS", "3000")
     monkeypatch.setenv("OWASP_THINKING_TOKEN_BUDGET", "512")
     monkeypatch.setenv("OWASP_ENABLE_THINKING", "false")
 
@@ -124,7 +124,7 @@ def test_owasp_generation_settings_read_environment(monkeypatch) -> None:
     assert config.OWASP_TEMPERATURE == 0.2
     assert config.OWASP_TOP_P == 0.8
     assert config.OWASP_TOP_K == 20
-    assert config.OWASP_MAX_OUTPUT_TOKENS == 128
+    assert config.OWASP_MAX_OUTPUT_TOKENS == 3000
     assert config.OWASP_THINKING_TOKEN_BUDGET == 512
     assert config.OWASP_ENABLE_THINKING is False
 

@@ -31,6 +31,7 @@ def _load_dispatcher_module():
 
     config_stub = types.ModuleType("agent.config")
     config_stub.DISPATCHER_TEMPERATURE = 0.2
+    config_stub.DISPATCHER_MAX_OUTPUT_TOKENS = 4000
     config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
     config_stub.LLM_PRESENCE_PENALTY = 1.5
 
