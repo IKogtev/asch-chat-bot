@@ -1,8 +1,4 @@
-"""Канально-нейтральный ход диалога: ADK /run → текст + _bot_action.
-
-Первая версия не исполняет kit/download (это остаётся у бота / следующих итераций BFF).
-История пишется с channel=web (или переданным каналом), отдельно от Telegram/MAX.
-"""
+"""Канально-нейтральный ход диалога: ADK /run → apply_bot_action → blocks."""
 
 from __future__ import annotations
 
@@ -11,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from bot.services.adk_events import extract_bot_action
+from bot.services.bot_actions import FileUrlIssuer, apply_bot_action
 from bot.services.database import AdkApiClient
 from utils.channel_session import build_session_id
 from utils.logger import setup_logger
@@ -30,13 +27,14 @@ class TurnResult:
     bot_action: Optional[dict[str, Any]] = field(default=None, repr=False)
 
 
-def build_blocks(answer: str, bot_action: dict[str, Any] | None) -> list[dict[str, Any]]:
+def build_blocks(answer: str, documents: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     text = (answer or "").strip()
     if text:
         blocks.append({"type": "text", "content": text})
-    if bot_action and bot_action.get("type"):
-        blocks.append({"type": "documents", "items": []})
+    items = [item for item in (documents or []) if item.get("name")]
+    if items:
+        blocks.append({"type": "documents", "items": items})
     return blocks
 
 
@@ -49,8 +47,9 @@ async def run_turn(
     profile: Optional[dict[str, Any]] = None,
     store=None,
     platform_user_id: int | str = 0,
+    file_urls: FileUrlIssuer | None = None,
 ) -> TurnResult:
-    """Один ход: новая ADK-сессия как у бота, ответ нормализуется в blocks."""
+    """Один ход: новая ADK-сессия как у бота, action → files, ответ в blocks."""
     user_text = (text or "").strip()
     if not user_text:
         raise ValueError("empty_message")
@@ -80,20 +79,34 @@ async def run_turn(
     answer, events = await adk.run(user_id=adk_user_id, session_id=session_id, text=user_text)
     bot_action = extract_bot_action(events)
     if bot_action:
-        logger.info("run_turn bot_action type=%s (files not served in v0)", bot_action.get("type"))
+        logger.info("run_turn bot_action type=%s", bot_action.get("type"))
+
+    delivery = await apply_bot_action(
+        store,
+        user_id=adk_user_id,
+        session_id=session_id,
+        answer=answer or "",
+        bot_action=bot_action if isinstance(bot_action, dict) else None,
+        file_urls=file_urls,
+    )
+    if delivery.replace_answer:
+        final_text = delivery.text
+    else:
+        final_text = delivery.text or (answer or "")
 
     if store is not None:
         await store.append(
             platform_user_id, "user", user_text, global_user_id, channel=channel
         )
+        history_text = final_text or (answer or "")
         await store.append(
-            platform_user_id, "model", answer or "", global_user_id, channel=channel
+            platform_user_id, "model", history_text, global_user_id, channel=channel
         )
 
     return TurnResult(
         message_id=message_id,
         session_id=session_id,
         status="complete",
-        blocks=build_blocks(answer or "", bot_action),
+        blocks=build_blocks(final_text, delivery.documents),
         bot_action=bot_action if isinstance(bot_action, dict) else None,
     )

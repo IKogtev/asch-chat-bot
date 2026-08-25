@@ -19,6 +19,10 @@ class WebBffSettings:
     adk_app_name: str = os.getenv("ADK_APP_NAME", "agent").strip() or "agent"
     adk_timeout_sec: int = int(os.getenv("ADK_TIMEOUT_SEC", "180"))
     allow_dev_auth: bool = _as_bool(os.getenv("WEB_BFF_ALLOW_DEV_AUTH"), default=False)
+    kb_manager_url: str = os.getenv("KB_MANAGER_URL", "http://kb-manager:5000").strip()
+    kb_manager_token: str | None = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
+    downloads_dir: str = os.getenv("DOWNLOADS_DIR", "/app/data/upload/web_files").strip()
+    file_secret: str = os.getenv("WEB_BFF_FILE_SECRET", "").strip() or "dev-file-secret-change-me"
     cors_origins: list[str] = [
         part.strip()
         for part in (os.getenv("WEB_BFF_CORS_ORIGINS") or "").split(",")

@@ -12,18 +12,22 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+from urllib.parse import unquote
 
 import asyncpg
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from bot.services.database import AdkApiClient, PostgresChatStore
 from bot.services.dialog import CHANNEL_WEB, run_turn
+from utils.logger import setup_logger
 from web_bff.auth_dev import require_dev_user
 from web_bff.config import settings
+from web_bff.files import FileTokenError, FileUrlIssuer, resolve_kit_file
 from web_bff.users import get_user_by_id, profile_for_adk
-from utils.logger import setup_logger
 
 logger = setup_logger("web_bff", "web_bff.log")
 
@@ -52,9 +56,19 @@ async def lifespan(app: FastAPI):
     await adk.open()
     store = PostgresChatStore(settings.database_url)
     store.pool = pool
+    file_urls = FileUrlIssuer(settings.file_secret)
+    from utils.document_handler import DocumentHandler
+
+    doc_handler = DocumentHandler(
+        kb_manager_url=settings.kb_manager_url,
+        kb_manager_token=settings.kb_manager_token,
+        downloads_dir=settings.downloads_dir,
+    )
     app.state.pool = pool
     app.state.store = store
     app.state.adk = adk
+    app.state.file_urls = file_urls
+    app.state.doc_handler = doc_handler
     logger.info(
         "web-bff started adk=%s app=%s dev_auth=%s",
         settings.adk_api_base,
@@ -136,6 +150,7 @@ async def post_message(
             profile=profile_for_adk(user),
             store=request.app.state.store,
             platform_user_id=0,
+            file_urls=request.app.state.file_urls,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -163,6 +178,48 @@ async def reset_dialog(request: Request, user_id: str = Depends(require_dev_user
     await store.reset("0", user["id"], channel=CHANNEL_WEB)
     await store.reset_search_state_for_channel(user["id"], CHANNEL_WEB)
     return {"status": "ok"}
+
+
+@app.get("/files/{token}")
+async def get_file(
+    token: str,
+    request: Request,
+    user_id: str = Depends(require_dev_user),
+):
+    try:
+        payload = request.app.state.file_urls.parse(unquote(token))
+    except FileTokenError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
+    if str(payload.get("u") or "") != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="file_forbidden")
+
+    filename = str(payload.get("n") or "file")
+    kind = payload.get("k")
+    if kind == "kit":
+        try:
+            path = resolve_kit_file(str(payload.get("root") or ""), str(payload.get("p") or ""))
+        except FileTokenError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
+        return FileResponse(path, filename=filename, media_type="application/octet-stream")
+
+    if kind == "kb":
+        document_id = str(payload.get("id") or "")
+        if not document_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
+        file_path = await request.app.state.doc_handler.download_document(document_id)
+        if file_path is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail="file_unavailable"
+            )
+        cleanup = BackgroundTask(lambda p=file_path: p.unlink(missing_ok=True))
+        return FileResponse(
+            file_path,
+            filename=filename,
+            media_type="application/octet-stream",
+            background=cleanup,
+        )
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
 
 
 def main() -> None:
