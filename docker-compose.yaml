@@ -235,7 +235,32 @@ services:
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
-    
+
+  web-bff:
+    build:
+      context: .
+      dockerfile: Dockerfile.web-bff
+    container_name: aszh-web-bff
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      adk-agent:
+        condition: service_started
+    ports:
+      - "8010:8010"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - ADK_API_BASE=http://adk-agent:8000
+      - ADK_APP_NAME=agent
+      - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
+      - WEB_BFF_ALLOW_DEV_AUTH=true
+      - WEB_BFF_PORT=8010
+    command: ["sh", "-c", "cd /app && exec python -m web_bff.app"]
+    networks:
+      - aszh-bot-network
 
   qdrant:
     image: qdrant/qdrant:v1.16.3
