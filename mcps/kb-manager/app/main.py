@@ -1,5 +1,5 @@
 from fastapi import (FastAPI, UploadFile, File, HTTPException, Form,
-                      Request, Depends, BackgroundTasks)
+                      Request, Depends, BackgroundTasks, Header)
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (
     HTMLResponse, JSONResponse, FileResponse,
@@ -24,7 +24,8 @@ from app.services.adk_db_stats_service import AdkDbStatsService
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
     DocumentInfo, SearchRequest, SearchResult, SwitchCollectionRequest, 
-    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
+    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, 
+    SyncInterval, NotificationRequest
     )
 from contextlib import asynccontextmanager
 from utils.logger import setup_logger
@@ -125,6 +126,7 @@ async def auth_middleware(request: Request, call_next):
                 return response
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
 # AUTH config
+LIFEPOINT_API_TOKEN = os.getenv("LIFEPOINT_API_TOKEN")
 SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
 ALGORITHM = "HS256"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
@@ -1750,6 +1752,332 @@ async def send_news(
     except Exception as e:
         logger.error(f"News send error: {e}")
         raise HTTPException(500, str(e))
+
+#######################################
+# Работа с уведомлениями пользователям 
+#######################################
+
+async def verify_lifepoint_token(
+    authorization: str = Header(default=None)
+):
+    """
+    Проверка Bearer Token для внешнего API LifePoint.
+    """
+    if not LIFEPOINT_API_TOKEN:
+        logger.error(
+            "LIFEPOINT_API_TOKEN is not configured"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "API authentication is not configured"
+            }
+        )
+
+    # Заголовок отсутствует
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "UNAUTHORIZED",
+                "message": "Authorization header is required"
+            }
+        )
+
+    # Проверяем формат
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "UNAUTHORIZED",
+                "message": "Authorization must use Bearer scheme"
+            }
+        )
+
+    token = authorization[len("Bearer "):].strip()
+
+    # Проверяем токен
+    if token != LIFEPOINT_API_TOKEN:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "UNAUTHORIZED",
+                "message": "Invalid authentication credentials"
+            }
+        )
+
+    return True
+
+def lifepoint_error(
+    status_code: int,
+    code: str,
+    message: str
+):
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message
+            }
+        }
+    )
+
+
+@app.post("/api/v1/notifications")
+async def send_notification(data: NotificationRequest, _: bool = Depends(verify_lifepoint_token)):
+    """
+    Отправка персонального уведомления пользователю.
+    Пользователь определяется только по global_user_id.
+    """
+
+    if data.channel not in ("all", "telegram", "max"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_CHANNEL",
+                "message": "channel must be one of: all, telegram, max"
+            }
+        )
+
+    global_user_id = str(data.global_user_id)
+    results = {}
+    # TELEGRAM
+    if data.channel in ("all", "telegram"):
+        try:
+            resp = await http_client.post(
+                f"{TELEGRAM_BOT_API}/notify",
+                json={
+                    "global_user_id": global_user_id,
+                    "message": data.message
+                }
+            )
+            # Пользователь не найден
+            if resp.status_code == 404:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "USER_NOT_FOUND",
+                    "message": "User account not found"
+                }
+
+            # Пользователь заблокирован
+            elif resp.status_code == 409:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "USER_BLOCKED",
+                    "message": "User is blocked"
+                }
+
+            # Бот недоступен
+            elif resp.status_code == 503:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "BOT_UNAVAILABLE",
+                    "message": "Bot is currently unavailable"
+                }
+
+            # Успешная отправка
+            elif resp.status_code == 200:
+                results["telegram"] = resp.json()
+
+            # Остальные ошибки
+            else:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "TELEGRAM_API_ERROR",
+                    "message": "Telegram notification failed"
+                }
+
+        except Exception as e:
+
+            logger.error(
+                f"Telegram notification error: {e}",
+                exc_info=True
+            )
+    # max
+    if data.channel in ("all", "max"):
+        try:
+            resp = await http_client.post(
+                f"{MAX_BOT_API}/notify",
+                json={
+                    "global_user_id": global_user_id,
+                    "message": data.message
+                }
+            )
+            # Пользователь не найден
+            if resp.status_code == 404:
+                results["max"] = {
+                    "status": "error",
+                    "code": "USER_NOT_FOUND",
+                    "message": "User account not found"
+                }
+
+            # Пользователь заблокирован
+            elif resp.status_code == 409:
+                results["max"] = {
+                    "status": "error",
+                    "code": "USER_BLOCKED",
+                    "message": "User is blocked"
+                }
+
+            # Бот недоступен
+            elif resp.status_code == 503:
+                results["max"] = {
+                    "status": "error",
+                    "code": "BOT_UNAVAILABLE",
+                    "message": "Bot is currently unavailable"
+                }
+
+            # Успешная отправка
+            elif resp.status_code == 200:
+                results["max"] = resp.json()
+
+            # Остальные ошибки
+            else:
+                results["max"] = {
+                    "status": "error",
+                    "code": "MAX_API_ERROR",
+                    "message": "MAX notification failed"
+                }
+        except Exception as e:
+            logger.error(
+                f"MAX notification error: {e}"
+            )
+            results["max"] = {
+                "status": "error",
+                "code": "MAX_API_ERROR"
+            }
+    # Определяем успешные каналы
+    successful = [
+        channel
+        for channel, result in results.items()
+        if result.get("status") == "ok"
+    ]
+    # Если есть хотя бы один успешный канал
+    if successful:
+        return {
+            "status": "ok",
+            "global_user_id": global_user_id,
+            "sent_to": successful,
+            "results": results
+        }
+    # Все каналы завершились ошибкой
+    error_codes = [
+        result.get("code")
+        for result in results.values()
+    ]
+
+    # Пользователь вообще не найден
+    if error_codes and all(
+        code == "USER_NOT_FOUND"
+        for code in error_codes
+    ):
+        return lifepoint_error(
+            status_code=404,
+            code="USER_NOT_FOUND",
+            message="User with specified global_user_id was not found"
+        )
+
+    # Пользователь заблокирован
+    if error_codes and all(
+        code == "USER_BLOCKED"
+        for code in error_codes
+    ):
+        return lifepoint_error(
+            status_code=409,
+            code="USER_BLOCKED",
+            message="User is blocked"
+        )
+
+    # Все нужные боты недоступны
+    if error_codes and all(
+        code == "BOT_UNAVAILABLE"
+        for code in error_codes
+    ):
+        return lifepoint_error(
+            status_code=503,
+            code="BOT_UNAVAILABLE",
+            message="Notification service is temporarily unavailable"
+        )
+
+    # Остальные ошибки
+    return lifepoint_error(
+        status_code=500,
+        code="INTERNAL_ERROR",
+        message="Failed to send notification"
+    )
+
+@app.get("/api/v1/users")
+async def get_lifepoint_users(_: bool = Depends(verify_lifepoint_token)):
+    """
+    Внешний API LifePoint.
+
+    Возвращает только данные, предусмотренные
+    контрактом интеграции:
+    - global_user_id
+    - first_name
+    - last_name
+    - доступные платформы
+    """
+
+    try:
+        resp = await http_client.get(
+            f"{TELEGRAM_BOT_API}/api/subscribers"
+        )
+
+        if resp.status_code != 200:
+            logger.error(
+                f"Failed to get subscribers: "
+                f"{resp.status_code}"
+            )
+
+            return lifepoint_error(
+                500,
+                "INTERNAL_ERROR",
+                "Failed to get users"
+            )
+
+        users = resp.json()
+
+        result = []
+
+        for user in users:
+            accounts = []
+
+            for account in user.get("accounts", []):
+                platform = account.get("platform")
+
+                if platform in ("telegram", "max"):
+                    accounts.append({
+                        "platform": platform
+                    })
+
+            result.append({
+                "global_user_id": str(
+                    user["global_user_id"]
+                ),
+                "first_name": user.get("first_name"),
+                "last_name": user.get("last_name"),
+                "accounts": accounts
+            })
+
+        return {
+            "users": result
+        }
+
+    except Exception as e:
+        logger.error(
+            f"LifePoint users API error: {e}",
+            exc_info=True
+        )
+
+        return lifepoint_error(
+            500,
+            "INTERNAL_ERROR",
+            "Internal server error"
+        )
 
 ###############################
 # Работа с промптами ADK Agent 

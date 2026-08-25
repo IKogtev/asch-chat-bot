@@ -15,11 +15,16 @@ from maxapi.enums import TextFormat
 import random
 import tempfile
 from maxapi.types import InputMedia
+from pydantic import BaseModel, Field
 
 # Настройка логгера
 logger = setup_logger('broadcasting', 'broadcast.log')
 #  логгер событий
 eventlogger = EventLogger()
+# модель входных данных на api
+class DirectNotificationRequest(BaseModel):
+    global_user_id: str
+    message: str = Field(..., min_length=1)
 
 def create_broadcast_app(
     news_store,
@@ -33,6 +38,49 @@ def create_broadcast_app(
 ):
     app = FastAPI(title="Bot Broadcast API")
     logger.info(f"Источник для всех {source}")
+
+
+
+    @app.post("/notify")
+    async def notify_user(data: DirectNotificationRequest):
+        """
+        Отправить персональное уведомление пользователю
+        по global_user_id.
+        """
+
+        result = await send_to_global_user(
+            global_user_id=data.global_user_id,
+            text=data.message,
+            bot_holder=bot_holder,
+            subscriber_store=subscriber_store,
+            source=source,
+        )
+
+        if result["status"] == "ok":
+            return result
+
+        if result["code"] == "USER_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail=result
+            )
+
+        if result["code"] == "USER_BLOCKED":
+            raise HTTPException(
+                status_code=409,
+                detail=result
+            )
+
+        if result["code"] == "BOT_UNAVAILABLE":
+            raise HTTPException(
+                status_code=503,
+                detail=result
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail=result
+        )
 
     @app.post("/broadcast")
     async def broadcast(
@@ -239,7 +287,6 @@ def create_broadcast_app(
 
                 result.append({
                     "global_user_id": str(r["global_user_id"]), # Явно в string для JS
-                    "phone_number": r["phone_number"],
                     "username": r["display_username"],
                     "first_name": r["display_first_name"],
                     "last_name": r["display_last_name"],
@@ -362,6 +409,175 @@ def create_broadcast_app(
 ######################################
 # обработчики новостей
 ######################################
+
+async def send_to_global_user(
+    global_user_id: str,
+    text: str,
+    bot_holder,
+    subscriber_store,
+    source: str = "telegram",
+):
+    """
+    Отправляет персональное уведомление конкретному пользователю
+    по его global_user_id.
+
+    global_user_id никогда не передаётся напрямую в Telegram/MAX.
+    Сначала он преобразуется через user_accounts в platform_user_id.
+    """
+    # ---------------------------------------------------------
+    # 1. Проверяем, что бот доступен
+    # ---------------------------------------------------------
+    bot = bot_holder.instance
+    if not bot:
+        logger.warning(
+            f"[DIRECT NOTIFY] bot is None, "
+            f"source={source}, global_user_id={global_user_id}"
+        )
+
+        return {
+            "status": "error",
+            "code": "BOT_UNAVAILABLE",
+            "message": "Bot is currently unavailable"
+        }
+
+    # ---------------------------------------------------------
+    # 2. Получаем platform_user_id по global_user_id
+    # ---------------------------------------------------------
+    accounts = await subscriber_store.get_accounts_by_global_id(
+        global_user_id
+    )
+    account = next(
+        (
+            account
+            for account in accounts
+            if account["platform"] == source
+        ),
+        None
+    )
+
+    # ---------------------------------------------------------
+    # 3. Пользователь/аккаунт не найден
+    # ---------------------------------------------------------
+    if not account:
+        logger.warning(
+            f"[DIRECT NOTIFY] account not found: "
+            f"global_user_id={global_user_id}, source={source}"
+        )
+
+        return {
+            "status": "error",
+            "code": "USER_NOT_FOUND",
+            "message": "User account not found"
+        }
+
+    # ---------------------------------------------------------
+    # 4. Пользователь заблокирован
+    # ---------------------------------------------------------
+    if account["is_blocked"]:
+        logger.info(
+            f"[DIRECT NOTIFY] user blocked: "
+            f"global_user_id={global_user_id}"
+        )
+
+        return {
+            "status": "error",
+            "code": "USER_BLOCKED",
+            "message": "User is blocked"
+        }
+
+    platform_user_id = account["platform_user_id"]
+
+    # ---------------------------------------------------------
+    # 5. Отправляем сообщение
+    # ---------------------------------------------------------
+    try:
+        # MAX требует integer
+        peer_id = (
+            int(platform_user_id)
+            if source == "max"
+            else platform_user_id
+        )
+
+        parts = split_message(text)
+
+        for part in parts:
+            try:
+                if source == "telegram":
+                    await bot.send_message(
+                        peer_id,
+                        part,
+                        parse_mode="HTML"
+                    )
+
+                else:
+                    await bot.send_message(
+                        user_id=peer_id,
+                        text=part,
+                        format=TextFormat.HTML
+                    )
+
+            except Exception as html_error:
+                # fallback на обычный текст
+                logger.debug(
+                    f"[DIRECT NOTIFY] HTML fallback: "
+                    f"{html_error}"
+                )
+
+                if source == "telegram":
+                    await bot.send_message(
+                        peer_id,
+                        part
+                    )
+                else:
+                    await bot.send_message(
+                        user_id=peer_id,
+                        text=part
+                    )
+
+        # -----------------------------------------------------
+        # 6. Логируем отправку
+        # -----------------------------------------------------
+        await eventlogger.log_event(
+            event_type="direct_notification_sent",
+            user_id=str(global_user_id),
+            channel=source,
+            payload={}
+        )
+
+        logger.info(
+            f"[DIRECT NOTIFY] sent successfully: "
+            f"global_user_id={global_user_id}, "
+            f"source={source}"
+        )
+
+        return {
+            "status": "ok",
+            "global_user_id": str(global_user_id),
+            "channel": source
+        }
+
+    except Exception as e:
+        logger.error(
+            f"[DIRECT NOTIFY] send error: "
+            f"global_user_id={global_user_id}, "
+            f"source={source}, "
+            f"error={e}"
+        )
+
+        await eventlogger.log_event(
+            event_type="direct_notification_error",
+            user_id=str(global_user_id),
+            channel=source,
+            payload={
+                "error": str(e)
+            }
+        )
+
+        return {
+            "status": "error",
+            "code": "SEND_FAILED",
+            "message": "Failed to send notification"
+        }
 
 #  функция отправки новости с фильтрацией по группе
 async def send_now(text: str, file_data: List, target_group: str="all", bot_holder=None, subscriber_store=None, source="telegram", news_id: Optional[int]=None):

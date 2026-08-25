@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, Literal
 from enum import Enum
+from uuid import UUID
 from datetime import datetime
 
 
@@ -69,3 +70,22 @@ class SwitchAliasRequest(BaseModel):
 
 class SyncInterval(BaseModel):
     hours: int
+
+class NotificationRequest(BaseModel):
+    """
+    Запрос на отправку персонального уведомления
+    через внешний API НАСТИ.
+    """
+    global_user_id: UUID = Field(
+        ...,
+        description="Уникальный идентификатор пользователя НАСТИ"
+    )
+    message: str = Field(
+        ...,
+        min_length=1,
+        description="Текст уведомления"
+    )
+    channel: str = Field(
+        default="all",
+        description="Канал отправки: telegram, max или all"
+    )
