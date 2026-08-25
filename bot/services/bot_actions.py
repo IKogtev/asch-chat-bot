@@ -34,6 +34,9 @@ class ActionDelivery:
     text: str = ""
     replace_answer: bool = False
     documents: list[dict[str, Any]] = field(default_factory=list)
+    shown: int | None = None
+    total: int | None = None
+    has_more: bool | None = None
 
 
 async def _search_session_id(store, user_id: str, request_session_id: str) -> str:
@@ -58,11 +61,15 @@ def _doc_item(*, name: str, url: str | None, size: int | None = None) -> dict[st
 def _search_list_caption(visible: int, total: int, offset: int) -> str:
     shown_end = offset + visible
     if shown_end < total:
-        return (
-            f"Найдено документов: {total}. Показано {shown_end} из {total}. "
-            "Напишите «ещё» или «все», чтобы увидеть остальные."
-        )
+        return f"Найдено документов: {total}. Показано {shown_end} из {total}."
     return f"Найдено документов: {total}."
+
+
+def _with_list_meta(delivery: ActionDelivery, shown: int, total: int) -> ActionDelivery:
+    delivery.shown = shown
+    delivery.total = total
+    delivery.has_more = shown < total
+    return delivery
 
 
 def _search_items_to_documents(
@@ -186,17 +193,25 @@ async def _deliver_show_more(
 
     start = int(meta.get("shown_count") or 0)
     if start >= len(items):
-        return ActionDelivery(text="Это уже все найденные файлы.", replace_answer=True)
+        return _with_list_meta(
+            ActionDelivery(text="Это уже все найденные файлы.", replace_answer=True),
+            shown=len(items),
+            total=len(items),
+        )
 
     end = min(start + page_size, len(items))
     chunk = items[start:end]
     await store.update_shown_count(user_id, search_session_id, end)
-    return ActionDelivery(
-        text=_search_list_caption(len(chunk), len(items), start),
-        replace_answer=True,
-        documents=_search_items_to_documents(
-            chunk, user_id=user_id, file_urls=file_urls, offset=start
+    return _with_list_meta(
+        ActionDelivery(
+            text=_search_list_caption(len(chunk), len(items), start),
+            replace_answer=True,
+            documents=_search_items_to_documents(
+                chunk, user_id=user_id, file_urls=file_urls, offset=start
+            ),
         ),
+        shown=end,
+        total=len(items),
     )
 
 
@@ -212,12 +227,16 @@ async def _deliver_show_all(
     if not items:
         return ActionDelivery(text=NO_SAVED_LIST, replace_answer=True)
     await store.update_shown_count(user_id, search_session_id, len(items))
-    return ActionDelivery(
-        text=_search_list_caption(len(items), len(items), 0),
-        replace_answer=True,
-        documents=_search_items_to_documents(
-            items, user_id=user_id, file_urls=file_urls, offset=0
+    return _with_list_meta(
+        ActionDelivery(
+            text=_search_list_caption(len(items), len(items), 0),
+            replace_answer=True,
+            documents=_search_items_to_documents(
+                items, user_id=user_id, file_urls=file_urls, offset=0
+            ),
         ),
+        shown=len(items),
+        total=len(items),
     )
 
 
@@ -236,12 +255,16 @@ async def _deliver_new_search_list(
         return None
     shown = min(max(int(meta.get("shown_count") or 5), 0), len(items))
     chunk = items[:shown]
-    return ActionDelivery(
-        text=_search_list_caption(len(chunk), len(items), 0),
-        replace_answer=True,
-        documents=_search_items_to_documents(
-            chunk, user_id=user_id, file_urls=file_urls, offset=0
+    return _with_list_meta(
+        ActionDelivery(
+            text=_search_list_caption(len(chunk), len(items), 0),
+            replace_answer=True,
+            documents=_search_items_to_documents(
+                chunk, user_id=user_id, file_urls=file_urls, offset=0
+            ),
         ),
+        shown=shown,
+        total=len(items),
     )
 
 

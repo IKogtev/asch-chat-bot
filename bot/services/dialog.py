@@ -27,15 +27,75 @@ class TurnResult:
     bot_action: Optional[dict[str, Any]] = field(default=None, repr=False)
 
 
-def build_blocks(answer: str, documents: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def build_blocks(
+    answer: str,
+    documents: list[dict[str, Any]] | None = None,
+    *,
+    shown: int | None = None,
+    total: int | None = None,
+    has_more: bool | None = None,
+) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     text = (answer or "").strip()
     if text:
         blocks.append({"type": "text", "content": text})
     items = [item for item in (documents or []) if item.get("name")]
-    if items:
-        blocks.append({"type": "documents", "items": items})
+    if items or total is not None:
+        block: dict[str, Any] = {"type": "documents", "items": items}
+        if total is not None:
+            block["shown"] = shown if shown is not None else len(items)
+            block["total"] = total
+            block["has_more"] = bool(has_more)
+        blocks.append(block)
     return blocks
+
+
+def _blocks_from_delivery(delivery, fallback_text: str = "") -> list[dict[str, Any]]:
+    text = delivery.text if delivery.replace_answer else (delivery.text or fallback_text)
+    return build_blocks(
+        text,
+        delivery.documents,
+        shown=delivery.shown,
+        total=delivery.total,
+        has_more=delivery.has_more,
+    )
+
+
+async def paginate_search(
+    store,
+    *,
+    global_user_id: str,
+    mode: str,
+    channel: str = CHANNEL_WEB,
+    platform_user_id: int | str = 0,
+    file_urls: FileUrlIssuer | None = None,
+) -> TurnResult:
+    """Следующая порция / весь список без ADK (кнопки UI)."""
+    if mode not in {"more", "all"}:
+        raise ValueError("bad_search_page_mode")
+    turn_id = str(uuid.uuid4())
+    session_id = build_session_id(global_user_id, channel, turn_id)
+    action = "show_doc_list_more" if mode == "more" else "show_doc_list_all"
+    label = "ещё" if mode == "more" else "все"
+    delivery = await apply_bot_action(
+        store,
+        user_id=str(global_user_id),
+        session_id=session_id,
+        answer="",
+        bot_action={"type": action},
+        file_urls=file_urls,
+    )
+    if store is not None:
+        await store.append(platform_user_id, "user", label, global_user_id, channel=channel)
+        await store.append(
+            platform_user_id, "model", delivery.text or "", global_user_id, channel=channel
+        )
+    return TurnResult(
+        message_id=turn_id,
+        session_id=session_id,
+        status="complete",
+        blocks=_blocks_from_delivery(delivery),
+    )
 
 
 async def run_turn(
@@ -107,6 +167,12 @@ async def run_turn(
         message_id=message_id,
         session_id=session_id,
         status="complete",
-        blocks=build_blocks(final_text, delivery.documents),
+        blocks=build_blocks(
+            final_text,
+            delivery.documents,
+            shown=delivery.shown,
+            total=delivery.total,
+            has_more=delivery.has_more,
+        ),
         bot_action=bot_action if isinstance(bot_action, dict) else None,
     )

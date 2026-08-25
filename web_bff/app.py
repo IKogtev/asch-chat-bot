@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from bot.services.database import AdkApiClient, PostgresChatStore
-from bot.services.dialog import CHANNEL_WEB, run_turn
+from bot.services.dialog import CHANNEL_WEB, paginate_search, run_turn
 from utils.logger import setup_logger
 from web_bff.auth_dev import require_dev_user
 from web_bff.config import settings
@@ -161,6 +161,55 @@ async def post_message(
             detail="backend_unavailable",
         ) from None
 
+    return MessageOut(
+        message_id=result.message_id,
+        status=result.status,
+        blocks=result.blocks,
+        error=result.error,
+    )
+
+
+async def _require_dialog_user(request: Request, user_id: str) -> dict[str, Any]:
+    user = await get_user_by_id(request.app.state.pool, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
+    if user["is_blocked"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_blocked")
+    return user
+
+
+@app.post("/dialog/search/more", response_model=MessageOut)
+async def post_search_more(
+    request: Request, user_id: str = Depends(require_dev_user)
+) -> MessageOut:
+    user = await _require_dialog_user(request, user_id)
+    result = await paginate_search(
+        request.app.state.store,
+        global_user_id=user["id"],
+        mode="more",
+        channel=CHANNEL_WEB,
+        file_urls=request.app.state.file_urls,
+    )
+    return MessageOut(
+        message_id=result.message_id,
+        status=result.status,
+        blocks=result.blocks,
+        error=result.error,
+    )
+
+
+@app.post("/dialog/search/all", response_model=MessageOut)
+async def post_search_all(
+    request: Request, user_id: str = Depends(require_dev_user)
+) -> MessageOut:
+    user = await _require_dialog_user(request, user_id)
+    result = await paginate_search(
+        request.app.state.store,
+        global_user_id=user["id"],
+        mode="all",
+        channel=CHANNEL_WEB,
+        file_urls=request.app.state.file_urls,
+    )
     return MessageOut(
         message_id=result.message_id,
         status=result.status,

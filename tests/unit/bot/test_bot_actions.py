@@ -133,7 +133,9 @@ async def test_apply_show_more_advances_shown_count() -> None:
     assert delivery.documents == [
         {"name": "two.pdf", "url": "/files/kb-doc_2", "rank": 2}
     ]
-    assert "ещё" not in delivery.text
+    assert delivery.has_more is False
+    assert delivery.shown == 2
+    assert delivery.total == 2
     assert store.updated == 2
 
 
@@ -148,7 +150,13 @@ async def test_apply_new_search_list_without_bot_action() -> None:
             "document_id": "doc_found",
             "source_name": "found.pdf",
             "source_path": "kb/found.pdf",
-        }
+        },
+        {
+            "rank": 2,
+            "document_id": "doc_two",
+            "source_name": "two.pdf",
+            "source_path": "kb/two.pdf",
+        },
     ]
     delivery = await apply_bot_action(
         store,
@@ -161,7 +169,10 @@ async def test_apply_new_search_list_without_bot_action() -> None:
     assert delivery.replace_answer is True
     assert delivery.documents[0]["url"] == "/files/kb-doc_found"
     assert delivery.documents[0]["name"] == "found.pdf"
-    assert "напишите номер" not in delivery.text.lower()
+    assert delivery.has_more is True
+    assert delivery.shown == 1
+    assert delivery.total == 2
+    assert len(delivery.documents) == 1
 
 
 @pytest.mark.unit

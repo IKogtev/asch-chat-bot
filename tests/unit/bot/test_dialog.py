@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bot.services.dialog import build_blocks, run_turn
+from bot.services.dialog import build_blocks, paginate_search, run_turn
 
 
 @pytest.mark.unit
@@ -15,6 +15,20 @@ def test_build_blocks_includes_documents() -> None:
     blocks = build_blocks("ok", [{"name": "a.pdf", "url": "/files/x"}])
     assert blocks[0] == {"type": "text", "content": "ok"}
     assert blocks[1] == {"type": "documents", "items": [{"name": "a.pdf", "url": "/files/x"}]}
+
+
+@pytest.mark.unit
+def test_build_blocks_includes_search_pagination() -> None:
+    blocks = build_blocks(
+        "Найдено 3",
+        [{"name": "a.pdf", "url": "/files/a"}],
+        shown=1,
+        total=3,
+        has_more=True,
+    )
+    assert blocks[1]["has_more"] is True
+    assert blocks[1]["shown"] == 1
+    assert blocks[1]["total"] == 3
 
 
 @pytest.mark.unit
@@ -109,3 +123,38 @@ async def test_run_turn_rejects_empty_text() -> None:
     with pytest.raises(ValueError, match="empty_message"):
         await run_turn(adk, global_user_id="u", text="  ")
     adk.run.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_paginate_search_more_does_not_call_adk() -> None:
+    store = AsyncMock()
+    store.get_last_search_meta = AsyncMock(return_value={"shown_count": 1})
+    store.get_last_search_results = AsyncMock(
+        return_value=[
+            {"rank": 1, "document_id": "d1", "source_name": "one.pdf", "source_path": "kb/a"},
+            {"rank": 2, "document_id": "d2", "source_name": "two.pdf", "source_path": "kb/b"},
+        ]
+    )
+    store.get_latest_search_session_id = AsyncMock(return_value=None)
+    store.update_shown_count = AsyncMock()
+    store.append = AsyncMock()
+
+    class _Urls:
+        def kit_url(self, user_id, path, name):
+            return "/files/kit"
+
+        def kb_url(self, user_id, document_id, name):
+            return f"/files/{document_id}"
+
+    result = await paginate_search(
+        store,
+        global_user_id="user-1",
+        mode="more",
+        file_urls=_Urls(),
+    )
+
+    docs = next(block for block in result.blocks if block["type"] == "documents")
+    assert docs["items"][0]["name"] == "two.pdf"
+    assert docs["has_more"] is False
+    assert store.append.await_count == 2
