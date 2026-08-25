@@ -1,7 +1,7 @@
 """Канально-нейтральный ход диалога: ADK /run → текст + _bot_action.
 
-Первая версия не исполняет kit/download (это остаётся у бота / следующих итераций BFF)
-и не пишет chat_history, чтобы не смешать ленту web с Telegram/MAX.
+Первая версия не исполняет kit/download (это остаётся у бота / следующих итераций BFF).
+История пишется с channel=web (или переданным каналом), отдельно от Telegram/MAX.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from bot.services.adk_events import extract_bot_action
 from bot.services.database import AdkApiClient
+from utils.channel_session import build_session_id
 from utils.logger import setup_logger
 
 logger = setup_logger("dialog", "web_bff.log")
@@ -46,6 +47,8 @@ async def run_turn(
     text: str,
     channel: str = CHANNEL_WEB,
     profile: Optional[dict[str, Any]] = None,
+    store=None,
+    platform_user_id: int | str = 0,
 ) -> TurnResult:
     """Один ход: новая ADK-сессия как у бота, ответ нормализуется в blocks."""
     user_text = (text or "").strip()
@@ -54,7 +57,7 @@ async def run_turn(
 
     turn_id = str(uuid.uuid4())
     message_id = turn_id
-    session_id = f"{global_user_id}_{turn_id}"
+    session_id = build_session_id(global_user_id, channel, turn_id)
     adk_user_id = str(global_user_id)
 
     logger.info(
@@ -78,6 +81,14 @@ async def run_turn(
     bot_action = extract_bot_action(events)
     if bot_action:
         logger.info("run_turn bot_action type=%s (files not served in v0)", bot_action.get("type"))
+
+    if store is not None:
+        await store.append(
+            platform_user_id, "user", user_text, global_user_id, channel=channel
+        )
+        await store.append(
+            platform_user_id, "model", answer or "", global_user_id, channel=channel
+        )
 
     return TurnResult(
         message_id=message_id,

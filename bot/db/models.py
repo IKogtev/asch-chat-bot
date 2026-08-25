@@ -17,6 +17,7 @@ class ChatHistory(Base):
     __table_args__ = (
         Index("idx_user_id", "user_id"),
         Index("idx_created_at", "created_at"),
+        Index("idx_chat_history_global_user_channel", "global_user_id", "channel"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -30,6 +31,7 @@ class ChatHistory(Base):
     )
 
     global_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    channel: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class SearchMeta(Base):
     __tablename__ = "search_meta"

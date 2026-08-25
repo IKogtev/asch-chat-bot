@@ -175,11 +175,41 @@ async def test_postgres_chat_store_get_latest_search_session_id_returns_value() 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgres_chat_store_get_latest_search_session_id_filters_channel() -> None:
+    conn = _FakeConn(fetchrow_result={"session_id": "user-1::telegram::t1"})
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    result = await store.get_latest_search_session_id("user-1", channel="telegram")
+
+    assert result == "user-1::telegram::t1"
+    query, args = conn.executed[0]
+    assert "LIKE" in query
+    assert args[1] == "user-1::telegram::%"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_postgres_chat_store_get_latest_search_session_id_returns_none_without_pool() -> None:
     store = PostgresChatStore("postgres://dsn")
     store.pool = None
 
     assert await store.get_latest_search_session_id("user-uuid") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgres_chat_store_reset_deletes_only_requested_channel() -> None:
+    conn = _FakeConn()
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    await store.reset(1, "user-1", channel="telegram")
+
+    query, args = conn.executed[0]
+    assert "DELETE FROM chat_history" in query
+    assert "channel" in query
+    assert args == ("user-1", "telegram")
 
 
 @pytest.mark.unit

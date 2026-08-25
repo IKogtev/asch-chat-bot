@@ -8,6 +8,7 @@ from utils import setup_logger
 # логер событий
 from utils.event_logger import EventLogger
 from utils.document_handler import DocumentHandler
+from utils.channel_session import parse_session_id
 from utils.doc_search_format import render_doc_list_html
 
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
@@ -262,7 +263,9 @@ async def resolve_search_session_id(
         )
         return request_session_id
 
-    latest = await store.get_latest_search_session_id(user_id)
+    latest = await store.get_latest_search_session_id(
+        user_id, channel=parse_session_id(request_session_id).channel
+    )
     if latest and latest != request_session_id:
         latest_meta = await store.get_last_search_meta(user_id, latest)
         logger.info(

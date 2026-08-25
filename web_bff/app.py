@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from bot.services.database import AdkApiClient
+from bot.services.database import AdkApiClient, PostgresChatStore
 from bot.services.dialog import CHANNEL_WEB, run_turn
 from web_bff.auth_dev import require_dev_user
 from web_bff.config import settings
@@ -50,7 +50,10 @@ async def lifespan(app: FastAPI):
         timeout_sec=settings.adk_timeout_sec,
     )
     await adk.open()
+    store = PostgresChatStore(settings.database_url)
+    store.pool = pool
     app.state.pool = pool
+    app.state.store = store
     app.state.adk = adk
     logger.info(
         "web-bff started adk=%s app=%s dev_auth=%s",
@@ -103,7 +106,13 @@ async def get_dialog(request: Request, user_id: str = Depends(require_dev_user))
     user = await get_user_by_id(request.app.state.pool, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
-    return {"messages": []}
+    return {
+        "messages": await request.app.state.store.get_history(
+            "0",
+            global_user_id=user["id"],
+            channel=CHANNEL_WEB,
+        )
+    }
 
 
 @app.post("/dialog/messages", response_model=MessageOut)
@@ -125,6 +134,8 @@ async def post_message(
             text=body.text,
             channel=CHANNEL_WEB,
             profile=profile_for_adk(user),
+            store=request.app.state.store,
+            platform_user_id=0,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -141,6 +152,17 @@ async def post_message(
         blocks=result.blocks,
         error=result.error,
     )
+
+
+@app.post("/dialog/reset")
+async def reset_dialog(request: Request, user_id: str = Depends(require_dev_user)) -> dict[str, str]:
+    user = await get_user_by_id(request.app.state.pool, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
+    store = request.app.state.store
+    await store.reset("0", user["id"], channel=CHANNEL_WEB)
+    await store.reset_search_state_for_channel(user["id"], CHANNEL_WEB)
+    return {"status": "ok"}
 
 
 def main() -> None:

@@ -46,6 +46,13 @@ maxapi_types_stub = types.ModuleType("maxapi.types")
 maxapi_types_stub.InputMedia = type("InputMedia", (), {})
 sys.modules["maxapi.types"] = maxapi_types_stub
 
+aiogram_types_stub = types.ModuleType("aiogram.types")
+aiogram_types_stub.FSInputFile = type("FSInputFile", (), {})
+aiogram_types_stub.InlineKeyboardMarkup = type("InlineKeyboardMarkup", (), {})
+aiogram_types_stub.InlineKeyboardButton = type("InlineKeyboardButton", (), {})
+sys.modules["aiogram"] = types.ModuleType("aiogram")
+sys.modules["aiogram.types"] = aiogram_types_stub
+
 doc_search_format_stub = types.ModuleType("utils.doc_search_format")
 doc_search_format_stub.DOWNLOAD_RE = re.compile(r"dummy_pattern")
 # Заглушка для функции render_doc_list_html. 
@@ -72,6 +79,8 @@ from bot.services.utils import (
     resolve_search_session_id,
     split_message,
 )
+
+sys.modules.pop("bot.services.database", None)
 
 if "utils.doc_search_format" in sys.modules:
     del sys.modules["utils.doc_search_format"]
@@ -143,7 +152,7 @@ async def test_resolve_search_session_id_uses_request_session_when_meta_exists()
                 return {"search_id": "s1", "total_count": 3}
             return None
 
-        async def get_latest_search_session_id(self, user_id):
+        async def get_latest_search_session_id(self, user_id, channel=None):
             return "previous"
 
     result = await resolve_search_session_id(_Store(), "user-1", "current")
@@ -160,12 +169,33 @@ async def test_resolve_search_session_id_falls_back_to_latest_search() -> None:
                 return {"search_id": "s-prev", "total_count": 5}
             return None
 
-        async def get_latest_search_session_id(self, user_id):
+        async def get_latest_search_session_id(self, user_id, channel=None):
             return "previous"
 
     result = await resolve_search_session_id(_Store(), "user-1", "current")
 
     assert result == "previous"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_search_session_id_fallback_passes_channel() -> None:
+    seen = {}
+
+    class _Store:
+        async def get_last_search_meta(self, user_id, session_id):
+            return None
+
+        async def get_latest_search_session_id(self, user_id, channel=None):
+            seen["channel"] = channel
+            return "user-1::web::old"
+
+    result = await resolve_search_session_id(
+        _Store(), "user-1", "user-1::web::current"
+    )
+
+    assert result == "user-1::web::old"
+    assert seen["channel"] == "web"
 
 
 @pytest.mark.unit

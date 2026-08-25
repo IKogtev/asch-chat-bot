@@ -10,6 +10,7 @@ from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
+from utils.channel_session import LEGACY_CHANNEL, context_cache_key, parse_session_id
 from .config import (
     AGENT_DIALOG_MEMORY_MAX_TURNS,
     DEBUG_EXCEPTIONS,
@@ -159,24 +160,33 @@ def is_response_schema_configuration_error(exc: Exception) -> bool:
         and "automatic function calling" in message
     )
 
-async def is_history_empty_by_global_id(global_user_id: str) -> bool:
-    """Одним запросом находит platform_user_id по UUID в user_accounts 
-    и проверяет, пуста ли его история в chat_history."""
+async def is_history_empty_by_global_id(global_user_id: str, channel: str | None = None) -> bool:
+    """True, если в chat_history нет реплик пользователя в этом канале (после /reset)."""
+    if not global_user_id:
+        return False
     conn = None
     try:
         conn = await asyncpg.connect(DATABASE_URL)
-        # Вложенный запрос: извлекаем platform_user_id по UUID и проверяем историю
-        # cast (::bigint) нужен, чтобы типы точно совпали с числовым user_id в chat_history
-        count = await conn.fetchval("""
-            SELECT COUNT(*) 
-            FROM chat_history 
-            WHERE user_id = (
-                SELECT platform_user_id::bigint 
-                FROM user_accounts 
-                WHERE user_id = $1
-            );
-        """, global_user_id)
-        return count == 0  # Если 0, значит история пуста (был /reset)
+        if channel:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM chat_history
+                WHERE global_user_id = $1 AND channel = $2
+                """,
+                global_user_id,
+                channel,
+            )
+        else:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM chat_history
+                WHERE global_user_id = $1
+                """,
+                global_user_id,
+            )
+        return count == 0
     except Exception as e:
         logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
         return False
@@ -424,7 +434,7 @@ class RootAgent(BaseAgent):
             )
         # БЛОК СОХРАНЕНИЯ В КЭШ ДЛЯ ПОДСТРАХОВКИ СЛЕДУЮЩИХ ШАГОВ ---
         sess_id = getattr(ctx.session, "id", "")
-        clean_id = sess_id.split("_")[0] if sess_id else ""
+        clean_id = context_cache_key(sess_id)
         if clean_id:
             # Собираем текущий снимок состояния
             current_state = {
@@ -2408,12 +2418,20 @@ class RootAgent(BaseAgent):
 
         # Блок автоматического восстановления контекста (защита от 409 Conflict)
         sess_id = getattr(ctx.session, "id", "")
-        clean_id = sess_id.split("_")[0] if sess_id else ""
+        identity = parse_session_id(sess_id)
+        clean_id = context_cache_key(sess_id)
         if clean_id:
             # Проверяем существующую БД: если там пусто, значит бот стёр историю через /reset
-            if await is_history_empty_by_global_id(clean_id):
+            if identity.channel != LEGACY_CHANNEL and await is_history_empty_by_global_id(
+                identity.user_id, identity.channel
+            ):
                 self._CROSS_SESSION_CACHE.pop(clean_id, None)
-                logger.info(f"🧹 [RAM Cache] Локальная память агента очищена, так как в БД история пуста для {clean_id}")
+                logger.info(
+                    "RAM cache cleared after empty channel history: key=%s user=%s channel=%s",
+                    clean_id,
+                    identity.user_id,
+                    identity.channel,
+                )
             elif clean_id in self._CROSS_SESSION_CACHE:
                 # Если в новой сессии пропали ключевые данные контекста, восстанавливаем их из кэша
                 if not ctx.session.state.get("last_product") and not ctx.session.state.get("_product_dialog_context"):
