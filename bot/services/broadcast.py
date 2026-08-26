@@ -216,18 +216,23 @@ def create_broadcast_app(
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/api/subscribers")
-    async def get_subscribers():
+    async def get_subscribers(global_user_id: Optional[str] = None):
         """
-        Возвращает ГЛОБАЛЬНЫХ пользователей с их аккаунтами(1 строка = 1человек)
+        Возвращает глобальных пользователей с их аккаунтами.
+
+        Если global_user_id не передан:
+            возвращаются все пользователи.
+
+        Если global_user_id передан:
+            возвращается только пользователь с указанным global_user_id
         """
         try:
             async with subscriber_store.pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT 
-                        u.id as global_user_id,
+                query = """
+                    SELECT
+                        u.id AS global_user_id,
                         u.phone_number,
                         u.is_blocked,
-
                         -- Собираем данные аккаунтов в массив объектов
                         json_agg(
                             json_build_object(
@@ -237,46 +242,94 @@ def create_broadcast_app(
                                 'first_name', s.first_name,
                                 'last_name', s.last_name
                             )
-                        ) FILTER (WHERE ua.platform_user_id IS NOT NULL) as accounts,
-                        
+                        ) FILTER (
+                            WHERE ua.platform_user_id IS NOT NULL
+                        ) AS accounts,
                         -- УМНЫЙ ВЫБОР ИМЕНИ ДЛЯ ТАБЛИЦЫ:
                         -- Ищем самый свежий аккаунт, где first_name не пустой. 
                         -- Если таких нет, берем просто самый свежий.
-                        (SELECT COALESCE(s2.first_name, s2.username, 'unknown')
-                        FROM subscribers s2 
-                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
-                        WHERE ua2.user_id = u.id 
-                        ORDER BY 
-                            (NULLIF(s2.first_name, '') IS NOT NULL) DESC, -- Сначала те, где есть имя
-                            s2.last_seen DESC                             -- Затем самые свежие
-                        LIMIT 1) as display_first_name,
-                        
-                        (SELECT s2.last_name
-                        FROM subscribers s2 
-                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
-                        WHERE ua2.user_id = u.id 
-                        ORDER BY 
-                            (NULLIF(s2.last_name, '') IS NOT NULL) DESC, 
-                            s2.last_seen DESC 
-                        LIMIT 1) as display_last_name,
+                        (
+                            SELECT COALESCE(
+                                s2.first_name,
+                                s2.username,
+                                'unknown'
+                            )
+                            FROM subscribers s2
+                            JOIN user_accounts ua2
+                                ON s2.user_id = ua2.platform_user_id
+                            WHERE ua2.user_id = u.id
+                            ORDER BY
+                                (
+                                    NULLIF(
+                                        s2.first_name,
+                                        ''
+                                    ) IS NOT NULL
+                                ) DESC,
+                                s2.last_seen DESC
+                            LIMIT 1
+                        ) AS display_first_name,
 
-                        (SELECT s2.username
-                        FROM subscribers s2 
-                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
-                        WHERE ua2.user_id = u.id 
-                        ORDER BY 
-                            (NULLIF(s2.username, '') IS NOT NULL) DESC, 
-                            s2.last_seen DESC 
-                        LIMIT 1) as display_username,
-                        bool_or(s.manager_group) as manager_group,
-                        bool_or(s.coach_group) as coach_group,
-                        max(s.last_seen) as last_seen
+                        (
+                            SELECT s2.last_name
+                            FROM subscribers s2
+                            JOIN user_accounts ua2
+                                ON s2.user_id = ua2.platform_user_id
+                            WHERE ua2.user_id = u.id
+                            ORDER BY
+                                (
+                                    NULLIF(
+                                        s2.last_name,
+                                        ''
+                                    ) IS NOT NULL
+                                ) DESC,
+                                s2.last_seen DESC
+                            LIMIT 1
+                        ) AS display_last_name,
+
+                        (
+                            SELECT s2.username
+                            FROM subscribers s2
+                            JOIN user_accounts ua2
+                                ON s2.user_id = ua2.platform_user_id
+                            WHERE ua2.user_id = u.id
+                            ORDER BY
+                                (
+                                    NULLIF(
+                                        s2.username,
+                                        ''
+                                    ) IS NOT NULL
+                                ) DESC,
+                                s2.last_seen DESC
+                            LIMIT 1
+                        ) AS display_username,
+
+                        bool_or(s.manager_group) AS manager_group,
+                        bool_or(s.coach_group) AS coach_group,
+                        max(s.last_seen) AS last_seen
+
                     FROM users u
-                    LEFT JOIN user_accounts ua ON ua.user_id = u.id
-                    LEFT JOIN subscribers s ON s.user_id = ua.platform_user_id AND s.platform = ua.platform
+
+                    LEFT JOIN user_accounts ua
+                        ON ua.user_id = u.id
+
+                    LEFT JOIN subscribers s
+                        ON s.user_id = ua.platform_user_id
+                        AND s.platform = ua.platform
+                    """
+                params = []
+                if global_user_id:
+                    query += """
+                        WHERE u.id = $1
+                    """
+                    params.append(global_user_id)
+                query += """
                     GROUP BY u.id
                     ORDER BY last_seen DESC NULLS LAST
-                """)
+                """
+                rows = await conn.fetch(
+                    query,
+                    *params
+                )
 
             result = []
             for r in rows:
@@ -299,7 +352,7 @@ def create_broadcast_app(
 
             return result
         except Exception as e:
-            logger.error(f"Error getting subscribers: {e}")
+            logger.error(f"Error getting subscribers: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/subscribers/group")

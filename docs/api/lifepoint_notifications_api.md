@@ -120,18 +120,16 @@ POST|	/notifications|	Отправка уведомления конкретно
 
 # 7. Получение списка пользователей
 
-## GET /users
+## GET /users/{global_user_id}
 
-Endpoint предназначен для получения списка пользователей,
-зарегистрированных в НАСТЕ.
+Endpoint предназначен для получения информации о пользователе,
+зарегистрированном в НАСТЕ, на основе его id, выдается информация о заблокированности пользователя, о его группах и где у данного пользователя есть аккаунты в Насте. 
 
 ### Request
 
 Метод:
 
-    GET /api/v1/users
-
-Тело запроса отсутствует.
+    GET /api/v1/users/{global_user_id}
 
 ### Response
 
@@ -139,19 +137,18 @@ HTTP 200:
 
 ```json
 {
-  "users": [
+  "global_user_id": "57a8ddfe-f225-43e8-8e94-33e4d3708097",
+  "is_blocked": false,
+  "groups": {
+    "manager": true,
+    "coach": false
+  },
+  "accounts": [
     {
-      "global_user_id": "b95d5201-7d1c-4100-b99b-97ca27222978",
-      "first_name": "Иван",
-      "last_name": "Иванов",
-      "accounts": [
-        {
-          "platform": "telegram"
-        },
-        {
-          "platform": "max"
-        }
-      ]
+      "platform": "telegram"
+    },
+    {
+      "platform": "max"
     }
   ]
 }
@@ -160,8 +157,8 @@ HTTP 200:
 |Поле|Тип|Описание|
 |---|---|---|
 | global_user_id|UUID |	Уникальный идентификатор пользователя НСТ |
-|first_name|	string|	Имя пользователя|
-|last_name|	string|	Фамилия пользователя|
+|is_blocked|	boolean|	Пользователь заблокирован(True) или нет|
+|groups|	dict|	словарь с пометками true для тех групп к каким относится пользователь|
 |accounts	|array|	Доступные каналы пользователя|
 
 Внешнему потребителю не передаются внутренние
@@ -372,9 +369,9 @@ curl -X POST "https://<NST_HOST>/api/v1/notifications" \
     "message": "Тестовое уведомление"
   }'
 ```
-## 12.4 Получение пользователей
+## 12.4 Получение по global_user_id аккаунтов пользователя
 ``` bash
-curl -X GET "https://<NST_HOST>/api/v1/users" \
+curl -X GET "https://<NST_HOST>/api/v1/users?global_user_id=<ID_USER>" \
   -H "Authorization: Bearer <API_TOKEN>" 
 ```
 

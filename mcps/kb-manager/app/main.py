@@ -1,5 +1,5 @@
 from fastapi import (FastAPI, UploadFile, File, HTTPException, Form,
-                      Request, Depends, BackgroundTasks, Header)
+                      Request, Depends, BackgroundTasks, Header, Query)
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (
     HTMLResponse, JSONResponse, FileResponse,
@@ -2010,66 +2010,88 @@ async def send_notification(data: NotificationRequest, _: bool = Depends(verify_
     )
 
 @app.get("/api/v1/users")
-async def get_lifepoint_users(_: bool = Depends(verify_lifepoint_token)):
+async def get_lifepoint_users(
+    global_user_id: str = Query(
+        ...,
+        description="Global ID пользователя"
+    ),
+    _: bool = Depends(verify_lifepoint_token)
+):
     """
     Внешний API LifePoint.
 
-    Возвращает только данные, предусмотренные
-    контрактом интеграции:
+    Возвращает информацию о конкретном пользователе
+    по его global_user_id.
+
+    Возвращаемые данные:
     - global_user_id
-    - first_name
-    - last_name
-    - доступные платформы
+    - статус блокировки пользователя
+    - группы пользователя
+    - доступные аккаунты/источники
     """
 
     try:
         resp = await http_client.get(
-            f"{TELEGRAM_BOT_API}/api/subscribers"
+            f"{TELEGRAM_BOT_API}/api/subscribers",
+            params={
+                "global_user_id": global_user_id
+            }
         )
+        users = resp.json()
+        if not users:
+            return lifepoint_error(
+                404,
+                "USER_NOT_FOUND",
+                "User not found"
+            )
 
+        
+        
         if resp.status_code != 200:
             logger.error(
-                f"Failed to get subscribers: "
-                f"{resp.status_code}"
+                f"Failed to get user: "
+                f"global_user_id={global_user_id}, "
+                f"status={resp.status_code}"
             )
 
             return lifepoint_error(
                 500,
                 "INTERNAL_ERROR",
-                "Failed to get users"
+                "Failed to get user"
             )
+        user = users[0]
+        accounts = []
 
-        users = resp.json()
+        for account in user.get("accounts", []):
+            platform = account.get("platform")
 
-        result = []
-
-        for user in users:
-            accounts = []
-
-            for account in user.get("accounts", []):
-                platform = account.get("platform")
-
-                if platform in ("telegram", "max"):
-                    accounts.append({
-                        "platform": platform
-                    })
-
-            result.append({
-                "global_user_id": str(
-                    user["global_user_id"]
-                ),
-                "first_name": user.get("first_name"),
-                "last_name": user.get("last_name"),
-                "accounts": accounts
-            })
+            if platform in ("telegram", "max"):
+                accounts.append({
+                    "platform": platform
+                })
 
         return {
-            "users": result
+            "global_user_id": str(
+                user["global_user_id"]
+            ),
+            "is_blocked": bool(
+                user.get("is_blocked", False)
+            ),
+            "groups": {
+                "manager": bool(
+                    user.get("manager_group", False)
+                ),
+                "coach": bool(
+                    user.get("coach_group", False)
+                )
+            },
+            "accounts": accounts
         }
 
     except Exception as e:
         logger.error(
-            f"LifePoint users API error: {e}",
+            f"LifePoint user API error: "
+            f"global_user_id={global_user_id}: {e}",
             exc_info=True
         )
 
