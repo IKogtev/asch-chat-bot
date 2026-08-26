@@ -261,6 +261,7 @@ services:
       - ADK_APP_NAME=agent
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - WEB_BFF_ALLOW_DEV_AUTH=true
+      - WEB_BFF_OTP_STUB=true
       - WEB_BFF_PORT=8010
       - KB_MANAGER_URL=http://kb-manager:5000
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты

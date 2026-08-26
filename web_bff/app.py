@@ -1,11 +1,15 @@
-"""Первая версия web-bff: health, /me, пустая лента, POST хода в ADK.
+"""web-bff: OTP cookie, диалог, файлы.
 
 Запуск:
   PYTHONPATH=. python -m web_bff.app
 
-Dev-аутентификация (пока нет OTP):
-  WEB_BFF_ALLOW_DEV_AUTH=true
-  заголовок X-User-Id: UUID из таблицы users.id
+Вход:
+  POST /auth/otp/request  {"phone": "+7..."}
+  POST /auth/otp/verify   {"phone": "+7...", "code": "123456"} → cookie nastya_web
+
+Dev:
+  WEB_BFF_OTP_STUB=true — код в логе и в поле dev_code
+  WEB_BFF_ALLOW_DEV_AUTH=true — запасной заголовок X-User-Id
 """
 
 from __future__ import annotations
@@ -15,19 +19,20 @@ from typing import Any, Optional
 from urllib.parse import unquote
 
 import asyncpg
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from bot.services.database import AdkApiClient, PostgresChatStore
 from bot.services.dialog import CHANNEL_WEB, paginate_search, run_turn
 from utils.logger import setup_logger
-from web_bff.auth_dev import require_dev_user
+from web_bff.auth import clear_session_cookie, current_user, require_user, set_session_cookie
 from web_bff.config import settings
 from web_bff.files import FileTokenError, FileUrlIssuer, resolve_kit_file
-from web_bff.users import get_user_by_id, profile_for_adk
+from web_bff.otp import OtpError, OtpService
+from web_bff.users import profile_for_adk
 
 logger = setup_logger("web_bff", "web_bff.log")
 
@@ -41,6 +46,15 @@ class MessageOut(BaseModel):
     status: str
     blocks: list[dict[str, Any]]
     error: Optional[str] = None
+
+
+class OtpRequestIn(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+
+
+class OtpVerifyIn(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+    code: str = Field(min_length=4, max_length=6)
 
 
 @asynccontextmanager
@@ -69,10 +83,12 @@ async def lifespan(app: FastAPI):
     app.state.adk = adk
     app.state.file_urls = file_urls
     app.state.doc_handler = doc_handler
+    app.state.otp = OtpService(pool, settings)
     logger.info(
-        "web-bff started adk=%s app=%s dev_auth=%s",
+        "web-bff started adk=%s app=%s stub_otp=%s dev_auth=%s",
         settings.adk_api_base,
         settings.adk_app_name,
+        settings.otp_stub,
         settings.allow_dev_auth,
     )
     try:
@@ -98,13 +114,38 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/auth/otp/request")
+async def otp_request(request: Request, body: OtpRequestIn) -> dict[str, Any]:
+    try:
+        return await request.app.state.otp.request(body.phone)
+    except OtpError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@app.post("/auth/otp/verify")
+async def otp_verify(request: Request, body: OtpVerifyIn) -> JSONResponse:
+    try:
+        token = await request.app.state.otp.verify(body.phone, body.code)
+    except OtpError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    response = JSONResponse({"status": "ok"})
+    set_session_cookie(response, token)
+    return response
+
+
+@app.post("/auth/logout")
+async def logout(request: Request, response: Response) -> dict[str, str]:
+    otp = getattr(request.app.state, "otp", None)
+    cookie = request.cookies.get(settings.cookie_name)
+    if otp is not None and cookie:
+        await otp.revoke_token(cookie)
+    clear_session_cookie(response)
+    return {"status": "ok"}
+
+
 @app.get("/me")
-async def me(request: Request, user_id: str = Depends(require_dev_user)) -> dict[str, Any]:
-    user = await get_user_by_id(request.app.state.pool, user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
-    if user["is_blocked"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_blocked")
+async def me(request: Request, _user_id: str = Depends(require_user)) -> dict[str, Any]:
+    user = current_user(request)
     phone = user.get("phone_number") or ""
     masked = f"***{phone[-4:]}" if len(phone) >= 4 else None
     return {
@@ -116,10 +157,8 @@ async def me(request: Request, user_id: str = Depends(require_dev_user)) -> dict
 
 
 @app.get("/dialog")
-async def get_dialog(request: Request, user_id: str = Depends(require_dev_user)) -> dict[str, Any]:
-    user = await get_user_by_id(request.app.state.pool, user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
+async def get_dialog(request: Request, _user_id: str = Depends(require_user)) -> dict[str, Any]:
+    user = current_user(request)
     return {
         "messages": await request.app.state.store.get_history(
             "0",
@@ -133,13 +172,9 @@ async def get_dialog(request: Request, user_id: str = Depends(require_dev_user))
 async def post_message(
     request: Request,
     body: MessageIn,
-    user_id: str = Depends(require_dev_user),
+    _user_id: str = Depends(require_user),
 ) -> MessageOut:
-    user = await get_user_by_id(request.app.state.pool, user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
-    if user["is_blocked"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_blocked")
+    user = current_user(request)
 
     try:
         result = await run_turn(
@@ -155,7 +190,7 @@ async def post_message(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception:
-        logger.exception("ADK run failed user=%s", user_id)
+        logger.exception("ADK run failed user=%s", user["id"])
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="backend_unavailable",
@@ -169,20 +204,11 @@ async def post_message(
     )
 
 
-async def _require_dialog_user(request: Request, user_id: str) -> dict[str, Any]:
-    user = await get_user_by_id(request.app.state.pool, user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
-    if user["is_blocked"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_blocked")
-    return user
-
-
 @app.post("/dialog/search/more", response_model=MessageOut)
 async def post_search_more(
-    request: Request, user_id: str = Depends(require_dev_user)
+    request: Request, _user_id: str = Depends(require_user)
 ) -> MessageOut:
-    user = await _require_dialog_user(request, user_id)
+    user = current_user(request)
     result = await paginate_search(
         request.app.state.store,
         global_user_id=user["id"],
@@ -200,9 +226,9 @@ async def post_search_more(
 
 @app.post("/dialog/search/all", response_model=MessageOut)
 async def post_search_all(
-    request: Request, user_id: str = Depends(require_dev_user)
+    request: Request, _user_id: str = Depends(require_user)
 ) -> MessageOut:
-    user = await _require_dialog_user(request, user_id)
+    user = current_user(request)
     result = await paginate_search(
         request.app.state.store,
         global_user_id=user["id"],
@@ -219,10 +245,8 @@ async def post_search_all(
 
 
 @app.post("/dialog/reset")
-async def reset_dialog(request: Request, user_id: str = Depends(require_dev_user)) -> dict[str, str]:
-    user = await get_user_by_id(request.app.state.pool, user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
+async def reset_dialog(request: Request, _user_id: str = Depends(require_user)) -> dict[str, str]:
+    user = current_user(request)
     store = request.app.state.store
     await store.reset("0", user["id"], channel=CHANNEL_WEB)
     await store.reset_search_state_for_channel(user["id"], CHANNEL_WEB)
@@ -233,7 +257,7 @@ async def reset_dialog(request: Request, user_id: str = Depends(require_dev_user
 async def get_file(
     token: str,
     request: Request,
-    user_id: str = Depends(require_dev_user),
+    user_id: str = Depends(require_user),
 ):
     try:
         payload = request.app.state.file_urls.parse(unquote(token))
