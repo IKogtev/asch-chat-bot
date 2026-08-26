@@ -74,23 +74,45 @@ Test:
 
 ---
 
-# 4. Аутентификация
+# 4. Аутентификация (OAuth2 Client Credentials)
 
+Для выполнения запросов к API сервиса LifePoint должен предварительно получить JWT-токен в сервисе Keycloak.
 API использует Bearer Token.
 
-Каждый запрос к API должен содержать HTTP-заголовок:
+## Получение токена:
+- HTTP Метод: POST
+- URL: https://<KEYCLOAK_HOST>/realms/<REALM_NAME>/protocol/openid-connect/token
+- Content-Type: application/x-www-form-urlencoded
+Параметры запроса (Form Data):
 
-    Authorization: Bearer <API_TOKEN>
+Параметр|	Значение |	Описание
+|---|---|---|
+`grant_type`|	`client_credentials`|	Тип авторизации
+`client_id`|	`lifepoint`|	Идентификатор клиента в Keycloak
+`client_secret`|	`<CLIENT_SECRET>`|	Секретный ключ клиента
 
-Пример:
+Пример запроса на получение токена:
 
-    Authorization: Bearer eyJhbGciOi...
-
-API-токен является секретным значением и не должен
-передаваться в URL или теле запроса.
-
-Для интеграции LifePoint используется отдельный API-токен.
-
+``` Bash
+curl -X POST "https://<KEYCLOAK_HOST>/realms/<REALM_NAME>/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=lifepoint" \
+  -d "client_secret=<CLIENT_SECRET>"
+```
+Пример ответа
+```json
+{
+  "access_token": "REMOVED_SECRET",
+  "expires_in": 300,
+  "token_type": "Bearer"
+}
+```
+Полученный access_token передается во всех последующих запросах к API Насти в HTTP-заголовке:
+```http
+Authorization: Bearer <access_token>
+```
+Примечание: Время жизни токена ограничено параметром expires_in (в секундах). При получении ошибки 401 Unauthorized система LifePoint должна автоматически запросить новый токен.
 ---
 
 # 5. Общие HTTP-заголовки
@@ -115,7 +137,7 @@ API предоставляет следующие методы:
 
 Метод|	Endpoint|	Назначение
 |---|---|---|
-GET|	/users|	Получение списка пользователей и их global_user_id
+GET|	/users|	Получение информации о пользователе по global_user_id
 POST|	/notifications|	Отправка уведомления конкретному пользователю
 
 # 7. Получение списка пользователей
@@ -129,7 +151,15 @@ Endpoint предназначен для получения информации
 
 Метод:
 
-    GET /api/v1/users/{global_user_id}
+    GET /api/v1/users?global_user_id=57a8ddfe-f225-43e8-8e94-33e4d3708097 HTTP/1.1
+    Host: <NST_HOST>
+    Authorization: Bearer <access_token>
+
+Параметры запроса: 
+
+Параметр|Тип|Обязательный|Описание
+---|---|---|---
+global_user_id|UUID|Да|Уникальный идентификатор пользователя НСТ
 
 ### Response
 

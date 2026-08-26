@@ -298,6 +298,7 @@ services:
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
       - LIFEPOINT_API_TOKEN=${LIFEPOINT_API_TOKEN?LIFEPOINT_API_TOKEN is required}
+      - KEYCLOAK_ISSUER=${KEYCLOAK_ISSUER?KEYCLOAK_ADDRESS IS REQUIRED}
     depends_on:
       migration:
           condition: service_completed_successfully
@@ -313,6 +314,24 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./keycloak/import:/opt/keycloak/data/import
+    networks:
+      - aszh-bot-network
+    # Если указать профиль, сервис НЕ будет подниматься по умолчанию на проде (`docker compose up`)
+    # Для локального запуска нужно будет передать флаг: `docker compose --profile tools up -d`
+    # profiles: ["tools"]
 
   kbsearch:
     build:

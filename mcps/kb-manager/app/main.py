@@ -30,6 +30,7 @@ from app.models import (
 from contextlib import asynccontextmanager
 from utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
+from app.auth.keycloak import verify_lifepoint_jwt
 load_dotenv()
 
 # Используем современный Lifespan вместо @app.on_event("startup")
@@ -126,7 +127,6 @@ async def auth_middleware(request: Request, call_next):
                 return response
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
 # AUTH config
-LIFEPOINT_API_TOKEN = os.getenv("LIFEPOINT_API_TOKEN")
 SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
 ALGORITHM = "HS256"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
@@ -1756,60 +1756,6 @@ async def send_news(
 #######################################
 # Работа с уведомлениями пользователям 
 #######################################
-
-async def verify_lifepoint_token(
-    authorization: str = Header(default=None)
-):
-    """
-    Проверка Bearer Token для внешнего API LifePoint.
-    """
-    if not LIFEPOINT_API_TOKEN:
-        logger.error(
-            "LIFEPOINT_API_TOKEN is not configured"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": "INTERNAL_ERROR",
-                "message": "API authentication is not configured"
-            }
-        )
-
-    # Заголовок отсутствует
-    if not authorization:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "UNAUTHORIZED",
-                "message": "Authorization header is required"
-            }
-        )
-
-    # Проверяем формат
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "UNAUTHORIZED",
-                "message": "Authorization must use Bearer scheme"
-            }
-        )
-
-    token = authorization[len("Bearer "):].strip()
-
-    # Проверяем токен
-    if token != LIFEPOINT_API_TOKEN:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "UNAUTHORIZED",
-                "message": "Invalid authentication credentials"
-            }
-        )
-
-    return True
-
 def lifepoint_error(
     status_code: int,
     code: str,
@@ -1827,7 +1773,7 @@ def lifepoint_error(
 
 
 @app.post("/api/v1/notifications")
-async def send_notification(data: NotificationRequest, _: bool = Depends(verify_lifepoint_token)):
+async def send_notification(data: NotificationRequest, token: dict = Depends(verify_lifepoint_jwt)):
     """
     Отправка персонального уведомления пользователю.
     Пользователь определяется только по global_user_id.
@@ -2015,7 +1961,7 @@ async def get_lifepoint_users(
         ...,
         description="Global ID пользователя"
     ),
-    _: bool = Depends(verify_lifepoint_token)
+    token: dict = Depends(verify_lifepoint_jwt)
 ):
     """
     Внешний API LifePoint.
