@@ -7,7 +7,7 @@ from fastapi.responses import (
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from dotenv import load_dotenv
-import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, sys
+import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, json, sys
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
@@ -29,6 +29,7 @@ from app.models import (
 from contextlib import asynccontextmanager
 from utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
+from app.services.tables_loader_service import CLIENT_TYPES_TABLE_NAME
 load_dotenv()
 
 # Используем современный Lifespan вместо @app.on_event("startup")
@@ -1198,22 +1199,36 @@ async def load_tables():
             sys.executable,
             "-m",
             "app.scripts.load_tables",
+            "--strict-validation",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
         if process.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=stderr.decode()
+                detail=(stderr_text.strip() or stdout_text.strip() or "Tables loader failed")
             )
         tables = await get_loaded_tables()
+        if CLIENT_TYPES_TABLE_NAME not in tables:
+            raise HTTPException(
+                status_code=500,
+                detail="Client Types table is missing after load",
+            )
         return {
             "success": True,
-            "stdout": stdout.decode(),
-            "stderr": stderr.decode(),
-            "tables": tables
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "tables": tables,
+            "client_types": {
+                "table_name": CLIENT_TYPES_TABLE_NAME,
+                "validation_status": "ok",
+            },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
