@@ -73,6 +73,8 @@ async def test_run_turn_writes_history_for_channel() -> None:
     first = store.append.await_args_list[0]
     assert first.args[:3] == (0, "user", "вопрос")
     assert first.kwargs["channel"] == "web"
+    model = store.append.await_args_list[1]
+    assert model.kwargs["blocks"] == [{"type": "text", "content": "ответ"}]
 
 
 @pytest.mark.unit

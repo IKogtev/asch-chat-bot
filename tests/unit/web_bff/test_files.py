@@ -29,3 +29,28 @@ def test_token_rejects_wrong_secret() -> None:
     token = unquote(url.rsplit("/", 1)[-1])
     with pytest.raises(FileTokenError):
         FileUrlIssuer("b").parse(token)
+
+
+@pytest.mark.unit
+def test_refresh_url_reissues_expired_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    issuer = FileUrlIssuer("secret", ttl_sec=10)
+    monkeypatch.setattr("web_bff.files.time.time", lambda: 100)
+    url = issuer.kb_url("user-1", "doc_1", "a.pdf")
+
+    monkeypatch.setattr("web_bff.files.time.time", lambda: 200)
+    old_token = unquote(url.rsplit("/", 1)[-1])
+    with pytest.raises(FileTokenError, match="expired"):
+        issuer.parse(old_token)
+
+    refreshed = issuer.refresh_url(url, "user-1")
+    payload = issuer.parse(unquote(refreshed.rsplit("/", 1)[-1]))
+    assert payload["id"] == "doc_1"
+    assert payload["exp"] == 210
+
+
+@pytest.mark.unit
+def test_refresh_url_rejects_other_user() -> None:
+    issuer = FileUrlIssuer("secret")
+    url = issuer.kb_url("user-1", "doc_1", "a.pdf")
+    with pytest.raises(FileTokenError, match="wrong_user"):
+        issuer.refresh_url(url, "user-2")

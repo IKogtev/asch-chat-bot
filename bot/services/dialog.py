@@ -85,16 +85,22 @@ async def paginate_search(
         bot_action={"type": action},
         file_urls=file_urls,
     )
+    blocks = _blocks_from_delivery(delivery)
     if store is not None:
         await store.append(platform_user_id, "user", label, global_user_id, channel=channel)
         await store.append(
-            platform_user_id, "model", delivery.text or "", global_user_id, channel=channel
+            platform_user_id,
+            "model",
+            delivery.text or "",
+            global_user_id,
+            channel=channel,
+            blocks=blocks,
         )
     return TurnResult(
         message_id=turn_id,
         session_id=session_id,
         status="complete",
-        blocks=_blocks_from_delivery(delivery),
+        blocks=blocks,
     )
 
 
@@ -154,25 +160,31 @@ async def run_turn(
     else:
         final_text = delivery.text or (answer or "")
 
+    blocks = build_blocks(
+        final_text,
+        delivery.documents,
+        shown=delivery.shown,
+        total=delivery.total,
+        has_more=delivery.has_more,
+    )
     if store is not None:
         await store.append(
             platform_user_id, "user", user_text, global_user_id, channel=channel
         )
         history_text = final_text or (answer or "")
         await store.append(
-            platform_user_id, "model", history_text, global_user_id, channel=channel
+            platform_user_id,
+            "model",
+            history_text,
+            global_user_id,
+            channel=channel,
+            blocks=blocks,
         )
 
     return TurnResult(
         message_id=message_id,
         session_id=session_id,
         status="complete",
-        blocks=build_blocks(
-            final_text,
-            delivery.documents,
-            shown=delivery.shown,
-            total=delivery.total,
-            has_more=delivery.has_more,
-        ),
+        blocks=blocks,
         bot_action=bot_action if isinstance(bot_action, dict) else None,
     )

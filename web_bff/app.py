@@ -159,13 +159,51 @@ async def me(request: Request, _user_id: str = Depends(require_user)) -> dict[st
 @app.get("/dialog")
 async def get_dialog(request: Request, _user_id: str = Depends(require_user)) -> dict[str, Any]:
     user = current_user(request)
-    return {
-        "messages": await request.app.state.store.get_history(
-            "0",
-            global_user_id=user["id"],
-            channel=CHANNEL_WEB,
+    messages = await request.app.state.store.get_history(
+        "0",
+        global_user_id=user["id"],
+        channel=CHANNEL_WEB,
+    )
+    for message in messages:
+        message["blocks"] = refresh_file_urls(
+            message.get("blocks"),
+            request.app.state.file_urls,
+            str(user["id"]),
         )
+    return {
+        "messages": messages
     }
+
+
+def refresh_file_urls(
+    blocks: Any,
+    file_urls: FileUrlIssuer,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    if not isinstance(blocks, list):
+        return None
+    refreshed: list[dict[str, Any]] = []
+    for raw_block in blocks:
+        if not isinstance(raw_block, dict):
+            continue
+        block = dict(raw_block)
+        if block.get("type") == "documents" and isinstance(block.get("items"), list):
+            items: list[dict[str, Any]] = []
+            for raw_item in block["items"]:
+                if not isinstance(raw_item, dict):
+                    continue
+                item = dict(raw_item)
+                url = item.get("url")
+                if isinstance(url, str) and url:
+                    try:
+                        item["url"] = file_urls.refresh_url(url, user_id)
+                    except FileTokenError:
+                        logger.warning("invalid stored file URL user=%s", user_id)
+                        item.pop("url", None)
+                items.append(item)
+            block["items"] = items
+        refreshed.append(block)
+    return refreshed
 
 
 @app.post("/dialog/messages", response_model=MessageOut)

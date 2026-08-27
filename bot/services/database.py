@@ -38,6 +38,7 @@ class PostgresChatStore:
         content: str,
         global_user_id=None,
         channel: str | None = None,
+        blocks: list[dict] | None = None,
     ) -> None:
         """Добавление сообщения в историю"""
         if not self.pool:
@@ -49,12 +50,23 @@ class PostgresChatStore:
             logger.warning(f"Skip append: no global_user_id for user_id={user_id}")
             return
         query = """
-        INSERT INTO chat_history (user_id, global_user_id, role, content, channel)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO chat_history (user_id, global_user_id, role, content, channel, blocks)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         """
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute(query, user_id, global_user_id, role, content, channel)
+                encoded_blocks = (
+                    json.dumps(blocks, ensure_ascii=False) if blocks is not None else None
+                )
+                await conn.execute(
+                    query,
+                    user_id,
+                    global_user_id,
+                    role,
+                    content,
+                    channel,
+                    encoded_blocks,
+                )
             logger.debug(f"Сохранено сообщение: user={user_id}, role={role}, len={len(content)}")
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
@@ -73,16 +85,13 @@ class PostgresChatStore:
             async with self.pool.acquire() as conn:
                 if global_user_id and channel:
                     rows = await conn.fetch("""
-                        SELECT role, content, created_at
+                        SELECT role, content, blocks, created_at
                         FROM chat_history
                         WHERE global_user_id = $1 AND channel = $2
                         ORDER BY created_at DESC
                         LIMIT $3
                     """, global_user_id, channel, self.max_turns)
-                    history = [
-                        {"role": row["role"], "content": row["content"]}
-                        for row in reversed(rows)
-                    ]
+                    history = [self._history_item(row) for row in reversed(rows)]
                     logger.debug(
                         "[CHANNEL] История для global_user_id=%s channel=%s: %s",
                         global_user_id,
@@ -92,7 +101,7 @@ class PostgresChatStore:
                     return history
                 elif global_user_id:
                     rows = await conn.fetch("""
-                        SELECT role, content, created_at
+                        SELECT role, content, blocks, created_at
                         FROM chat_history
                         WHERE global_user_id = $1
                         ORDER BY created_at DESC
@@ -100,15 +109,12 @@ class PostgresChatStore:
                     """, global_user_id, self.max_turns)
 
                     if rows:
-                        history = [
-                            {"role": row["role"], "content": row["content"]}
-                            for row in reversed(rows)
-                        ]
+                        history = [self._history_item(row) for row in reversed(rows)]
                         logger.debug(f"[GLOBAL] История для global_user_id={global_user_id}: {len(history)}")
                         return history
                 # fallback
                 query = """
-                SELECT role, content, created_at
+                SELECT role, content, blocks, created_at
                 FROM chat_history
                 WHERE user_id = $1
                 ORDER BY created_at DESC
@@ -117,16 +123,28 @@ class PostgresChatStore:
 
                 rows = await conn.fetch(query, user_id, self.max_turns)
 
-            history = [
-                {"role": row["role"], "content": row["content"]}
-                for row in reversed(rows)
-            ]
+            history = [self._history_item(row) for row in reversed(rows)]
             logger.debug(f"[LEGACY] История для user={user_id}: {len(history)} сообщений")
             return history
 
         except Exception as e:
             logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
             return []
+
+    @staticmethod
+    def _history_item(row) -> dict:
+        blocks = row["blocks"]
+        if isinstance(blocks, str):
+            try:
+                blocks = json.loads(blocks)
+            except json.JSONDecodeError:
+                blocks = None
+        return {
+            "role": row["role"],
+            "content": row["content"],
+            "blocks": blocks if isinstance(blocks, list) else None,
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        }
 
     async def reset(self, user_id: str, global_user_id=None, channel: str | None = None) -> None:
         """Очистка истории пользователя (при channel — только этот канал)."""

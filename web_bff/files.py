@@ -69,7 +69,7 @@ class FileUrlIssuer:
         )
         return f"/files/{quote(token, safe='')}"
 
-    def parse(self, token: str) -> dict[str, Any]:
+    def parse(self, token: str, *, allow_expired: bool = False) -> dict[str, Any]:
         try:
             body, sig = token.split(".", 1)
         except ValueError as exc:
@@ -81,9 +81,28 @@ class FileUrlIssuer:
             payload = json.loads(_b64url_decode(body))
         except (json.JSONDecodeError, ValueError) as exc:
             raise FileTokenError("malformed") from exc
-        if int(payload.get("exp") or 0) < int(time.time()):
+        if not allow_expired and int(payload.get("exp") or 0) < int(time.time()):
             raise FileTokenError("expired")
         return payload
+
+    def refresh_url(self, url: str, user_id: str) -> str:
+        """Перевыпустить сохранённую ссылку после проверки подписи и владельца."""
+        token = unquote_token(url)
+        payload = self.parse(token, allow_expired=True)
+        if str(payload.get("u") or "") != str(user_id):
+            raise FileTokenError("wrong_user")
+        payload["exp"] = int(time.time()) + self.ttl_sec
+        return f"/files/{quote(self._sign(payload), safe='')}"
+
+
+def unquote_token(url: str) -> str:
+    from urllib.parse import unquote
+
+    path = (url or "").split("?", 1)[0].rstrip("/")
+    token = path.rsplit("/", 1)[-1]
+    if not token:
+        raise FileTokenError("malformed")
+    return unquote(token)
 
 
 def kit_ref_from_path(path: str) -> tuple[str, str]:

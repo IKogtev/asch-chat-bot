@@ -120,6 +120,42 @@ async def test_postgres_chat_store_get_history_returns_empty_without_pool() -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgres_chat_store_persists_and_reads_blocks() -> None:
+    now = datetime.now()
+    blocks = [
+        {"type": "text", "content": "Найдено документов: 1."},
+        {"type": "documents", "items": [{"name": "a.pdf", "url": "/files/token"}]},
+    ]
+    conn = _FakeConn(
+        fetch_result=[
+            {
+                "role": "model",
+                "content": "Найдено документов: 1.",
+                "blocks": json.dumps(blocks),
+                "created_at": now,
+            }
+        ]
+    )
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    await store.append(
+        0,
+        "model",
+        "Найдено документов: 1.",
+        "user-1",
+        channel="web",
+        blocks=blocks,
+    )
+    history = await store.get_history("0", global_user_id="user-1", channel="web")
+
+    assert json.loads(conn.executed[0][1][5]) == blocks
+    assert history[0]["blocks"] == blocks
+    assert history[0]["created_at"] == now.isoformat()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_postgres_chat_store_save_search_results_uses_min_shown_count(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
