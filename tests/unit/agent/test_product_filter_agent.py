@@ -349,7 +349,9 @@ def test_product_filter_format_prompt_requires_multiline_product_output() -> Non
     assert "кодируй каждый перенос строки как `\\n`" in prompt
     assert "используй `\\n\\n` между заголовком" in prompt
     assert "Никогда не объединяй их в одну строку" in prompt
-    assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
+    assert "Сохраняй порядок продуктов из входного массива" in prompt
+    assert "Не сортируй их повторно" in prompt
+    # assert "Сортируй строки продуктов по `code` по возрастанию" in prompt
     assert "Каждое свойство должно принадлежать ровно одной группе" in prompt
     assert "### Пример отображения `product_compare`" in prompt
     assert "Никогда не выводи одинаковое свойство под продуктами" in prompt
@@ -406,13 +408,13 @@ def test_product_filter_content_prompt_requires_status_fallback_and_full_identit
         / "product_filter_content"
         / "product_filter_content_agent_prompt.md"
     ).read_text(encoding="utf-8")
-
-    assert "при полном отсутствии совпадений — по\nархивным" in prompt
-    assert "полной комбинации `code + name + is_active`" in prompt
+    prompt = " ".join(prompt.split())
+    assert "при полном отсутствии совпадений — по архивным" in prompt
+    assert "комбинации `code + name + is_active`" in prompt
     assert "`code IN (...)`" in prompt
     assert "этот запрос вернул ноль строк" in prompt
-    assert "Не объединяй результаты\n  двух статусов" in prompt
-    assert "Для фильтра только по свойству" in prompt
+    assert "Не объединяй результаты двух статусов" in prompt
+    assert "`property_only` — пользователь просит список продуктов по свойству" in prompt
     assert "не используй `product_filter_resolution.product_codes`" in prompt
 
 

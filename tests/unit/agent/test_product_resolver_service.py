@@ -10,6 +10,7 @@ from agent.product_resolver_service import (
     ACTIVE_PRODUCT_STATUS,
     ARCHIVED_PRODUCT_STATUS,
     ProductCandidate,
+    ProductResolveResult,
     ProductResolverService,
 )
 
@@ -255,7 +256,7 @@ async def test_resolve_product_removes_inflected_archive_modifier() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_resolve_products_does_not_mix_archive_into_partial_active_result() -> None:
+async def test_resolve_product_mentions_falls_back_to_archive_when_active_missing() -> None:
     resolver = FakeProductResolver(
         exact={
             "product a": [
@@ -269,10 +270,303 @@ async def test_resolve_products_does_not_mix_archive_into_partial_active_result(
 
     result = await resolver.resolve_product_mentions(["Product A", "Product B"])
 
-    assert result.status == "partial"
+    assert result.status == "resolved"
     assert result.items[0].status == "resolved"
     assert result.items[0].is_active == ACTIVE_PRODUCT_STATUS
-    assert result.items[1].status == "not_found"
+    assert result.items[0].found_via_fallback is False
+    assert result.items[1].status == "resolved"
+    assert result.items[1].is_active == ARCHIVED_PRODUCT_STATUS
+    assert result.items[1].found_via_fallback is True
+    assert result.items[1].requested_status == "active"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_mentions_falls_back_to_active_when_archive_missing() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "архивный product a": [
+                candidate("1001", "Product A", is_active=ACTIVE_PRODUCT_STATUS)
+            ],
+            "product a": [
+                candidate("1001", "Product A", is_active=ACTIVE_PRODUCT_STATUS)
+            ],
+            "product b": [
+                candidate("1002", "Product B", is_active=ACTIVE_PRODUCT_STATUS)
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_mentions(
+        ["архивный Product A", "Product B"]
+    )
+
+    assert result.status == "resolved"
+    assert result.items[0].found_via_fallback is True
+    assert result.items[0].requested_status == "archived"
+    assert result.items[0].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[1].found_via_fallback is False
+    assert result.items[1].is_active == ACTIVE_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_products_applies_archive_modifier_to_one_mention_only() -> None:
+    active_fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fd1 = candidate(
+        "8914",
+        "Fort Knox 1 год",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    active_fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fd3 = candidate(
+        "9000",
+        "Фиксированный доход 3 года",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={
+            "фд 1 год": [active_fd1, archived_fd1],
+            "архивный фд 3 года": [active_fd3, archived_fd3],
+            "фд 3 года": [active_fd3, archived_fd3],
+        },
+    )
+
+    result = await resolver.resolve_products("Сравни ФД 1 год и архивный ФД 3 года")
+
+    assert result.status == "resolved"
+    assert result.items[0].product_code == "8914"
+    assert result.items[0].product_name == "Фиксированный доход 1 год"
+    assert result.items[0].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[1].product_code == "9000"
+    assert result.items[1].is_active == ARCHIVED_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_products_plural_archived_applies_to_both_mentions() -> None:
+    active_ak = candidate(
+        "1001",
+        "Ak+",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_ak = candidate(
+        "1001",
+        "Ak+ Archive",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    active_fn = candidate(
+        "2002",
+        "ФН 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fn = candidate(
+        "2002",
+        "ФН 1 год Archive",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={
+            "архивные ak plus": [active_ak, archived_ak],
+            "ak plus": [active_ak, archived_ak],
+            "фн 1 год": [active_fn, archived_fn],
+        },
+    )
+
+    result = await resolver.resolve_products("сравни архивные Ak+ и ФН 1 год")
+
+    assert result.status == "resolved"
+    assert result.items[0].is_active == ARCHIVED_PRODUCT_STATUS
+    assert result.items[0].product_name == "Ak+ Archive"
+    assert result.items[1].is_active == ARCHIVED_PRODUCT_STATUS
+    assert result.items[1].product_name == "ФН 1 год Archive"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_products_plural_archived_falls_back_to_active() -> None:
+    archived_fn = candidate(
+        "8837",
+        "Fort Knox 3 года",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    active_fd = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={
+            "архивные fort knox 3 года": [archived_fn],
+            "fort knox 3 года": [archived_fn],
+            "фиксированный доход 1 год": [active_fd],
+        },
+    )
+
+    result = await resolver.resolve_products(
+        "сравни архивные Fort Knox 3 года и Фиксированный доход 1 год"
+    )
+
+    assert result.status == "resolved"
+    assert result.items[0].product_code == "8837"
+    assert result.items[0].found_via_fallback is False
+    assert result.items[0].requested_status == "archived"
+    assert result.items[1].product_code == "8914"
+    assert result.items[1].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[1].found_via_fallback is True
+    assert result.items[1].requested_status == "archived"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_products_singular_archived_applies_only_to_marked_mention() -> None:
+    active_ak = candidate(
+        "1001",
+        "Ak+",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_ak = candidate(
+        "1001",
+        "Ak+ Archive",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    active_fn = candidate(
+        "2002",
+        "ФН 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fn = candidate(
+        "2002",
+        "ФН 1 год Archive",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={
+            "архивный ak plus": [active_ak, archived_ak],
+            "ak plus": [active_ak, archived_ak],
+            "фн 1 год": [active_fn, archived_fn],
+        },
+    )
+
+    result = await resolver.resolve_products("сравни архивный Ak+ и ФН 1 год")
+
+    assert result.status == "resolved"
+    assert result.items[0].is_active == ARCHIVED_PRODUCT_STATUS
+    assert result.items[0].product_name == "Ak+ Archive"
+    assert result.items[1].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[1].product_name == "ФН 1 год"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "сравни ФД 1 год и ФН 1 год из архива",
+        "сравни ФД 1 год и ФН 1 год в архиве",
+        "сравни ФД 1 год и архивный ФН 1 год",
+    ],
+)
+async def test_resolve_products_archive_phrase_applies_only_to_one_mention(
+    query: str,
+) -> None:
+    active_fd = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fd = candidate(
+        "8914",
+        "Fort Knox 1 год",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    active_fn = candidate(
+        "2002",
+        "ФН 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fn = candidate(
+        "2002",
+        "ФН 1 год Archive",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={
+            "фд 1 год": [active_fd, archived_fd],
+            "фн 1 год": [active_fn, archived_fn],
+            "фн 1 год архива": [active_fn, archived_fn],
+            "фн 1 год архиве": [active_fn, archived_fn],
+            "архивный фн 1 год": [active_fn, archived_fn],
+        },
+    )
+
+    result = await resolver.resolve_products(query)
+
+    assert result.status == "resolved"
+    assert result.items[0].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[0].product_name == "Фиксированный доход 1 год"
+    assert result.items[1].is_active == ARCHIVED_PRODUCT_STATUS
+    assert result.items[1].product_name == "ФН 1 год Archive"
+
+
+@pytest.mark.unit
+def test_detect_compare_mention_status_keeps_archive_after_stopwords() -> None:
+    assert (
+        ProductResolverService._detect_compare_mention_status_preference(
+            "фн 1 год архива"
+        )
+        == "archived"
+    )
+    assert (
+        ProductResolverService._detect_compare_mention_status_preference(
+            "фн 1 год архиве"
+        )
+        == "archived"
+    )
+    assert (
+        ProductResolverService._detect_compare_mention_status_preference("фд 1 год")
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_mentions_does_not_inherit_neighbor_archive_status() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "fort knox": [
+                candidate("2832", "Fort Knox", is_active=ACTIVE_PRODUCT_STATUS),
+                candidate("2832", "Old Fort Knox", is_active=ARCHIVED_PRODUCT_STATUS),
+            ],
+            "архивный unit linked": [
+                candidate("7698", "Unit Linked", is_active=ACTIVE_PRODUCT_STATUS),
+                candidate("7699", "Unit Linked Archive", is_active=ARCHIVED_PRODUCT_STATUS),
+            ],
+            "unit linked": [
+                candidate("7698", "Unit Linked", is_active=ACTIVE_PRODUCT_STATUS),
+                candidate("7699", "Unit Linked Archive", is_active=ARCHIVED_PRODUCT_STATUS),
+            ],
+        },
+    )
+
+    result = await resolver.resolve_product_mentions(
+        ["Fort Knox", "архивный Unit Linked"],
+        status_preference="archived",
+    )
+
+    assert result.status == "resolved"
+    assert result.items[0].product_name == "Fort Knox"
+    assert result.items[0].is_active == ACTIVE_PRODUCT_STATUS
+    assert result.items[1].product_code == "7699"
+    assert result.items[1].is_active == ARCHIVED_PRODUCT_STATUS
 
 
 @pytest.mark.unit
@@ -303,6 +597,134 @@ async def test_resolve_product_mentions_returns_structured_error() -> None:
     assert result.status == "error"
     assert result.items[0].status == "error"
     assert result.items[0].error == "RuntimeError"
+
+
+@pytest.mark.unit
+def test_exclude_resolved_identity_from_other_mention_options() -> None:
+    fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    results = ProductResolverService._exclude_resolved_from_ambiguous_mentions(
+        [
+            ProductResolverService._resolved_result("Product A", fd3),
+            ProductResolveResult(
+                status="ambiguous",
+                mention="Product B",
+                options=[
+                    candidate(
+                        "8941",
+                        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                        is_active=ACTIVE_PRODUCT_STATUS,
+                    ),
+                    fd1,
+                ],
+            ),
+        ]
+    )
+
+    assert results[0].status == "resolved"
+    assert results[1].status == "resolved"
+    assert results[1].product_code == "8914"
+    assert results[1].product_name == "Фиксированный доход 1 год"
+
+
+@pytest.mark.unit
+def test_exclude_resolved_keeps_same_code_with_different_identity() -> None:
+    active_fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    archived_fort_knox = candidate(
+        "8914",
+        "Fort Knox 1 год",
+        is_active=ARCHIVED_PRODUCT_STATUS,
+    )
+    results = ProductResolverService._exclude_resolved_from_ambiguous_mentions(
+        [
+            ProductResolverService._resolved_result("Product A", active_fd1),
+            ProductResolveResult(
+                status="ambiguous",
+                mention="Product B",
+                options=[
+                    candidate(
+                        "8914",
+                        "Фиксированный доход 1 год",
+                        is_active=ACTIVE_PRODUCT_STATUS,
+                    ),
+                    archived_fort_knox,
+                ],
+            ),
+        ]
+    )
+
+    assert results[1].status == "resolved"
+    assert results[1].product_code == "8914"
+    assert results[1].product_name == "Fort Knox 1 год"
+    assert results[1].is_active == ARCHIVED_PRODUCT_STATUS
+
+
+@pytest.mark.unit
+def test_exclude_resolved_marks_mention_not_found_when_only_duplicate_remains() -> None:
+    fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    results = ProductResolverService._exclude_resolved_from_ambiguous_mentions(
+        [
+            ProductResolverService._resolved_result("Product A", fd3),
+            ProductResolveResult(
+                status="ambiguous",
+                mention="Product B",
+                options=[
+                    candidate(
+                        "8941",
+                        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+                        is_active=ACTIVE_PRODUCT_STATUS,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    assert results[0].status == "resolved"
+    assert results[1].status == "not_found"
+    assert results[1].mention == "Product B"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_mentions_excludes_resolved_identity_from_other_options() -> None:
+    fd3 = candidate(
+        "8941",
+        "Фиксированный доход 3 года + Альфа-Вклад Актив",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    fd1 = candidate(
+        "8914",
+        "Фиксированный доход 1 год",
+        is_active=ACTIVE_PRODUCT_STATUS,
+    )
+    resolver = FakeProductResolver(
+        exact={"product a": [fd3]},
+        tokens={"product b": [fd3, fd1]},
+    )
+
+    result = await resolver.resolve_product_mentions(["Product A", "Product B"])
+
+    assert result.status == "resolved"
+    assert result.items[0].product_code == "8941"
+    assert result.items[1].status == "resolved"
+    assert result.items[1].product_code == "8914"
+    assert result.items[1].product_name == "Фиксированный доход 1 год"
 
 
 @pytest.mark.unit
@@ -424,6 +846,61 @@ async def test_resolve_product_strips_query_noise_before_search() -> None:
 
     assert result.status == "resolved"
     assert result.product_code == "2832"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("покажи Fort Knox на год", "fort knox 1 год"),
+        ("Fort Knox год", "fort knox 1 год"),
+        ("Fort Knox 1 год", "fort knox 1 год"),
+        ("Fort Knox 3 года", "fort knox 3 года"),
+        ("Fort Knox на 3 года", "fort knox 3 года"),
+        ("покажи Fort Knox на три года", "fort knox 3 года"),
+        ("Fort Knox три года", "fort knox 3 года"),
+        ("Fort Knox на пять лет", "fort knox 5 лет"),
+        ("Fort Knox три месяца", "fort knox 3 месяца"),
+    ],
+)
+def test_remove_query_noise_fills_bare_year_as_one_year(query: str, expected: str) -> None:
+    assert ProductResolverService._remove_query_noise(query) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_treats_na_god_as_one_year() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "fort knox 1 год": [candidate("8914", "Fort Knox 1 год")],
+            "fort knox 3 года": [candidate("8837", "Fort Knox 3 года")],
+        },
+    )
+
+    result = await resolver.resolve_product("покажи Fort Knox на год")
+
+    assert result.status == "resolved"
+    assert result.product_code == "8914"
+    assert result.product_name == "Fort Knox 1 год"
+    assert ("exact", "fort knox 1 год") in resolver.search_calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resolve_product_treats_word_years_as_digits() -> None:
+    resolver = FakeProductResolver(
+        exact={
+            "fort knox 1 год": [candidate("8914", "Fort Knox 1 год")],
+            "fort knox 3 года": [candidate("8837", "Fort Knox 3 года")],
+        },
+    )
+
+    result = await resolver.resolve_product("покажи Fort Knox на три года")
+
+    assert result.status == "resolved"
+    assert result.product_code == "8837"
+    assert result.product_name == "Fort Knox 3 года"
+    assert ("exact", "fort knox 3 года") in resolver.search_calls
 
 
 @pytest.mark.unit
