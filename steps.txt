@@ -931,4 +931,20 @@ Review realisation and type numbered list of deviations from this rules. Do not 
 We have the semantic layer with filter templates for different user query: "C:\GitHub\asch-chat-bot\kb_storage\manager\tables\business layer_active.xlsx"
 But current version of product_*_agent_prompt contain hardcoded list of properties and filtering logic. We need to update prompts to use semantic layer templates instead of hardcoded logic.
 Analize semantic layer and prompts, prepare plan for this update. Do not realize any changes, just analyze.
+==========
+Задача: добавить функциональность ассистента, чтобы он мог помогать подбирать продукты под запросы клиента.
+Идея: добавить агента advisor_agent, на который будет переключать dispatcher_agent в случае если задаются вопросы "подбери продукт", "помоги выбрать продукт", "клиенту нужен продукт", "какой продукт подойдет клиенту".
+Логика работы агента:
+- понять профиль клиента
+- понять критерии подбора продуктов
+- подобрать продукты
+- сделать акцент на продукты в фокусе и попытаться повысить КВ
+- вывести ТОП3, ответить на уточняющие вопросы
+- для получения детальной информации о продуктах - передать управление на product_info_agent
+Подготовь описание подходов к реализации в формате .md, сохрани в docs, сделай акцент на:
+- варианты реализации (новый агент, точки взаимодействия с существующими)
+- какая информация требуется (типовые профили клиентов, для каких профилей какие продукты подходят)
+- предложи идеи, может кластеризация продуктов
+- посмотри широко на варианты, технические детали реализации пока вторичны
+
 

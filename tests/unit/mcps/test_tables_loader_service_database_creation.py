@@ -401,6 +401,160 @@ def test_normalize_products_dataframe_trims_strings_and_coerces_numeric_columns(
     assert service._sql_type(result["empty_float_attribute"].dtype) == "TEXT"
 
 
+@pytest.mark.unit
+def test_normalize_client_types_adds_stable_codes_and_removes_description_row(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    module.pd = real_pandas
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    columns = list(module.CLIENT_TYPES_EXPECTED_COLUMNS)
+    description = {column: f"Описание {column}" for column in columns}
+    description["profile_name"] = "Тип профиля"
+    conservative = {column: "" for column in columns}
+    conservative.update(
+        profile_name=" Консервативный ",
+        required_properties="Статус: Действующий; уровень риска: Низкий",
+    )
+    moderate = {column: "" for column in columns}
+    moderate.update(
+        profile_name="Умеренный",
+        preferred_properties="Уровень риска: Средний или Высокий",
+    )
+    source = real_pandas.DataFrame(
+        [description, conservative, moderate],
+        columns=columns,
+    )
+
+    result = service._normalize_client_types_dataframe(source)
+
+    assert list(result.columns) == ["client_type_code", *columns]
+    assert result["client_type_code"].tolist() == ["CT-001", "CT-002"]
+    assert result["profile_name"].tolist() == ["Консервативный", "Умеренный"]
+
+
+@pytest.mark.unit
+def test_normalize_client_types_rejects_schema_mismatch(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    module.pd = real_pandas
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    source = real_pandas.DataFrame([{"profile_name": "Консервативный"}])
+
+    with pytest.raises(ValueError, match="Client Types schema mismatch"):
+        service._normalize_client_types_dataframe(source)
+
+
+@pytest.mark.unit
+def test_parse_client_type_rule_cell_maps_properties_and_alternatives(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    parsed = module.TablesLoaderService.parse_client_type_rule_cell(
+        "Статус: Действующий; Уровень риска: Средний или Высокий",
+        profile_name="Умеренный",
+        rule_column="preferred_properties",
+    )
+
+    assert parsed == [
+        ("is_active", ["Действующий"]),
+        ("product_risk_level", ["Средний", "Высокий"]),
+    ]
+
+
+@pytest.mark.unit
+def test_parse_client_type_rule_cell_rejects_unknown_property(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="Unknown Client Types product property"):
+        module.TablesLoaderService.parse_client_type_rule_cell(
+            "Неизвестное свойство: Значение",
+            profile_name="Умеренный",
+            rule_column="required_properties",
+        )
+
+
+@pytest.mark.unit
+def test_validate_client_type_rules_uses_product_catalog_values(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    module.pd = real_pandas
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    client_types = real_pandas.DataFrame(
+        [
+            {
+                "profile_name": "Умеренный",
+                "required_properties": "Статус: Действующий",
+                "preferred_properties": "Уровень риска: Средний или Высокий",
+                "acceptable_compromises": "Срок: Среднесрочный",
+                "contraindications": "Ликвидность: Низкая",
+            }
+        ]
+    )
+    products = real_pandas.DataFrame(
+        [
+            {
+                "is_active": "Действующий",
+                "product_type": "Unit Linked",
+                "term": "Среднесрочный",
+                "capital_loss_risk": "Есть риск",
+                "product_risk_level": "Средний",
+                "income": "Не гарантирован",
+                "contribution_type": "Единоразовый",
+                "payout_type": "Без выплат",
+                "liquidity": "Низкая",
+                "currency": "Рубли",
+            },
+            {
+                "is_active": "Действующий",
+                "product_type": "Unit Linked",
+                "term": "Среднесрочный",
+                "capital_loss_risk": "Есть риск",
+                "product_risk_level": "Высокий",
+                "income": "Не гарантирован",
+                "contribution_type": "Единоразовый",
+                "payout_type": "Без выплат",
+                "liquidity": "Высокая",
+                "currency": "Рубли",
+            },
+        ]
+    )
+
+    service._validate_client_type_rules_against_products(client_types, products)
+
+
+@pytest.mark.unit
+def test_validate_client_type_rules_rejects_value_missing_from_products(monkeypatch) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    module.pd = real_pandas
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    client_types = real_pandas.DataFrame(
+        [
+            {
+                "profile_name": "Умеренный",
+                "required_properties": "Валюта: Евро",
+                "preferred_properties": "",
+                "acceptable_compromises": "",
+                "contraindications": "",
+            }
+        ]
+    )
+    products = real_pandas.DataFrame(
+        [
+            {
+                "is_active": "Действующий",
+                "product_type": "Unit Linked",
+                "term": "Среднесрочный",
+                "capital_loss_risk": "Есть риск",
+                "product_risk_level": "Средний",
+                "income": "Не гарантирован",
+                "contribution_type": "Единоразовый",
+                "payout_type": "Без выплат",
+                "liquidity": "Высокая",
+                "currency": "Рубли",
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="currency='Евро' not found in products"):
+        service._validate_client_type_rules_against_products(client_types, products)
+
+
 class DateFakeAt:
     def __init__(self, frame):
         self.frame = frame

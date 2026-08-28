@@ -11,7 +11,7 @@ if ($LASTEXITCODE -ne 0 -or $RunningServices -notcontains $Service) {
     exit 1
 }
 
-docker compose exec -T $Service python -m app.scripts.load_tables
+docker compose exec -T $Service python -m app.scripts.load_tables --strict-validation
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Tables loader failed."

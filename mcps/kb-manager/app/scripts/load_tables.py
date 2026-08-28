@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 try:
@@ -10,7 +11,12 @@ except ImportError:
     load_dotenv = None
 
 from utils.logger import setup_logger
-from app.services.tables_loader_service import GLOSSARY_TABLE_NAME, TablesLoaderService
+from app.services.tables_loader_service import (
+    CLIENT_TYPE_CODE_COLUMN,
+    CLIENT_TYPES_TABLE_NAME,
+    GLOSSARY_TABLE_NAME,
+    TablesLoaderService,
+)
 
 
 DEFAULT_TABLES_DIR = "/app/data/kb_documents/manager/tables"
@@ -59,6 +65,12 @@ def main() -> int:
             f"{table.table_name}: {table.rows} rows, {table.columns} columns "
             f"from {table.source_file}/{table.source_sheet}"
         )
+        if table.table_name == CLIENT_TYPES_TABLE_NAME:
+            print(
+                "Client Types validated successfully: "
+                f"{table.rows} profiles with generated codes in "
+                f"{CLIENT_TYPE_CODE_COLUMN}."
+            )
         if table.table_name == GLOSSARY_TABLE_NAME:
             print(f"Glossary terms loaded: {table.rows}")
         
@@ -100,6 +112,11 @@ def main() -> int:
         for error in result.validation_errors:
             print(f"- {error}")
         if args.strict_validation:
+            print(
+                "Strict table validation failed: "
+                + "; ".join(result.validation_errors),
+                file=sys.stderr,
+            )
             return 1
 
     print("Tables load completed successfully.")

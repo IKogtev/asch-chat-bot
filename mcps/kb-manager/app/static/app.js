@@ -1352,12 +1352,18 @@ async function loadTables() {
         if (!response.ok) {
             throw new Error(data.detail || 'Ошибка загрузки таблиц');
         }
+        const clientTypes = data.client_types;
+        if (
+            !clientTypes ||
+            clientTypes.validation_status !== "ok" ||
+            !data.tables.includes(clientTypes.table_name)
+        ) {
+            throw new Error("Таблица типов клиентов не загружена или не прошла проверку");
+        }
         showLoadLog(data.stdout);
-        document.getElementById("load-log-content").textContent =
-            data.stdout;
         result.className = "result-message success";
-        result.innerHTML =
-            "✓ Таблицы успешно обновлены";
+        result.textContent =
+            "✓ Таблицы успешно обновлены. Типы клиентов загружены и проверены.";
         renderTables(data.tables);
     } catch (error) {
         result.className =
