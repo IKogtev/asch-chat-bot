@@ -114,7 +114,7 @@ async def main() -> None:
     adk_app = os.getenv("ADK_APP_NAME", "agent").strip()
     adk_timeout_sec = Settings.ADK_TIMEOUT_SEC
     # Конфигурация для DocumentHandler
-    kb_manager_token = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
+    kb_manager_token = Settings.KB_MANAGER_TOKEN
     downloads_dir = os.getenv("DOWNLOADS_DIR", "./downloads").strip()
 
     logger.info(f"Конфигурация:")
