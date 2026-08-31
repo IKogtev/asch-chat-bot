@@ -58,6 +58,8 @@ class Settings():
     
     TIME_SET_WAIT = 120
     AVAILABLE_GROUPS = ("all", "manager_group", "coach_group")
+    # токен для взаимодействия ботов с kb-manager 
+    KB_MANAGER_TOKEN = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
 
     def create_directories(self):
         """Создает необходимые директории при старте, если их нет"""

@@ -30,6 +30,7 @@ class DocumentHandler:
         url = f"{self.kb_manager_url}/api/documents/download/{document_id}"
         headers = {}
         if self.kb_manager_token:
+            headers["X-API-Key"] = self.kb_manager_token
             headers["Authorization"] = f"Bearer {self.kb_manager_token}"
 
         logger.info(

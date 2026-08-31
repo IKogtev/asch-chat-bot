@@ -182,7 +182,8 @@ services:
       - ADK_APP_NAME=agent
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.8.4
+      - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
+      - PLATFORM_VERSION=0.8.5
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -225,7 +226,8 @@ services:
       - ADK_APP_NAME=agent
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - KB_MANAGER_URL=http://kb-manager:5000
-      - PLATFORM_VERSION=0.8.4
+      - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
+      - PLATFORM_VERSION=0.8.5
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -264,6 +266,7 @@ services:
     environment:
       - LOG_LEVEL=${KB_MANAGER_LOG_LEVEL:-DEBUG}
       - LOG_TO_FILE=false
+      - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
@@ -281,7 +284,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
-      - PLATFORM_VERSION=0.8.4
+      - PLATFORM_VERSION=0.8.5
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
@@ -297,6 +300,12 @@ services:
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
+      # keycloak information to connect
+      - LIFEPOINT_API_TOKEN=${LIFEPOINT_API_TOKEN?LIFEPOINT_API_TOKEN is required}
+      - KEYCLOAK_ISSUER=${KEYCLOAK_ISSUER?KEYCLOAK_ADDRESS IS REQUIRED}
+      - KEYCLOAK_AUDIENCE=lifepoint
+      - KEYCLOAK_ALGORITHM=RS256
+      - KEYCLOAK_JWKS_CACHE_TTL=3600
     depends_on:
       migration:
           condition: service_completed_successfully
@@ -312,6 +321,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    ports:
+      - "8088:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./keycloak/import:/opt/keycloak/data/import
+      - ./keycloak/themes/kb-manager-theme:/opt/keycloak/themes/kb-manager-theme
+    networks:
+      - aszh-bot-network
+    # Если указать профиль, сервис НЕ будет подниматься по умолчанию на проде (`docker compose up`)
+    # Для локального запуска нужно будет передать флаг: `docker compose --profile tools up -d`
+    # profiles: ["tools"]
 
   kbsearch:
     build:
@@ -538,6 +567,7 @@ volumes:
   pg_data:
   pgadmin_data:
   qdrant-storage:
+  keycloak_data:
 
 networks:
   aszh-bot-network:

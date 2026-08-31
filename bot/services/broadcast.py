@@ -15,11 +15,16 @@ from maxapi.enums import TextFormat
 import random
 import tempfile
 from maxapi.types import InputMedia
+from pydantic import BaseModel, Field
 
 # Настройка логгера
 logger = setup_logger('broadcasting', 'broadcast.log')
 #  логгер событий
 eventlogger = EventLogger()
+# модель входных данных на api
+class DirectNotificationRequest(BaseModel):
+    global_user_id: str
+    message: str = Field(..., min_length=1)
 
 def create_broadcast_app(
     news_store,
@@ -33,6 +38,49 @@ def create_broadcast_app(
 ):
     app = FastAPI(title="Bot Broadcast API")
     logger.info(f"Источник для всех {source}")
+
+
+
+    @app.post("/notify")
+    async def notify_user(data: DirectNotificationRequest):
+        """
+        Отправить персональное уведомление пользователю
+        по global_user_id.
+        """
+
+        result = await send_to_global_user(
+            global_user_id=data.global_user_id,
+            text=data.message,
+            bot_holder=bot_holder,
+            subscriber_store=subscriber_store,
+            source=source,
+        )
+
+        if result["status"] == "ok":
+            return result
+
+        if result["code"] == "USER_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail=result
+            )
+
+        if result["code"] == "USER_BLOCKED":
+            raise HTTPException(
+                status_code=409,
+                detail=result
+            )
+
+        if result["code"] == "BOT_UNAVAILABLE":
+            raise HTTPException(
+                status_code=503,
+                detail=result
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail=result
+        )
 
     @app.post("/broadcast")
     async def broadcast(
@@ -168,18 +216,23 @@ def create_broadcast_app(
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/api/subscribers")
-    async def get_subscribers():
+    async def get_subscribers(global_user_id: Optional[str] = None):
         """
-        Возвращает ГЛОБАЛЬНЫХ пользователей с их аккаунтами(1 строка = 1человек)
+        Возвращает глобальных пользователей с их аккаунтами.
+
+        Если global_user_id не передан:
+            возвращаются все пользователи.
+
+        Если global_user_id передан:
+            возвращается только пользователь с указанным global_user_id
         """
         try:
             async with subscriber_store.pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT 
-                        u.id as global_user_id,
+                query = """
+                    SELECT
+                        u.id AS global_user_id,
                         u.phone_number,
                         u.is_blocked,
-
                         -- Собираем данные аккаунтов в массив объектов
                         json_agg(
                             json_build_object(
@@ -189,46 +242,94 @@ def create_broadcast_app(
                                 'first_name', s.first_name,
                                 'last_name', s.last_name
                             )
-                        ) FILTER (WHERE ua.platform_user_id IS NOT NULL) as accounts,
-                        
+                        ) FILTER (
+                            WHERE ua.platform_user_id IS NOT NULL
+                        ) AS accounts,
                         -- УМНЫЙ ВЫБОР ИМЕНИ ДЛЯ ТАБЛИЦЫ:
                         -- Ищем самый свежий аккаунт, где first_name не пустой. 
                         -- Если таких нет, берем просто самый свежий.
-                        (SELECT COALESCE(s2.first_name, s2.username, 'unknown')
-                        FROM subscribers s2 
-                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
-                        WHERE ua2.user_id = u.id 
-                        ORDER BY 
-                            (NULLIF(s2.first_name, '') IS NOT NULL) DESC, -- Сначала те, где есть имя
-                            s2.last_seen DESC                             -- Затем самые свежие
-                        LIMIT 1) as display_first_name,
-                        
-                        (SELECT s2.last_name
-                        FROM subscribers s2 
-                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
-                        WHERE ua2.user_id = u.id 
-                        ORDER BY 
-                            (NULLIF(s2.last_name, '') IS NOT NULL) DESC, 
-                            s2.last_seen DESC 
-                        LIMIT 1) as display_last_name,
+                        (
+                            SELECT COALESCE(
+                                s2.first_name,
+                                s2.username,
+                                'unknown'
+                            )
+                            FROM subscribers s2
+                            JOIN user_accounts ua2
+                                ON s2.user_id = ua2.platform_user_id
+                            WHERE ua2.user_id = u.id
+                            ORDER BY
+                                (
+                                    NULLIF(
+                                        s2.first_name,
+                                        ''
+                                    ) IS NOT NULL
+                                ) DESC,
+                                s2.last_seen DESC
+                            LIMIT 1
+                        ) AS display_first_name,
 
-                        (SELECT s2.username
-                        FROM subscribers s2 
-                        JOIN user_accounts ua2 ON s2.user_id = ua2.platform_user_id 
-                        WHERE ua2.user_id = u.id 
-                        ORDER BY 
-                            (NULLIF(s2.username, '') IS NOT NULL) DESC, 
-                            s2.last_seen DESC 
-                        LIMIT 1) as display_username,
-                        bool_or(s.manager_group) as manager_group,
-                        bool_or(s.coach_group) as coach_group,
-                        max(s.last_seen) as last_seen
+                        (
+                            SELECT s2.last_name
+                            FROM subscribers s2
+                            JOIN user_accounts ua2
+                                ON s2.user_id = ua2.platform_user_id
+                            WHERE ua2.user_id = u.id
+                            ORDER BY
+                                (
+                                    NULLIF(
+                                        s2.last_name,
+                                        ''
+                                    ) IS NOT NULL
+                                ) DESC,
+                                s2.last_seen DESC
+                            LIMIT 1
+                        ) AS display_last_name,
+
+                        (
+                            SELECT s2.username
+                            FROM subscribers s2
+                            JOIN user_accounts ua2
+                                ON s2.user_id = ua2.platform_user_id
+                            WHERE ua2.user_id = u.id
+                            ORDER BY
+                                (
+                                    NULLIF(
+                                        s2.username,
+                                        ''
+                                    ) IS NOT NULL
+                                ) DESC,
+                                s2.last_seen DESC
+                            LIMIT 1
+                        ) AS display_username,
+
+                        bool_or(s.manager_group) AS manager_group,
+                        bool_or(s.coach_group) AS coach_group,
+                        max(s.last_seen) AS last_seen
+
                     FROM users u
-                    LEFT JOIN user_accounts ua ON ua.user_id = u.id
-                    LEFT JOIN subscribers s ON s.user_id = ua.platform_user_id AND s.platform = ua.platform
+
+                    LEFT JOIN user_accounts ua
+                        ON ua.user_id = u.id
+
+                    LEFT JOIN subscribers s
+                        ON s.user_id = ua.platform_user_id
+                        AND s.platform = ua.platform
+                    """
+                params = []
+                if global_user_id:
+                    query += """
+                        WHERE u.id = $1
+                    """
+                    params.append(global_user_id)
+                query += """
                     GROUP BY u.id
                     ORDER BY last_seen DESC NULLS LAST
-                """)
+                """
+                rows = await conn.fetch(
+                    query,
+                    *params
+                )
 
             result = []
             for r in rows:
@@ -239,7 +340,6 @@ def create_broadcast_app(
 
                 result.append({
                     "global_user_id": str(r["global_user_id"]), # Явно в string для JS
-                    "phone_number": r["phone_number"],
                     "username": r["display_username"],
                     "first_name": r["display_first_name"],
                     "last_name": r["display_last_name"],
@@ -252,7 +352,7 @@ def create_broadcast_app(
 
             return result
         except Exception as e:
-            logger.error(f"Error getting subscribers: {e}")
+            logger.error(f"Error getting subscribers: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/subscribers/group")
@@ -362,6 +462,175 @@ def create_broadcast_app(
 ######################################
 # обработчики новостей
 ######################################
+
+async def send_to_global_user(
+    global_user_id: str,
+    text: str,
+    bot_holder,
+    subscriber_store,
+    source: str = "telegram",
+):
+    """
+    Отправляет персональное уведомление конкретному пользователю
+    по его global_user_id.
+
+    global_user_id никогда не передаётся напрямую в Telegram/MAX.
+    Сначала он преобразуется через user_accounts в platform_user_id.
+    """
+    # ---------------------------------------------------------
+    # 1. Проверяем, что бот доступен
+    # ---------------------------------------------------------
+    bot = bot_holder.instance
+    if not bot:
+        logger.warning(
+            f"[DIRECT NOTIFY] bot is None, "
+            f"source={source}, global_user_id={global_user_id}"
+        )
+
+        return {
+            "status": "error",
+            "code": "BOT_UNAVAILABLE",
+            "message": "Bot is currently unavailable"
+        }
+
+    # ---------------------------------------------------------
+    # 2. Получаем platform_user_id по global_user_id
+    # ---------------------------------------------------------
+    accounts = await subscriber_store.get_accounts_by_global_id(
+        global_user_id
+    )
+    account = next(
+        (
+            account
+            for account in accounts
+            if account["platform"] == source
+        ),
+        None
+    )
+
+    # ---------------------------------------------------------
+    # 3. Пользователь/аккаунт не найден
+    # ---------------------------------------------------------
+    if not account:
+        logger.warning(
+            f"[DIRECT NOTIFY] account not found: "
+            f"global_user_id={global_user_id}, source={source}"
+        )
+
+        return {
+            "status": "error",
+            "code": "USER_NOT_FOUND",
+            "message": "User account not found"
+        }
+
+    # ---------------------------------------------------------
+    # 4. Пользователь заблокирован
+    # ---------------------------------------------------------
+    if account["is_blocked"]:
+        logger.info(
+            f"[DIRECT NOTIFY] user blocked: "
+            f"global_user_id={global_user_id}"
+        )
+
+        return {
+            "status": "error",
+            "code": "USER_BLOCKED",
+            "message": "User is blocked"
+        }
+
+    platform_user_id = account["platform_user_id"]
+
+    # ---------------------------------------------------------
+    # 5. Отправляем сообщение
+    # ---------------------------------------------------------
+    try:
+        # MAX требует integer
+        peer_id = (
+            int(platform_user_id)
+            if source == "max"
+            else platform_user_id
+        )
+
+        parts = split_message(text)
+
+        for part in parts:
+            try:
+                if source == "telegram":
+                    await bot.send_message(
+                        peer_id,
+                        part,
+                        parse_mode="HTML"
+                    )
+
+                else:
+                    await bot.send_message(
+                        user_id=peer_id,
+                        text=part,
+                        format=TextFormat.HTML
+                    )
+
+            except Exception as html_error:
+                # fallback на обычный текст
+                logger.debug(
+                    f"[DIRECT NOTIFY] HTML fallback: "
+                    f"{html_error}"
+                )
+
+                if source == "telegram":
+                    await bot.send_message(
+                        peer_id,
+                        part
+                    )
+                else:
+                    await bot.send_message(
+                        user_id=peer_id,
+                        text=part
+                    )
+
+        # -----------------------------------------------------
+        # 6. Логируем отправку
+        # -----------------------------------------------------
+        await eventlogger.log_event(
+            event_type="direct_notification_sent",
+            user_id=str(global_user_id),
+            channel=source,
+            payload={}
+        )
+
+        logger.info(
+            f"[DIRECT NOTIFY] sent successfully: "
+            f"global_user_id={global_user_id}, "
+            f"source={source}"
+        )
+
+        return {
+            "status": "ok",
+            "global_user_id": str(global_user_id),
+            "channel": source
+        }
+
+    except Exception as e:
+        logger.error(
+            f"[DIRECT NOTIFY] send error: "
+            f"global_user_id={global_user_id}, "
+            f"source={source}, "
+            f"error={e}"
+        )
+
+        await eventlogger.log_event(
+            event_type="direct_notification_error",
+            user_id=str(global_user_id),
+            channel=source,
+            payload={
+                "error": str(e)
+            }
+        )
+
+        return {
+            "status": "error",
+            "code": "SEND_FAILED",
+            "message": "Failed to send notification"
+        }
 
 #  функция отправки новости с фильтрацией по группе
 async def send_now(text: str, file_data: List, target_group: str="all", bot_holder=None, subscriber_store=None, source="telegram", news_id: Optional[int]=None):

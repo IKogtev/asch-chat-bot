@@ -48,18 +48,6 @@ let filteredUsersCache = []; // кэш фильтрованных пользов
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', async () => {
-    await checkAuth(); //Проверка авторизации
-    await loadAliasData(); // загрузка данных Алиаса
-    await loadCollections(); // загрузка коллекций
-    await loadActiveCollections(); // загрузка активных коллекций
-    await loadCollectionInfo(); // загрузка информации о коллекциях
-    await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
-    await loadDocuments(); // загрузка документов
-    await loadSyncSettings(); // загрузка настроек синхронизации
-    refreshTablesList();
-    subscribeToSync();
-    await loadFilesystemTree();
-    startLogsAutoRefresh();
     // блок для работы с новостями
     const uploadBox = document.getElementById("news-upload-box");
     const fileInput = document.getElementById("news-files");
@@ -88,10 +76,34 @@ document.addEventListener('DOMContentLoaded', async () => {
             placeholder: "Введите текст..."
         });
     }
+    const isAuthenticated = await checkAuth(); //Проверка авторизации
+    // Загружаем данные приложения ТОЛЬКО если пользователь уже авторизован (например, куки сохранились)
+    if (isAuthenticated) {
+        await loadAppData();
+    }
 });
 // #############################
 // MENU FOR ALL PAGES INSIDE UI 
 // #############################
+
+async function loadAppData() {
+    try {
+        await loadAliasData(); // загрузка данных Алиаса
+        await loadCollections(); // загрузка коллекций
+        await loadActiveCollections(); // загрузка активных коллекций
+        await loadCollectionInfo(); // загрузка информации о коллекциях
+        await loadManagerCollectionInfo(); // загрузка информации о коллекции для менеджера
+        await loadDocuments(); // загрузка документов
+        await loadSyncSettings(); // загрузка настроек синхронизации
+        refreshTablesList();
+        subscribeToSync();
+        await loadFilesystemTree();
+        startLogsAutoRefresh();
+    } catch (err) {
+        console.error("Ошибка при загрузке данных приложения:", err);
+    }
+}
+
 
 // load active collections
 async function loadActiveCollections() {
@@ -107,6 +119,10 @@ async function loadCollections() {
     activeEl.textContent = 'Активная коллекция: загрузка...';
     try {
         const response = await fetch(`${API_BASE}/api/collections`);
+        if (!response.ok) {
+            console.warn('Не удалось загрузить коллекции:', response.status);
+            return;
+        }
         const data = await response.json();
         const { current_collection, collections} = data;
         currentCollection = current_collection;
@@ -731,7 +747,7 @@ document.addEventListener("click", async function (e) {
 // подписка на очередь событий для отслеживания автоматического обновления 
 // при синхронизации атомарной
 function subscribeToSync() {
-    const eventSource = new EventSource("/api/filesystem/sync_events");
+    const eventSource = new EventSource('/api/filesystem/sync_events', { withCredentials: true });
     eventSource.onmessage = function (event) {
         if (event.data === "sync_completed") {
             loadDocuments();
@@ -2584,9 +2600,11 @@ async function checkAuth() {
         document.getElementById("login-screen").style.display = "none";
         document.getElementById("app").style.display = "block";
         applyRoleAccess();
+        return true; // Авторизация успешна
     } catch {
         document.getElementById("login-screen").style.display = "flex";
         document.getElementById("app").style.display = "none";
+        return false; // Пользователь не авторизован
     }
 }
 // авторизация
@@ -2601,7 +2619,13 @@ async function login() {
         body: formData
     });
     if (res.ok) {
-        checkAuth();
+        document.getElementById("login-error").innerText = "";
+        
+        // После успешного логина проверяем статус и ЗАГРУЖАЕМ ДАННЫЕ
+        const isAuth = await checkAuth();
+        if (isAuth) {
+            await loadAppData();
+        }
     } else {
         document.getElementById("login-error").innerText = "Неверные учетные данные";
     }
@@ -2721,8 +2745,8 @@ async function loadLogs() {
         }
     });
     const res = await fetch(`/api/events?${params}`);
+    if (!res.ok) return;
     const data = await res.json();
-    logsCache = data;
     // создаём таблицу один раз
     if (!document.getElementById("logs-body")) {
         document.getElementById("logs-table").innerHTML = `
@@ -2741,7 +2765,11 @@ async function loadLogs() {
             </table>
         `;
     }
-    renderLogs();
+    // Проверяем, что data — это массив, перед тем как передавать в renderLogs
+    if (Array.isArray(data)) {
+        logsCache = data;
+        renderLogs();
+    }
 }
 // настраиваем фильтры для логов
 function setupLogFilters() {
