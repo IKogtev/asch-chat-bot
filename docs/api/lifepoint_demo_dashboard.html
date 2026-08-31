@@ -111,33 +111,62 @@
     .status-200 { background: rgba(16,185,129,0.2); color: var(--success); }
     .status-err { background: rgba(239,68,68,0.2); color: var(--danger); }
     
-    .cors-box {
-      background: rgba(245, 158, 11, 0.1);
-      border: 1px solid var(--warning);
-      padding: 10px;
+    .env-badge {
+      background: #1e293b;
+      border: 1px solid var(--border);
+      padding: 4px 10px;
       border-radius: 6px;
       font-size: 0.8rem;
-      margin-top: 10px;
-      color: #fde68a;
+      color: var(--muted);
     }
   </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>LifePoint ↔ ИС "Настя" <span class="badge">Local Bench</span></h1>
-  <div style="font-size: 0.8rem; color: var(--muted);">Подключено к <b>localhost:5000</b> & <b>localhost:8088</b></div>
+  <h1>LifePoint ↔ ИС "Настя" </h1>
+  <div class="env-badge">Активный хост: <b id="activeHostLabel" style="color: #fff;">localhost</b></div>
 </div>
 
 <div class="grid">
-  <!-- LEFT COLUMN: INPUT FORM -->
+  <!-- LEFT COLUMN: CONFIG & INPUT FORM -->
   <div>
+    <!-- GLOBAL ENVIRONMENT CONFIG -->
+    <div class="card">
+      <h2>⚙️ Глобальные настройки окружения</h2>
+      <div class="row" style="margin-bottom: 10px;">
+        <button class="btn btn-secondary" onclick="applyPreset('local')">🖥️ Пресет: Local</button>
+        <button class="btn btn-secondary" onclick="applyPreset('prod')">🌐 Пресет: Production</button>
+      </div>
+      <div class="row">
+        <div class="form-group" style="flex: 0.8;">
+          <label>Протокол:</label>
+          <select id="envScheme" class="form-control" onchange="updateCalculatedUrls()">
+            <option value="http">http</option>
+            <option value="https">https</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 2;">
+          <label>&lt;KEYCLOAK_HOST&gt;:</label>
+          <input type="text" id="envKcHost" class="form-control" value="localhost:8088" oninput="updateCalculatedUrls()">
+        </div>
+        <div class="form-group" style="flex: 1.5;">
+          <label>&lt;REALM_NAME&gt;:</label>
+          <input type="text" id="envRealm" class="form-control" value="kb-manager-test" oninput="updateCalculatedUrls()">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>&lt;NST_HOST&gt; (Хост API ИС "Настя"):</label>
+        <input type="text" id="envNstHost" class="form-control" value="localhost:5000" oninput="updateCalculatedUrls()">
+      </div>
+    </div>
+
     <!-- KEYCLOAK AUTH -->
     <div class="card">
-      <h2>1. Авторизация Keycloak (localhost:8088)</h2>
+      <h2>1. Авторизация Keycloak</h2>
       <div class="form-group">
-        <label>Keycloak Token URL:</label>
-        <input type="text" id="kcUrl" class="form-control" value="http://localhost:8088/realms/kb-manager-test/protocol/openid-connect/token">
+        <label>Сформированный Token URL:</label>
+        <input type="text" id="kcUrl" class="form-control" readonly style="opacity: 0.8;">
       </div>
       <div class="row">
         <div class="form-group" style="flex: 1;">
@@ -146,7 +175,7 @@
         </div>
         <div class="form-group" style="flex: 1;">
           <label>client_secret:</label>
-          <input type="password" id="clientSecret" class="form-control" placeholder="Введите секрет">
+          <input type="password" id="clientSecret" class="form-control" placeholder="Введите секрет клиента">
         </div>
       </div>
       
@@ -157,16 +186,16 @@
 
       <div class="form-group" style="margin-top: 12px;">
         <label>Текущий Authorization Bearer Token:</label>
-        <textarea id="bearerToken" class="form-control" rows="3" placeholder="Токен появится здесь после получения или вставьте токен из терминала"></textarea>
+        <textarea id="bearerToken" class="form-control" rows="3" placeholder="Токен появится здесь после получения или вставьте токен вручную"></textarea>
       </div>
     </div>
 
     <!-- API ENDPOINTS -->
     <div class="card">
-      <h2>2. Методы API ИС "Настя" (localhost:5000)</h2>
+      <h2>2. Методы API ИС "Настя"</h2>
       <div class="form-group">
-        <label>Base API URL:</label>
-        <input type="text" id="apiUrl" class="form-control" value="http://localhost:5000/api/v1">
+        <label>Сформированный Base API URL:</label>
+        <input type="text" id="apiUrl" class="form-control" readonly style="opacity: 0.8;">
       </div>
 
       <div class="tabs">
@@ -178,7 +207,7 @@
       <div id="tabUsers">
         <div class="form-group">
           <label>global_user_id (UUID):</label>
-          <input type="text" id="getUserUuid" class="form-control" value="9fce6b58-2c80-41c6-ac72-2919a39ec44b">
+          <input type="text" id="getUserUuid" class="form-control" value="Введите сюда UUID пользователя">
         </div>
         <button class="btn btn-success" onclick="execGetUser()">🔍 Запросить профиль пользователя</button>
       </div>
@@ -187,7 +216,7 @@
       <div id="tabNotify" style="display: none;">
         <div class="form-group">
           <label>global_user_id (UUID):</label>
-          <input type="text" id="postUserUuid" class="form-control" value="57a8ddfe-f225-43e8-8e94-33e4d3708097">
+          <input type="text" id="postUserUuid" class="form-control" value="Введите сюда UUID пользователя">
         </div>
         <div class="form-group">
           <label>channel (Канал):</label>
@@ -223,12 +252,42 @@
         Ответ Сервера
         <span id="statusTag"></span>
       </h2>
-      <div class="code-block" id="responseOutput">// Результат ответа от локального сервера...</div>
+      <div class="code-block" id="responseOutput">// Результат ответа от сервера...</div>
     </div>
   </div>
 </div>
 
 <script>
+  // Автоматическая сборка URL на основе параметров окружения
+  function updateCalculatedUrls() {
+    const scheme = document.getElementById('envScheme').value;
+    const kcHost = document.getElementById('envKcHost').value.trim();
+    const realm = document.getElementById('envRealm').value.trim();
+    const nstHost = document.getElementById('envNstHost').value.trim();
+
+    const kcUrl = `${scheme}://${kcHost}/realms/${realm}/protocol/openid-connect/token`;
+    const apiUrl = `${scheme}://${nstHost}/api/v1`;
+
+    document.getElementById('kcUrl').value = kcUrl;
+    document.getElementById('apiUrl').value = apiUrl;
+    document.getElementById('activeHostLabel').innerText = nstHost || 'Custom';
+  }
+
+  function applyPreset(preset) {
+    if (preset === 'local') {
+      document.getElementById('envScheme').value = 'http';
+      document.getElementById('envKcHost').value = 'localhost:8088';
+      document.getElementById('envRealm').value = 'kb-manager-test';
+      document.getElementById('envNstHost').value = 'localhost:5000';
+    } else if (preset === 'prod') {
+      document.getElementById('envScheme').value = 'https';
+      document.getElementById('envKcHost').value = 'auth.yourdomain.com';
+      document.getElementById('envRealm').value = 'production';
+      document.getElementById('envNstHost').value = 'api.yourdomain.com';
+    }
+    updateCalculatedUrls();
+  }
+
   function setTab(tab) {
     document.getElementById('tabUsers').style.display = tab === 'users' ? 'block' : 'none';
     document.getElementById('tabNotify').style.display = tab === 'notify' ? 'block' : 'none';
@@ -276,8 +335,14 @@
     const clientId = document.getElementById('clientId').value;
     const clientSecret = document.getElementById('clientSecret').value;
 
-    const curl = `curl -X POST "${kcUrl}" \\\n  -H "Content-Type: application/x-www-form-urlencoded" \\\n  -d "grant_type=client_credentials" \\\n  -d "client_id=${clientId}" \\\n  -d "client_secret=${clientSecret}"`;
+    const secretDisplay = clientSecret || '<YOUR_CLIENT_SECRET>';
+    const curl = `curl -X POST "${kcUrl}" \\\n  -H "Content-Type: application/x-www-form-urlencoded" \\\n  -d "grant_type=client_credentials" \\\n  -d "client_id=${clientId}" \\\n  -d "client_secret=${secretDisplay}"`;
     document.getElementById('curlOutput').innerText = curl;
+
+    if (!clientSecret) {
+      displayResponse(400, { error: "Missing Client Secret", details: "Укажите client_secret в форме перед отправкой запроса." });
+      return;
+    }
 
     try {
       const params = new URLSearchParams();
@@ -298,9 +363,9 @@
       displayResponse(res.status, data);
     } catch (err) {
       displayResponse(500, {
-        error: "Keycloak CORS / Blocked Error",
+        error: "Keycloak CORS / Network Error",
         details: err.message,
-        solution: "Браузер заблокировал прямой запрос к Keycloak из-за правил CORS. Скопируйте сгенерированный cURL выше, выполните его в терминале и вставьте полученный access_token по кнопке '📋 Вставить токен вручную' или вставьте '*' в настройки Web Origins клиента 'lifepoint' в админке Keycloak."
+        solution: "Скопируйте сгенерированный cURL выше, выполните его в терминале и вставьте access_token по кнопке '📋 Вставить токен вручную', либо разрешите Web Origins в Keycloak."
       });
     }
   }
@@ -365,6 +430,9 @@
       displayResponse(500, { error: "Network Error", details: err.message });
     }
   }
+
+  // Инициализация при загрузке страницы
+  window.onload = updateCalculatedUrls;
 </script>
 
 </body>
