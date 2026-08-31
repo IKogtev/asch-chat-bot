@@ -329,7 +329,9 @@ services:
     ports:
       - "8088:8080"
     volumes:
+      - keycloak_data:/opt/keycloak/data
       - ./keycloak/import:/opt/keycloak/data/import
+      - ./keycloak/themes/kb-manager-theme:/opt/keycloak/themes/kb-manager-theme
     networks:
       - aszh-bot-network
     # Если указать профиль, сервис НЕ будет подниматься по умолчанию на проде (`docker compose up`)
@@ -561,6 +563,7 @@ volumes:
   pg_data:
   pgadmin_data:
   qdrant-storage:
+  keycloak_data:
 
 networks:
   aszh-bot-network:
