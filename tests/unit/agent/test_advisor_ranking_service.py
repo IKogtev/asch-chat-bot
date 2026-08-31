@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from agent.advisor_ranking_service import (
+    ACTIVE_PRODUCT_STATUS,
     BELOW_MINIMUM_SCORE,
     CONTRAINDICATED_PROPERTY,
+    INACTIVE_PRODUCT,
     REQUIRED_PROPERTY_MISMATCH,
     AdvisorProductFacts,
     AdvisorRankingService,
@@ -54,7 +56,7 @@ def product(
     priority: int = 100,
     **attributes,
 ) -> AdvisorProductFacts:
-    is_active = attributes.pop("is_active", "Действующий")
+    is_active = attributes.pop("is_active", ACTIVE_PRODUCT_STATUS)
     return AdvisorProductFacts(
         code=code,
         name=f"Product {code}",
@@ -155,6 +157,29 @@ def test_required_and_contraindicated_rules_return_stable_exclusion_codes() -> N
     assert REQUIRED_PROPERTY_MISMATCH in codes
     assert CONTRAINDICATED_PROPERTY in codes
     assert not result.top_products
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("inactive_status", ["Архивный", "действующий"])
+def test_inactive_status_product_is_excluded_before_ranking(
+    inactive_status: str,
+) -> None:
+    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
+    attributes = moderate_product_attributes()
+
+    result = AdvisorRankingService(policy()).rank(
+        products=[
+            product("ACTIVE", is_active=ACTIVE_PRODUCT_STATUS, **attributes),
+            product("INACTIVE", is_active=inactive_status, **attributes),
+        ],
+        primary_client_type=moderate,
+    )
+
+    assert [item.product.code for item in result.top_products] == ["ACTIVE"]
+    assert any(
+        item.product_code == "INACTIVE" and item.code == INACTIVE_PRODUCT
+        for item in result.excluded_candidates
+    )
 
 
 @pytest.mark.unit

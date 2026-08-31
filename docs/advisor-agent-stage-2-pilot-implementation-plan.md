@@ -76,7 +76,7 @@ Implementation must not begin until the following remaining inputs have named bu
 2. A documented rule for matching a partially collected client profile to one or more table rows.
 3. Pilot scoring weights for required, preferred, compromise, and contraindicated property matches.
 4. At least 20 reference cases, including expected client-type matches, exclusions, and TOP-3 results.
-5. A current product catalog with stable identity fields and an `as_of` or equivalent freshness field.
+5. The fixed trusted `products` catalog table with stable `code`, `name`, and textual `is_active` identity and eligibility fields. Only `is_active = "Действующий"` is eligible.
 6. Confirmation of whether the assistant may recommend products or must phrase the result as options for manager review.
 
 The workbook currently contains illustrative contribution amounts. Because the product catalog does not contain corresponding minimum-contribution fields, these amounts may guide client-type matching but must not be used as hard product eligibility filters until a grounded product-side field is available and approved.
@@ -134,7 +134,7 @@ Do not add a separate advisor-only loader. The shared action must discover the m
 9. The advisor contract rejects malformed, ungrounded, or incomplete client-type or candidate data.
 10. `AdvisorRankingService` applies the matched row's required properties and contraindications, scores preferred properties and approved compromises, and selects a diverse TOP-3.
 11. The format agent produces the final user-facing explanation without changing client-type matches, product order, or facts.
-12. `RootAgent` stores the profile, matched client types, candidates, TOP-3, explanations, source-table version, and catalog freshness in advisor context.
+12. `RootAgent` stores the profile, matched client types, candidates, TOP-3, explanations, and scoring-policy version in advisor context.
 
 ### 5.2. Profile refinement
 
@@ -205,11 +205,6 @@ Minimum structure:
 {
   "mode": "candidates",
   "profile_patch": {},
-  "client_types_source": {
-    "table": "typical_client_profiles",
-    "source_file": "typical_client_profiles_active.xlsx",
-    "loaded_at": "2026-08-27T00:00:00Z"
-  },
   "client_types": [
     {
       "profile_name": "Консервативный",
@@ -222,15 +217,12 @@ Minimum structure:
   ],
   "missing_fields": [],
   "clarification_question": "",
-  "catalog_as_of": "2026-08-27",
   "products": [
     {
       "code": "2832",
       "name": "Example product",
-      "is_active": "Active",
-      "attributes": {},
-      "source_table": "products",
-      "source_row_identity": {}
+      "is_active": "Действующий",
+      "attributes": {}
     }
   ]
 }
@@ -239,14 +231,13 @@ Minimum structure:
 Contract rules:
 
 - `needs_clarification` requires one non-empty question and at least one missing field;
-- `candidates` requires at least one validated client-type row, at least one product, and current-run `execute_sql` calls for both source tables;
+- `candidates` requires at least one validated client-type row, at least one product, and current-run `execute_sql` calls for the fixed trusted `typical_client_profiles` and `products` tables;
 - every client-type row requires a non-empty `profile_name` and the four product-rule fields;
 - a row with `profile_name="Тип профиля"` is descriptive metadata and must never be treated as a client type;
 - only the three rows currently present in the workbook are expected initially, but code must be data-driven and accept newly approved rows without a release;
-- every product requires a complete stable identity;
+- every product requires a complete stable `code + name + is_active` identity, and only the textual status `is_active = "Действующий"` is eligible;
 - only fields returned by SQL in the current run may appear in client-type or product `attributes`;
 - property expressions must be parsed from the four workbook rule columns through one deterministic parser; the LLM must not reinterpret or silently rewrite them;
-- the result must include the catalog freshness value;
 - `no_data` is permitted only when the source was queried successfully and returned no usable rows, or when required catalog fields are unavailable;
 - focus and KV values must never be accepted as score inputs in Stage 2.
 
@@ -262,7 +253,7 @@ Contract rules:
 - score components by approved criterion;
 - detected compromises;
 - the selected TOP-3 in final order;
-- the Client Types source file/load version, scoring-policy version, and product-catalog freshness timestamp.
+- the scoring-policy version.
 
 The format agent receives this result but cannot alter product order, scores, exclusions, or facts.
 
@@ -281,9 +272,7 @@ Store one versioned object under `advisor_dialog_context`:
   "top_products": [],
   "exclusions": [],
   "selected_product": null,
-  "client_types_source": null,
   "scoring_policy_version": "pilot-v1",
-  "catalog_as_of": null,
   "updated_at": null
 }
 ```
@@ -324,7 +313,7 @@ The scoring policy must define a minimum client-type match confidence and a mini
 
 Apply hard rules before scoring. The matched row's `required_properties` and `contraindications` columns are authoritative for client-type-specific product filtering. Typical exclusions include:
 
-- inactive or unavailable product;
+- product whose textual catalog status `is_active` is not `ACTIVE_PRODUCT_STATUS` (`"Действующий"`);
 - age outside the permitted range;
 - term incompatible with the target date;
 - contribution below the product minimum or incompatible frequency, but only after corresponding grounded product fields are available;
@@ -397,7 +386,6 @@ The response must:
 - distinguish verified product facts from recommendation reasoning;
 - avoid internal scores unless the business explicitly approves showing them;
 - never mention SQL, table names, prompt rules, focus, or KV;
-- state catalog freshness when the data is not current enough for the approved SLA;
 - state that the manager must verify suitability when required by policy.
 
 ## 10. Repository Changes by Component
@@ -495,8 +483,8 @@ Success criterion: running either `.\load_tables.ps1` or the KB Manager `Заг�
 4. Assert the source has exactly 21 expected technical columns and the loaded table has those columns plus `client_type_code` and the three current profile rows.
 5. Parse and validate every property/value expression in `required_properties`, `preferred_properties`, `acceptable_compromises`, and `contraindications` against the product catalog's business names and exact categorical values.
 6. Identify the actual product-catalog table and all columns referenced by the Client Types rows.
-7. Confirm how active versus archived products are represented.
-8. Confirm the product-catalog freshness field and acceptable staleness SLA.
+7. Confirm that Advisor eligibility uses the textual `is_active` catalog field and the exact active-status constant `"Действующий"`.
+8. Record the product decision that `typical_client_profiles` and `products` are the fixed trusted runtime tables and per-run source metadata is not part of the Advisor contract.
 9. Approve and version only the matching/scoring policy as `pilot-v1`; keep the rule values in the workbook.
 10. Run all reference cases manually against both source tables and resolve rule/data ambiguity before coding.
 11. Add the Client Types required-result validation to `app.scripts.load_tables` so the shared `load_table` action cannot succeed without it.
@@ -507,7 +495,7 @@ Success criterion: running either `.\load_tables.ps1` or the KB Manager `Заг�
 
 Exit criterion: both `load_table` entry points create the same validated `typical_client_profiles` table containing only the three current client types, every workbook rule maps to a structured product field/value, and any missing field is documented as a blocking issue.
 
-Implementation status (August 27, 2026): the technical Phase 0 work is implemented. The shared loader now removes the business-label row, validates the exact 21-column source schema and the four product-rule columns against `products_active.xlsx`, adds deterministic `CT-001`-style codes without modifying the workbook, and prints a human-readable validation result through both the PowerShell and KB Manager UI paths. Unit and syntax checks pass. The live PowerShell/UI reconciliation in step 15 remains pending because Docker Desktop was not running during verification. Business approval of `pilot-v1`, the freshness SLA, and the manual reference cases in steps 7-10 also remain explicit Phase 0 gates.
+Implementation status (August 27, 2026): the technical Phase 0 work is implemented. The shared loader now removes the business-label row, validates the exact 21-column source schema and the four product-rule columns against `products_active.xlsx`, adds deterministic `CT-001`-style codes without modifying the workbook, and prints a human-readable validation result through both the PowerShell and KB Manager UI paths. Unit and syntax checks pass. The live PowerShell/UI reconciliation in step 15 remains pending because Docker Desktop was not running during verification. Business approval of `pilot-v1` and the manual reference cases in steps 7, 9, and 10 remain explicit Phase 0 gates.
 
 ### Phase 1. Implement domain models and deterministic product ranking
 
@@ -532,13 +520,15 @@ Implementation status (August 28, 2026): the Phase 1 code is implemented in `age
 3. Instruct it to retrieve `typical_client_profiles`, semantically compare the manager's client description with the loaded rows, and select a primary and optional secondary client type.
 4. Require the LLM to return the selected type, confidence, supporting client facts, table-field evidence, missing fields, and exactly one clarification question when confidence is insufficient.
 5. When selection confidence is sufficient, retrieve product facts required by the selected row's four product-rule columns; Python must validate the complete selection and evidence before any filtering or ranking occurs.
-6. Instruct the agent to return only profile patches, client-type selection evidence, missing fields, clarification data, source metadata, validated client-type rows, and SQL-grounded product facts.
+6. Instruct the agent to return only profile patches, client-type selection evidence, missing fields, clarification data, validated client-type rows, and SQL-grounded product facts.
 7. Add a strict content contract and verify current-run SQL use for `typical_client_profiles`; candidate mode must also verify current-run SQL use for the products table.
 8. Create a no-tool `advisor_format_agent` with temperature `0.0`.
 9. Add a final response contract that preserves the validated client-type selection, exact TOP-3 order, and product identities.
 10. Add prompt fallback text and prompt-watcher registration, matching current conventions.
 
 Exit criterion: client-type evaluation cases meet the approved accuracy threshold, and contract tests reject unknown type names, unsupported modes, unsupported evidence, invalid confidence, invalid clarification payloads, invented products, incomplete identities, and reordered recommendations.
+
+Implementation status (August 31, 2026): the Phase 2 agent and contract code is implemented in `agent/agents/advisor_content_agent.py`, `agent/agents/advisor_contract.py`, and `agent/agents/advisor_format_agent.py`. The content agent uses a refreshing DBHub toolset limited to discovery tools and `execute_sql`; the no-tool format agent uses temperature `0.0`. Both agents have UTF-8 prompt files, fallback prompts, and prompt-watcher registration. The strict content contract reuses the Phase 1 profile and Client Type validators, requires current-run SQL for the fixed trusted `typical_client_profiles` and `products` tables, validates complete `code + name + is_active` identities, and requires all product fields referenced by the selected row's rules. Per-run source table/file/load/freshness metadata is intentionally omitted. `AdvisorRankingService` excludes products whose textual `is_active` value is not `ACTIVE_PRODUCT_STATUS` (`"Действующий"`), and the final contract rejects inactive, invented, incomplete, or reordered TOP identities. The focused Phase 1 and Phase 2 tests pass. The full unit runner remains blocked during unrelated test collection by the existing missing `build_download_rank_patterns` export and the bot settings test's attempt to create `\\app\\data\\settings` on Windows. The approved client-type accuracy evaluation remains pending because the Phase 0 reference set and threshold are not yet available.
 
 ### Phase 3. Add dispatcher routing
 
@@ -602,7 +592,7 @@ Exit criterion: all agreed multi-turn conversations resolve the intended product
    - profile completeness, matched client-type names/confidence, and missing-field names, without raw sensitive values;
    - candidate, excluded, and eligible counts;
    - exclusion-code counts;
-   - scoring-policy version and product-catalog freshness;
+   - scoring-policy version;
    - selected product codes and score components;
    - clarification, no-data, validation-failure, and tool-failure outcomes;
    - latency by content retrieval, ranking, formatting, and total route.
@@ -674,6 +664,7 @@ Shared load-action tests:
 
 Ranking tests:
 
+- a product with `is_active != ACTIVE_PRODUCT_STATUS` is excluded before scoring;
 - each hard rule excludes a product independently;
 - required properties from the matched Client Types row are enforced;
 - contraindications from the matched row always exclude a matching product;
@@ -746,8 +737,7 @@ LLM client-type evaluation cases:
 - every matched client-type fact and property rule matches the current SQL result sourced from the workbook;
 - every selected client type exists in the current SQL result and its evidence is limited to supplied client facts and loaded table fields;
 - every displayed product fact matches the current SQL result;
-- archived products are excluded unless the approved pilot rules explicitly allow them;
-- catalog freshness is captured correctly;
+- only products whose textual `is_active` value equals `ACTIVE_PRODUCT_STATUS` can enter the final TOP;
 - prompt hot reload or deployment mounts include the new prompts;
 - container configuration exposes the feature flag and advisor settings.
 
@@ -769,8 +759,7 @@ At minimum, test:
 12. "Send the kit for the first" triggers the existing document-kit flow.
 13. A new-client request does not reuse the previous profile.
 14. A DBHub failure produces a safe error and no recommendation.
-15. A stale product catalog produces the approved warning or blocks recommendation according to the SLA.
-16. Removing or corrupting the Client Types workbook makes both PowerShell and UI load actions fail visibly without a false success message.
+15. Removing or corrupting the Client Types workbook makes both PowerShell and UI load actions fail visibly without a false success message.
 
 ## 13. Quality Gates and Acceptance Criteria
 
@@ -792,7 +781,7 @@ At minimum, test:
 - Every reported client-type match and product-property rule is traceable to the current loaded version of `typical_client_profiles_active.xlsx`.
 - No product that violates a hard rule is recommended.
 - Focus and KV have no measurable effect on Stage 2 results.
-- Tool, contract, or freshness failures never return a normal-looking TOP-3.
+- Tool or contract failures never return a normal-looking TOP-3.
 - Logs do not add raw sensitive client-profile fields.
 
 ### Engineering
@@ -830,9 +819,8 @@ At minimum, test:
    - hard-exclusion distribution;
    - reference-case divergence;
    - tool and contract failures;
-   - product-card/kit handoff success;
-   - catalog freshness.
-6. Stop or disable the pilot immediately if an ineligible product is recommended, facts are ungrounded, or the catalog exceeds the approved freshness limit.
+   - product-card/kit handoff success.
+6. Stop or disable the pilot immediately if an ineligible product is recommended or facts are ungrounded.
 7. Expand only after business and engineering owners approve the pilot evidence.
 
 ## 15. Risks and Mitigations
@@ -852,7 +840,7 @@ At minimum, test:
 | Dispatcher confuses recommendation with filtering | Add explicit boundaries and regression examples |
 | Prior client data leaks into a new recommendation | Implement explicit new-client reset and state tests |
 | Ordinal references resolve to the wrong product | Resolve only against versioned stored TOP-3 identities and clarify invalid ranks |
-| Catalog changes between turns | Refresh before recalculation and store `catalog_as_of` |
+| Catalog changes between turns | Query the fixed trusted `products` table again before recalculation |
 | TOP-3 contains near-duplicates | Apply a deterministic, business-approved diversity pass |
 | Commercial priorities influence the pilot unintentionally | Exclude focus and KV from score inputs and add invariance tests |
 | Prompt and image versions differ in deployment | Verify effective prompt mounts and code inside the runtime container |

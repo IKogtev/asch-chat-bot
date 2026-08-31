@@ -22,6 +22,10 @@ REQUIRED_PROPERTY_MISMATCH = "REQUIRED_PROPERTY_MISMATCH"
 CONTRAINDICATED_PROPERTY = "CONTRAINDICATED_PROPERTY"
 # Код исключения: итоговый балл продукта ниже минимально допустимого значения.
 BELOW_MINIMUM_SCORE = "BELOW_MINIMUM_SCORE"
+# Текстовый статус активного продукта из фиксированного продуктового классификатора.
+ACTIVE_PRODUCT_STATUS = "Действующий"
+# Код исключения: продукт не имеет активного статуса в продуктовом классификаторе.
+INACTIVE_PRODUCT = "INACTIVE_PRODUCT"
 
 
 class AdvisorScoringPolicy(BaseModel):
@@ -297,6 +301,19 @@ class AdvisorRankingService:
         противопоказанием сохраняются как отдельные причины.
         """
         exclusions: list[AdvisorExclusion] = []
+        if product.is_active != ACTIVE_PRODUCT_STATUS:
+            exclusions.append(
+                AdvisorExclusion(
+                    product_code=product.code,
+                    product_name=product.name,
+                    product_status=product.is_active,
+                    code=INACTIVE_PRODUCT,
+                    reason="Product status is not active in the product classifier.",
+                    product_column="is_active",
+                    expected_values=(ACTIVE_PRODUCT_STATUS,),
+                    actual_value=product.is_active,
+                )
+            )
         for rule in client_type.required_properties:
             if not _matches(product, rule):
                 exclusions.append(
