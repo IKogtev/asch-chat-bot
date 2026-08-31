@@ -18,6 +18,16 @@ from app.services.product_kit_folder_resolver import (
     resolve_product_input_date_from_kit,
     resolve_product_kit_folder,
 )
+from utils.client_types import (
+    CLIENT_TYPE_CODE_COLUMN,
+    CLIENT_TYPES_DESCRIPTION_ROW_LABEL,
+    CLIENT_TYPES_EXPECTED_COLUMNS,
+    CLIENT_TYPES_PROFILE_COLUMN,
+    CLIENT_TYPES_RULE_COLUMNS,
+    CLIENT_TYPES_RULE_PROPERTY_MAP,
+    parse_client_type_rule_cell as parse_shared_client_type_rule_cell,
+    validate_client_type_source_columns,
+)
 
 
 DATA_CATALOG_FILE = "business layer_active.xlsx"
@@ -26,53 +36,6 @@ PRODUCTS_TABLE_NAME = "products"
 PRODUCTS_FILE_NAME = "products_active.xlsx"
 CLIENT_TYPES_FILE_NAME = "typical_client_profiles_active.xlsx"
 CLIENT_TYPES_TABLE_NAME = "typical_client_profiles"
-CLIENT_TYPES_PROFILE_COLUMN = "profile_name"
-CLIENT_TYPE_CODE_COLUMN = "client_type_code"
-CLIENT_TYPES_DESCRIPTION_ROW_LABEL = "Тип профиля"
-CLIENT_TYPES_EXPECTED_COLUMNS = (
-    "profile_name",
-    "client_goal",
-    "term",
-    "minimum_initial_contribution",
-    "minimum_contribution",
-    "contribution_frequency",
-    "currency",
-    "capital_loss_tolerance",
-    "guarantee_importance",
-    "liquidity_need",
-    "age_range",
-    "insurance_protection_need",
-    "investment_experience",
-    "family_context",
-    "income_stability",
-    "additional_context",
-    "required_properties",
-    "preferred_properties",
-    "acceptable_compromises",
-    "contraindications",
-    "notes",
-)
-CLIENT_TYPES_RULE_COLUMNS = (
-    "required_properties",
-    "preferred_properties",
-    "acceptable_compromises",
-    "contraindications",
-)
-CLIENT_TYPES_RULE_PROPERTY_MAP = {
-    "статус": "is_active",
-    "активный продукт": "is_active",
-    "тип продукта": "product_type",
-    "срок": "term",
-    "срок продукта": "term",
-    "риск потери капитала": "capital_loss_risk",
-    "уровень риска": "product_risk_level",
-    "уровень риска продукта": "product_risk_level",
-    "доход": "income",
-    "тип взноса": "contribution_type",
-    "тип выплат": "payout_type",
-    "ликвидность": "liquidity",
-    "валюта": "currency",
-}
 GLOSSARY_FILE_NAME = "glossary_active.xlsx"
 GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
@@ -653,13 +616,7 @@ class TablesLoaderService:
         self._client_types_source_sheet = sheet_name
 
     def _normalize_client_types_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        actual_columns = tuple(str(column) for column in df.columns)
-        if actual_columns != CLIENT_TYPES_EXPECTED_COLUMNS:
-            raise ValueError(
-                "Client Types schema mismatch: "
-                f"expected {list(CLIENT_TYPES_EXPECTED_COLUMNS)}, "
-                f"got {list(actual_columns)}"
-            )
+        validate_client_type_source_columns(df.columns)
 
         result = df.copy()
         for column in result.columns:
@@ -701,41 +658,14 @@ class TablesLoaderService:
         profile_name: str = "",
         rule_column: str = "",
     ) -> list[tuple[str, list[str]]]:
-        if not cls._is_meaningful_value(value):
-            return []
-
-        parsed: list[tuple[str, list[str]]] = []
-        for raw_expression in str(value).split(";"):
-            expression = raw_expression.strip()
-            if not expression:
-                continue
-            if ":" not in expression:
-                raise ValueError(
-                    "Invalid Client Types rule expression "
-                    f"for profile {profile_name!r}, column {rule_column!r}: "
-                    f"{expression!r}"
-                )
-            raw_property, raw_value = expression.split(":", 1)
-            property_label = " ".join(raw_property.split()).casefold()
-            product_column = CLIENT_TYPES_RULE_PROPERTY_MAP.get(property_label)
-            if product_column is None:
-                raise ValueError(
-                    "Unknown Client Types product property "
-                    f"for profile {profile_name!r}, column {rule_column!r}: "
-                    f"{raw_property.strip()!r}"
-                )
-            expected_values = [
-                part.strip()
-                for part in re.split(r"\s+или\s+", raw_value.strip(), flags=re.IGNORECASE)
-                if part.strip()
-            ]
-            if not expected_values:
-                raise ValueError(
-                    "Client Types rule value must not be empty "
-                    f"for profile {profile_name!r}, column {rule_column!r}"
-                )
-            parsed.append((product_column, expected_values))
-        return parsed
+        return [
+            (rule.product_column, list(rule.expected_values))
+            for rule in parse_shared_client_type_rule_cell(
+                value,
+                profile_name=profile_name,
+                rule_column=rule_column,
+            )
+        ]
 
     def _validate_client_type_rules_against_products(
         self,

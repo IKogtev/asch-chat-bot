@@ -410,7 +410,7 @@ The response must:
 | `agent/agents/advisor_format_agent.py` | Format validated ranking results without tools |
 | `agent/agents/advisor_contract.py` | Validate content and final advisor contracts |
 | `agent/advisor_profile.py` | Typed profile, merge rules, conflict handling, and completeness checks |
-| `agent/advisor_profile_matcher.py` | Parse Client Types rows and deterministically match a client profile to one or more types |
+| `agent/advisor_profile_matcher.py` | Parse Client Types rule columns and deterministically validate the LLM's primary/secondary client-type selection and evidence |
 | `agent/advisor_ranking_service.py` | Deterministic hard filtering, scoring, tie-breaking, and diversity |
 | `kb_storage/prompts/advisor_content/advisor_content_agent_prompt.md` | Profile extraction and grounded catalog-retrieval instructions |
 | `kb_storage/prompts/advisor_format/advisor_format_agent_prompt.md` | User-facing TOP-3 and clarification formatting instructions |
@@ -522,6 +522,8 @@ Implementation status (August 27, 2026): the technical Phase 0 work is implement
 9. Add table-driven unit tests using real workbook rows loaded through a fixture, not hardcoded copies.
 
 Exit criterion: pure Python tests validate the Client Types schema, parse the four product-rule columns, reject invalid LLM selection payloads, and produce the approved exclusions and TOP-3 from a preselected valid client type without a live database.
+
+Implementation status (August 28, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime now use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. Production ranking still requires the business-owned `pilot-v1` weights and thresholds identified in Phase 0; the code intentionally requires an explicit policy rather than embedding unapproved defaults.
 
 ### Phase 2. Implement advisor agents and contracts
 
