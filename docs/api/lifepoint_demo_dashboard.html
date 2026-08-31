@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LifePoint API Tester & Demo</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: #161e2e;
+      --border: #2d3748;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --code-bg: #030712;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 20px; line-height: 1.4; }
+
+    .header {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 16px 24px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 { font-size: 1.3rem; }
+    .badge { background: var(--primary); padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; text-transform: uppercase; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media(max-width: 1024px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card h2 { font-size: 1.05rem; margin-bottom: 14px; color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
+    .form-control {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 0.85rem;
+      font-family: inherit;
+    }
+    .form-control:focus { border-color: var(--primary); outline: none; }
+    .row { display: flex; gap: 10px; }
+
+    .btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 9px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: var(--primary-hover); }
+    .btn-success { background: var(--success); }
+    .btn-success:hover { background: #059669; }
+    .btn-secondary { background: #334155; }
+    .btn-secondary:hover { background: #475569; }
+    .btn-copy { background: #334155; font-size: 0.75rem; padding: 4px 8px; border-radius: 4px; border: none; color: #fff; cursor: pointer; float: right; }
+    .btn-copy:hover { background: #475569; }
+
+    .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+    .tab-btn {
+      background: #1e293b;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .tab-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+    .code-block {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #a7f3d0;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+
+    .status-tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; }
+    .status-200 { background: rgba(16,185,129,0.2); color: var(--success); }
+    .status-err { background: rgba(239,68,68,0.2); color: var(--danger); }
+    
+    .cors-box {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid var(--warning);
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      margin-top: 10px;
+      color: #fde68a;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>LifePoint ↔ ИС "Настя" <span class="badge">Local Bench</span></h1>
+  <div style="font-size: 0.8rem; color: var(--muted);">Подключено к <b>localhost:5000</b> & <b>localhost:8088</b></div>
+</div>
+
+<div class="grid">
+  <!-- LEFT COLUMN: INPUT FORM -->
+  <div>
+    <!-- KEYCLOAK AUTH -->
+    <div class="card">
+      <h2>1. Авторизация Keycloak (localhost:8088)</h2>
+      <div class="form-group">
+        <label>Keycloak Token URL:</label>
+        <input type="text" id="kcUrl" class="form-control" value="http://localhost:8088/realms/kb-manager-test/protocol/openid-connect/token">
+      </div>
+      <div class="row">
+        <div class="form-group" style="flex: 1;">
+          <label>client_id:</label>
+          <input type="text" id="clientId" class="form-control" value="lifepoint">
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label>client_secret:</label>
+          <input type="password" id="clientSecret" class="form-control" placeholder="Введите секрет">
+        </div>
+      </div>
+      
+      <div class="row" style="margin-bottom: 10px;">
+        <button class="btn" onclick="requestToken()">🔑 Получить Bearer Token</button>
+        <button class="btn btn-secondary" onclick="promptPasteToken()">📋 Вставить токен вручную</button>
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label>Текущий Authorization Bearer Token:</label>
+        <textarea id="bearerToken" class="form-control" rows="3" placeholder="Токен появится здесь после получения или вставьте токен из терминала"></textarea>
+      </div>
+    </div>
+
+    <!-- API ENDPOINTS -->
+    <div class="card">
+      <h2>2. Методы API ИС "Настя" (localhost:5000)</h2>
+      <div class="form-group">
+        <label>Base API URL:</label>
+        <input type="text" id="apiUrl" class="form-control" value="http://localhost:5000/api/v1">
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" id="tabBtnUsers" onclick="setTab('users')">GET /users</button>
+        <button class="tab-btn" id="tabBtnNotify" onclick="setTab('notify')">POST /notifications</button>
+      </div>
+
+      <!-- GET /users Form -->
+      <div id="tabUsers">
+        <div class="form-group">
+          <label>global_user_id (UUID):</label>
+          <input type="text" id="getUserUuid" class="form-control" value="9fce6b58-2c80-41c6-ac72-2919a39ec44b">
+        </div>
+        <button class="btn btn-success" onclick="execGetUser()">🔍 Запросить профиль пользователя</button>
+      </div>
+
+      <!-- POST /notifications Form -->
+      <div id="tabNotify" style="display: none;">
+        <div class="form-group">
+          <label>global_user_id (UUID):</label>
+          <input type="text" id="postUserUuid" class="form-control" value="57a8ddfe-f225-43e8-8e94-33e4d3708097">
+        </div>
+        <div class="form-group">
+          <label>channel (Канал):</label>
+          <select id="postChannel" class="form-control">
+            <option value="max">max</option>
+            <option value="telegram">telegram</option>
+            <option value="all">all</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>message (Текст уведомления):</label>
+          <input type="text" id="postMessage" class="form-control" value="Тестовое уведомление">
+        </div>
+        <button class="btn btn-success" onclick="execSendNotification()">🚀 Отправить уведомление</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT COLUMN: RESULTS & CURL GENERATOR -->
+  <div>
+    <!-- LIVE CURL GENERATOR -->
+    <div class="card">
+      <h2>
+        Сгенерированный cURL
+        <button class="btn-copy" onclick="copyCurl()">Скопировать cURL</button>
+      </h2>
+      <div class="code-block" id="curlOutput"># Выполните действие слева для генерации cURL...</div>
+    </div>
+
+    <!-- RESPONSE INSPECTOR -->
+    <div class="card">
+      <h2>
+        Ответ Сервера
+        <span id="statusTag"></span>
+      </h2>
+      <div class="code-block" id="responseOutput">// Результат ответа от локального сервера...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function setTab(tab) {
+    document.getElementById('tabUsers').style.display = tab === 'users' ? 'block' : 'none';
+    document.getElementById('tabNotify').style.display = tab === 'notify' ? 'block' : 'none';
+    
+    document.getElementById('tabBtnUsers').classList.toggle('active', tab === 'users');
+    document.getElementById('tabBtnNotify').classList.toggle('active', tab === 'notify');
+  }
+
+  function displayResponse(status, data) {
+    const tag = document.getElementById('statusTag');
+    const output = document.getElementById('responseOutput');
+    
+    if (status >= 200 && status < 300) {
+      tag.innerHTML = `<span class="status-tag status-200">HTTP ${status} OK</span>`;
+    } else {
+      tag.innerHTML = `<span class="status-tag status-err">HTTP ${status} ERROR</span>`;
+    }
+
+    output.innerText = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+  }
+
+  function copyCurl() {
+    const text = document.getElementById('curlOutput').innerText;
+    navigator.clipboard.writeText(text);
+    alert('cURL команда скопирована!');
+  }
+
+  function promptPasteToken() {
+    const token = prompt("Вставьте полученный из консоли access_token (или весь JSON ответа Keycloak):");
+    if (token) {
+      try {
+        const parsed = JSON.parse(token);
+        if (parsed.access_token) {
+          document.getElementById('bearerToken').value = parsed.access_token;
+          return;
+        }
+      } catch (e) {}
+      document.getElementById('bearerToken').value = token.trim();
+    }
+  }
+
+  // 1. KEYCLOAK TOKEN REQUEST
+  async function requestToken() {
+    const kcUrl = document.getElementById('kcUrl').value;
+    const clientId = document.getElementById('clientId').value;
+    const clientSecret = document.getElementById('clientSecret').value;
+
+    const curl = `curl -X POST "${kcUrl}" \\\n  -H "Content-Type: application/x-www-form-urlencoded" \\\n  -d "grant_type=client_credentials" \\\n  -d "client_id=${clientId}" \\\n  -d "client_secret=${clientSecret}"`;
+    document.getElementById('curlOutput').innerText = curl;
+
+    try {
+      const params = new URLSearchParams();
+      params.append('grant_type', 'client_credentials');
+      params.append('client_id', clientId);
+      params.append('client_secret', clientSecret);
+
+      const res = await fetch(kcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params
+      });
+
+      const data = await res.json();
+      if (data.access_token) {
+        document.getElementById('bearerToken').value = data.access_token;
+      }
+      displayResponse(res.status, data);
+    } catch (err) {
+      displayResponse(500, {
+        error: "Keycloak CORS / Blocked Error",
+        details: err.message,
+        solution: "Браузер заблокировал прямой запрос к Keycloak из-за правил CORS. Скопируйте сгенерированный cURL выше, выполните его в терминале и вставьте полученный access_token по кнопке '📋 Вставить токен вручную' или вставьте '*' в настройки Web Origins клиента 'lifepoint' в админке Keycloak."
+      });
+    }
+  }
+
+  // 2. GET /users REQUEST
+  async function execGetUser() {
+    const baseUrl = document.getElementById('apiUrl').value;
+    const userId = document.getElementById('getUserUuid').value;
+    const token = document.getElementById('bearerToken').value.trim();
+
+    const fullUrl = `${baseUrl}/users?global_user_id=${userId}`;
+    const curl = `curl -X GET "${fullUrl}" \\\n  -H "Authorization: Bearer ${token || '<API_TOKEN>'}"`;
+    document.getElementById('curlOutput').innerText = curl;
+
+    try {
+      const res = await fetch(fullUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const data = await res.json();
+      displayResponse(res.status, data);
+    } catch (err) {
+      displayResponse(500, { error: "Network Error", details: err.message });
+    }
+  }
+
+  // 3. POST /notifications REQUEST
+  async function execSendNotification() {
+    const baseUrl = document.getElementById('apiUrl').value;
+    const userId = document.getElementById('postUserUuid').value;
+    const channel = document.getElementById('postChannel').value;
+    const message = document.getElementById('postMessage').value;
+    const token = document.getElementById('bearerToken').value.trim();
+
+    const fullUrl = `${baseUrl}/notifications`;
+    const payload = {
+      global_user_id: userId,
+      channel: channel,
+      message: message
+    };
+
+    const jsonPayload = JSON.stringify(payload);
+    const curl = `curl -X POST "${fullUrl}" \\\n  -H "Authorization: Bearer ${token || '<API_TOKEN>'}" \\\n  -H "Content-Type: application/json; charset=utf-8" \\\n  --data-raw '${jsonPayload}'`;
+    document.getElementById('curlOutput').innerText = curl;
+
+    try {
+      const res = await fetch(fullUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=utf-8'
+        },
+        body: jsonPayload
+      });
+
+      const data = await res.json();
+      displayResponse(res.status, data);
+    } catch (err) {
+      displayResponse(500, { error: "Network Error", details: err.message });
+    }
+  }
+</script>
+
+</body>
+</html>

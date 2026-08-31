@@ -46,6 +46,8 @@ __pycache__
 *.csv
 *.parquet
 *.html
+# Исключение: этот файл нужно отслеживать
+!docs/api/lifepoint_demo_dashboard.html
 
 # Next.js / Copilot web (generated & deps — do not commit)
 web/copilot-web/node_modules/
