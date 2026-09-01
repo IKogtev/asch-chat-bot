@@ -282,6 +282,41 @@ def test_news_store_parse_news_row_handles_invalid_files_json() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_published_for_web_fetches_limit_plus_one_and_joins_platform() -> None:
+    conn = _FakeConn(fetch_result=[{"id": 1, "text": "a", "files": [], "created_at": None, "scheduled_at": None}])
+    store = NewsStore(pool=_FakePool(conn))
+
+    rows = await store.get_published_for_web("user-1", limit=20, offset=0)
+
+    query, args = conn.executed[0]
+    assert "n.status = 'sent'" in query
+    assert "s.user_id = ua.platform_user_id" in query
+    assert "s.platform = ua.platform" in query
+    assert "BOOL_OR(s.manager_group)" in query
+    assert "BOOL_OR(s.coach_group)" in query
+    assert "ORDER BY COALESCE(n.scheduled_at, n.created_at) DESC" in query
+    assert args == ("user-1", 21, 0)
+    assert rows[0]["id"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_published_for_web_by_id_reuses_access_rules() -> None:
+    conn = _FakeConn(fetchrow_result={"id": 12, "text": "a", "files": [], "created_at": None, "scheduled_at": None})
+    store = NewsStore(pool=_FakePool(conn))
+
+    row = await store.get_published_for_web_by_id("user-1", 12)
+
+    query, args = conn.executed[0]
+    assert "n.status = 'sent'" in query
+    assert "s.platform = ua.platform" in query
+    assert "AND n.id = $2" in query
+    assert args == ("user-1", 12)
+    assert row["id"] == 12
+
+
+@pytest.mark.unit
 def test_adk_api_client_extract_model_text_returns_final_root_agent_text() -> None:
     events = [
         {"author": "dispatcher_agent", "actions": {"end_of_agent": True}, "content": {"parts": [{"text": "skip"}]}},

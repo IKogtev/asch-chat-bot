@@ -19,18 +19,19 @@ from typing import Any, Optional
 from urllib.parse import unquote
 
 import asyncpg
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from bot.services.database import AdkApiClient, PostgresChatStore
+from bot.services.database import AdkApiClient, NewsStore, PostgresChatStore
 from bot.services.dialog import CHANNEL_WEB, paginate_search, run_turn
 from utils.logger import setup_logger
 from web_bff.auth import clear_session_cookie, current_user, require_user, set_session_cookie
 from web_bff.config import settings
 from web_bff.files import FileTokenError, FileUrlIssuer, resolve_kit_file
+from web_bff.news import NewsDetail, NewsListResponse, to_news_detail, to_news_list_item
 from web_bff.otp import OtpError, OtpService
 from web_bff.users import profile_for_adk
 
@@ -80,6 +81,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.pool = pool
     app.state.store = store
+    app.state.news_store = NewsStore(pool)
     app.state.adk = adk
     app.state.file_urls = file_urls
     app.state.doc_handler = doc_handler
@@ -141,6 +143,35 @@ async def logout(request: Request, response: Response) -> dict[str, str]:
         await otp.revoke_token(cookie)
     clear_session_cookie(response)
     return {"status": "ok"}
+
+
+@app.get("/news")
+async def get_news(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user_id: str = Depends(require_user),
+) -> NewsListResponse:
+    rows = await request.app.state.news_store.get_published_for_web(
+        user_id,
+        limit=limit,
+        offset=offset,
+    )
+    has_more = len(rows) > limit
+    items = [to_news_list_item(row) for row in rows[:limit]]
+    return NewsListResponse(items=items, limit=limit, offset=offset, has_more=has_more)
+
+
+@app.get("/news/{news_id}")
+async def get_news_by_id(
+    news_id: int,
+    request: Request,
+    user_id: str = Depends(require_user),
+) -> NewsDetail:
+    row = await request.app.state.news_store.get_published_for_web_by_id(user_id, news_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="news_not_found")
+    return to_news_detail(row)
 
 
 @app.get("/me")

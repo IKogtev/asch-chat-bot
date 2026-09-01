@@ -543,6 +543,60 @@ class NewsStore:
         d.setdefault("target_group", "all")
         return d
 
+    _WEB_PUBLISHED_SELECT = """
+        SELECT n.id, n.text, n.files, n.created_at, n.scheduled_at
+        FROM news n
+        CROSS JOIN (
+            SELECT
+                COALESCE(BOOL_OR(s.manager_group), FALSE) AS is_manager,
+                COALESCE(BOOL_OR(s.coach_group), FALSE) AS is_coach
+            FROM user_accounts ua
+            LEFT JOIN subscribers s
+                ON s.user_id = ua.platform_user_id
+               AND s.platform = ua.platform
+            WHERE ua.user_id = $1
+        ) ug
+        WHERE n.status = 'sent'
+          AND (
+                n.target_group IS NULL
+                OR n.target_group = 'all'
+                OR (n.target_group = 'manager_group' AND ug.is_manager)
+                OR (n.target_group = 'coach_group' AND ug.is_coach)
+          )
+    """
+
+    async def get_published_for_web(
+        self,
+        global_user_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[dict]:
+        """Опубликованные новости, доступные глобальному пользователю WebUI."""
+        query = (
+            self._WEB_PUBLISHED_SELECT
+            + """
+        ORDER BY COALESCE(n.scheduled_at, n.created_at) DESC
+        LIMIT $2 OFFSET $3
+        """
+        )
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, global_user_id, limit + 1, offset)
+        return [self._parse_news_row(r) for r in rows]
+
+    async def get_published_for_web_by_id(
+        self,
+        global_user_id: str,
+        news_id: int,
+    ) -> dict | None:
+        """Одна опубликованная новость с теми же правилами доступа, что и список."""
+        query = self._WEB_PUBLISHED_SELECT + " AND n.id = $2"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, global_user_id, news_id)
+        if not row:
+            return None
+        return self._parse_news_row(row)
+
     async def get_all(self):
         """Получение всех новостей"""
         async with self.pool.acquire() as conn:
