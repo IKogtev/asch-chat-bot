@@ -52,6 +52,20 @@ async def get_user_by_phone(pool: asyncpg.Pool, phone: str) -> Optional[dict[str
     return _user_from_row(row)
 
 
+async def get_messenger_accounts(pool: asyncpg.Pool, user_id: str) -> list[dict[str, Any]]:
+    query = """
+        SELECT platform, platform_user_id
+        FROM user_accounts
+        WHERE user_id = $1 AND platform IN ('telegram', 'max')
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, user_id)
+    return [
+        {"platform": str(row["platform"]), "platform_user_id": int(row["platform_user_id"])}
+        for row in rows
+    ]
+
+
 def profile_for_adk(user: dict[str, Any]) -> dict[str, Any]:
     return {
         "first_name": user.get("first_name") or "",

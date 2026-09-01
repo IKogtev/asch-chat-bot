@@ -27,6 +27,9 @@ class WebBffSettings:
     otp_max_attempts: int = int(os.getenv("WEB_BFF_OTP_MAX_ATTEMPTS", "5"))
     otp_max_requests: int = int(os.getenv("WEB_BFF_OTP_MAX_REQUESTS", "5"))
     otp_request_window_sec: int = int(os.getenv("WEB_BFF_OTP_REQUEST_WINDOW_SEC", "900"))
+    otp_internal_secret: str = os.getenv("OTP_INTERNAL_SECRET", "").strip()
+    bot_telegram_api: str = os.getenv("BOT_TELEGRAM_API", "http://bot:8001").strip()
+    bot_max_api: str = os.getenv("BOT_MAX_API", "http://bot-max:8002").strip()
     session_ttl_sec: int = int(os.getenv("WEB_BFF_SESSION_TTL_SEC", str(7 * 24 * 3600)))
     cookie_name: str = os.getenv("WEB_BFF_COOKIE_NAME", "nastya_web").strip() or "nastya_web"
     cookie_secure: bool = _as_bool(os.getenv("WEB_BFF_COOKIE_SECURE"), default=False)

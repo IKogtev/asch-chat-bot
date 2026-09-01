@@ -50,6 +50,10 @@ class FakeConn:
     async def execute(self, query, *args):
         self.executed.append(("execute", query, args))
 
+    async def fetch(self, query, *args):
+        self.executed.append(("fetch", query, args))
+        return []
+
 
 class FakePool:
     def __init__(self, conn: FakeConn):
@@ -70,6 +74,9 @@ def _settings(**overrides):
         otp_max_requests=5,
         otp_request_window_sec=900,
         session_ttl_sec=3600,
+        otp_internal_secret="internal-secret",
+        bot_telegram_api="http://bot:8001",
+        bot_max_api="http://bot-max:8002",
         cookie_name="nastya_web",
         cookie_secure=False,
         allow_dev_auth=False,
@@ -155,6 +162,46 @@ async def test_otp_request_blocked_no_code(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert result == {"status": "ok"}
     assert "dev_code" not in result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_otp_request_delivers_to_messengers(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = FakeConn(fetchval=0)
+    service = OtpService(FakePool(conn), _settings(otp_stub=False))
+    monkeypatch.setattr(
+        "web_bff.otp.get_user_by_phone",
+        AsyncMock(return_value={"id": "user-1", "is_blocked": False}),
+    )
+    monkeypatch.setattr(
+        "web_bff.otp.get_messenger_accounts",
+        AsyncMock(return_value=[{"platform": "telegram", "platform_user_id": 99}]),
+    )
+    monkeypatch.setattr("web_bff.otp.generate_otp_code", lambda: "111111")
+    deliver = AsyncMock(return_value=1)
+    monkeypatch.setattr("web_bff.otp.deliver_otp_code", deliver)
+
+    result = await service.request("+79161234567")
+
+    assert result == {"status": "ok"}
+    deliver.assert_awaited_once()
+    assert deliver.await_args.args[2] == "111111"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_otp_request_requires_messenger(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = FakeConn(fetchval=0)
+    service = OtpService(FakePool(conn), _settings(otp_stub=False))
+    monkeypatch.setattr(
+        "web_bff.otp.get_user_by_phone",
+        AsyncMock(return_value={"id": "user-1", "is_blocked": False}),
+    )
+    monkeypatch.setattr("web_bff.otp.get_messenger_accounts", AsyncMock(return_value=[]))
+
+    with pytest.raises(OtpError) as exc:
+        await service.request("+79161234567")
+    assert exc.value.detail == "messenger_required"
 
 
 @pytest.mark.unit

@@ -12,8 +12,9 @@ import asyncpg
 
 from utils.logger import setup_logger
 from web_bff.config import WebBffSettings
+from web_bff.otp_delivery import deliver_otp_code
 from web_bff.phones import normalize_phone
-from web_bff.users import get_user_by_phone
+from web_bff.users import get_messenger_accounts, get_user_by_phone
 
 logger = setup_logger("web_bff_otp", "web_bff.log")
 
@@ -92,6 +93,14 @@ class OtpService:
                 eligible = False
             else:
                 code = pair[1]
+
+        accounts: list = []
+        if eligible and not self.settings.otp_stub:
+            accounts = await get_messenger_accounts(self.pool, user["id"])
+            if not accounts:
+                logger.info("otp no messenger accounts user=%s", user["id"])
+                raise OtpError(400, "messenger_required")
+
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 if eligible:
@@ -130,7 +139,9 @@ class OtpService:
             logger.info("otp stub user=%s phone=%s code=%s", user["id"], phone, code)
             return {"status": "ok", "dev_code": code}
 
-        logger.info("otp challenge created user=%s (delivery not wired)", user["id"])
+        sent = await deliver_otp_code(self.settings, accounts, code)
+        if sent == 0:
+            logger.error("otp delivery failed for all channels user=%s", user["id"])
         return dict(OTP_OK)
 
     async def verify(self, raw_phone: str, code: str) -> str:

@@ -1,5 +1,6 @@
 import asyncio
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from pathlib import Path
 import os
@@ -8,6 +9,7 @@ from utils import setup_logger
 from utils.event_logger import EventLogger
 from bot.services.config import Settings
 import aiofiles
+from bot.services.otp_internal import require_otp_sender, send_otp_to_user, OTP_CODE_RE
 from bot.services.utils import html_to_bot, split_message
 import json
 from aiogram.types import BufferedInputFile
@@ -21,6 +23,12 @@ logger = setup_logger('broadcasting', 'broadcast.log')
 #  логгер событий
 eventlogger = EventLogger()
 
+
+class OtpSendIn(BaseModel):
+    platform_user_id: int = Field(gt=0)
+    code: str = Field(min_length=4, max_length=6)
+
+
 def create_broadcast_app(
     news_store,
     subscriber_store,
@@ -33,6 +41,21 @@ def create_broadcast_app(
 ):
     app = FastAPI(title="Bot Broadcast API")
     logger.info(f"Источник для всех {source}")
+
+    @app.post("/internal/otp")
+    async def send_otp(body: OtpSendIn, _: None = Depends(require_otp_sender)):
+        if not OTP_CODE_RE.match(body.code):
+            raise HTTPException(status_code=400, detail="invalid_code")
+        bot = bot_holder.instance
+        if bot is None:
+            raise HTTPException(status_code=503, detail="bot_unavailable")
+        try:
+            await send_otp_to_user(bot, source, body.platform_user_id, body.code)
+        except Exception as exc:
+            logger.error("internal otp send failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=502, detail="send_failed") from exc
+        logger.info("internal otp sent platform_user_id=%s", body.platform_user_id)
+        return {"status": "ok"}
 
     @app.post("/broadcast")
     async def broadcast(
