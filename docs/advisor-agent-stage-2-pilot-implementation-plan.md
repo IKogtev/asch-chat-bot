@@ -550,7 +550,7 @@ Exit criterion: the dispatcher test matrix passes with no route ambiguity in the
 
 ### Phase 4. Integrate `RootAgent` and session state
 
-1. Inject both advisor agents, the client-type selection validator, and `AdvisorRankingService` into `RootAgent`.
+1. Inject both advisor agents and `AdvisorRankingService` into `RootAgent`; call the client-type selection validator directly, consistently with the other agent validators.
 2. Register advisor agents in `sub_agents`.
 3. Add per-turn advisor keys to `STATE_KEYS_TO_CLEAR`.
 4. Add `_handle_advisor` with this order:
@@ -570,6 +570,8 @@ Exit criterion: the dispatcher test matrix passes with no route ambiguity in the
 8. Ensure OWASP checks still run before advisor processing.
 
 Exit criterion: RootAgent tests prove that only a contract-valid, table-grounded LLM selection reaches deterministic product ranking, advisor state survives turns, per-turn intermediate state does not leak, and failures do not emit recommendations.
+
+Implementation status (September 1, 2026): Phase 4 is implemented. `RootAgent` now receives and registers both advisor agents and an explicitly configured `AdvisorRankingService`; the Client Type selection validator is imported and called directly, consistently with the other agent validators. The advisor route runs after OWASP, merges the saved typed profile, revalidates the current-run table-grounded selection, returns a single clarification when required, ranks only validated candidates in Python, validates formatter output, and stores a versioned `advisor_dialog_context`. Advisor intermediate keys are cleared per turn, while the persistent context is included in final state deltas and in the existing cross-session cache snapshot and recovery flow. Validation and formatter failures use the existing safe retry path and do not persist partial recommendations. The content prompt now receives the current query, serialized saved profile, prior advisor context, and confidence threshold. The Phase 1-4 focused test set passes (189 tests). The full unit runner still stops during unrelated collection on the pre-existing missing `build_download_rank_patterns` export and the Windows attempt to create `\\app\\data\\settings`. The environment-backed `pilot-v1` weights use the Phase 1 deterministic test-policy values as technical defaults; business approval of those values and the manual reference cases remains a release gate.
 
 ### Phase 5. Implement follow-ups and product-info handoff
 

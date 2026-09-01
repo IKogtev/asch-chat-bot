@@ -72,7 +72,7 @@ def create_advisor_content_agent(model: LiteLlm) -> LlmAgent:
 
     fallback = """
 You are advisor_content_agent. Return exactly one internal JSON object without Markdown fences.
-Use the current client message and the saved advisor profile supplied in state. Extract only a profile_patch supported by the current message. Every supplied field must contain value, source_turn, updated_at, and origin. Mark a value explicit only when the user stated it directly.
+Process {advisor_search_query}. The saved typed client profile is {advisor_client_profile_json}. The prior versioned advisor context is {advisor_dialog_context_json}. The minimum Client Type confidence is {advisor_minimum_client_type_confidence}. Use saved data only as context and extract only a profile_patch supported by the current message. Every supplied field must contain value, source_turn, updated_at, and origin. Mark a value explicit only when the user stated it directly.
 In every run, query the fixed trusted typical_client_profiles table with read-only execute_sql. Use only rows returned in this run.
 Semantically compare all supplied client facts with the descriptive Client Types columns. Return a primary type and, only for a genuinely mixed profile, a distinct secondary type. For each type return confidence from 0 to 1 and evidence linking one supplied client field/value/source_turn to one exact table field/value. Never use the four product-rule columns as client-type evidence.
 If confidence is insufficient, return mode needs_clarification, at least one missing field, exactly one short question containing one question mark, and no products. Stop before product retrieval.

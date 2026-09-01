@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, ClassVar
 from dataclasses import dataclass, field
 from collections import OrderedDict, deque
@@ -27,6 +28,17 @@ from .agents.smalltalk_agent import validate_smalltalk_result
 from .agents.doc_search_orchestrator import DocSearchOrchestrator
 from .agents.product_filter_contract import validate_product_filter_result
 from .agents.product_info_contract import validate_product_info_result
+from .agents.advisor_contract import (
+    AdvisorContentResult,
+    validate_advisor_content_result,
+    validate_advisor_final_result,
+)
+from .advisor_profile import AdvisorClientProfile, merge_advisor_profile
+from .advisor_profile_matcher import (
+    AdvisorClientTypeSelection,
+    validate_client_type_selection,
+)
+from .advisor_ranking_service import AdvisorRankingResult, AdvisorRankingService
 from .glossary import GlossaryLookup
 from .product_resolver_service import ProductResolverService
 from .smart_fallback import (
@@ -45,6 +57,8 @@ BOT_USER_PROFILE_MESSAGE_PREFIX = "Контекст пользователя:"
 OWASP_CONTEXT_WINDOW = 6
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
+ADVISOR_DIALOG_CONTEXT_STATE_KEY = "advisor_dialog_context"
+ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION = 1
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
     "Могу показать карточку продукта или скачать комплект. Какой продукт тебя интересует ?"
 )
@@ -146,6 +160,12 @@ STATE_KEYS_TO_CLEAR = [
     "dialog_recent_messages",
     "dialog_context_json",
     "product_dialog_context_json",
+    "advisor_search_query", "advisor_client_profile", "advisor_client_profile_json",
+    "advisor_dialog_context_json", "advisor_minimum_client_type_confidence",
+    "_advisor_content_result_parsed", "_advisor_result_parsed",
+    "advisor_content_result_json", "advisor_ranking_result",
+    "advisor_ranking_result_json", "advisor_result_json",
+    "_advisor_content_tool_calls", "_advisor_content_tool_events",
 ]
 
 def is_bot_user_profile_injection_message(text: str) -> bool:
@@ -200,9 +220,11 @@ class PipelineContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 class RootAgent(BaseAgent):
-    """
-    Оркестратор цепочки:
-    owasp_agent -> dispatcher_agent -> (DocSearchOrchestrator | kb_answer_agent)
+    """Оркестрирует безопасную маршрутизацию запроса в целевой сценарий.
+
+    Цепочка начинается с `owasp_agent` и `dispatcher_agent`, после чего запрос
+    передается в поиск документов, базу знаний, smalltalk, продуктовый сценарий
+    или advisor-пайплайн с детерминированным ранжированием и сохранением контекста.
     """
     owasp_agent: LlmAgent
     dispatcher_agent: LlmAgent
@@ -213,6 +235,10 @@ class RootAgent(BaseAgent):
     product_info_format_agent: LlmAgent
     product_filter_content_agent: LlmAgent
     product_filter_format_agent: LlmAgent
+    advisor_content_agent: LlmAgent
+    advisor_format_agent: LlmAgent
+    advisor_ranking_service: AdvisorRankingService
+    advisor_minimum_client_type_confidence: float
     glossary_lookup: GlossaryLookup
     product_resolver: ProductResolverService
     faq_collection: str
@@ -237,6 +263,10 @@ class RootAgent(BaseAgent):
         product_info_format_agent: LlmAgent,
         product_filter_content_agent: LlmAgent,
         product_filter_format_agent: LlmAgent,
+        advisor_content_agent: LlmAgent,
+        advisor_format_agent: LlmAgent,
+        advisor_ranking_service: AdvisorRankingService,
+        advisor_minimum_client_type_confidence: float = 0.75,
         glossary_lookup: GlossaryLookup | None = None,
         product_resolver: ProductResolverService | None = None,
         faq_collection: str = FAQ_DOCUMENTS_COLLECTION,
@@ -253,6 +283,10 @@ class RootAgent(BaseAgent):
             product_info_format_agent=product_info_format_agent,
             product_filter_content_agent=product_filter_content_agent,
             product_filter_format_agent=product_filter_format_agent,
+            advisor_content_agent=advisor_content_agent,
+            advisor_format_agent=advisor_format_agent,
+            advisor_ranking_service=advisor_ranking_service,
+            advisor_minimum_client_type_confidence=advisor_minimum_client_type_confidence,
             glossary_lookup=glossary_lookup or GlossaryLookup(),
             product_resolver=product_resolver or ProductResolverService(),
             faq_collection=faq_collection,
@@ -267,6 +301,8 @@ class RootAgent(BaseAgent):
                 product_info_format_agent,
                 product_filter_content_agent,
                 product_filter_format_agent,
+                advisor_content_agent,
+                advisor_format_agent,
             ],
         )
 
@@ -322,6 +358,9 @@ class RootAgent(BaseAgent):
         product_dialog_context = session_state.get(PRODUCT_DIALOG_CONTEXT_STATE_KEY)
         if isinstance(product_dialog_context, dict):
             state_delta[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = product_dialog_context
+        advisor_dialog_context = session_state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY)
+        if isinstance(advisor_dialog_context, dict):
+            state_delta[ADVISOR_DIALOG_CONTEXT_STATE_KEY] = advisor_dialog_context
 
         timing = build_timing_payload(session_state)
         if timing:
@@ -435,6 +474,9 @@ class RootAgent(BaseAgent):
                 "last_document_list": ctx.session.state.get("last_document_list"),
                 "last_product": ctx.session.state.get("last_product"),
                 "_product_dialog_context": ctx.session.state.get("_product_dialog_context"),
+                ADVISOR_DIALOG_CONTEXT_STATE_KEY: ctx.session.state.get(
+                    ADVISOR_DIALOG_CONTEXT_STATE_KEY
+                ),
             }
             # 1. Если пользователя еще нет в кэше — создаем для него личную очередь
             if clean_id not in self._CROSS_SESSION_CACHE:
@@ -2633,7 +2675,15 @@ class RootAgent(BaseAgent):
                 dispatch.get("search_query", ""),
             ):
                 yield event
-        # 2. Подбор продуктов
+        # 2. Персональная рекомендация по профилю клиента
+        elif route == "advisor":
+            async for event in self._handle_advisor(
+                ctx,
+                user_text,
+                dispatch.get("search_query", ""),
+            ):
+                yield event
+        # 3. Подбор продуктов
         elif route in {"product_info", "product_filter"}:
             self._enrich_product_query(ctx, dispatch, user_text)
             handler = (
@@ -2648,7 +2698,7 @@ class RootAgent(BaseAgent):
                 dispatch["intent"],
             ):
                 yield event
-        # 3. База знаний / FAQ
+        # 4. База знаний / FAQ
         elif route == "kb_answer":
             async for event in self._handle_kb_answer(
                 ctx,
@@ -2657,7 +2707,7 @@ class RootAgent(BaseAgent):
                 dispatch.get("intent", "kb_answer"),
             ):
                 yield event
-        # 4. Smalltalk
+        # 5. Smalltalk
         elif route == "smalltalk":
             async for event in self._handle_smalltalk(
                 ctx,
@@ -2718,7 +2768,7 @@ class RootAgent(BaseAgent):
                 truncate_for_log(exc.raw, 500),
             )
             # Определяем, какой агент работал
-            agent_name = next((name for name in ("product_info", "product_filter", "kb_answer", "smalltalk", "dispatcher", "doc_search") if name in exc.log_label), None)
+            agent_name = next((name for name in ("product_info", "product_filter", "advisor", "kb_answer", "smalltalk", "dispatcher", "doc_search") if name in exc.log_label), None)
             # Собираем контекст из состояния
             context: Dict[str, Any] = {
                 "validation_error": exc.validation_error,
@@ -2727,6 +2777,7 @@ class RootAgent(BaseAgent):
             context["search_query"] = (
                 ctx.session.state.get("product_info_search_query")
                 or ctx.session.state.get("product_filter_search_query")
+                or ctx.session.state.get("advisor_search_query")
                 or ctx.session.state.get("doc_search_query")
                 or ctx.session.state.get("search_query")
                 or ctx.session.state.get("dispatcher_user_query")
@@ -3138,6 +3189,216 @@ class RootAgent(BaseAgent):
             product_result.get("mode"),
         )
         ctx.session.state.pop("_bot_action", None)
+
+    @staticmethod
+    def _advisor_profile_from_context(ctx: InvocationContext) -> AdvisorClientProfile:
+        """Восстанавливает типизированный профиль из постоянного advisor-контекста."""
+        value = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY)
+        if not isinstance(value, dict):
+            return AdvisorClientProfile()
+        return AdvisorClientProfile.model_validate(value.get("profile") or {})
+
+    @staticmethod
+    def _advisor_selected_matches(
+        selection: AdvisorClientTypeSelection | None,
+    ) -> list[dict[str, Any]]:
+        """Сериализует только проверенные совпадения типов клиента."""
+        if selection is None:
+            return []
+        return [
+            match.model_dump(mode="json")
+            for match in (selection.primary_type, selection.secondary_type)
+            if match is not None
+        ]
+
+    def _store_advisor_dialog_context(
+        self,
+        ctx: InvocationContext,
+        *,
+        profile: AdvisorClientProfile,
+        content: AdvisorContentResult,
+        ranking: AdvisorRankingResult | None,
+    ) -> None:
+        """Сохраняет один версионированный результат advisor без временных ключей."""
+        selection = content.client_type_selection
+        ctx.session.state[ADVISOR_DIALOG_CONTEXT_STATE_KEY] = {
+            "schema_version": ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION,
+            "profile": profile.model_dump(mode="json"),
+            "matched_client_types": self._advisor_selected_matches(selection),
+            "primary_client_type": (
+                selection.primary_type.profile_name
+                if selection and selection.primary_type
+                else None
+            ),
+            "missing_fields": list(content.missing_fields),
+            "candidate_products": [
+                product.model_dump(mode="json") for product in content.products
+            ],
+            "top_products": (
+                [item.model_dump(mode="json") for item in ranking.top_products]
+                if ranking
+                else []
+            ),
+            "exclusions": (
+                [item.model_dump(mode="json") for item in ranking.excluded_candidates]
+                if ranking
+                else []
+            ),
+            "selected_product": None,
+            "scoring_policy_version": (
+                ranking.scoring_policy_version
+                if ranking
+                else self.advisor_ranking_service.policy.version
+            ),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def _run_advisor_formatter(
+        self,
+        ctx: InvocationContext,
+        payload: dict[str, Any],
+    ) -> AsyncGenerator[Event, None]:
+        """Передает форматтеру только уже проверенный детерминированный результат."""
+        ctx.session.state["advisor_ranking_result_json"] = json.dumps(
+            payload,
+            ensure_ascii=False,
+            default=str,
+        )
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.advisor_format_agent,
+            output_key="advisor_result_json",
+            parsed_state_key="_advisor_result_parsed",
+            validator=validate_advisor_final_result,
+            log_label="advisor_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+        ):
+            yield event
+
+    async def _handle_advisor(
+        self,
+        ctx: InvocationContext,
+        user_message: str,
+        search_query: str,
+    ) -> AsyncGenerator[Event, None]:
+        """Выполняет проверенный advisor-пайплайн и сохраняет итоговый контекст."""
+        current_profile = self._advisor_profile_from_context(ctx)
+        effective_query = str(search_query or user_message).strip()
+        ctx.session.state["advisor_search_query"] = effective_query
+        ctx.session.state["search_query"] = effective_query
+        ctx.session.state["advisor_client_profile"] = current_profile.model_dump(mode="json")
+        ctx.session.state["advisor_client_profile_json"] = current_profile.model_dump_json()
+        ctx.session.state["advisor_minimum_client_type_confidence"] = (
+            self.advisor_minimum_client_type_confidence
+        )
+        advisor_context = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY) or {}
+        ctx.session.state["advisor_dialog_context_json"] = json.dumps(
+            advisor_context,
+            ensure_ascii=False,
+            default=str,
+        )
+
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.advisor_content_agent,
+            output_key="advisor_content_result_json",
+            parsed_state_key="_advisor_content_result_parsed",
+            validator=validate_advisor_content_result,
+            log_label="advisor_content_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            tool_calls_state_key="_advisor_content_tool_calls",
+            tool_events_state_key="_advisor_content_tool_events",
+        ):
+            yield event
+
+        content = AdvisorContentResult.model_validate(
+            self._get_required_state_dict(ctx, "_advisor_content_result_parsed")
+        )
+        merge_result = merge_advisor_profile(current_profile, content.profile_patch)
+        if merge_result.conflicts:
+            raise ValueError("Advisor profile contains unresolved explicit-value conflicts")
+        profile = merge_result.profile
+        selection = content.client_type_selection
+        if selection is not None:
+            validate_client_type_selection(
+                selection,
+                client_profile=profile,
+                client_types=list(content.client_types),
+                minimum_confidence=self.advisor_minimum_client_type_confidence,
+            )
+
+        if content.mode == "needs_clarification":
+            self._store_advisor_dialog_context(
+                ctx,
+                profile=profile,
+                content=content,
+                ranking=None,
+            )
+            ctx.session.state["_root_final_text"] = str(
+                content.clarification_question or ""
+            ).strip()
+            return
+
+        if content.mode == "no_data":
+            async for event in self._run_advisor_formatter(
+                ctx,
+                {"mode": "no_data", "no_data_reason": content.no_data_reason},
+            ):
+                yield event
+            final_result = self._get_required_state_dict(ctx, "_advisor_result_parsed")
+            self._store_advisor_dialog_context(
+                ctx,
+                profile=profile,
+                content=content,
+                ranking=None,
+            )
+            ctx.session.state["_root_final_text"] = format_text_answer(
+                final_result["message"]
+            )
+            return
+
+        if selection is None or selection.primary_type is None:
+            raise ValueError("Advisor candidates require a validated primary Client Type")
+        selected_row = next(
+            (
+                row
+                for row in content.client_types
+                if row.profile_name == selection.primary_type.profile_name
+            ),
+            None,
+        )
+        if selected_row is None:
+            raise ValueError("Selected Client Type row is absent from current-run data")
+
+        ranking = self.advisor_ranking_service.rank(
+            products=[product.to_product_facts() for product in content.products],
+            primary_client_type=selected_row,
+            selection=selection,
+        )
+        ctx.session.state["advisor_ranking_result"] = ranking.model_dump(mode="json")
+        format_payload = {
+            "mode": "recommendation",
+            **ranking.model_dump(mode="json"),
+        }
+        if not ranking.top_products:
+            format_payload = {
+                "mode": "no_data",
+                "no_data_reason": "Все проверенные продукты исключены обязательными правилами.",
+                "ranking": ranking.model_dump(mode="json"),
+            }
+        async for event in self._run_advisor_formatter(ctx, format_payload):
+            yield event
+
+        final_result = self._get_required_state_dict(ctx, "_advisor_result_parsed")
+        self._store_advisor_dialog_context(
+            ctx,
+            profile=profile,
+            content=content,
+            ranking=ranking,
+        )
+        ctx.session.state["_root_final_text"] = format_text_answer(
+            final_result["message"]
+        )
 
     async def _handle_product_info(
         self,

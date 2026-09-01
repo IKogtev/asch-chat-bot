@@ -37,6 +37,7 @@ def _load_rootagent_module():
     config_stub.KB_DOCUMENTS_COLLECTION = "kb"
     config_stub.AGENT_DIALOG_MEMORY_MAX_TURNS = 3
     config_stub.DATABASE_URL = "postgresql://test"
+    config_stub.PROMPTS_DIR = repo_root / "kb_storage" / "prompts"
     config_stub.COMPARE_FRAZE = "сравни"
     config_stub.PRODUCT_CARD_KIT_OFFER = "комплект"
 
@@ -274,6 +275,10 @@ def _make_agent(**kwargs) -> RootAgent:
     kwargs.setdefault("glossary_lookup", EmptyGlossaryLookup())
     kwargs.setdefault("product_resolver", EmptyProductResolver())
     fake_subagent = object()
+    kwargs.setdefault(
+        "advisor_ranking_service",
+        types.SimpleNamespace(policy=types.SimpleNamespace(version="test-pilot-v1")),
+    )
     fake_doc_orchestrator = type("DocSearchOrchestratorFake", (), {"run_async": lambda self, ctx: ()})()
     return RootAgent(
         owasp_agent=fake_subagent,
@@ -285,6 +290,8 @@ def _make_agent(**kwargs) -> RootAgent:
         product_info_format_agent=fake_subagent,
         product_filter_content_agent=fake_subagent,
         product_filter_format_agent=fake_subagent,
+        advisor_content_agent=fake_subagent,
+        advisor_format_agent=fake_subagent,
         **kwargs,
     )
 
@@ -310,6 +317,367 @@ def _make_ctx(
         user_content=types.SimpleNamespace(parts=parts or []),
         invocation_id=invocation_id,
     )
+
+
+def _advisor_candidate_content_payload():
+    return {
+        "mode": "candidates",
+        "profile_patch": {
+            "goal": {
+                "value": "Сохранение капитала",
+                "source_turn": "turn-1",
+                "updated_at": "2026-09-01T00:00:00Z",
+                "origin": "explicit",
+            }
+        },
+        "client_types": [
+            {
+                "client_type_code": "CT-001",
+                "profile_name": "Консервативный",
+                "attributes": {"client_goal": "Сохранение капитала"},
+                "required_properties": [],
+                "preferred_properties": [],
+                "acceptable_compromises": [],
+                "contraindications": [],
+            }
+        ],
+        "client_type_selection": {
+            "mode": "selected",
+            "primary_type": {
+                "profile_name": "Консервативный",
+                "confidence": 0.9,
+                "evidence": [],
+            },
+            "secondary_type": None,
+            "missing_fields": [],
+            "clarification_question": None,
+        },
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [
+            {
+                "code": "2832",
+                "name": "Продукт 1",
+                "is_active": "Действующий",
+                "attributes": {},
+            }
+        ],
+        "no_data_reason": None,
+    }
+
+
+@pytest.mark.unit
+def test_reset_turn_state_clears_advisor_intermediate_keys_only() -> None:
+    agent = _make_agent()
+    persistent = {"schema_version": 1, "profile": {}}
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: persistent,
+            "advisor_content_result_json": "stale",
+            "advisor_ranking_result": {"stale": True},
+            "_advisor_content_tool_events": [{"name": "execute_sql"}],
+        }
+    )
+
+    agent._reset_turn_state(ctx)
+
+    assert ctx.session.state == {
+        rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: persistent
+    }
+
+
+@pytest.mark.unit
+def test_build_final_event_includes_advisor_dialog_context_state_delta() -> None:
+    agent = _make_agent()
+    advisor_context = {"schema_version": 1, "primary_client_type": "Консервативный"}
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context
+        }
+    )
+
+    event = agent._build_final_event(ctx, "Ответ")
+
+    assert event.actions.state_delta == {
+        rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_advisor_validates_ranks_formats_and_persists_context(
+    monkeypatch,
+) -> None:
+    content_payload = _advisor_candidate_content_payload()
+    ranking = rootagent_module.AdvisorRankingResult.model_validate(
+        {
+            "primary_client_type": "Консервативный",
+            "secondary_client_type": None,
+            "match_evidence": [],
+            "accepted_candidates": [],
+            "excluded_candidates": [],
+            "top_products": [
+                {
+                    "product": content_payload["products"][0],
+                    "score": "100.00",
+                    "score_components": [],
+                    "compromises": [],
+                }
+            ],
+            "diversity_replacements": [],
+            "scoring_policy_version": "test-pilot-v1",
+        }
+    )
+    calls = []
+
+    class RankingService:
+        policy = types.SimpleNamespace(version="test-pilot-v1")
+
+        def rank(self, **kwargs):
+            calls.append("rank")
+            return ranking
+
+    def validate_selection(selection, **kwargs):
+        calls.append("validate")
+        return selection
+
+    monkeypatch.setattr(
+        rootagent_module,
+        "validate_client_type_selection",
+        validate_selection,
+    )
+    agent = _make_agent(advisor_ranking_service=RankingService())
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "advisor_content_result_json":
+            ctx.session.state["_advisor_content_result_parsed"] = content_payload
+        else:
+            calls.append("format")
+            ctx.session.state["_advisor_result_parsed"] = {
+                "mode": "recommendation",
+                "message": "Проверенная рекомендация.",
+                "primary_client_type": "Консервативный",
+                "secondary_client_type": None,
+                "products": [content_payload["products"][0]],
+            }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    events = [
+        event
+        async for event in agent._handle_advisor(
+            ctx,
+            "Что предложить клиенту?",
+            "подобрать продукт клиенту",
+        )
+    ]
+
+    assert events == []
+    assert calls == ["validate", "rank", "format"]
+    assert ctx.session.state["_root_final_text"] == "Проверенная рекомендация."
+    stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["schema_version"] == 1
+    assert stored["profile"]["goal"]["value"] == "Сохранение капитала"
+    assert stored["primary_client_type"] == "Консервативный"
+    assert stored["top_products"][0]["product"]["code"] == "2832"
+    assert stored["scoring_policy_version"] == "test-pilot-v1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_advisor_returns_exactly_one_validated_clarification(
+    monkeypatch,
+) -> None:
+    content_payload = _advisor_candidate_content_payload()
+    content_payload.update(
+        mode="needs_clarification",
+        client_type_selection={
+            "mode": "needs_clarification",
+            "primary_type": None,
+            "secondary_type": None,
+            "missing_fields": ["term_months"],
+            "clarification_question": "На какой срок клиент готов разместить средства?",
+        },
+        missing_fields=["term_months"],
+        clarification_question="На какой срок клиент готов разместить средства?",
+        products=[],
+    )
+    calls = []
+
+    def validate_selection(selection, **kwargs):
+        calls.append("validate")
+        return selection
+
+    monkeypatch.setattr(
+        rootagent_module,
+        "validate_client_type_selection",
+        validate_selection,
+    )
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] != "advisor_content_result_json":
+            raise AssertionError("clarification must stop before format agent")
+        ctx.session.state["_advisor_content_result_parsed"] = content_payload
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    async for _ in agent._handle_advisor(ctx, "Запрос", "Запрос"):
+        pass
+
+    assert calls == ["validate"]
+    assert ctx.session.state["_root_final_text"] == (
+        "На какой срок клиент готов разместить средства?"
+    )
+    stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["missing_fields"] == ["term_months"]
+    assert stored["candidate_products"] == []
+    assert stored["top_products"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_advisor_does_not_rank_or_persist_invalid_selection(
+    monkeypatch,
+) -> None:
+    content_payload = _advisor_candidate_content_payload()
+    rank_called = False
+
+    class RankingService:
+        policy = types.SimpleNamespace(version="test-pilot-v1")
+
+        def rank(self, **kwargs):
+            nonlocal rank_called
+            rank_called = True
+            raise AssertionError("invalid selection must not reach ranking")
+
+    def reject_selection(selection, **kwargs):
+        raise ValueError("invalid table-grounded selection")
+
+    monkeypatch.setattr(
+        rootagent_module,
+        "validate_client_type_selection",
+        reject_selection,
+    )
+    agent = _make_agent(advisor_ranking_service=RankingService())
+    ctx = _make_ctx(session_state={})
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        ctx.session.state["_advisor_content_result_parsed"] = content_payload
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    with pytest.raises(ValueError, match="invalid table-grounded selection"):
+        async for _ in agent._handle_advisor(ctx, "Запрос", "Запрос"):
+            pass
+
+    assert rank_called is False
+    assert rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY not in ctx.session.state
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_prepare_pipeline_context_restores_advisor_with_existing_context_flow(
+    monkeypatch,
+) -> None:
+    async def history_exists(global_user_id):
+        return False
+
+    monkeypatch.setattr(
+        rootagent_module,
+        "is_history_empty_by_global_id",
+        history_exists,
+    )
+    agent = _make_agent()
+    agent._CROSS_SESSION_CACHE.clear()
+    cached_advisor = {"schema_version": 1, "profile": {}}
+    agent._CROSS_SESSION_CACHE["client"] = rootagent_module.deque(
+        [
+            {
+                "last_product": "Сохраненный продукт",
+                rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                    "selected_product": {"code": "1", "name": "Продукт"}
+                },
+                rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: cached_advisor,
+            }
+        ],
+        maxlen=agent.MAX_HISTORY_PER_USER,
+    )
+    ctx = _make_ctx(
+        session_state={},
+        parts=[types.SimpleNamespace(text="Следующий вопрос")],
+    )
+    ctx.session.id = "client_split"
+
+    await agent._prepare_pipeline_context(ctx)
+
+    assert ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY] == cached_advisor
+    assert ctx.session.state["last_product"] == "Сохраненный продукт"
+    agent._CROSS_SESSION_CACHE.clear()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_async_impl_runs_owasp_before_advisor() -> None:
+    order = []
+    agent = _make_agent()
+    ctx = _make_ctx(parts=[types.SimpleNamespace(text="Подбери продукт клиенту")])
+
+    async def prepare_pipeline_context(invocation_ctx):
+        return rootagent_module.PipelineContext(
+            ctx=invocation_ctx,
+            user_text="Подбери продукт клиенту",
+            clean_text="Подбери продукт клиенту",
+            session_id="session-1",
+        )
+
+    async def check_safety(pipeline_ctx):
+        order.append("owasp")
+        pipeline_ctx.ctx.session.state["_owasp_result_parsed"] = {
+            "status": "allowed",
+            "route": "continue",
+        }
+        if False:
+            yield None
+
+    async def run_dispatcher(pipeline_ctx):
+        order.append("dispatcher")
+        pipeline_ctx.ctx.session.state["_dispatcher_result_parsed"] = {
+            "route": "advisor",
+            "intent": "advisor_recommendation",
+            "search_query": "подобрать продукт клиенту",
+        }
+        if False:
+            yield None
+
+    async def handle_advisor(invocation_ctx, user_message, search_query):
+        order.append("advisor")
+        invocation_ctx.session.state["_root_final_text"] = "Ответ"
+        if False:
+            yield None
+
+    agent._prepare_pipeline_context = prepare_pipeline_context
+    agent._check_safety_guardrails = check_safety
+    agent._try_short_circuit = lambda pipeline_ctx: _async_none()
+    agent._run_llm_dispatcher = run_dispatcher
+    agent._handle_advisor = handle_advisor
+
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+    assert order == ["owasp", "dispatcher", "advisor"]
+    assert events[-1].content.parts[0].text == "Ответ"
+
+
+async def _async_none():
+    return None
 
 
 @pytest.mark.unit
