@@ -1,5 +1,5 @@
 from fastapi import (FastAPI, UploadFile, File, HTTPException, Form,
-                      Request, Depends, BackgroundTasks)
+                      Request, Depends, BackgroundTasks, Header, Query)
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (
     HTMLResponse, JSONResponse, FileResponse,
@@ -7,7 +7,7 @@ from fastapi.responses import (
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from dotenv import load_dotenv
-import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, sys
+import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, json, sys
 from pathlib import Path
 import httpx, mimetypes
 from urllib.parse import unquote, quote
@@ -24,11 +24,14 @@ from app.services.adk_db_stats_service import AdkDbStatsService
 from app.services.qdrant_service import QdrantService, CollectionType
 from app.models import (
     DocumentInfo, SearchRequest, SearchResult, SwitchCollectionRequest, 
-    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, SyncInterval
+    DeleteCollectionRequest, DeleteKBRequest, SwitchAliasRequest, 
+    SyncInterval, NotificationRequest
     )
 from contextlib import asynccontextmanager
 from utils.logger import setup_logger
 from app.services.file_storage_service import FileStorageService
+from app.auth.keycloak import verify_lifepoint_jwt
+from app.services.tables_loader_service import CLIENT_TYPES_TABLE_NAME
 load_dotenv()
 
 # Используем современный Lifespan вместо @app.on_event("startup")
@@ -80,25 +83,70 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600,
 )
+KB_MANAGER_TOKEN = os.getenv("KB_MANAGER_TOKEN", "").strip()
+PUBLIC_EXACT_PATHS = {
+    "/",
+    "/api/login",
+    "/api/refresh",
+    "/api/health",
+}
+
+PUBLIC_PREFIX_PATHS = {
+    "/static/",
+}
+
 # обертка для проверки разрешений по ролям
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    public_paths = [
-        "/api/login",
-        "/api/refresh",
-        "/static",
-        "/"
-    ]
+    """
+    Центральная authentication/authorization точка.
+
+    PUBLIC:
+        /
+        /static/*
+        /api/login
+        /api/refresh
+        /api/health
+
+    Всё остальное:
+        JWT -> authentication
+        role -> authorization
+    """
     path = request.url.path
+    method = request.method.upper()
     # публичные
-    if any(path.startswith(p) for p in public_paths):
+    if is_public_path(path):
         return await call_next(request)
+    # не затрагиваем api lifepoint 
+    if path.startswith("/api/v1/"):
+        return await call_next(request)
+    # Проверка API-ключа бота (X-API-Key)
+    api_key = request.headers.get("X-API-Key")
+    if api_key and KB_MANAGER_TOKEN and api_key.strip() == KB_MANAGER_TOKEN:
+        return await call_next(request)
+    # Проверка access token из Cookie
     access_token = request.cookies.get("access_token")
     payload = decode_token(access_token) if access_token else None
     # 1. если access_token валиден
     if payload and payload.get("type") == "access":
+        username = payload.get("sub")
         role = payload.get("role")
-        if not is_allowed(path, role):
+        if not username or not role:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Invalid access token"
+                }
+            )
+        
+        if not is_allowed(path=path, method=method, role=role):
+            logger.warning(
+                f"Access denied: "
+                f"user={username}, "
+                f"role={role}, "
+                f"method={method}, "
+                f"path={path}"
+            )
             return JSONResponse(status_code=403, content={"detail": "Forbidden"})
         return await call_next(request)
     # 2. если access умер → пробуем refresh
@@ -110,9 +158,24 @@ async def auth_middleware(request: Request, call_next):
             # берём роль из БД
             user = await get_user_from_db(username, request.app.state.db_pool)
             if user:
+                role = user["role"]
+                # Даже при refresh сначала проверяем,
+                # разрешён ли пользователю endpoint.
+                if not is_allowed(
+                    path=path,
+                    method=method,
+                    role=role
+                ):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": "Forbidden"
+                        }
+                    )
+
                 new_access = create_access_token({
                     "sub": username,
-                    "role": user["role"]
+                    "role": role
                 })
                 response = await call_next(request)
                 # обновляем access_token
@@ -120,7 +183,9 @@ async def auth_middleware(request: Request, call_next):
                     key="access_token",
                     value=new_access,
                     httponly=True,
-                    samesite="lax"
+                    secure=False, # TODO при продакшен меняем на true
+                    samesite="lax",
+                    max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
                 )
                 return response
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
@@ -152,15 +217,60 @@ REFRESH_TOKEN_EXPIRE_HOURS = 5
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # доступные эндпоинты для ролей
 ROLE_PERMISSIONS = {
-    "admin": ["*"],
-    "manager": [
-        "/api/documents",
-        "/api/search",
-        "/api/knowledge-bases",
-        "/api/filesystem",
-        "/api/news",
-        "/api/user-groups"
-    ]
+    "admin": {
+        "*": {"*"},
+    },
+    "manager": {
+        # Служебные и профиль
+        "/api/me": {"GET"},
+        "/api/logout": {"POST"},
+        
+        # Коллекции и базы знаний
+        "/api/collections": {"GET"},
+        "/api/collections/active": {"GET"},
+        "/api/collections/info": {"GET"},
+        "/api/collections/by-type": {"GET"},
+        "/api/collections/refresh_metadata": {"POST"}, # Обновление метаданных коллекций
+        "/api/knowledge-bases": {"GET"},
+        "/api/knowledge-bases/delete": {"POST"}, # менеджеру разрешено удалять KB
+
+        # Синхронизация и события
+        "/api/sync/settings": {"GET"},
+        "/api/sync/current": {"GET"},
+        "/api/sync/start": {"POST"},
+        "/api/sync/status/{task_id}": {"GET"},
+        "/api/filesystem/sync_events": {"GET"},
+        "/api/events": {"GET"},
+
+        # Документы и ФС
+        "/api/documents": {"GET"},
+        "/api/documents/{document_id}": {"GET"},
+        "/api/documents/download/{document_id}": {"GET"},
+        "/api/filesystem/folders": {"GET"},
+        "/api/filesystem/node": {"GET"},
+        "/api/filesystem/download": {"GET"},
+
+        # Таблицы и справочники
+        "/api/tables": {"GET"},
+        "/api/tables/load": {"POST"},                        # Загрузка таблиц
+        "/api/tables/glossary": {"GET"},                     # Глоссарий
+        "/api/tables/product_search_dictionary": {"GET"},   # Словарь поиска продуктов
+        "/api/tables/products": {"GET"},
+
+        # Подписчики
+        "/api/subscribers": {"GET"},                         # Список подписчиков
+        "/api/subscribers/export": {"GET"},                  # Экспорт подписчиков
+        "/api/subscribers/group": {"POST"},                  # Группировка/управление группами подписчиков
+        "/api/subscribers/block": {"POST"},
+
+        # Поиск, Новости, Аналитика
+        "/api/search": {"POST"},
+        "/api/news": {"GET"},
+        "/api/news/{news_id}": {"GET", "DELETE"},
+        "/api/news/send": {"POST"},
+        "/api/analytics/*": {"GET"}, # Поддерживается новым path_matches
+        
+    }
 }
 # Инициализация пользователей, паролей и ролей для UI
 TELEGRAM_BOT_API = os.getenv("BOT_TELEGRAM_API", "http://bot:8001")
@@ -967,25 +1077,107 @@ def decode_token(token: str):
 
 def get_current_user(request: Request):
     """Получение текущего пользователя из access токена в cookies"""
-    token = request.cookies.get("access_token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    payload = decode_token(token)
-    if not payload or payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return {
-        "username": payload.get("sub"),
-        "role": payload.get("role")
-    }
+    # 1. Проверка API-ключа бота/сервиса (Заголовок X-API-Key)
+    api_key = request.headers.get("X-API-Key")
+    if api_key and KB_MANAGER_TOKEN and api_key.strip() == KB_MANAGER_TOKEN:
+        # Боты получают системную роль с полным доступом к скачиванию
+        return {"sub": "bot", "role": "admin"}
 
-def is_allowed(path: str, role: str) -> bool:
+    # 2. Проверка Bearer токена в Authorization
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        payload = decode_token(token)
+        if payload and payload.get("type") == "access":
+            return {
+                "username": payload.get("sub"),
+                "role": payload.get("role")
+            }
+        raise HTTPException(status_code=401, detail="Invalid Bearer token")
+    # 3. Резервный вариант: Cookie для Web UI
+    token = request.cookies.get("access_token")
+    if token:
+        payload = decode_token(token)
+        if payload and payload.get("type") == "access":
+            return {
+                "username": payload.get("sub"),
+                "role": payload.get("role")
+            }
+
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+def is_allowed(path: str, method: str, role: str) -> bool:
     """Проверка разрешений по роли для доступа к пути"""
-    allowed_paths = ROLE_PERMISSIONS.get(role, [])
-    # admin — всё можно
-    if "*" in allowed_paths:
+    permissions = ROLE_PERMISSIONS.get(role)
+
+    if not permissions:
+        return False
+
+    # admin
+    if "*" in permissions:
         return True
-    # проверяем prefix match
-    return any(path.startswith(p) for p in allowed_paths)
+
+    method = method.upper()
+
+    for pattern, methods in permissions.items():
+
+        if not path_matches(pattern, path):
+            continue
+
+        if "*" in methods:
+            return True
+
+        if method in methods:
+            return True
+
+    return False
+
+def is_public_path(path: str) -> bool:
+    """
+    Проверяет, является ли endpoint действительно публичным.
+    "/" проверяется только как точное совпадение,
+    /api/documents больше не считается public.
+    """
+
+    if path in PUBLIC_EXACT_PATHS:
+        return True
+
+    return any(
+        path.startswith(prefix)
+        for prefix in PUBLIC_PREFIX_PATHS
+    )
+
+def path_matches(pattern: str, path: str) -> bool:
+    """
+    Сравнивает URL с шаблоном permission.
+
+    Например:
+
+        /api/documents/{document_id}
+        /api/documents/123
+
+    -> True
+    """
+    if pattern.endswith("/*"):
+        prefix = pattern[:-2]
+        return path == prefix or path.startswith(prefix + "/")
+    pattern_parts = pattern.strip("/").split("/")
+    path_parts = path.strip("/").split("/")
+
+    if len(pattern_parts) != len(path_parts):
+        return False
+
+    for pattern_part, path_part in zip(
+        pattern_parts,
+        path_parts
+    ):
+        if pattern_part.startswith("{") and pattern_part.endswith("}"):
+            continue
+
+        if pattern_part != path_part:
+            return False
+
+    return True
 
 @app.get("/api/admin/adk-sessions/stats")
 async def get_adk_session_stats():
@@ -1007,16 +1199,17 @@ async def login(request: Request, username: str = Form(...), password: str = For
     user = await get_user_from_db(username, request.app.state.db_pool)
     if not user or not verify_password(password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    access_token = create_access_token({
-        "sub": username,
-        "role": user["role"]
-    })
-    refresh_token = create_refresh_token({
-        "sub": username
-    })
+    access_token = create_access_token({"sub": username, "role": user["role"]})
+    refresh_token = create_refresh_token({"sub": username})    
     response = JSONResponse({"success": True})
     for k, v in [("access_token", access_token), ("refresh_token", refresh_token)]:
-        response.set_cookie(key=k, value=v, httponly=True, samesite="lax")
+        response.set_cookie(
+            key=k, 
+            value=v, 
+            httponly=True, 
+            samesite="lax",
+            path="/"  # явный указатель корневого пути
+        )
     return response
 
 @app.post("/api/refresh")
@@ -1198,22 +1391,36 @@ async def load_tables():
             sys.executable,
             "-m",
             "app.scripts.load_tables",
+            "--strict-validation",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
         if process.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=stderr.decode()
+                detail=(stderr_text.strip() or stdout_text.strip() or "Tables loader failed")
             )
         tables = await get_loaded_tables()
+        if CLIENT_TYPES_TABLE_NAME not in tables:
+            raise HTTPException(
+                status_code=500,
+                detail="Client Types table is missing after load",
+            )
         return {
             "success": True,
-            "stdout": stdout.decode(),
-            "stderr": stderr.decode(),
-            "tables": tables
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "tables": tables,
+            "client_types": {
+                "table_name": CLIENT_TYPES_TABLE_NAME,
+                "validation_status": "ok",
+            },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -1750,6 +1957,300 @@ async def send_news(
     except Exception as e:
         logger.error(f"News send error: {e}")
         raise HTTPException(500, str(e))
+
+#######################################
+# Работа с уведомлениями пользователям 
+#######################################
+def lifepoint_error(
+    status_code: int,
+    code: str,
+    message: str
+):
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message
+            }
+        }
+    )
+
+
+@app.post("/api/v1/notifications")
+async def send_notification(data: NotificationRequest, token: dict = Depends(verify_lifepoint_jwt)):
+    """
+    Отправка персонального уведомления пользователю.
+    Пользователь определяется только по global_user_id.
+    """
+
+    if data.channel not in ("all", "telegram", "max"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_CHANNEL",
+                "message": "channel must be one of: all, telegram, max"
+            }
+        )
+
+    global_user_id = str(data.global_user_id)
+    results = {}
+    # TELEGRAM
+    if data.channel in ("all", "telegram"):
+        try:
+            resp = await http_client.post(
+                f"{TELEGRAM_BOT_API}/notify",
+                json={
+                    "global_user_id": global_user_id,
+                    "message": data.message
+                }
+            )
+            # Пользователь не найден
+            if resp.status_code == 404:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "USER_NOT_FOUND",
+                    "message": "User account not found"
+                }
+
+            # Пользователь заблокирован
+            elif resp.status_code == 409:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "USER_BLOCKED",
+                    "message": "User is blocked"
+                }
+
+            # Бот недоступен
+            elif resp.status_code == 503:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "BOT_UNAVAILABLE",
+                    "message": "Bot is currently unavailable"
+                }
+
+            # Успешная отправка
+            elif resp.status_code == 200:
+                results["telegram"] = resp.json()
+
+            # Остальные ошибки
+            else:
+                results["telegram"] = {
+                    "status": "error",
+                    "code": "TELEGRAM_API_ERROR",
+                    "message": "Telegram notification failed"
+                }
+
+        except Exception as e:
+
+            logger.error(
+                f"Telegram notification error: {e}",
+                exc_info=True
+            )
+    # max
+    if data.channel in ("all", "max"):
+        try:
+            resp = await http_client.post(
+                f"{MAX_BOT_API}/notify",
+                json={
+                    "global_user_id": global_user_id,
+                    "message": data.message
+                }
+            )
+            # Пользователь не найден
+            if resp.status_code == 404:
+                results["max"] = {
+                    "status": "error",
+                    "code": "USER_NOT_FOUND",
+                    "message": "User account not found"
+                }
+
+            # Пользователь заблокирован
+            elif resp.status_code == 409:
+                results["max"] = {
+                    "status": "error",
+                    "code": "USER_BLOCKED",
+                    "message": "User is blocked"
+                }
+
+            # Бот недоступен
+            elif resp.status_code == 503:
+                results["max"] = {
+                    "status": "error",
+                    "code": "BOT_UNAVAILABLE",
+                    "message": "Bot is currently unavailable"
+                }
+
+            # Успешная отправка
+            elif resp.status_code == 200:
+                results["max"] = resp.json()
+
+            # Остальные ошибки
+            else:
+                results["max"] = {
+                    "status": "error",
+                    "code": "MAX_API_ERROR",
+                    "message": "MAX notification failed"
+                }
+        except Exception as e:
+            logger.error(
+                f"MAX notification error: {e}"
+            )
+            results["max"] = {
+                "status": "error",
+                "code": "MAX_API_ERROR"
+            }
+    # Определяем успешные каналы
+    successful = [
+        channel
+        for channel, result in results.items()
+        if result.get("status") == "ok"
+    ]
+    # Если есть хотя бы один успешный канал
+    if successful:
+        return {
+            "status": "ok",
+            "global_user_id": global_user_id,
+            "sent_to": successful,
+            "results": results
+        }
+    # Все каналы завершились ошибкой
+    error_codes = [
+        result.get("code")
+        for result in results.values()
+    ]
+
+    # Пользователь вообще не найден
+    if error_codes and all(
+        code == "USER_NOT_FOUND"
+        for code in error_codes
+    ):
+        return lifepoint_error(
+            status_code=404,
+            code="USER_NOT_FOUND",
+            message="User with specified global_user_id was not found"
+        )
+
+    # Пользователь заблокирован
+    if error_codes and all(
+        code == "USER_BLOCKED"
+        for code in error_codes
+    ):
+        return lifepoint_error(
+            status_code=409,
+            code="USER_BLOCKED",
+            message="User is blocked"
+        )
+
+    # Все нужные боты недоступны
+    if error_codes and all(
+        code == "BOT_UNAVAILABLE"
+        for code in error_codes
+    ):
+        return lifepoint_error(
+            status_code=503,
+            code="BOT_UNAVAILABLE",
+            message="Notification service is temporarily unavailable"
+        )
+
+    # Остальные ошибки
+    return lifepoint_error(
+        status_code=500,
+        code="INTERNAL_ERROR",
+        message="Failed to send notification"
+    )
+
+@app.get("/api/v1/users")
+async def get_lifepoint_users(
+    global_user_id: str = Query(
+        ...,
+        description="Global ID пользователя"
+    ),
+    token: dict = Depends(verify_lifepoint_jwt)
+):
+    """
+    Внешний API LifePoint.
+
+    Возвращает информацию о конкретном пользователе
+    по его global_user_id.
+
+    Возвращаемые данные:
+    - global_user_id
+    - статус блокировки пользователя
+    - группы пользователя
+    - доступные аккаунты/источники
+    """
+
+    try:
+        resp = await http_client.get(
+            f"{TELEGRAM_BOT_API}/api/subscribers",
+            params={
+                "global_user_id": global_user_id
+            }
+        )
+        users = resp.json()
+        if not users:
+            return lifepoint_error(
+                404,
+                "USER_NOT_FOUND",
+                "User not found"
+            )
+
+        
+        
+        if resp.status_code != 200:
+            logger.error(
+                f"Failed to get user: "
+                f"global_user_id={global_user_id}, "
+                f"status={resp.status_code}"
+            )
+
+            return lifepoint_error(
+                500,
+                "INTERNAL_ERROR",
+                "Failed to get user"
+            )
+        user = users[0]
+        accounts = []
+
+        for account in user.get("accounts", []):
+            platform = account.get("platform")
+
+            if platform in ("telegram", "max"):
+                accounts.append({
+                    "platform": platform
+                })
+
+        return {
+            "global_user_id": str(
+                user["global_user_id"]
+            ),
+            "is_blocked": bool(
+                user.get("is_blocked", False)
+            ),
+            "groups": {
+                "manager": bool(
+                    user.get("manager_group", False)
+                ),
+                "coach": bool(
+                    user.get("coach_group", False)
+                )
+            },
+            "accounts": accounts
+        }
+
+    except Exception as e:
+        logger.error(
+            f"LifePoint user API error: "
+            f"global_user_id={global_user_id}: {e}",
+            exc_info=True
+        )
+
+        return lifepoint_error(
+            500,
+            "INTERNAL_ERROR",
+            "Internal server error"
+        )
 
 ###############################
 # Работа с промптами ADK Agent 

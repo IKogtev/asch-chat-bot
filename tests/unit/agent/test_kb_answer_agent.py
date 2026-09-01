@@ -31,6 +31,7 @@ def _load_kb_answer_module():
     config_stub.MCP_TIMEOUT_SEC = 30.0
     config_stub.MCP_TOKEN = ""
     config_stub.KB_ANSWER_TEMPERATURE = 0.0
+    config_stub.KB_ANSWER_MAX_OUTPUT_TOKENS = 6000
     config_stub.LLM_MAX_OUTPUT_TOKENS = 4096
     config_stub.LLM_PRESENCE_PENALTY = 1.5
 

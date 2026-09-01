@@ -33,7 +33,7 @@ def _load_owasp_module():
     config_stub.OWASP_TEMPERATURE = 0.2
     config_stub.OWASP_TOP_P = 0.8
     config_stub.OWASP_TOP_K = 20
-    config_stub.OWASP_MAX_OUTPUT_TOKENS = 128
+    config_stub.OWASP_MAX_OUTPUT_TOKENS = 3000
     config_stub.LLM_PRESENCE_PENALTY = 1.5
 
     adk_agents_stub = types.ModuleType("google.adk.agents")
@@ -108,7 +108,7 @@ def test_create_owasp_agent_excludes_prior_conversation_contents() -> None:
     assert agent.generate_content_config.top_p == 0.8
     assert agent.generate_content_config.top_k == 20
     assert agent.generate_content_config.presence_penalty == 1.5
-    assert agent.generate_content_config.max_output_tokens == 128
+    assert agent.generate_content_config.max_output_tokens == 3000
 
 
 @pytest.mark.unit

@@ -17,7 +17,7 @@ RUN mkdir -p /app/.cache/fastembed \
 
 # Copy application code and shared logger
 COPY mcps/kb-manager/app/ ./app/
-COPY utils/logger.py utils/__init__.py utils/qdrant_hybrid.py utils/rrf.py ./utils/
+COPY utils/logger.py utils/__init__.py utils/qdrant_hybrid.py utils/rrf.py utils/client_types.py ./utils/
 
 ENV PYTHONPATH=/app
 

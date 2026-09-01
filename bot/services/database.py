@@ -7,6 +7,7 @@ from typing import Optional
 from utils import setup_logger
 from bot.services.config import Settings
 from datetime import datetime
+from uuid import UUID
 
 # Настройка логгера
 logger = setup_logger('database', 'db.log')
@@ -486,6 +487,27 @@ class SubscriberStore:
             await conn.execute(query, value, user_id)
 
         logger.info(f"✓ Группа {group} обновлена для user_id={user_id}: {value}")
+
+    async def get_accounts_by_global_id(
+        self,
+        global_user_id: str
+    ):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    ua.platform,
+                    ua.platform_user_id,
+                    u.is_blocked
+                FROM users u
+                JOIN user_accounts ua
+                    ON ua.user_id = u.id
+                WHERE u.id = $1
+                """,
+                global_user_id
+            )
+
+        return rows
 
 # Хранилище новостей и рассылок
 class NewsStore:

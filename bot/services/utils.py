@@ -140,32 +140,54 @@ def register_callback_path(path: str) -> str:
 
     return path_id
 
+def _get_auth_headers() -> dict:
+    """Вспомогательная функция для получения заголовков авторизации"""
+    headers = {}
+    token = getattr(Settings, "KB_MANAGER_TOKEN", None)
+    if token:
+        headers["X-API-Key"] = str(token).strip()
+    else:
+        logger.warning("_get_auth_headers: KB_MANAGER_TOKEN не задан в Settings!")
+    return headers
+
 # получить дерево папок
 async def get_kb_tree():
-    
     url = f"{Settings.KB_MANAGER_URL}/api/filesystem/folders"
+    headers = _get_auth_headers()
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            return await resp.json()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    logger.error(f"get_kb_tree error: HTTP {resp.status}")
+                    return {}
+                return await resp.json()
+    except Exception as e:
+        logger.error(f"get_kb_tree exception: {e}", exc_info=True)
+        return {}
 
 # получить id документа
 async def get_document_id(path: str) -> str | None:
     filename = path.split("/")[-1]
 
     url = f"{Settings.KB_MANAGER_URL}/api/documents"
+    headers = _get_auth_headers()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    logger.error(f"get_document_id error: HTTP {resp.status}")
+                    return None
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                logger.error(f"kb-manager error: {resp.status}")
-                return None
+                docs = await resp.json()
 
-            docs = await resp.json()
+        if isinstance(docs, list):
+            for doc in docs:
+                if doc.get("source_name") == filename:
+                    return doc.get("document_id")
 
-    for doc in docs:
-        if doc.get("source_name") == filename:
-            return doc.get("document_id")
+    except Exception as e:
+        logger.error(f"get_document_id exception: {e}", exc_info=True)
 
     return None
 

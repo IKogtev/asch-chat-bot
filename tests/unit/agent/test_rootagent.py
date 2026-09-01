@@ -1235,7 +1235,8 @@ def test_format_product_answer_skips_filter_followup_for_single_product() -> Non
             "mode": "product_filter",
             "message": (
                 "Найдено продуктов: 1.\n"
-                "7698 - Архивный. Unit Linked Стратегия роста"
+                "7698 - Архивный. Unit Linked Стратегия роста\n\n"
+                "Могу показать карточку продукта или скачать комплект."
             ),
             "products": [
                 {
@@ -1249,7 +1250,8 @@ def test_format_product_answer_skips_filter_followup_for_single_product() -> Non
 
     assert answer == (
         "Найдено продуктов: 1.\n"
-        "7698 - Архивный. Unit Linked Стратегия роста"
+        "7698 - Архивный. Unit Linked Стратегия роста\n\n"
+        "Могу показать карточку продукта или скачать комплект."
     )
     assert rootagent_module.PRODUCT_FILTER_FOLLOWUP_QUESTION not in answer and rootagent_module.PRODUCT_FILTER_ONLY_FOLLOWUP_QUESTION in answer
 

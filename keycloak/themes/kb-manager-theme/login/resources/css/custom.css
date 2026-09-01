@@ -1,0 +1,38 @@
+/* Фон всей страницы */
+body {
+    background-color: #0f172a;
+    font-family: 'Inter', sans-serif;
+}
+
+/* Контейнер формы входа */
+.card-pf {
+    background-color: #1e293b;
+    border-radius: 12px;
+    border: 1px solid #334155;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+}
+
+/* Шапка и заголовки */
+#kc-page-title {
+    color: #f8fafc;
+}
+
+/* Поля ввода */
+.form-control {
+    background-color: #0f172a;
+    border: 1px solid #475569;
+    color: #f8fafc;
+    border-radius: 6px;
+}
+
+/* Основная кнопка "Sign In" / "Submit" */
+#kc-login {
+    background-color: #2563eb;
+    border: none;
+    border-radius: 6px;
+    color: #ffffff;
+    font-weight: 600;
+}
+#kc-login:hover {
+    background-color: #1d4ed8;
+}

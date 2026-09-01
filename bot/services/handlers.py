@@ -668,13 +668,22 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
             channel=platform,
             payload={"filename": filename, "file_path": path, "doc_id": doc_id, "source": "menu"}
         )
-
+        # Формируем заголовки авторизации
+        headers = {}
+        token = getattr(Settings, "KB_MANAGER_TOKEN", None)
+        if token:
+            headers["X-API-Key"] = token
+            headers["Authorization"] = f"Bearer {token}"
         tmp_name = os.path.join(tempfile.gettempdir(), filename)
         try:
             # Скачиваем файл во временный буфер
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.error(f"❌ Ошибка скачивания файла {filename}: HTTP {resp.status}, body: {body[:200]}")
+                        await bot_res.send("Ошибка авторизации или файл недоступен")
+                        return
                     with open(tmp_name, "wb") as f:
                         f.write(await resp.read())
 

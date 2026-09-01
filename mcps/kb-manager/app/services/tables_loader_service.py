@@ -18,11 +18,24 @@ from app.services.product_kit_folder_resolver import (
     resolve_product_input_date_from_kit,
     resolve_product_kit_folder,
 )
+from utils.client_types import (
+    CLIENT_TYPE_CODE_COLUMN,
+    CLIENT_TYPES_DESCRIPTION_ROW_LABEL,
+    CLIENT_TYPES_EXPECTED_COLUMNS,
+    CLIENT_TYPES_PROFILE_COLUMN,
+    CLIENT_TYPES_RULE_COLUMNS,
+    CLIENT_TYPES_RULE_PROPERTY_MAP,
+    parse_client_type_rule_cell as parse_shared_client_type_rule_cell,
+    validate_client_type_source_columns,
+)
 
 
 DATA_CATALOG_FILE = "business layer_active.xlsx"
 ACTIVE_TABLES_SUFFIX = "_active.xlsx"
 PRODUCTS_TABLE_NAME = "products"
+PRODUCTS_FILE_NAME = "products_active.xlsx"
+CLIENT_TYPES_FILE_NAME = "typical_client_profiles_active.xlsx"
+CLIENT_TYPES_TABLE_NAME = "typical_client_profiles"
 GLOSSARY_FILE_NAME = "glossary_active.xlsx"
 GLOSSARY_TABLE_NAME = "glossary"
 PRODUCT_KIT_FOLDER_COLUMN = "folder_kit"
@@ -186,6 +199,7 @@ class LoadedTable:
     source_sheet: str
     rows: int
     columns: int
+    validation_status: str = "loaded"
 
 
 @dataclass(frozen=True)
@@ -235,6 +249,8 @@ class TablesLoaderService:
         self.product_input_dates_from_table: int | None = None
         self.product_input_dates_from_kits: int | None = None
         self.product_input_dates_missing: int | None = None
+        self._prepared_client_types: pd.DataFrame | None = None
+        self._client_types_source_sheet: str | None = None
 
     def load_all(self) -> TablesLoadResult:
         """Синхронно загружает все поддерживаемые Excel-таблицы.
@@ -263,6 +279,7 @@ class TablesLoaderService:
         self.product_input_dates_from_table = None
         self.product_input_dates_from_kits = None
         self.product_input_dates_missing = None
+        self._prepare_client_types_source()
         await self.ensure_database_exists()
         conn = await asyncpg.connect(self.database_url)
         try:
@@ -524,8 +541,15 @@ class TablesLoaderService:
         for file_path in excel_files:
             workbook = pd.ExcelFile(file_path, engine="openpyxl")
             for sheet_name in workbook.sheet_names:
-                df = self._read_sheet(file_path, sheet_name, skip_second_row_comment=True)
                 table_name = self._regular_table_name(file_path, sheet_name, workbook.sheet_names)
+                if (
+                    table_name == CLIENT_TYPES_TABLE_NAME
+                    and self._prepared_client_types is not None
+                    and sheet_name == self._client_types_source_sheet
+                ):
+                    df = self._prepared_client_types.copy()
+                else:
+                    df = self._read_sheet(file_path, sheet_name, skip_second_row_comment=True)
                 product_search_df = None
                 if table_name == PRODUCTS_TABLE_NAME:
                     df = self._normalize_products_dataframe(df)
@@ -549,10 +573,137 @@ class TablesLoaderService:
                         source_sheet=sheet_name,
                         rows=len(df),
                         columns=len(df.columns),
+                        validation_status=(
+                            "ok" if table_name == CLIENT_TYPES_TABLE_NAME else "loaded"
+                        ),
                     )
                 )
 
         return loaded_tables
+
+    def _prepare_client_types_source(self) -> None:
+        file_path = self.tables_dir / CLIENT_TYPES_FILE_NAME
+        if not file_path.exists():
+            raise FileNotFoundError(f"Client Types file not found: {file_path}")
+
+        products_path = self.tables_dir / PRODUCTS_FILE_NAME
+        if not products_path.exists():
+            raise FileNotFoundError(f"Products file not found: {products_path}")
+
+        workbook = pd.ExcelFile(file_path, engine="openpyxl")
+        if len(workbook.sheet_names) != 1:
+            raise ValueError(
+                f"Client Types workbook must contain exactly one sheet: {file_path}"
+            )
+
+        sheet_name = workbook.sheet_names[0]
+        client_types = self._read_sheet(file_path, sheet_name)
+        client_types = self._normalize_client_types_dataframe(client_types)
+
+        products_workbook = pd.ExcelFile(products_path, engine="openpyxl")
+        if len(products_workbook.sheet_names) != 1:
+            raise ValueError(
+                f"Products workbook must contain exactly one sheet: {products_path}"
+            )
+        products = self._read_sheet(
+            products_path,
+            products_workbook.sheet_names[0],
+            skip_second_row_comment=True,
+        )
+        self._validate_client_type_rules_against_products(client_types, products)
+
+        self._prepared_client_types = client_types
+        self._client_types_source_sheet = sheet_name
+
+    def _normalize_client_types_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        validate_client_type_source_columns(df.columns)
+
+        result = df.copy()
+        for column in result.columns:
+            result[column] = result[column].map(self._strip_cell_value)
+
+        description_mask = result[CLIENT_TYPES_PROFILE_COLUMN].map(
+            lambda value: str(value).strip() == CLIENT_TYPES_DESCRIPTION_ROW_LABEL
+        )
+        result = result.loc[~description_mask].reset_index(drop=True)
+        if result.empty:
+            raise ValueError("Client Types table has no profile rows")
+
+        profile_names = [
+            str(value).strip()
+            for value in result[CLIENT_TYPES_PROFILE_COLUMN].tolist()
+        ]
+        if any(not name for name in profile_names):
+            raise ValueError("Client Types profile_name must not be empty")
+        if len(profile_names) != len(set(profile_names)):
+            raise ValueError("Client Types profile_name values must be unique")
+
+        for row_index, row in result.iterrows():
+            for column in CLIENT_TYPES_RULE_COLUMNS:
+                self.parse_client_type_rule_cell(
+                    row.get(column),
+                    profile_name=profile_names[row_index],
+                    rule_column=column,
+                )
+
+        codes = [f"CT-{index:03d}" for index in range(1, len(result) + 1)]
+        result.insert(0, CLIENT_TYPE_CODE_COLUMN, codes)
+        return result
+
+    @classmethod
+    def parse_client_type_rule_cell(
+        cls,
+        value: Any,
+        *,
+        profile_name: str = "",
+        rule_column: str = "",
+    ) -> list[tuple[str, list[str]]]:
+        return [
+            (rule.product_column, list(rule.expected_values))
+            for rule in parse_shared_client_type_rule_cell(
+                value,
+                profile_name=profile_name,
+                rule_column=rule_column,
+            )
+        ]
+
+    def _validate_client_type_rules_against_products(
+        self,
+        client_types: pd.DataFrame,
+        products: pd.DataFrame,
+    ) -> None:
+        product_values: dict[str, set[str]] = {}
+        required_product_columns = set(CLIENT_TYPES_RULE_PROPERTY_MAP.values())
+        missing_columns = required_product_columns - set(products.columns)
+        if missing_columns:
+            raise ValueError(
+                f"Products table is missing Client Types columns: {sorted(missing_columns)}"
+            )
+
+        for column in required_product_columns:
+            product_values[column] = {
+                str(value).strip()
+                for value in products[column].tolist()
+                if self._is_meaningful_value(value)
+            }
+
+        errors: list[str] = []
+        for _, row in client_types.iterrows():
+            profile_name = str(row[CLIENT_TYPES_PROFILE_COLUMN]).strip()
+            for rule_column in CLIENT_TYPES_RULE_COLUMNS:
+                for product_column, expected_values in self.parse_client_type_rule_cell(
+                    row.get(rule_column),
+                    profile_name=profile_name,
+                    rule_column=rule_column,
+                ):
+                    for expected_value in expected_values:
+                        if expected_value not in product_values[product_column]:
+                            errors.append(
+                                f"{profile_name}/{rule_column}: "
+                                f"{product_column}={expected_value!r} not found in products"
+                            )
+        if errors:
+            raise ValueError("Invalid Client Types product rules: " + "; ".join(errors))
 
     async def _load_glossary(self, conn: asyncpg.Connection) -> list[LoadedTable]:
         """Загружает клиентский глоссарий в таблицу PostgreSQL.
