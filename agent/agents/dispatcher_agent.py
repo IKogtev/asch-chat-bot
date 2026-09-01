@@ -28,24 +28,26 @@ ASSISTANT_CAPABILITIES_SMALLTALK_EXAMPLES = (
 # Объявляем схему как Pydantic-класс
 class DispatcherResponseSchema(BaseModel):
     status: Literal["ok"] = Field(description="Всегда 'ok'")
-    route: Literal["doc_search", "kb_answer", "product_info", "product_filter", "smalltalk"] = Field(description="Маршрут обработки запроса")
+    route: Literal["doc_search", "kb_answer", "product_info", "product_filter", "advisor", "smalltalk"] = Field(description="Маршрут обработки запроса")
     intent: Literal[
         "doc_search", "show_more", "show_all", "file_download",
         "kb_answer", "smalltalk",
-        "product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values"
+        "product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values",
+        "advisor_recommendation"
     ] = Field(description="Классифицированное намерение пользователя")
     reason: Literal[
         "asks_for_documents", "asks_for_document_list", 
         "followup_show_more", "followup_show_all", "followup_file_download",
         "asks_about_conditions", "asks_about_rules", "asks_about_applicability", "asks_for_explanation",
         "product_card", "product_kit", "product_filter", "product_compare", "product_attribute_values",
+        "advisor_recommendation",
         "smalltalk_greeting", "smalltalk_thanks", "smalltalk_other"
     ] = Field(description="Обоснование выбора")
     search_query: str = Field(
         description=(
             "Поисковый запрос. СТРОЖАЙШИЕ ПРАВИЛА:\n"
             "1. ОБЯЗАТЕЛЬНО ПУСТАЯ СТРОКА (строго '') для интентов: 'smalltalk', 'show_more', 'show_all', 'file_download'.\n"
-            "2. ОБЯЗАТЕЛЬНО НЕПУСТОЙ нормализованный поисковый запрос для интентов: 'doc_search', 'kb_answer', 'product_card', 'product_kit', 'product_filter', 'product_compare', 'product_attribute_values'. "
+            "2. ОБЯЗАТЕЛЬНО НЕПУСТОЙ нормализованный поисковый запрос для интентов: 'doc_search', 'kb_answer', 'product_card', 'product_kit', 'product_filter', 'product_compare', 'product_attribute_values', 'advisor_recommendation'. "
             "Если выбрано intent='kb_answer', поле search_query НЕ может быть пустым. Сформируй в нем поисковый запрос по смыслу сообщения пользователя."
         )
     )
@@ -63,6 +65,7 @@ class DispatcherResponseSchema(BaseModel):
         product_filter_intents = {
             "product_filter", "product_compare", "product_attribute_values"
         }
+        advisor_intents = {"advisor_recommendation"}
         empty_query_intents = {"show_more", "show_all", "file_download", "smalltalk"}
 
         # 1. Исправляем несоответствие route и intent
@@ -81,6 +84,10 @@ class DispatcherResponseSchema(BaseModel):
         elif self.intent in product_filter_intents and self.route != "product_filter":
             logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'product_filter' for intent '{self.intent}'")
             self.route = "product_filter"
+        # Рекомендации по профилю клиента обрабатывает только самостоятельный advisor flow.
+        elif self.intent in advisor_intents and self.route != "advisor":
+            logger.warning(f"[Self-Healing] Route corrected from '{self.route}' to 'advisor' for intent '{self.intent}'")
+            self.route = "advisor"
 
         # 2. Исправляем аномалии в search_query
         # Если интент требует пустого запроса, но модель что-то прислала -> очищаем
@@ -104,10 +111,10 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
 
     Ожидаемый контракт:
     - `status="ok"`;
-    - `route` один из `doc_search`, `kb_answer`, `product_info`, `product_filter`, `smalltalk`;
+    - `route` один из `doc_search`, `kb_answer`, `product_info`, `product_filter`, `advisor`, `smalltalk`;
     - `intent` один из `doc_search`, `show_more`, `show_all`, `file_download`,
       `kb_answer`, `smalltalk`, `product_card`, `product_kit`, `product_filter`,
-      `product_compare`, `product_attribute_values`;
+      `product_compare`, `product_attribute_values`, `advisor_recommendation`;
     - `reason` обязателен всегда.
 
     Семантические правила:
@@ -131,7 +138,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
     """
     agent_name = "dispatcher_agent"
     _ = context
-    allowed_routes = {"doc_search", "kb_answer", "product_info", "product_filter", "smalltalk"}
+    allowed_routes = {"doc_search", "kb_answer", "product_info", "product_filter", "advisor", "smalltalk"}
     doc_route_intents = {"doc_search", "show_more", "show_all", "file_download"}
     kb_route_intents = {"kb_answer"}
     smalltalk_route_intents = {"smalltalk"}
@@ -141,8 +148,16 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
         "product_compare",
         "product_attribute_values",
     }
+    # Phase 3 introduces one deliberately narrow advisor intent.
+    advisor_route_intents = {"advisor_recommendation"}
     product_route_intents = product_info_intents | product_filter_intents
-    allowed_intents = doc_route_intents | kb_route_intents | smalltalk_route_intents | product_route_intents
+    allowed_intents = (
+        doc_route_intents
+        | kb_route_intents
+        | smalltalk_route_intents
+        | product_route_intents
+        | advisor_route_intents
+    )
     follow_up_no_query = {"show_more", "show_all", "file_download"}
     empty_query_intents = follow_up_no_query | {"smalltalk"}
     
@@ -233,7 +248,15 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
                 problem="product filter intents must use route='product_filter'",
                 data=payload,
                 fields=("route", "intent"),
-            )        
+            )
+        if intent in advisor_route_intents and route != "advisor":
+            raise build_validation_error(
+                agent=agent_name,
+                stage="semantics",
+                problem="advisor recommendation intent must use route='advisor'",
+                data=payload,
+                fields=("route", "intent"),
+            )
         if intent in smalltalk_route_intents and route != "smalltalk":
             raise build_validation_error(
                 agent=agent_name,
@@ -264,7 +287,7 @@ def validate_dispatcher_result(data: Dict[str, Any], context: Dict[str, Any]) ->
             raise build_validation_error(
                 agent=agent_name,
                 stage="semantics",
-                problem="search_query is required for doc_search, kb_answer, and product intents",
+                problem="search_query is required for non-follow-up intents",
                 data=payload,
                 fields=("route", "intent", "search_query"),
             )
@@ -311,12 +334,14 @@ High-priority product-focus rule: if the latest user message is "Что сейч
 - kb_answer
 - product_info
 - product_filter
+- advisor
 
 Разрешённые intent:
 - doc_search, show_more, show_all, file_download (только с route=doc_search)
 - kb_answer, smalltalk (только с route=kb_answer)
 - product_card, product_kit (только с route=product_info)
 - product_filter, product_compare, product_attribute_values (только с route=product_filter)
+- advisor_recommendation (только с route=advisor)
 
 Правила:
 - smalltalk идёт в route=kb_answer
@@ -326,6 +351,9 @@ High-priority product-focus rule: if the latest user message is "Что сейч
   "каковы твои возможности", "на что ты способен", "на что способен"
 - для таких вопросов верни route="kb_answer", intent="smalltalk", search_query=""
 - show_more / show_all / file_download - follow-up к списку документов, route=doc_search
+- персональная рекомендация по сценарию или профилю клиента идёт в route=advisor, intent=advisor_recommendation, reason=advisor_recommendation
+- исправление профиля и объяснение предыдущей рекомендации остаются в advisor
+- фильтрация продуктов остаётся в product_filter, карточка/комплект — в product_info, общий вопрос о правилах — в kb_answer
 - используй только snake_case
 """
     prompt_file = "dispatcher_agent_prompt.md"
