@@ -76,11 +76,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             placeholder: "Введите текст..."
         });
     }
-    const isAuthenticated = await checkAuth(); //Проверка авторизации
-    // Загружаем данные приложения ТОЛЬКО если пользователь уже авторизован (например, куки сохранились)
-    if (isAuthenticated) {
-        await loadAppData();
-    }
+    await loadCurrentUser();
+    await loadAppData();
 });
 // #############################
 // MENU FOR ALL PAGES INSIDE UI 
@@ -2588,52 +2585,51 @@ function exportUsers() {
 /// #############################
 // AUTH ACCESS LOGIC
 // #############################
-// проверка авторизованности
-async function checkAuth() {
+
+const originalFetch = window.fetch;
+
+window.fetch = async function (...args) {
+    const response = await originalFetch(...args);
+
+    if (
+        response.status === 401 &&
+        !window.location.pathname.startsWith("/auth/")
+    ) {
+        window.location.href = "/auth/login";
+    }
+
+    return response;
+};
+// загрузка текущего пользователя
+async function loadCurrentUser() {
     try {
-        const res = await fetch("/api/me", {
+        const response = await fetch("/api/me", {
             credentials: "include"
         });
-        if (!res.ok) throw new Error();
-        const user = await res.json();
-        currentUser = user;
-        document.getElementById("login-screen").style.display = "none";
-        document.getElementById("app").style.display = "block";
-        applyRoleAccess();
-        return true; // Авторизация успешна
-    } catch {
-        document.getElementById("login-screen").style.display = "flex";
-        document.getElementById("app").style.display = "none";
-        return false; // Пользователь не авторизован
-    }
-}
-// авторизация
-async function login() {
-    const username = document.getElementById("login-username").value;
-    const password = document.getElementById("login-password").value;
-    const formData = new FormData();
-    formData.append("username", username);
-    formData.append("password", password);
-    const res = await fetch("/api/login", {
-        method: "POST",
-        body: formData
-    });
-    if (res.ok) {
-        document.getElementById("login-error").innerText = "";
-        
-        // После успешного логина проверяем статус и ЗАГРУЖАЕМ ДАННЫЕ
-        const isAuth = await checkAuth();
-        if (isAuth) {
-            await loadAppData();
+        if (!response.ok) {
+            throw new Error(
+                `Не удалось получить текущего пользователя: ${response.status}`
+            );
         }
-    } else {
-        document.getElementById("login-error").innerText = "Неверные учетные данные";
+        currentUser = await response.json();
+        console.log(
+            "Current Keycloak user:",
+            currentUser
+        );
+        applyRoleAccess();
+    } catch (error) {
+        console.error(
+            "Ошибка получения текущего пользователя:",
+            error
+        );
+        // Если пользователь оказался неавторизован,
+        // отправляем его в Keycloak.
+        window.location.href = "/auth/login";
     }
 }
 // выход из учетной записи
 async function logout() {
-    await fetch("/api/logout", { method: "POST" });
-    checkAuth();
+    window.location.href = "/auth/logout";
 }
 // ролевые правила
 function applyRoleAccess() {

@@ -1,21 +1,20 @@
-from fastapi import (FastAPI, UploadFile, File, HTTPException, Form,
-                      Request, Depends, BackgroundTasks, Header, Query)
+from fastapi import (FastAPI, UploadFile, File, HTTPException, Form, Request,
+                    Depends, BackgroundTasks, Query, APIRouter, Response)
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (
     HTMLResponse, JSONResponse, FileResponse,
-    PlainTextResponse, StreamingResponse, Response)
+    PlainTextResponse, StreamingResponse, Response, RedirectResponse)
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from dotenv import load_dotenv
-import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, json, sys
+import os, uuid, shutil, asyncio, aiofiles, re, pymorphy3, csv, io, sys
 from pathlib import Path
 import httpx, mimetypes
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlencode, urlparse
 from datetime import datetime, timedelta, timezone
 # Auth dependencies
 from jose import JWTError, jwt
 import asyncpg
-from passlib.context import CryptContext
 import pandas as pd
 # простая токенизация
 from collections import Counter
@@ -34,6 +33,136 @@ from app.auth.keycloak import verify_lifepoint_jwt
 from app.services.tables_loader_service import CLIENT_TYPES_TABLE_NAME
 load_dotenv()
 
+# ============================================================
+# KEYCLOAK CONFIG
+# ============================================================
+# URL, по которому браузер пользователя обращается к Keycloak
+KEYCLOAK_PUBLIC_URL = os.getenv("KEYCLOAK_PUBLIC_URL", "http://localhost:8088")
+# URL, по которому контейнер kb-manager обращается к Keycloak
+KEYCLOAK_INTERNAL_URL = os.getenv("KEYCLOAK_INTERNAL_URL","http://keycloak:8080")
+KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "kb-manager-test")
+KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "kb-manager-ui")
+KEYCLOAK_CLIENT_SECRET = os.getenv("KEYCLOAK_CLIENT_SECRET","REMOVED_SECRET")
+REALM_URL_PUB = f"{KEYCLOAK_PUBLIC_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect"
+REALM_URL_INT = f"{KEYCLOAK_INTERNAL_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect"
+REDIRECT_URI = os.getenv("REDIRECT_URI","http://localhost:5000/auth/callback")
+# URL, куда Keycloak верёт пользователя после выхода из SSO-сессии: 
+POST_LOGOUT_REDIRECT_URI = os.getenv("POST_LOGOUT_REDIRECT_URI", "http://localhost:5000/auth/login")
+AUTH_URL = (f"{REALM_URL_PUB}/auth")
+TOKEN_URL = (f"{REALM_URL_INT}/token")
+LOGOUT_URL = (f"{REALM_URL_PUB}/logout")
+LOGOUT_INT_URL = f"{REALM_URL_INT}/logout"
+JWKS_URL = (f"{REALM_URL_INT}/certs")
+
+_keycloak_jwks_cache : Optional[dict] = None
+# =====================
+# KEYCLOAK AUTH ROUTES
+# =====================
+auth_router = APIRouter(prefix="/auth", tags=["Keycloak Auth"])
+@auth_router.get("/login")
+async def keycloak_login():
+    """
+    Redirect пользователя на страницу авторизации Keycloak.
+    """
+    params = {
+        "client_id": KEYCLOAK_CLIENT_ID,
+        "response_type": "code",
+        "scope": "openid profile email",
+        "redirect_uri": REDIRECT_URI,
+    }
+    query_string = urlencode(params)
+    return RedirectResponse(url=f"{AUTH_URL}?{query_string}")
+
+@auth_router.get("/callback")
+async def keycloak_callback(
+    request: Request,
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+):
+    """
+    Callback от Keycloak после успешной авторизации.
+    Keycloak передает сюда authorization code.
+    kb-manager обменивает его на access_token / refresh_token.
+    """
+    # 1. Keycloak вернул ошибку
+    if error:
+        logger.error(f"Keycloak authorization error: error={error}, description={error_description}")
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": "Keycloak authorization failed",
+                "error": error,
+                "error_description": error_description,
+            },
+        )
+    # 2. Authorization code отсутствует
+    if not code:
+        logger.error("Keycloak callback received without authorization code")
+        return JSONResponse(status_code=400, content={"detail": "Authorization code is missing"})
+    # 3. Обмениваем code на токены
+    token_data = {
+        "grant_type": "authorization_code",
+        "client_id": KEYCLOAK_CLIENT_ID,
+        "client_secret": KEYCLOAK_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                TOKEN_URL,
+                data=token_data,
+                headers=get_keycloak_headers(), # Используем сформированные заголовки
+            )
+    except httpx.HTTPError as exc:
+        logger.exception("Failed to connect to Keycloak token endpoint")
+        return JSONResponse(status_code=502, content={"detail": "Could not connect to Keycloak"})
+    # 4. Keycloak отклонил authorization code
+    if response.status_code != 200:
+        logger.error(
+            "Keycloak token exchange failed: "
+            f"status={response.status_code}, "
+            f"body={response.text}"
+        )
+        return JSONResponse(status_code=401, content={"detail": "Keycloak token exchange failed"})
+    # 5. Получаем токены
+    tokens = response.json()
+    if not tokens.get("access_token"):
+        logger.error("Keycloak response does not contain access_token")
+        return JSONResponse(status_code=401, content={"detail": "Keycloak did not return access token"})
+    logger.info("Keycloak authentication successful")
+    # 6. Возвращаем пользователя в kb-manager
+    redirect_response = RedirectResponse(url="/", status_code=303)
+    return set_auth_cookies(redirect_response, tokens)
+
+@auth_router.get("/logout")
+@auth_router.post("/logout")
+async def keycloak_logout(request: Request):
+    """
+    Полноценный Logout:
+    1. Отзываем Keycloak refresh token.
+    2. Удаляем локальные cookies.
+    3. Завершаем SSO-сессию Keycloak.
+    4. Возвращаем пользователя на /auth/login.
+    """
+    refresh_token = request.cookies.get("refresh_token")
+    id_token = request.cookies.get("id_token")
+    # 1. Завершаем сессию на стороне Keycloak (Back-channel)
+    if refresh_token:
+        await revoke_keycloak_session(refresh_token)
+    # 2. Формируем URL сброса SSO-сессии в браузере (Front-channel)
+    params = {
+        "client_id": KEYCLOAK_CLIENT_ID,
+        "post_logout_redirect_uri": POST_LOGOUT_REDIRECT_URI,
+    }
+    if id_token:
+        params["id_token_hint"] = id_token
+    keycloak_logout_url = f"{LOGOUT_URL}?{urlencode(params)}"
+    response = RedirectResponse(url=keycloak_logout_url, status_code=303)
+    # 3. Полностью удаляем все куки авторизации с явным указанием path="/"
+    return clear_auth_cookies(response)
+
 # Используем современный Lifespan вместо @app.on_event("startup")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,8 +173,6 @@ async def lifespan(app: FastAPI):
         min_size=5,
         max_size=20
     )
-    # инициализация базы данных для пользователей UI
-    await init_db(app.state.db_pool)
     # создаем глобальный http клиент для всех запросов, чтобы не создавать новый каждый раз
     http_client = httpx.AsyncClient(timeout=60)
     # создаем коллекцию в qdrant 
@@ -73,6 +200,7 @@ app = FastAPI(
     title="UI Manager for Anastasia",
     lifespan=lifespan
 )
+app.include_router(auth_router)
 
 # CORS middleware
 app.add_middleware(
@@ -85,14 +213,13 @@ app.add_middleware(
 )
 KB_MANAGER_TOKEN = os.getenv("KB_MANAGER_TOKEN", "").strip()
 PUBLIC_EXACT_PATHS = {
-    "/",
-    "/api/login",
     "/api/refresh",
     "/api/health",
 }
 
 PUBLIC_PREFIX_PATHS = {
     "/static/",
+    "/auth/"
 }
 
 # обертка для проверки разрешений по ролям
@@ -100,14 +227,7 @@ PUBLIC_PREFIX_PATHS = {
 async def auth_middleware(request: Request, call_next):
     """
     Центральная authentication/authorization точка.
-
-    PUBLIC:
-        /
-        /static/*
-        /api/login
-        /api/refresh
-        /api/health
-
+    PUBLIC: PUBLIC_EXACT_PATHS 
     Всё остальное:
         JWT -> authentication
         role -> authorization
@@ -126,74 +246,39 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     # Проверка access token из Cookie
     access_token = request.cookies.get("access_token")
-    payload = decode_token(access_token) if access_token else None
-    # 1. если access_token валиден
-    if payload and payload.get("type") == "access":
-        username = payload.get("sub")
-        role = payload.get("role")
-        if not username or not role:
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "detail": "Invalid access token"
-                }
-            )
-        
+    if access_token:
+        payload = await decode_keycloak_access_token(access_token)
+        username, role = extract_user_credentials(payload)
+        if not username:
+            return JSONResponse(status_code=401, content={"detail": "Invalid Keycloak token: username missing"})
+        if not role:
+            return JSONResponse(status_code=403, content={"detail": "User has no supported role"})
         if not is_allowed(path=path, method=method, role=role):
-            logger.warning(
-                f"Access denied: "
-                f"user={username}, "
-                f"role={role}, "
-                f"method={method}, "
-                f"path={path}"
-            )
+            logger.warning(f"Keycloak access denied: user={username}, role={role}, method={method}, path={path}")
             return JSONResponse(status_code=403, content={"detail": "Forbidden"})
         return await call_next(request)
     # 2. если access умер → пробуем refresh
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
-        refresh_payload = decode_token(refresh_token)
-        if refresh_payload and refresh_payload.get("type") == "refresh":
-            username = refresh_payload.get("sub")
-            # берём роль из БД
-            user = await get_user_from_db(username, request.app.state.db_pool)
-            if user:
-                role = user["role"]
-                # Даже при refresh сначала проверяем,
-                # разрешён ли пользователю endpoint.
-                if not is_allowed(
-                    path=path,
-                    method=method,
-                    role=role
-                ):
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "detail": "Forbidden"
-                        }
-                    )
-
-                new_access = create_access_token({
-                    "sub": username,
-                    "role": role
-                })
+        new_tokens = await refresh_keycloak_token(refresh_token)
+        new_access_token = new_tokens.get("access_token") if new_tokens else None
+        if new_access_token:
+            payload = await decode_keycloak_access_token(new_access_token)
+            username, role = extract_user_credentials(payload)
+            if role and is_allowed(path=path, method=method, role=role):
                 response = await call_next(request)
-                # обновляем access_token
-                response.set_cookie(
-                    key="access_token",
-                    value=new_access,
-                    httponly=True,
-                    secure=False, # TODO при продакшен меняем на true
-                    samesite="lax",
-                    max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                )
-                return response
+                return set_auth_cookies(response, new_tokens)
+    # Пользователь не авторизован.
+    # Для обычного открытия страницы отправляем его
+    # на Keycloak login.
+    if path == "/" and method == "GET":
+        return RedirectResponse(url="/auth/login", status_code=302)
+    # Для API оставляем обычный 401.
+    # Это важно: fetch() из app.js не должен получать
+    # HTML/redirect вместо JSON.
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-# AUTH config
-SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-this")
-ALGORITHM = "HS256"
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
 # база для загрузки таблиц postgres 
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot")
 NSTYA_DATA_URL = os.getenv(
     "NSTYA_DATA_URL",
     "postgresql://aszh-bot:aszh-bot@postgres:5432/nstya_data"
@@ -212,19 +297,15 @@ def normalize_adk_dsn(uri: str) -> str:
         1
     )
 ADK_SESSION_DATABASE_URL = normalize_adk_dsn(ADK_SESSION_SERVICE_URI)
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-REFRESH_TOKEN_EXPIRE_HOURS = 5
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # доступные эндпоинты для ролей
 ROLE_PERMISSIONS = {
     "admin": {
         "*": {"*"},
     },
     "manager": {
+        "/": {"GET"},
         # Служебные и профиль
         "/api/me": {"GET"},
-        "/api/logout": {"POST"},
-        
         # Коллекции и базы знаний
         "/api/collections": {"GET"},
         "/api/collections/active": {"GET"},
@@ -233,7 +314,6 @@ ROLE_PERMISSIONS = {
         "/api/collections/refresh_metadata": {"POST"}, # Обновление метаданных коллекций
         "/api/knowledge-bases": {"GET"},
         "/api/knowledge-bases/delete": {"POST"}, # менеджеру разрешено удалять KB
-
         # Синхронизация и события
         "/api/sync/settings": {"GET"},
         "/api/sync/current": {"GET"},
@@ -241,7 +321,6 @@ ROLE_PERMISSIONS = {
         "/api/sync/status/{task_id}": {"GET"},
         "/api/filesystem/sync_events": {"GET"},
         "/api/events": {"GET"},
-
         # Документы и ФС
         "/api/documents": {"GET"},
         "/api/documents/{document_id}": {"GET"},
@@ -249,27 +328,22 @@ ROLE_PERMISSIONS = {
         "/api/filesystem/folders": {"GET"},
         "/api/filesystem/node": {"GET"},
         "/api/filesystem/download": {"GET"},
-
         # Таблицы и справочники
         "/api/tables": {"GET"},
         "/api/tables/load": {"POST"},                        # Загрузка таблиц
-        "/api/tables/glossary": {"GET"},                     # Глоссарий
-        "/api/tables/product_search_dictionary": {"GET"},   # Словарь поиска продуктов
-        "/api/tables/products": {"GET"},
-
+        "/api/tables/*": {"GET"},
         # Подписчики
         "/api/subscribers": {"GET"},                         # Список подписчиков
         "/api/subscribers/export": {"GET"},                  # Экспорт подписчиков
         "/api/subscribers/group": {"POST"},                  # Группировка/управление группами подписчиков
         "/api/subscribers/block": {"POST"},
-
         # Поиск, Новости, Аналитика
         "/api/search": {"POST"},
         "/api/news": {"GET"},
         "/api/news/{news_id}": {"GET", "DELETE"},
         "/api/news/send": {"POST"},
         "/api/analytics/*": {"GET"}, # Поддерживается новым path_matches
-        
+        "/api/local-file-news": {"GET"},
     }
 }
 # Инициализация пользователей, паролей и ролей для UI
@@ -402,68 +476,6 @@ subscribers = []
 http_client: httpx.AsyncClient = None
 # создаем анализатора морфем
 morph = pymorphy3.MorphAnalyzer() 
-
-# функция отправки запросов в боты
-async def send_to_bots(
-    route: str,
-    *,
-    method: str = "POST",
-    json_data: dict | None = None,
-    files=None,
-    form_data=None,
-    bots: list[str] | None = None,
-    timeout: int = 10,
-):
-    """
-    Универсальная отправка запросов во все боты.
-    route:
-        "/api/reload-start-message"
-        "/broadcast"
-        "/api/subscribers/block"
-
-    Возвращает:
-    {
-        "telegram": {...},
-        "max": {...}
-    }
-    """
-    results = {}
-    target_bots = bots or list(BOTS.keys())
-    for bot_name in target_bots:
-        base_url = BOTS[bot_name]
-        try:
-            url = f"{base_url}{route}"
-            kwargs = {
-                "timeout": timeout
-            }
-            if json_data is not None:
-                kwargs["json"] = json_data
-            if files is not None:
-                kwargs["files"] = files
-            if form_data is not None:
-                kwargs["data"] = form_data
-            if method.upper() == "POST":
-                resp = await http_client.post(url, **kwargs)
-            elif method.upper() == "GET":
-                resp = await http_client.get(url, **kwargs)
-            else:
-                raise ValueError(f"Unsupported method: {method}")
-            resp.raise_for_status()
-            try:
-                results[bot_name] = resp.json()
-            except Exception:
-                results[bot_name] = {
-                    "status": "ok",
-                    "text": resp.text
-                }
-        except Exception as e:
-            logger.error(f"{bot_name.upper()} request error: {e}")
-            results[bot_name] = {
-                "status": "error",
-                "error": str(e)
-            }
-    return results
-
 # Mount static files
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
@@ -474,7 +486,6 @@ async def favicon():
 # функция для получения текущего сервиса хранилища
 def get_current_storage() -> FileStorageService:
     """Возвращает сервис хранилища для текущей активной коллекции Qdrant"""
-    # current_name = qdrant_service.collection_name
     current_name = collection_name
     if current_name not in file_storages:
         raise ValueError(f"Storage for collection '{current_name}' not initialized!")
@@ -663,7 +674,6 @@ async def run_collection_task(task_id: str, collection_name: str):
     log_cb = create_log_callback(task_id)
     async with sync_lock:
         global current_sync_task_id
-
         current_sync_task_id = task_id
         try:
             # Получаем конфиг и сторадж
@@ -672,9 +682,7 @@ async def run_collection_task(task_id: str, collection_name: str):
             await sync_function(Path(cfg["root_path"]), storager, cfg["sync_type"], log_callback=log_cb)
             sync_tasks[task_id]["status"] = "completed"
             sync_tasks[task_id]["progress"] = 100
-            sync_tasks[task_id]["finished_at"] = (
-                datetime.now().isoformat()
-            )
+            sync_tasks[task_id]["finished_at"] = (datetime.now().isoformat())
             sync_tasks[task_id]["logs"].append(
                 {
                     "time": datetime.now().strftime("%H:%M:%S"),
@@ -690,11 +698,7 @@ async def run_collection_task(task_id: str, collection_name: str):
                 }
             )
         finally:
-
-            sync_tasks[task_id]["finished_at"] = (
-                datetime.now().isoformat()
-            )
-
+            sync_tasks[task_id]["finished_at"] = (datetime.now().isoformat())
             if current_sync_task_id == task_id:
                 current_sync_task_id = None
 # синхронизация одной базы знаний
@@ -709,15 +713,9 @@ async def run_kb_task(
         current_sync_task_id = task_id
         try:
             # Получаем конфиг и сторадж
-            storager = get_or_create_storager(
-                collection_name
-            )      
-            cfg = get_collection_cfg(
-                collection_name
-            )
-            log_cb(
-                f"📚 Синхронизация БЗ {kb_id}"
-            )
+            storager = get_or_create_storager(collection_name)      
+            cfg = get_collection_cfg(collection_name)
+            log_cb(f"📚 Синхронизация БЗ {kb_id}")
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
@@ -729,9 +727,7 @@ async def run_kb_task(
             sync_tasks[task_id]["progress"] = 100
             sync_tasks[task_id]["current_kb"] = kb_id
             sync_tasks[task_id]["status"] = "completed"
-            sync_tasks[task_id]["finished_at"] = (
-                datetime.now().isoformat()
-            )
+            sync_tasks[task_id]["finished_at"] = (datetime.now().isoformat())
             sync_tasks[task_id]["logs"].append(
                 {
                     "time": datetime.now().strftime("%H:%M:%S"),
@@ -749,10 +745,7 @@ async def run_kb_task(
             )
             return {"status": "error", "message": str(e)}
         finally:
-            sync_tasks[task_id]["finished_at"] = (
-                datetime.now().isoformat()
-            )
-
+            sync_tasks[task_id]["finished_at"] = (datetime.now().isoformat())
             if current_sync_task_id == task_id:
                 current_sync_task_id = None
 
@@ -771,9 +764,7 @@ async def start_sync(data: dict, background_tasks: BackgroundTasks):
                 "status": "already_running",
                 "task_id": running_task_id
             }
-        return {
-            "status": "already_running"
-        }
+        return {"status": "already_running"}
     mode = data.get("mode")
     task_id = str(uuid.uuid4())
     sync_tasks[task_id] = create_sync_task(
@@ -851,7 +842,6 @@ async def run_sync_all_once(log_callback=None, global_progress=None):
     функция для правильного вызова синхронизации от типа, 
     в дальнейшем можно добавить другие типы коллекций если надо
     """
-    
     for collection_name in _sync_collections_in_order():
         cfg = COLLECTIONS_CFG[collection_name]
         logger.info(f"[SYNC] Processing {collection_name}")
@@ -861,16 +851,10 @@ async def run_sync_all_once(log_callback=None, global_progress=None):
             )
         root = cfg["root_path"]
         storager = file_storages[collection_name]
-
         logger.info(f"[SYNC] {collection_name} from {root}")
-
         # удаление отсутствующих KB (целевая коллекция — у storager, не UI)
-        disk_kb_ids = {
-            folder.name for folder in root.iterdir() if folder.is_dir()
-        }
-        qdrant_kbs = qdrant_service.list_knowledge_bases(
-            collection_name=collection_name
-        )
+        disk_kb_ids = {folder.name for folder in root.iterdir() if folder.is_dir()}
+        qdrant_kbs = qdrant_service.list_knowledge_bases(collection_name=collection_name)
         qdrant_kb_ids = {kb["kb_id"] for kb in qdrant_kbs}
         deleted_kbs = qdrant_kb_ids - disk_kb_ids
         for kb_id in deleted_kbs:
@@ -882,9 +866,7 @@ async def run_sync_all_once(log_callback=None, global_progress=None):
                 )
             except Exception as e:
                 logger.error(f"[SYNC] delete error {kb_id}: {e}")
-
         await sync_function(root, storager, cfg["sync_type"], log_callback=log_callback, global_progress=global_progress)
-
     return {"status": "success", "message": "SYNC completed"}          
 # синхронизация по расписанию
 async def start_scheduler():
@@ -927,9 +909,7 @@ async def auto_sync():
                     }
                 )
             finally:
-                sync_tasks[task_id]["finished_at"] = (
-                    datetime.now().isoformat()
-                )
+                sync_tasks[task_id]["finished_at"] = (datetime.now().isoformat())
 
 @app.get("/api/sync/settings")
 async def get_sync_settings():
@@ -957,7 +937,6 @@ def get_or_create_storager(collection_name: str):
     # 1. Если уже есть, возвращаем
     if collection_name in file_storages:
         return file_storages[collection_name]
-    
     # 2. Если нет, пытаемся понять, к какому "типу" (faq, kb) относится имя
     # Находим базовую конфигурацию (например, если в имени есть "faq", берем конфиг faq)
     base_cfg = None
@@ -965,10 +944,8 @@ def get_or_create_storager(collection_name: str):
         if collection_name.startswith(key):
             base_cfg = cfg
             break
-            
     if not base_cfg:
         return None
-
     # 3. Создаем новый инстанс на лету
     new_storager = FileStorageService(
         root_path=KB_STORAGE_ROOT / base_cfg["dir"], 
@@ -979,7 +956,6 @@ def get_or_create_storager(collection_name: str):
         ext_allowed=base_cfg["ext"],
         qdrant_collection_name=collection_name, # Используем реальное имя новой коллекции
     )
-    
     # Сохраняем, чтобы не пересоздавать в следующий раз
     file_storages[collection_name] = new_storager
     return new_storager
@@ -989,147 +965,214 @@ def get_collection_cfg(collection_name: str):
         return None
     if collection_name in COLLECTIONS_CFG:
         return COLLECTIONS_CFG[collection_name]
-    
     for base_key in COLLECTIONS_CFG.keys():
         if collection_name.startswith(base_key):
             return COLLECTIONS_CFG[base_key]
-            
     logger.warning(f"Configuration for collection '{collection_name}' not found.")
     return None
 
 ##################################
 # DATABASE & AUTH utils
 ##################################
-def get_users_from_env() -> list[tuple[str, str, str]]:
+
+def get_keycloak_headers() -> dict:
     """
-    Парсит переменную окружения UI_USERS_DATA.
-    Возвращает список кортежей (username, password, role).
+    Формирует заголовки Host и X-Forwarded-*, чтобы Keycloak при внутренних
+    запросах между контейнерами вычислял issuer относительно KEYCLOAK_PUBLIC_URL.
     """
-    raw_data = os.getenv("UI_USERS_DATA", "")
-    if not raw_data:
-        logger.warning("UI_USERS_DATA is empty. Using default admin.")
-        return [('admin', 'admin123', 'admin')]
-    users = []
-    # Разбиваем строку по запятой на отдельных юзеров
-    for entry in raw_data.split(","):
-        parts = entry.strip().split(":")
-        if len(parts) == 3:
-            users.append(tuple(parts))
-        else:
-            logger.error(f"Invalid user format in ENV: {entry}. Expected user:pass:role")
-    return users
+    pub_parsed = urlparse(KEYCLOAK_PUBLIC_URL)
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if pub_parsed.netloc:
+        headers["Host"] = pub_parsed.netloc
+        headers["X-Forwarded-Host"] = pub_parsed.netloc
+        headers["X-Forwarded-Proto"] = pub_parsed.scheme or "http"
+    return headers
 
-def hash_password(password: str) -> str:
-    """Хеширование пароля"""
-    return pwd_context.hash(password)
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Проверка пароля с нормализацией"""
-    return pwd_context.verify(password, hashed)
-
-async def init_db(pool: asyncpg.Pool):
-    """Инициализация пользователей (таблица уже создана через alembic)"""
-    logger.info("Initializing UI users...")
-    users_to_init = get_users_from_env()
-    async with pool.acquire() as conn:
-        for username, password, role in users_to_init:
-            hashed = hash_password(password)
-            await conn.execute("""
-                INSERT INTO ui_users (username, password, role)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (username) DO UPDATE 
-                SET password = EXCLUDED.password, role = EXCLUDED.role;
-            """, username, hashed, role)
-            
-    logger.info(f"UI users initialized with {len(users_to_init)} users.")
-
-async def get_user_from_db(username: str, pool: asyncpg.Pool):
-    """Получение пользователя из базы данных по имени"""
-    async with pool.acquire() as conn:
-        user = await conn.fetchrow(
-            "SELECT username, password, role FROM ui_users WHERE username=$1",
-            username
-        )
-    return dict(user) if user else None
-
-def _generate_jwt(data: dict, expires_delta: timedelta, token_type: str) -> str:
-    """Внутренняя база для создания любых токенов"""
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + expires_delta
-    to_encode.update({"exp": expire, "type": token_type})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def create_access_token(data: dict):
-    """Создание JWT access токена с типом и временем жизни"""
-    return _generate_jwt(data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), "access")
-
-def create_refresh_token(data: dict):
-    """Создание JWT refresh токена с типом и временем жизни"""
-    return _generate_jwt(data, timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS), "refresh")
-
-def decode_token(token: str):
-    """Декодирование JWT токена и проверка его типа"""
+async def refresh_keycloak_token(refresh_token: str) -> Optional[dict]:
+    """
+    Обменивает refresh_token на новую пару access_token / refresh_token в Keycloak.
+    """
+    if not refresh_token:
+        return None
+    token_data = {
+        "grant_type": "refresh_token",
+        "client_id": KEYCLOAK_CLIENT_ID,
+        "client_secret": KEYCLOAK_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+    }
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except JWTError:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                TOKEN_URL,
+                data=token_data,
+                headers=get_keycloak_headers(), # Используем подмену Host заголовков
+            )
+        if response.status_code == 200:
+            logger.info("Keycloak token successfully refreshed")
+            return response.json()
+        else:
+            logger.warning(f"Keycloak token refresh failed: status={response.status_code}, body={response.text}")
+            return None
+    except Exception as e:
+        logger.exception(f"Error during Keycloak token refresh: {e}")
         return None
 
-def get_current_user(request: Request):
+async def revoke_keycloak_session(refresh_token: str):
+    """
+    Завершает сессию пользователя на стороне Keycloak (Back-Channel Logout),
+    инвалидируя refresh_token.
+    """
+    if not refresh_token:
+        return
+    logout_data = {
+        "client_id": KEYCLOAK_CLIENT_ID,
+        "client_secret": KEYCLOAK_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                LOGOUT_INT_URL,
+                data=logout_data,
+                headers=get_keycloak_headers(), # Используем подмену Host заголовков
+            )
+            if resp.status_code in (200, 204):
+                logger.info("Keycloak session successfully revoked on server side")
+            else:
+                logger.info(
+                    "Keycloak refresh token could not be revoked "
+                    f"(status={resp.status_code}); "
+                    "continuing with front-channel logout"
+                )
+    except Exception as e:
+        logger.warning(f"Failed to revoke Keycloak session: {e}")
+
+async def get_keycloak_jwks():
+    """
+    Получает публичные ключи Keycloak для проверки JWT.
+    Ключи кэшируются, чтобы не ходить в Keycloak
+    при каждом API-запросе.
+    """
+    global _keycloak_jwks_cache
+    if _keycloak_jwks_cache is not None:
+        return _keycloak_jwks_cache
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(JWKS_URL)
+        response.raise_for_status()
+        _keycloak_jwks_cache = response.json()
+        logger.info("Keycloak JWKS loaded successfully")
+        return _keycloak_jwks_cache
+    except Exception as e:
+        logger.exception(f"Failed to load Keycloak JWKS: {e}")
+        raise
+
+async def decode_keycloak_access_token(
+    token: str
+) -> Optional[dict]:
+    """
+    Проверяет JWT access token, выданный Keycloak.
+    Проверяем:
+    - подпись;
+    - issuer;
+    - audience / azp;
+    - срок действия.
+    """
+    if not token:
+        return None
+    try:
+        jwks = await get_keycloak_jwks()
+        unverified_header = jwt.get_unverified_header(token)
+        kid = unverified_header.get("kid")
+        if not kid:
+            logger.warning("Keycloak token does not contain kid")
+            return None
+        key = None
+        for jwk in jwks.get("keys", []):
+            if jwk.get("kid") == kid:
+                key = jwk
+                break
+        if not key:
+            logger.warning(f"Keycloak signing key not found: kid={kid}")
+            # Ключ мог смениться.
+            # Сбрасываем cache и пробуем получить JWKS ещё раз.
+            global _keycloak_jwks_cache
+            _keycloak_jwks_cache = None
+            jwks = await get_keycloak_jwks()
+            for jwk in jwks.get("keys", []):
+                if jwk.get("kid") == kid:
+                    key = jwk
+                    break
+        if not key:
+            logger.warning(f"Keycloak signing key still not found: kid={kid}")
+            return None
+        issuer = (f"{KEYCLOAK_PUBLIC_URL}/realms/{KEYCLOAK_REALM}")
+        payload = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            issuer=issuer,
+            options={
+                "verify_aud": False,
+            },
+        )
+        return payload
+    except JWTError as e:
+        logger.warning(f"Invalid Keycloak access token: {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"Unexpected Keycloak JWT validation error: {e}")
+        return None
+
+def get_keycloak_user_role(payload: dict) -> Optional[str]:
+    """
+    Извлекает роль пользователя из Keycloak JWT.
+    """
+    realm_access = payload.get("realm_access", {})
+    roles = realm_access.get("roles", [])
+    if "admin" in roles:
+        return "admin"
+    if "manager" in roles:
+        return "manager"
+    return None
+
+async def get_current_user(request: Request):
     """Получение текущего пользователя из access токена в cookies"""
     # 1. Проверка API-ключа бота/сервиса (Заголовок X-API-Key)
     api_key = request.headers.get("X-API-Key")
     if api_key and KB_MANAGER_TOKEN and api_key.strip() == KB_MANAGER_TOKEN:
         # Боты получают системную роль с полным доступом к скачиванию
         return {"sub": "bot", "role": "admin"}
-
-    # 2. Проверка Bearer токена в Authorization
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-        payload = decode_token(token)
-        if payload and payload.get("type") == "access":
-            return {
-                "username": payload.get("sub"),
-                "role": payload.get("role")
-            }
-        raise HTTPException(status_code=401, detail="Invalid Bearer token")
-    # 3. Резервный вариант: Cookie для Web UI
     token = request.cookies.get("access_token")
+    # 2. keycloak cookie
     if token:
-        payload = decode_token(token)
-        if payload and payload.get("type") == "access":
-            return {
-                "username": payload.get("sub"),
-                "role": payload.get("role")
-            }
-
+        keycloak_payload = await decode_keycloak_access_token(token)
+        if keycloak_payload:
+            username = (keycloak_payload.get("preferred_username") or keycloak_payload.get("sub"))
+            role = get_keycloak_user_role(keycloak_payload)
+            if not username:
+                raise HTTPException(status_code=401, detail="Keycloak token has no username")
+            if not role:
+                raise HTTPException(status_code=403, detail="User has no supported role")
+            return {"username": username, "role": role}
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 def is_allowed(path: str, method: str, role: str) -> bool:
     """Проверка разрешений по роли для доступа к пути"""
     permissions = ROLE_PERMISSIONS.get(role)
-
     if not permissions:
         return False
-
     # admin
     if "*" in permissions:
         return True
-
     method = method.upper()
-
     for pattern, methods in permissions.items():
-
         if not path_matches(pattern, path):
             continue
-
         if "*" in methods:
             return True
-
         if method in methods:
             return True
-
     return False
 
 def is_public_path(path: str) -> bool:
@@ -1138,24 +1181,16 @@ def is_public_path(path: str) -> bool:
     "/" проверяется только как точное совпадение,
     /api/documents больше не считается public.
     """
-
     if path in PUBLIC_EXACT_PATHS:
         return True
-
-    return any(
-        path.startswith(prefix)
-        for prefix in PUBLIC_PREFIX_PATHS
-    )
+    return any(path.startswith(prefix) for prefix in PUBLIC_PREFIX_PATHS)
 
 def path_matches(pattern: str, path: str) -> bool:
     """
     Сравнивает URL с шаблоном permission.
-
     Например:
-
         /api/documents/{document_id}
         /api/documents/123
-
     -> True
     """
     if pattern.endswith("/*"):
@@ -1163,88 +1198,105 @@ def path_matches(pattern: str, path: str) -> bool:
         return path == prefix or path.startswith(prefix + "/")
     pattern_parts = pattern.strip("/").split("/")
     path_parts = path.strip("/").split("/")
-
     if len(pattern_parts) != len(path_parts):
         return False
-
     for pattern_part, path_part in zip(
         pattern_parts,
         path_parts
     ):
         if pattern_part.startswith("{") and pattern_part.endswith("}"):
             continue
-
         if pattern_part != path_part:
             return False
-
     return True
 
 @app.get("/api/admin/adk-sessions/stats")
 async def get_adk_session_stats():
     if not ADK_SESSION_DATABASE_URL:
-        raise HTTPException(
-            status_code=500,
-            detail="ADK_SESSION_DATABASE_URL not configured"
-        )
-    service = AdkDbStatsService(
-        ADK_SESSION_DATABASE_URL
-    )
+        raise HTTPException(status_code=500, detail="ADK_SESSION_DATABASE_URL not configured")
+    service = AdkDbStatsService(ADK_SESSION_DATABASE_URL)
     return await service.get_stats()
 ##################################
 # Авторизация и главная
 ##################################
-@app.post("/api/login")
-async def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    """Эндпоинт для логина. Принимает username и password, проверяет их и возвращает JWT токены в cookies"""
-    user = await get_user_from_db(username, request.app.state.db_pool)
-    if not user or not verify_password(password, user["password"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    access_token = create_access_token({"sub": username, "role": user["role"]})
-    refresh_token = create_refresh_token({"sub": username})    
-    response = JSONResponse({"success": True})
-    for k, v in [("access_token", access_token), ("refresh_token", refresh_token)]:
+def set_auth_cookies(response: Response, tokens: Dict[str, Any]) -> Response:
+    """
+    Унифицированная установка авторизационных кук из ответа Keycloak.
+    """
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    id_token = tokens.get("id_token")
+    cookie_defaults = {
+        "httponly": True,
+        "secure": False,  # True в production
+        "samesite": "lax",
+        "path": "/",
+    }
+    if access_token:
         response.set_cookie(
-            key=k, 
-            value=v, 
-            httponly=True, 
-            samesite="lax",
-            path="/"  # явный указатель корневого пути
+            key="access_token",
+            value=access_token,
+            max_age=tokens.get("expires_in", 300),
+            **cookie_defaults,
+        )
+    refresh_max_age = tokens.get("refresh_expires_in", 1800)
+    if refresh_token:
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            max_age=refresh_max_age,
+            **cookie_defaults,
+        )
+    if id_token:
+        response.set_cookie(
+            key="id_token",
+            value=id_token,
+            max_age=refresh_max_age,
+            **cookie_defaults,
         )
     return response
+
+def clear_auth_cookies(response: Response) -> Response:
+    """
+    Унифицированное сбрасывание авторизационных кук.
+    """
+    for cookie_key in ("access_token", "refresh_token", "id_token"):
+        response.delete_cookie(cookie_key, path="/")
+    return response
+
+def extract_user_credentials(payload: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Извлечение username и role из декодированного Keycloak JWT payload.
+    """
+    if not payload:
+        return None, None
+    username = payload.get("preferred_username") or payload.get("sub")
+    role = get_keycloak_user_role(payload)
+    return username, role
 
 @app.post("/api/refresh")
 async def refresh(request: Request):
     """Эндпоинт для обновления access токена с помощью refresh токена"""
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
-        raise HTTPException(status_code=401)
-    payload = decode_token(refresh_token)
-    if not payload or payload.get("type") != "refresh":
-        raise HTTPException(status_code=401)
-    username = payload.get("sub")
-    user = await get_user_from_db(username, request.app.state.db_pool)
-    if not user:
-        raise HTTPException(status_code=401)
-    new_access = create_access_token({
-        "sub": username,
-        "role": user["role"]
-    })
-    response = JSONResponse({"success": True})
-    response.set_cookie(
-        key="access_token",
-        value=new_access, 
-        httponly=True,
-        samesite="lax"
-    )
-    return response
+        raise HTTPException(status_code=401, detail="Refresh token missing")
+    new_tokens = await refresh_keycloak_token(refresh_token)
+    if not new_tokens:
+        raise HTTPException(status_code=401, detail="Keycloak refresh failed")
+    new_access_token = new_tokens.get("access_token") if new_tokens else None
+    if not new_access_token:
+        raise HTTPException(status_code=401, detail="Keycloak refresh failed or access token missing")
+    # Обязательно проверяем новый access token
+    # перед тем как записывать его в cookie.
+    payload = await decode_keycloak_access_token(new_access_token)
+    username, role = extract_user_credentials(payload)
 
-@app.post("/api/logout")
-async def logout():
-    """Эндпоинт для логаута. Удаляет токены из cookies"""
-    response = JSONResponse({"success": True})
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
-    return response
+    if not username or not role:
+        raise HTTPException(status_code=401, detail="Invalid refreshed Keycloak token")
+
+    response = JSONResponse({"success": True, "username": username, "role": role})
+    return set_auth_cookies(response, new_tokens)
+
 @app.get("/api/me")
 async def me(user=Depends(get_current_user)):
     """Эндпоинт для получения информации о текущем пользователе"""
@@ -1399,16 +1451,10 @@ async def load_tables():
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
         if process.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=(stderr_text.strip() or stdout_text.strip() or "Tables loader failed")
-            )
+            raise HTTPException(status_code=500, detail=(stderr_text.strip() or stdout_text.strip() or "Tables loader failed"))
         tables = await get_loaded_tables()
         if CLIENT_TYPES_TABLE_NAME not in tables:
-            raise HTTPException(
-                status_code=500,
-                detail="Client Types table is missing after load",
-            )
+            raise HTTPException(status_code=500, detail="Client Types table is missing after load")
         return {
             "success": True,
             "stdout": stdout_text,
@@ -1422,10 +1468,7 @@ async def load_tables():
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 # получаем загруженные таблицы все кроме начинающихся с dc_
 async def get_loaded_tables():
     conn = await asyncpg.connect(NSTYA_DATA_URL)
@@ -1681,12 +1724,9 @@ def get_collection_root(collection_name: str):
         faq_collection_test
         kb_collection_new
     """
-
     cfg = get_collection_cfg(collection_name)
-
     if not cfg:
         return None
-
     return cfg["root_path"]
 
 @app.get("/api/filesystem/folders")
@@ -1737,20 +1777,16 @@ async def download_filesystem_file(path: str):
     """Скачивает файл из нашего источника, пока только для kb коллекции документов"""
     path = unquote(path)
     # Получаем имя текущей активной коллекции
-    # current_collection = qdrant_service.collection_name
     current_collection = collection_name
     if current_collection not in COLLECTIONS_CFG:
         return {"error": f"Collection '{current_collection}' not found in config"}
     root_path = COLLECTIONS_CFG[current_collection]["root_path"]
     file_path = (root_path / path).resolve()
-
     # защита от выхода из root
     if not str(file_path).startswith(str(root_path)):
         raise HTTPException(403, "Invalid path")
-
     if not file_path.exists():
         raise HTTPException(404, "File not found")
-
     return FileResponse(
         path=str(file_path),
         filename=file_path.name,
@@ -1778,7 +1814,6 @@ async def get_news_file(name: str):
         logger.info(f"Путь который вышел: {file_path}")
         if not file_path.exists():
             raise HTTPException(404, f"File not found: {file_path}")
-
         content_type, _ = mimetypes.guess_type(file_path)
         text_extensions = {'.md', '.txt', '.json', '.csv', '.xml', '.html', '.htm'}
         is_text_file = file_path.suffix.lower() in text_extensions
@@ -1798,7 +1833,6 @@ async def get_news_file(name: str):
                         continue
                 else:
                     content = file_path.read_text(encoding="utf-8", errors="replace")
-
             # НЕТ Content-Disposition - браузер покажет текст, а не скачает
             return PlainTextResponse(
                 content, 
@@ -1817,7 +1851,6 @@ async def get_news_file(name: str):
                     "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"
                 }
             )
-        
         return FileResponse(
             path=str(file_path),
             media_type=content_type or "application/octet-stream",
@@ -1826,7 +1859,6 @@ async def get_news_file(name: str):
                 "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
             }
         )
-
     except Exception as e:
         logger.error(f"Проблема говорит: {e}")
         raise HTTPException(500, str(e))
@@ -1937,7 +1969,6 @@ async def send_news(
             tg_name: tg_result,
             max_name: max_result
         }
-        
         for bot_name, bot_result in results_map.items():
             if isinstance(bot_result, Exception):
                 # Обработка исключений из gather
@@ -1976,14 +2007,12 @@ def lifepoint_error(
         }
     )
 
-
 @app.post("/api/v1/notifications")
 async def send_notification(data: NotificationRequest, token: dict = Depends(verify_lifepoint_jwt)):
     """
     Отправка персонального уведомления пользователю.
     Пользователь определяется только по global_user_id.
     """
-
     if data.channel not in ("all", "telegram", "max"):
         raise HTTPException(
             status_code=422,
@@ -1992,7 +2021,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                 "message": "channel must be one of: all, telegram, max"
             }
         )
-
     global_user_id = str(data.global_user_id)
     results = {}
     # TELEGRAM
@@ -2012,7 +2040,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "USER_NOT_FOUND",
                     "message": "User account not found"
                 }
-
             # Пользователь заблокирован
             elif resp.status_code == 409:
                 results["telegram"] = {
@@ -2020,7 +2047,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "USER_BLOCKED",
                     "message": "User is blocked"
                 }
-
             # Бот недоступен
             elif resp.status_code == 503:
                 results["telegram"] = {
@@ -2028,11 +2054,9 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "BOT_UNAVAILABLE",
                     "message": "Bot is currently unavailable"
                 }
-
             # Успешная отправка
             elif resp.status_code == 200:
                 results["telegram"] = resp.json()
-
             # Остальные ошибки
             else:
                 results["telegram"] = {
@@ -2040,9 +2064,7 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "TELEGRAM_API_ERROR",
                     "message": "Telegram notification failed"
                 }
-
         except Exception as e:
-
             logger.error(
                 f"Telegram notification error: {e}",
                 exc_info=True
@@ -2064,7 +2086,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "USER_NOT_FOUND",
                     "message": "User account not found"
                 }
-
             # Пользователь заблокирован
             elif resp.status_code == 409:
                 results["max"] = {
@@ -2072,7 +2093,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "USER_BLOCKED",
                     "message": "User is blocked"
                 }
-
             # Бот недоступен
             elif resp.status_code == 503:
                 results["max"] = {
@@ -2080,11 +2100,9 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
                     "code": "BOT_UNAVAILABLE",
                     "message": "Bot is currently unavailable"
                 }
-
             # Успешная отправка
             elif resp.status_code == 200:
                 results["max"] = resp.json()
-
             # Остальные ошибки
             else:
                 results["max"] = {
@@ -2119,7 +2137,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
         result.get("code")
         for result in results.values()
     ]
-
     # Пользователь вообще не найден
     if error_codes and all(
         code == "USER_NOT_FOUND"
@@ -2130,7 +2147,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
             code="USER_NOT_FOUND",
             message="User with specified global_user_id was not found"
         )
-
     # Пользователь заблокирован
     if error_codes and all(
         code == "USER_BLOCKED"
@@ -2141,7 +2157,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
             code="USER_BLOCKED",
             message="User is blocked"
         )
-
     # Все нужные боты недоступны
     if error_codes and all(
         code == "BOT_UNAVAILABLE"
@@ -2152,7 +2167,6 @@ async def send_notification(data: NotificationRequest, token: dict = Depends(ver
             code="BOT_UNAVAILABLE",
             message="Notification service is temporarily unavailable"
         )
-
     # Остальные ошибки
     return lifepoint_error(
         status_code=500,
@@ -2180,7 +2194,6 @@ async def get_lifepoint_users(
     - группы пользователя
     - доступные аккаунты/источники
     """
-
     try:
         resp = await http_client.get(
             f"{TELEGRAM_BOT_API}/api/subscribers",
@@ -2195,16 +2208,12 @@ async def get_lifepoint_users(
                 "USER_NOT_FOUND",
                 "User not found"
             )
-
-        
-        
         if resp.status_code != 200:
             logger.error(
                 f"Failed to get user: "
                 f"global_user_id={global_user_id}, "
                 f"status={resp.status_code}"
             )
-
             return lifepoint_error(
                 500,
                 "INTERNAL_ERROR",
@@ -2212,15 +2221,12 @@ async def get_lifepoint_users(
             )
         user = users[0]
         accounts = []
-
         for account in user.get("accounts", []):
             platform = account.get("platform")
-
             if platform in ("telegram", "max"):
                 accounts.append({
                     "platform": platform
                 })
-
         return {
             "global_user_id": str(
                 user["global_user_id"]
@@ -2238,14 +2244,12 @@ async def get_lifepoint_users(
             },
             "accounts": accounts
         }
-
     except Exception as e:
         logger.error(
             f"LifePoint user API error: "
             f"global_user_id={global_user_id}: {e}",
             exc_info=True
         )
-
         return lifepoint_error(
             500,
             "INTERNAL_ERROR",
@@ -2279,7 +2283,6 @@ async def list_prompts(agent: str):
             not x["is_backup"],
             x["modified"]
         ))
-
         return {
             "current": f"{agent}_agent_prompt.md",
             "files": prompts
@@ -2295,10 +2298,8 @@ async def get_current_prompt(agent: str):
         prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
-        
         async with aiofiles.open(prompt_file, "r", encoding="utf-8") as f:
             content = await f.read()
-        
         stat = prompt_file.stat()
         return {
             "name": f"{agent}_agent_prompt.md",
@@ -2317,14 +2318,11 @@ async def get_prompt_file(filename: str, agent: str):
         # Защита от path traversal
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
-        
         prompt_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
-        
         async with aiofiles.open(prompt_file, "r", encoding="utf-8") as f:
             content = await f.read()
-        
         stat = prompt_file.stat()
         return {
             "name": filename,
@@ -2343,14 +2341,11 @@ async def create_prompt_backup(agent: str):
         prompt_file = PROMPTS_STORAGE_ROOT/ agent / f"{agent}_agent_prompt.md"
         if not prompt_file.exists():
             raise HTTPException(status_code=404, detail="Current prompt not found")
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = f"{agent}_agent_prompt_backup_{timestamp}.md"
         backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
-        
         shutil.copy2(prompt_file, backup_file)
         logger.info(f"Created prompt backup: {backup_name}")
-        
         return {
             "success": True,
             "backup_name": backup_name,
@@ -2368,9 +2363,7 @@ async def save_prompt(data: dict):
         agent = data.get("agent")
         if not content:
             raise HTTPException(status_code=400, detail="Content is required")
-        
         prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
-        
         # 1. Создать бэкап если файл существует
         if prompt_file.exists():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2378,13 +2371,10 @@ async def save_prompt(data: dict):
             backup_file = PROMPTS_STORAGE_ROOT / agent / backup_name
             shutil.copy2(prompt_file, backup_file)
             logger.info(f"Created backup before save: {backup_name}")
-        
         # 2. Записать новый промпт
         async with aiofiles.open(prompt_file, "w", encoding="utf-8") as f:
             await f.write(content)
-        
         logger.info("Prompt saved successfully")
-        
         return {
             "success": True,
             "message": "Prompt saved successfully",
@@ -2400,16 +2390,12 @@ async def restore_prompt(filename: str, agent: str):
     try:
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
-        
         backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="Backup file not found")
-        
         prompt_file = PROMPTS_STORAGE_ROOT / agent / f"{agent}_agent_prompt.md"
         shutil.copy2(backup_file, prompt_file)
-        
         logger.info(f"Restored prompt from backup: {filename}")
-        
         return {
             "success": True,
             "message": f"Restored from {filename}",
@@ -2425,17 +2411,13 @@ async def delete_prompt_file(filename: str, agent: str):
     try:
         if ".." in filename or filename.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid filename")
-        
         if filename == f"{agent}_agent_prompt.md":
             raise HTTPException(status_code=400, detail="Cannot delete current prompt")
-        
         backup_file = PROMPTS_STORAGE_ROOT / agent / filename
         if not backup_file.exists():
             raise HTTPException(status_code=404, detail="File not found")
-        
         backup_file.unlink()
         logger.info(f"Deleted prompt file: {filename}")
-        
         return {
             "success": True,
             "message": f"Deleted {filename}"
@@ -2459,6 +2441,67 @@ async def get_agents():
 ############################
 # Работа с настройками бота 
 ############################
+# функция отправки запросов в боты
+async def send_to_bots(
+    route: str,
+    *,
+    method: str = "POST",
+    json_data: dict | None = None,
+    files=None,
+    form_data=None,
+    bots: list[str] | None = None,
+    timeout: int = 10,
+):
+    """
+    Универсальная отправка запросов во все боты.
+    route:
+        "/api/reload-start-message"
+        "/broadcast"
+        "/api/subscribers/block"
+
+    Возвращает:
+    {
+        "telegram": {...},
+        "max": {...}
+    }
+    """
+    results = {}
+    target_bots = bots or list(BOTS.keys())
+    for bot_name in target_bots:
+        base_url = BOTS[bot_name]
+        try:
+            url = f"{base_url}{route}"
+            kwargs = {
+                "timeout": timeout
+            }
+            if json_data is not None:
+                kwargs["json"] = json_data
+            if files is not None:
+                kwargs["files"] = files
+            if form_data is not None:
+                kwargs["data"] = form_data
+            if method.upper() == "POST":
+                resp = await http_client.post(url, **kwargs)
+            elif method.upper() == "GET":
+                resp = await http_client.get(url, **kwargs)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+            resp.raise_for_status()
+            try:
+                results[bot_name] = resp.json()
+            except Exception:
+                results[bot_name] = {
+                    "status": "ok",
+                    "text": resp.text
+                }
+        except Exception as e:
+            logger.error(f"{bot_name.upper()} request error: {e}")
+            results[bot_name] = {
+                "status": "error",
+                "error": str(e)
+            }
+    return results
+
 @app.get("/api/prompts/bot-start")
 async def get_bot_start_message():
     """Получить текущее стартовое сообщение бота"""
@@ -2497,11 +2540,9 @@ async def save_bot_start_message(data: dict):
         content = data.get("content")
         if not content:
             raise HTTPException(status_code=400, detail="Content is required")
-        
         # Сохраняем в файл
         async with aiofiles.open(BOT_START_MESSAGE_FILE, "w", encoding="utf-8") as f:
                 await f.write(content)
-        
         logger.info(f"Bot start message saved ({len(content)} symbols)")
         bot_reload_success = False
         try:
@@ -2515,7 +2556,6 @@ async def save_bot_start_message(data: dict):
                 logger.info("Bot notified to reload start message")
         except Exception as e:
             logger.warning(f"Could not notify bot: {e}")
-
         return {
             "success": True,
             "message": "Bot start message saved successfully",
@@ -2545,7 +2585,6 @@ async def get_bot_help_message():
         async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "r", encoding="utf-8") as f:
             content = await f.read()
             stat = BOT_HELP_MESSAGE_FILE.stat()
-        
         return {
             "success": True,
             "content": content,
@@ -2564,11 +2603,9 @@ async def save_bot_help_message(data: dict):
         content = data.get("content")
         if not content:
             raise HTTPException(status_code=400, detail="Content is required")
-        
         # Сохраняем в файл
         async with aiofiles.open(BOT_HELP_MESSAGE_FILE, "w", encoding="utf-8") as f:
                 await f.write(content)
-        
         logger.info(f"Bot help message saved ({len(content)} symbols)")
         bot_reload_success = False
         try:
@@ -2614,10 +2651,8 @@ async def update_subscriber_group(data: dict):
         global_user_id = data.get("global_user_id")
         group = data.get("group")
         value = bool(data.get("value"))
-        
         if group not in ("manager_group", "coach_group"):
             raise HTTPException(400, "Invalid group. Must be 'manager_group' or 'coach_group'")
-        
         resp = await http_client.post(
             f"{TELEGRAM_BOT_API}/api/subscribers/group",
             json={
@@ -2628,7 +2663,6 @@ async def update_subscriber_group(data: dict):
         )
         resp.raise_for_status()
         return resp.json()
-            
     except HTTPException:
         raise
     except Exception as e:
@@ -2639,17 +2673,14 @@ async def update_subscriber_group(data: dict):
 async def block_subscriber(data: dict):
     """Заблокировать или разблокировать пользователя сразу в двух ботах"""
     try:
-
         results = await send_to_bots(
             "/api/subscribers/block",
             json_data=data
         )
-
         return {
             "status": "ok",
             "results": results
         }
-
     except Exception as e:
         logger.error(f"Block subscriber error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
@@ -2664,7 +2695,6 @@ async def export_subscribers(
     - search: строка поиска
     - group: manager | coach | both | none | all
     """
-
     try:
         resp = await http_client.get(f"{TELEGRAM_BOT_API}/api/subscribers")
         resp.raise_for_status()
@@ -2672,7 +2702,6 @@ async def export_subscribers(
     except Exception as e:
         logger.error(f"Error fetching subscribers: {e}")
         raise HTTPException(500, "Failed to fetch subscribers")
-
     # фильтрация
     def matches(u):
         # поиск
@@ -2694,9 +2723,7 @@ async def export_subscribers(
                 p_username = (acc.get("username") or "").lower()
                 if q in p_id or q in p_username:
                     return True
-            
             return False
-                
         # фильтр группы
         if group == "manager":
             return u.get("manager_group")
@@ -2706,15 +2733,11 @@ async def export_subscribers(
             return u.get("manager_group") and u.get("coach_group")
         elif group == "none":
             return not u.get("manager_group") and not u.get("coach_group")
-
         return True
-
     filtered = [u for u in users if matches(u)]
-
-    # 📄 формируем CSV
+    # формируем CSV
     output = io.StringIO()
     writer = csv.writer(output)
-
     writer.writerow([
         "User ID",
         "Username",
@@ -2736,7 +2759,6 @@ async def export_subscribers(
             u.get("last_seen"),
             len(u.get("accounts", []))
         ])
-
     return Response(
         content=output.getvalue(),
         media_type="text/csv",
@@ -2762,11 +2784,9 @@ async def get_events(request: Request):
         "created_at": request.query_params.get("created_at"),
         "payload": request.query_params.get("payload"),
     }
-
     conditions = []
     values = []
     i = 1
-
     for key, value in filters.items():
         if value:
             if key == "payload":
@@ -2776,7 +2796,6 @@ async def get_events(request: Request):
                 # Пытаемся распарсить дату
                 try:
                     dt = datetime.fromisoformat(value)
-
                     # обрезаем секунды
                     dt_from = dt.replace(second=0, microsecond=0)
                     dt_to = dt_from + timedelta(minutes=1)
@@ -2785,7 +2804,6 @@ async def get_events(request: Request):
                     values.append(dt_from)
                     values.append(dt_to)
                     i += 1  # +1 дополнительный параметр
-
                 except:
                     # fallback — если не смогли распарсить
                     conditions.append(f"created_at::text ILIKE ${i}")
@@ -2794,11 +2812,9 @@ async def get_events(request: Request):
                 conditions.append(f"{key} ILIKE ${i}")
                 values.append(f"%{value}%")
             i += 1
-
     where_clause = ""
     if conditions:
         where_clause = "WHERE " + " AND ".join(conditions)
-
     query = f"""
         SELECT user_id, user_name, event_type, channel, payload, created_at
         FROM events
@@ -2806,12 +2822,9 @@ async def get_events(request: Request):
         ORDER BY created_at DESC
         LIMIT ${i} OFFSET ${i+1}
     """
-
     values.extend([limit, offset])
-
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(query, *values)
-
     return [
         {
             "user_id": r["user_id"],
@@ -2831,13 +2844,11 @@ async def export(request: Request, from_ts: Optional[str]=None, to_ts: Optional[
         from_dt = datetime.fromisoformat(from_ts)
     else:
         from_dt = datetime(1970, 1, 1, tzinfo=timezone.utc)
-
     if to_ts:
         to_dt = datetime.fromisoformat(to_ts)
     else:
         to_dt = datetime.now(timezone.utc)
     pool = request.app.state.db_pool
-
     query = """
     SELECT *
     FROM events
@@ -2908,10 +2919,8 @@ async def document_users(filename: str, from_ts: str, to_ts: str, request: Reque
     GROUP BY e.user_id, u.user_name, source
     ORDER BY downloads DESC
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, filename, from_ts, to_ts)
-
     return [dict(r) for r in rows]
 # аналитика активности самых активных часов и дней
 @app.get("/api/analytics/activity")
@@ -2920,7 +2929,6 @@ async def activity(from_ts: str, to_ts: str, request: Request):
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
     pool = request.app.state.db_pool
-
     query = """
     SELECT
         EXTRACT(HOUR FROM created_at) as hour,
@@ -2932,10 +2940,8 @@ async def activity(from_ts: str, to_ts: str, request: Request):
     GROUP BY hour, day
     ORDER BY day, hour
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
     return [dict(r) for r in rows]
 # облако популярных слов
 @app.get("/api/analytics/top-words")
@@ -2951,7 +2957,6 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
       AND payload ? 'text'
       AND created_at BETWEEN $1 AND $2
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
     #  извлекаем текст
@@ -2960,7 +2965,6 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
     words = []
     for t in texts:
         words += re.findall(r'\b\w+\b', t.lower())
-
     # убираем мусор
     stopwords = {"и", "в", "на", "что", "как", "а", "с", "по", 
                  "это", "файл", "документ", "скачать"}
@@ -2974,18 +2978,14 @@ async def top_words(from_ts: str, to_ts: str, request: Request):
             clean_words.append(lemma)
     # считаем слова
     counter = Counter(clean_words)
-
     top = counter.most_common(50)
-
     return [{"text": w, "value": c} for w, c in top]
 # аналитика фраз топ
 @app.get("/api/analytics/top-phrases")
 async def top_phrases(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
-
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
-
     query = """
     SELECT payload->>'text' as text
     FROM events
@@ -2993,7 +2993,6 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
       AND payload ? 'text'
       AND created_at BETWEEN $1 AND $2
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
     # извлекаем текст
@@ -3008,7 +3007,6 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
     for t in texts:
         # находим слова
         words = re.findall(r'\b\w+\b', t.lower())
-
         # чистка + лемматизация
         clean = []
         for w in words:
@@ -3016,13 +3014,11 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
                 continue
             lemma = morph.parse(w)[0].normal_form
             clean.append(lemma)
-
         # ===== биграммы =====
         for i in range(len(clean) - 1):
             phrase = f"{clean[i]} {clean[i+1]}"
             if len(phrase) <= 30:
                 all_phrases.append(phrase)
-
         # ===== триграммы =====
         for i in range(len(clean) - 2):
             phrase = f"{clean[i]} {clean[i+1]} {clean[i+2]}"
@@ -3030,9 +3026,7 @@ async def top_phrases(from_ts: str, to_ts: str, request: Request):
                 all_phrases.append(phrase)
     # считаем число повторений
     counter = Counter(all_phrases)
-
     top = counter.most_common(50)
-
     return [{"text": p, "value": c} for p, c in top]
 # статистика по пользователям
 @app.get("/api/analytics/stats")
@@ -3041,7 +3035,6 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
-    
     query = """
     WITH base_users AS (
         SELECT
@@ -3055,7 +3048,6 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
         AND e.created_at BETWEEN $1 AND $2
         GROUP BY COALESCE(ua.user_id::text, e.user_id::text)
     ),
-
     response_times AS (
         SELECT (payload->>'response_time_ms')::int as rt
         FROM events
@@ -3063,7 +3055,6 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
         AND payload ? 'response_time_ms'
         AND created_at BETWEEN $1 AND $2
     ),
-
     totals AS (
         SELECT
             COUNT(DISTINCT COALESCE(ua.user_id::text, e.user_id::text)) as unique_users,
@@ -3083,10 +3074,8 @@ async def get_stats(from_ts: str, to_ts: str, request: Request):
         (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY rt) FROM response_times) as median_response_time
     FROM totals t;
     """
-
     async with pool.acquire() as conn:
         row = await conn.fetchrow(query, from_ts, to_ts)
-
     return dict(row)
 # аналитика по самым активным каналам
 @app.get("/api/analytics/channels")
@@ -3095,7 +3084,6 @@ async def channels(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
-    
     query = """
     SELECT
         channel,
@@ -3109,7 +3097,6 @@ async def channels(from_ts: str, to_ts: str, request: Request):
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
     return [dict(r) for r in rows]
 
 # аналитика по топу пользователей
@@ -3133,51 +3120,36 @@ async def top_users(from_ts: str, to_ts: str, request: Request):
                 username,
                 'Аноним'
             ) as user_name
-
         FROM user_accounts
-
         ORDER BY
             user_id,
             last_seen DESC
     ),
-
     period_messages AS (
         SELECT
             e.user_id::text as global_user_id,
             COUNT(*) as messages
-
         FROM events e
-
         WHERE e.event_type = 'message_received'
           AND e.created_at BETWEEN $1 AND $2
-
         GROUP BY e.user_id
     )
-    
     SELECT
         p.global_user_id,
-
         COALESCE(u.user_name, 'Аноним') as user_name,
-
         p.messages,
-
         ROUND(
             p.messages::numeric / $3,
             2
         ) as avg_weekly_messages
-
     FROM period_messages p
-
     LEFT JOIN users u
         ON u.global_user_id = p.global_user_id
-
     ORDER BY p.messages DESC
-
     LIMIT 100
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts, normalized_days)
-
     return [dict(r) for r in rows]
 
 # получение самых востребованных документов
@@ -3218,10 +3190,8 @@ async def top_documents(from_ts: str, to_ts: str, request: Request):
     ORDER BY total_downloads DESC
     LIMIT 50;
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
     return [dict(r) for r in rows]
 
 # получаем наиболее востребованные способы работы с документами (поиск или меню)
@@ -3231,7 +3201,6 @@ async def document_sources(from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
-
     query = """
     SELECT
         CASE
@@ -3245,10 +3214,8 @@ async def document_sources(from_ts: str, to_ts: str, request: Request):
     GROUP BY source
     ORDER BY downloads DESC
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
     return [dict(r) for r in rows]
 
 ####################
@@ -3261,7 +3228,6 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
     pool = request.app.state.db_pool
-
     query = """
     WITH base_events AS (
         SELECT
@@ -3356,10 +3322,8 @@ async def export_dialogs(from_ts: str, to_ts: str, request: Request):
     LEFT JOIN msg_counts mc ON mc.session_id = m.session_id
     ORDER BY m.message_time
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, from_ts, to_ts)
-
     df = pd.DataFrame([dict(r) for r in rows])
     # убираем timezone из datetime колонок
     for col in df.columns:
@@ -3448,29 +3412,21 @@ async def get_dialogs(
     text: str = None
 ):
     pool = request.app.state.db_pool
-
     from_dt = datetime.fromisoformat(from_ts)
     to_dt = datetime.fromisoformat(to_ts)
-
     query = """
     WITH turns AS (
         SELECT
             e.payload->>'turn_id' as turn_id,
-
             -- events.user_id уже глобальный user_id
             MAX(e.user_id::text) as global_user_id,
-
             MIN(e.created_at) as message_time,
             MAX(e.channel) as channel
-
         FROM events e
-
         WHERE e.payload->>'turn_id' IS NOT NULL
           AND e.created_at BETWEEN $1 AND $2
-
         GROUP BY e.payload->>'turn_id'
     ),
-
     messages AS (
         SELECT DISTINCT ON (payload->>'turn_id')
             payload->>'turn_id' as turn_id,
@@ -3479,7 +3435,6 @@ async def get_dialogs(
         WHERE event_type = 'message_received'
         ORDER BY payload->>'turn_id', created_at ASC
     ),
-
     responses AS (
         SELECT DISTINCT ON (payload->>'turn_id')
             payload->>'turn_id' as turn_id,
@@ -3489,7 +3444,6 @@ async def get_dialogs(
         WHERE event_type = 'response'
         ORDER BY payload->>'turn_id', created_at DESC
     ),
-
     docs AS (
         SELECT
             payload->>'turn_id' as turn_id,
@@ -3499,7 +3453,6 @@ async def get_dialogs(
           AND payload->>'file_path' IS NOT NULL
         GROUP BY payload->>'turn_id'
     ),
-
     users AS (
         SELECT DISTINCT ON (user_id)
             user_id::text as global_user_id,
@@ -3508,33 +3461,25 @@ async def get_dialogs(
         FROM user_accounts
         ORDER BY user_id, last_seen DESC
     )
-
     SELECT
         t.global_user_id,
-
         COALESCE(
             NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
             'Аноним'
         ) as user_name,
-
         t.channel,
         t.message_time,
-
         m.message,
         r.response,
         r.response_time,
-
         d.file_paths
-
     FROM turns t
     LEFT JOIN messages m ON m.turn_id = t.turn_id
     LEFT JOIN responses r ON r.turn_id = t.turn_id
     LEFT JOIN docs d ON d.turn_id = t.turn_id
     LEFT JOIN users u ON u.global_user_id = t.global_user_id
-
     WHERE t.message_time BETWEEN $1 AND $2
     """
-
     params = [from_dt, to_dt]
     # фильтр по пользователям
     if user:
@@ -3550,21 +3495,16 @@ async def get_dialogs(
     if text:
         query += f" AND m.message ILIKE ${len(params)+1}"
         params.append(f"%{text}%")
-
     query += " ORDER BY t.message_time DESC LIMIT 500"
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
-
     return [dict(r) for r in rows]
 # просмотр диалогов по каждому пользователю
 @app.get("/api/analytics/user-dialogs")
 async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
-
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
-
     query = """
     WITH target_events AS (
         -- Собираем все события конкретного пользователя (через global_user_id или платформенный ID)    
@@ -3573,7 +3513,6 @@ async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request)
         FROM events e
         WHERE e.user_id::text = $1
     ),
-
     messages AS (
         SELECT
             payload->>'turn_id' as turn_id,
@@ -3581,87 +3520,65 @@ async def user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request)
             created_at as message_time,
             payload->>'text' as message,
             channel
-
         FROM target_events
-
         WHERE event_type = 'message_received'
           AND created_at BETWEEN $2 AND $3
     ),
-
     responses AS (
         SELECT DISTINCT ON (payload->>'turn_id')
             payload->>'turn_id' as turn_id,
             payload->>'text' as response,
             (payload->>'response_time_ms')::int as response_time
-
         FROM target_events
-
         WHERE event_type = 'response'
           AND payload->>'turn_id' IS NOT NULL
-
         ORDER BY payload->>'turn_id', created_at DESC
     ),
-    
     downloads_turn AS (
         SELECT
             payload->>'turn_id' as turn_id,
-
             STRING_AGG(
                 payload->>'file_path',
                 '||'
                 ORDER BY created_at
             ) as file_paths
-
         FROM target_events
-
         WHERE event_type IN (
             'document_download',
             'document_download_menu'
         )
           AND payload->>'file_path' IS NOT NULL
-
         GROUP BY payload->>'turn_id'
     )
-
     SELECT
         m.message_time,
         m.message,
         m.channel,
-
         CASE
             WHEN r.response IS NOT NULL THEN r.response
             WHEN dt.file_paths IS NOT NULL THEN dt.file_paths
             ELSE ''
         END as response,
-
         r.response_time,
-
         dt.file_paths
-
     FROM messages m
-
     LEFT JOIN responses r
         ON r.turn_id = m.turn_id
     LEFT JOIN downloads_turn dt
         ON dt.turn_id = m.turn_id
-
     ORDER BY m.message_time ASC
     LIMIT 500
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, user_id, from_ts, to_ts)
-
     return [dict(r) for r in rows]
 
 # выгрузка диалога по пользователю
 @app.get("/api/analytics/export-user-dialogs")
 async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: Request):
     pool = request.app.state.db_pool
-
     from_ts = datetime.fromisoformat(from_ts)
     to_ts = datetime.fromisoformat(to_ts)
-
     query = """
     WITH target_events AS (
         SELECT
@@ -3717,7 +3634,6 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
         ON dt.turn_id = m.turn_id
     ORDER BY m.message_time
     """
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, user_id, from_ts, to_ts)
     # экспорт диалогов делаем просто в виде текста для одного диалога
@@ -3726,9 +3642,7 @@ async def export_user_dialogs(user_id: str, from_ts: str, to_ts: str, request: R
         lines.append(f"[{r['message_time']}] USER: {r['message']}")
         lines.append(f"[{r['message_time']}] BOT: {r['response']}")
         lines.append("")
-
     content = "\n".join(lines)
-
     return Response(
         content,
         media_type="text/plain",

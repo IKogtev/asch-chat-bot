@@ -300,12 +300,20 @@ services:
       - ADK_SESSION_SERVICE_URI=postgresql+asyncpg://aszh-bot:aszh-bot@postgres:5432/adk_sessions
       # настройка интервала синхронизации при старте
       - SYNC_INTERVAL_HOURS=12
-      # keycloak information to connect
-      - LIFEPOINT_API_TOKEN=${LIFEPOINT_API_TOKEN?LIFEPOINT_API_TOKEN is required}
+      # keycloak information to connect lifepoint
       - KEYCLOAK_ISSUER=${KEYCLOAK_ISSUER?KEYCLOAK_ADDRESS IS REQUIRED}
       - KEYCLOAK_AUDIENCE=lifepoint
       - KEYCLOAK_ALGORITHM=RS256
       - KEYCLOAK_JWKS_CACHE_TTL=3600
+      # keycloak для kb-manager ui
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET?KEYCLOAK_CLIENT_SECRET is REQUIRED}
+      - KEYCLOAK_PUBLIC_URL=http://localhost:8088
+      - REDIRECT_URI=http://localhost:5000/auth/callback
+      - POST_LOGOUT_REDIRECT_URI=http://localhost:5000/auth/login
+      - KEYCLOAK_INTERNAL_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=kb-manager-test
+      - KEYCLOAK_CLIENT_ID=kb-manager-ui
+      
     depends_on:
       migration:
           condition: service_completed_successfully

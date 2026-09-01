@@ -202,7 +202,7 @@ def create_broadcast_app(
         """Перезагрузить стартовое сообщение из файла"""
         try:
             load_bot_start_message()
-            return {"success": True, "message": "Start message reloaded", "length": len(get_start_message())}
+            return {"status": "ok", "success": True, "message": "Start message reloaded", "length": len(get_start_message())}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
@@ -211,7 +211,7 @@ def create_broadcast_app(
         """Перезагрузить help сообщение из файла"""
         try:
             load_bot_help_message()
-            return {"success": True, "message": "Help message reloaded", "length": len(get_help_message())}
+            return {"status": "ok", "success": True, "message": "Help message reloaded", "length": len(get_help_message())}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
