@@ -20,6 +20,7 @@ from .config import (
     PRODUCT_CARD_KIT_OFFER
 )
 from .helpers import extract_json, truncate_for_log, format_text_answer, format_reject_answer
+from .debug_trace import log_advisor_input_state
 from .json_leaf_runner import AgentValidationFailure, run_json_leaf_agent
 from .agents.owasp_agent import validate_owasp_result
 from .agents.dispatcher_agent import validate_dispatcher_result
@@ -35,8 +36,8 @@ from .agents.advisor_contract import (
 )
 from .advisor_profile import AdvisorClientProfile, merge_advisor_profile
 from .advisor_profile_matcher import (
-    AdvisorClientTypeSelection,
-    validate_client_type_selection,
+    AdvisorSelectedClientType,
+    validate_selected_client_type,
 )
 from .advisor_ranking_service import AdvisorRankingResult, AdvisorRankingService
 from .glossary import GlossaryLookup
@@ -58,7 +59,7 @@ OWASP_CONTEXT_WINDOW = 6
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 ADVISOR_DIALOG_CONTEXT_STATE_KEY = "advisor_dialog_context"
-ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION = 1
+ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION = 2
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
     "Могу показать карточку продукта или скачать комплект. Какой продукт тебя интересует ?"
 )
@@ -162,6 +163,8 @@ STATE_KEYS_TO_CLEAR = [
     "product_dialog_context_json",
     "advisor_search_query", "advisor_client_profile", "advisor_client_profile_json",
     "advisor_dialog_context_json", "advisor_minimum_client_type_confidence",
+    "advisor_source_turn", "advisor_updated_at",
+    "advisor_content_repair_raw_json", "advisor_content_repair_error",
     "_advisor_content_result_parsed", "_advisor_result_parsed",
     "advisor_content_result_json", "advisor_ranking_result",
     "advisor_ranking_result_json", "advisor_result_json",
@@ -236,6 +239,7 @@ class RootAgent(BaseAgent):
     product_filter_content_agent: LlmAgent
     product_filter_format_agent: LlmAgent
     advisor_content_agent: LlmAgent
+    advisor_content_repair_agent: LlmAgent
     advisor_format_agent: LlmAgent
     advisor_ranking_service: AdvisorRankingService
     advisor_minimum_client_type_confidence: float
@@ -264,6 +268,7 @@ class RootAgent(BaseAgent):
         product_filter_content_agent: LlmAgent,
         product_filter_format_agent: LlmAgent,
         advisor_content_agent: LlmAgent,
+        advisor_content_repair_agent: LlmAgent,
         advisor_format_agent: LlmAgent,
         advisor_ranking_service: AdvisorRankingService,
         advisor_minimum_client_type_confidence: float = 0.75,
@@ -284,6 +289,7 @@ class RootAgent(BaseAgent):
             product_filter_content_agent=product_filter_content_agent,
             product_filter_format_agent=product_filter_format_agent,
             advisor_content_agent=advisor_content_agent,
+            advisor_content_repair_agent=advisor_content_repair_agent,
             advisor_format_agent=advisor_format_agent,
             advisor_ranking_service=advisor_ranking_service,
             advisor_minimum_client_type_confidence=advisor_minimum_client_type_confidence,
@@ -302,6 +308,7 @@ class RootAgent(BaseAgent):
                 product_filter_content_agent,
                 product_filter_format_agent,
                 advisor_content_agent,
+                advisor_content_repair_agent,
                 advisor_format_agent,
             ],
         )
@@ -3199,17 +3206,13 @@ class RootAgent(BaseAgent):
         return AdvisorClientProfile.model_validate(value.get("profile") or {})
 
     @staticmethod
-    def _advisor_selected_matches(
-        selection: AdvisorClientTypeSelection | None,
-    ) -> list[dict[str, Any]]:
-        """Сериализует только проверенные совпадения типов клиента."""
-        if selection is None:
-            return []
-        return [
-            match.model_dump(mode="json")
-            for match in (selection.primary_type, selection.secondary_type)
-            if match is not None
-        ]
+    def _advisor_selected_match(
+        selected: AdvisorSelectedClientType | None,
+    ) -> dict[str, Any] | None:
+        """Сериализует единственный проверенный тип клиента."""
+        if selected is None:
+            return None
+        return selected.model_dump(mode="json")
 
     def _store_advisor_dialog_context(
         self,
@@ -3220,14 +3223,14 @@ class RootAgent(BaseAgent):
         ranking: AdvisorRankingResult | None,
     ) -> None:
         """Сохраняет один версионированный результат advisor без временных ключей."""
-        selection = content.client_type_selection
+        selected = content.selected_client_type
         ctx.session.state[ADVISOR_DIALOG_CONTEXT_STATE_KEY] = {
             "schema_version": ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION,
             "profile": profile.model_dump(mode="json"),
-            "matched_client_types": self._advisor_selected_matches(selection),
+            "selected_client_type": self._advisor_selected_match(selected),
             "primary_client_type": (
-                selection.primary_type.profile_name
-                if selection and selection.primary_type
+                selected.definition.profile_name
+                if selected
                 else None
             ),
             "missing_fields": list(content.missing_fields),
@@ -3291,25 +3294,48 @@ class RootAgent(BaseAgent):
         ctx.session.state["advisor_minimum_client_type_confidence"] = (
             self.advisor_minimum_client_type_confidence
         )
+        ctx.session.state["advisor_source_turn"] = str(
+            getattr(ctx, "invocation_id", "") or ""
+        )
+        ctx.session.state["advisor_updated_at"] = datetime.now(timezone.utc).isoformat()
         advisor_context = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY) or {}
         ctx.session.state["advisor_dialog_context_json"] = json.dumps(
             advisor_context,
             ensure_ascii=False,
             default=str,
         )
+        log_advisor_input_state(ctx)
 
-        async for event in self._run_json_leaf_agent(
-            ctx=ctx,
-            agent=self.advisor_content_agent,
-            output_key="advisor_content_result_json",
-            parsed_state_key="_advisor_content_result_parsed",
-            validator=validate_advisor_content_result,
-            log_label="advisor_content_result_json",
-            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-            tool_calls_state_key="_advisor_content_tool_calls",
-            tool_events_state_key="_advisor_content_tool_events",
-        ):
-            yield event
+        try:
+            async for event in self._run_json_leaf_agent(
+                ctx=ctx,
+                agent=self.advisor_content_agent,
+                output_key="advisor_content_result_json",
+                parsed_state_key="_advisor_content_result_parsed",
+                validator=validate_advisor_content_result,
+                log_label="advisor_content_result_json",
+                validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+                tool_calls_state_key="_advisor_content_tool_calls",
+                tool_events_state_key="_advisor_content_tool_events",
+            ):
+                yield event
+        except AgentValidationFailure as exc:
+            if "validation failed at contract" not in exc.validation_error:
+                raise
+            ctx.session.state["advisor_content_repair_raw_json"] = exc.raw
+            ctx.session.state["advisor_content_repair_error"] = exc.validation_error
+            async for event in self._run_json_leaf_agent(
+                ctx=ctx,
+                agent=self.advisor_content_repair_agent,
+                output_key="advisor_content_result_json",
+                parsed_state_key="_advisor_content_result_parsed",
+                validator=validate_advisor_content_result,
+                log_label="advisor_content_repair_result_json",
+                validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+                validation_tool_calls_state_key="_advisor_content_tool_calls",
+                validation_tool_events_state_key="_advisor_content_tool_events",
+            ):
+                yield event
 
         content = AdvisorContentResult.model_validate(
             self._get_required_state_dict(ctx, "_advisor_content_result_parsed")
@@ -3318,12 +3344,11 @@ class RootAgent(BaseAgent):
         if merge_result.conflicts:
             raise ValueError("Advisor profile contains unresolved explicit-value conflicts")
         profile = merge_result.profile
-        selection = content.client_type_selection
-        if selection is not None:
-            validate_client_type_selection(
-                selection,
+        selected = content.selected_client_type
+        if selected is not None:
+            validate_selected_client_type(
+                selected,
                 client_profile=profile,
-                client_types=list(content.client_types),
                 minimum_confidence=self.advisor_minimum_client_type_confidence,
             )
 
@@ -3357,23 +3382,12 @@ class RootAgent(BaseAgent):
             )
             return
 
-        if selection is None or selection.primary_type is None:
-            raise ValueError("Advisor candidates require a validated primary Client Type")
-        selected_row = next(
-            (
-                row
-                for row in content.client_types
-                if row.profile_name == selection.primary_type.profile_name
-            ),
-            None,
-        )
-        if selected_row is None:
-            raise ValueError("Selected Client Type row is absent from current-run data")
+        if selected is None:
+            raise ValueError("Advisor candidates require a validated Client Type")
 
         ranking = self.advisor_ranking_service.rank(
             products=[product.to_product_facts() for product in content.products],
-            primary_client_type=selected_row,
-            selection=selection,
+            selected_client_type=selected,
         )
         ctx.session.state["advisor_ranking_result"] = ranking.model_dump(mode="json")
         format_payload = {

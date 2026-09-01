@@ -11,7 +11,12 @@ import pytest
 def _load_refreshing_mcp_toolset_module():
     repo_root = Path(__file__).resolve().parents[3]
     module_path = repo_root / "agent" / "tools" / "refreshing_mcp_toolset.py"
-    module_name = "test_refreshing_mcp_toolset_module"
+    module_name = "agent.tools.refreshing_mcp_toolset"
+
+    agent_pkg = type(sys)("agent")
+    agent_pkg.__path__ = [str(repo_root / "agent")]
+    tools_pkg = type(sys)("agent.tools")
+    tools_pkg.__path__ = [str(repo_root / "agent" / "tools")]
 
     logger_stub = type(sys)("utils.logger")
     logger_stub.setup_logger = lambda *args, **kwargs: type(
@@ -37,15 +42,39 @@ def _load_refreshing_mcp_toolset_module():
     mcp_tool_stub = type(sys)("google.adk.tools.mcp_tool")
     mcp_tool_stub.McpToolset = type("McpToolset", (), {})
 
-    sys.modules["utils.logger"] = logger_stub
-    sys.modules["google.adk.tools.base_toolset"] = base_toolset_stub
-    sys.modules["google.adk.tools.mcp_tool"] = mcp_tool_stub
+    debug_trace_stub = type(sys)("agent.debug_trace")
+    debug_trace_stub.debug_trace_enabled = lambda agent_name=None: False
+    debug_trace_stub.summarize_tool_definition = lambda tool: {
+        "name": str(getattr(tool, "name", tool)),
+        "schema_sha256": "test",
+    }
+    debug_trace_stub.trace_debug = lambda *args, **kwargs: None
+
+    stubbed_modules = {
+        "utils.logger": logger_stub,
+        "agent": agent_pkg,
+        "agent.tools": tools_pkg,
+        "agent.debug_trace": debug_trace_stub,
+        "google.adk.tools.base_toolset": base_toolset_stub,
+        "google.adk.tools.mcp_tool": mcp_tool_stub,
+    }
+    original_modules = {
+        name: sys.modules.get(name) for name in (*stubbed_modules, module_name)
+    }
+    sys.modules.update(stubbed_modules)
 
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        for name, original in original_modules.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
     return module
 
 

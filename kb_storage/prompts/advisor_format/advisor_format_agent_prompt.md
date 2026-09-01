@@ -7,7 +7,6 @@
 Из `{advisor_ranking_result_json}` дословно скопируй:
 
 - `primary_client_type`;
-- `secondary_client_type`;
 - для каждого продукта из `top_products`: `code`, `name`, `is_active`;
 - исходный порядок `top_products`.
 
@@ -35,7 +34,6 @@
   "mode": "recommendation | needs_clarification | no_data",
   "message": "пользовательский текст на русском языке",
   "primary_client_type": null,
-  "secondary_client_type": null,
   "products": [
     {
       "code": "2832",

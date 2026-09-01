@@ -291,6 +291,7 @@ def _make_agent(**kwargs) -> RootAgent:
         product_filter_content_agent=fake_subagent,
         product_filter_format_agent=fake_subagent,
         advisor_content_agent=fake_subagent,
+        advisor_content_repair_agent=fake_subagent,
         advisor_format_agent=fake_subagent,
         **kwargs,
     )
@@ -330,8 +331,8 @@ def _advisor_candidate_content_payload():
                 "origin": "explicit",
             }
         },
-        "client_types": [
-            {
+        "selected_client_type": {
+            "definition": {
                 "client_type_code": "CT-001",
                 "profile_name": "Консервативный",
                 "attributes": {"client_goal": "Сохранение капитала"},
@@ -339,18 +340,9 @@ def _advisor_candidate_content_payload():
                 "preferred_properties": [],
                 "acceptable_compromises": [],
                 "contraindications": [],
-            }
-        ],
-        "client_type_selection": {
-            "mode": "selected",
-            "primary_type": {
-                "profile_name": "Консервативный",
-                "confidence": 0.9,
-                "evidence": [],
             },
-            "secondary_type": None,
-            "missing_fields": [],
-            "clarification_question": None,
+            "confidence": 0.9,
+            "evidence": [],
         },
         "missing_fields": [],
         "clarification_question": None,
@@ -412,7 +404,6 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
     ranking = rootagent_module.AdvisorRankingResult.model_validate(
         {
             "primary_client_type": "Консервативный",
-            "secondary_client_type": None,
             "match_evidence": [],
             "accepted_candidates": [],
             "excluded_candidates": [],
@@ -443,7 +434,7 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
 
     monkeypatch.setattr(
         rootagent_module,
-        "validate_client_type_selection",
+        "validate_selected_client_type",
         validate_selection,
     )
     agent = _make_agent(advisor_ranking_service=RankingService())
@@ -458,7 +449,6 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
                 "mode": "recommendation",
                 "message": "Проверенная рекомендация.",
                 "primary_client_type": "Консервативный",
-                "secondary_client_type": None,
                 "products": [content_payload["products"][0]],
             }
         if False:
@@ -479,11 +469,70 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
     assert calls == ["validate", "rank", "format"]
     assert ctx.session.state["_root_final_text"] == "Проверенная рекомендация."
     stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
-    assert stored["schema_version"] == 1
+    assert stored["schema_version"] == 2
+    assert stored["selected_client_type"]["definition"]["profile_name"] == "Консервативный"
     assert stored["profile"]["goal"]["value"] == "Сохранение капитала"
     assert stored["primary_client_type"] == "Консервативный"
     assert stored["top_products"][0]["product"]["code"] == "2832"
     assert stored["scoring_policy_version"] == "test-pilot-v1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_advisor_repairs_contract_structure_once_without_tools() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={})
+    labels = []
+    repaired = _advisor_candidate_content_payload()
+    repaired.update(
+        mode="needs_clarification",
+        selected_client_type=None,
+        missing_fields=["term_months"],
+        clarification_question="На какой срок клиент планирует вложение?",
+        products=[],
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        labels.append(kwargs["log_label"])
+        if kwargs["log_label"] == "advisor_content_result_json":
+            ctx.session.state["_advisor_content_tool_calls"] = ["execute_sql"]
+            ctx.session.state["_advisor_content_tool_events"] = [
+                {"type": "call", "name": "execute_sql"}
+            ]
+            raise rootagent_module.AgentValidationFailure(
+                log_label="advisor_content_result_json",
+                validation_error=(
+                    "advisor_content_agent validation failed at contract: bad nesting"
+                ),
+                raw='{"mode":"needs_clarification"}',
+                user_message="safe",
+            )
+        assert kwargs["agent"] is agent.advisor_content_repair_agent
+        assert kwargs["validation_tool_calls_state_key"] == (
+            "_advisor_content_tool_calls"
+        )
+        assert kwargs["validation_tool_events_state_key"] == (
+            "_advisor_content_tool_events"
+        )
+        ctx.session.state["_advisor_content_result_parsed"] = repaired
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    async for _ in agent._handle_advisor(ctx, "Запрос", "Запрос"):
+        pass
+
+    assert labels == [
+        "advisor_content_result_json",
+        "advisor_content_repair_result_json",
+    ]
+    assert ctx.session.state["advisor_content_repair_raw_json"] == (
+        '{"mode":"needs_clarification"}'
+    )
+    assert ctx.session.state["_root_final_text"] == (
+        "На какой срок клиент планирует вложение?"
+    )
 
 
 @pytest.mark.unit
@@ -494,13 +543,7 @@ async def test_handle_advisor_returns_exactly_one_validated_clarification(
     content_payload = _advisor_candidate_content_payload()
     content_payload.update(
         mode="needs_clarification",
-        client_type_selection={
-            "mode": "needs_clarification",
-            "primary_type": None,
-            "secondary_type": None,
-            "missing_fields": ["term_months"],
-            "clarification_question": "На какой срок клиент готов разместить средства?",
-        },
+        selected_client_type=None,
         missing_fields=["term_months"],
         clarification_question="На какой срок клиент готов разместить средства?",
         products=[],
@@ -511,11 +554,7 @@ async def test_handle_advisor_returns_exactly_one_validated_clarification(
         calls.append("validate")
         return selection
 
-    monkeypatch.setattr(
-        rootagent_module,
-        "validate_client_type_selection",
-        validate_selection,
-    )
+    monkeypatch.setattr(rootagent_module, "validate_selected_client_type", validate_selection)
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
 
@@ -531,7 +570,7 @@ async def test_handle_advisor_returns_exactly_one_validated_clarification(
     async for _ in agent._handle_advisor(ctx, "Запрос", "Запрос"):
         pass
 
-    assert calls == ["validate"]
+    assert calls == []
     assert ctx.session.state["_root_final_text"] == (
         "На какой срок клиент готов разместить средства?"
     )
@@ -562,7 +601,7 @@ async def test_handle_advisor_does_not_rank_or_persist_invalid_selection(
 
     monkeypatch.setattr(
         rootagent_module,
-        "validate_client_type_selection",
+        "validate_selected_client_type",
         reject_selection,
     )
     agent = _make_agent(advisor_ranking_service=RankingService())

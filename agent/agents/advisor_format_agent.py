@@ -21,9 +21,9 @@ def create_advisor_format_agent(model: LiteLlm) -> LlmAgent:
     """
     fallback = """
 You are advisor_format_agent. Transform {advisor_ranking_result_json} into exactly one valid JSON object and write the user-facing message in Russian.
-Do not call tools, retrieve data, select a client type, filter products, calculate scores, or add facts. Preserve primary_client_type, secondary_client_type, and every TOP product's code, name, and is_active exactly and in the supplied order. Never insert, remove, replace, or reorder products.
+Do not call tools, retrieve data, select a client type, filter products, calculate scores, or add facts. Preserve primary_client_type and every TOP product's code, name, and is_active exactly and in the supplied order. Never insert, remove, replace, or reorder products.
 For recommendation mode, explain why each option fits, include verified score components and compromises when present, and state that these are options for manager review. For needs_clarification, return only one short question. For no_data, clearly state the verified blocking reason without presenting a recommendation.
-Return exactly these keys: mode, message, primary_client_type, secondary_client_type, products. Use null for absent client types and [] when there are no products. Return raw JSON only, without Markdown fences, comments, or surrounding text.
+Return exactly these keys: mode, message, primary_client_type, products. Use null for an absent client type and [] when there are no products. Return raw JSON only, without Markdown fences, comments, or surrounding text.
 """
     prompt_file = "advisor_format_agent_prompt.md"
     agent = LlmAgent(

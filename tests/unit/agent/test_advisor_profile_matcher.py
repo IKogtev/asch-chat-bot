@@ -10,15 +10,14 @@ from agent.advisor_profile import AdvisorClientProfile, AdvisorProfileField
 from agent.advisor_profile_matcher import (
     AdvisorClientTypeDefinition,
     AdvisorClientTypeEvidence,
-    AdvisorClientTypeMatch,
-    AdvisorClientTypeSelection,
-    validate_client_type_selection,
+    AdvisorSelectedClientType,
+    validate_selected_client_type,
 )
 from tests.unit.agent._advisor_workbook import (
     client_type_workbook_rows,
     load_client_type_definitions,
 )
-from utils.client_types import CLIENT_TYPE_CODE_COLUMN
+from utils.client_types import CLIENT_TYPE_CODE_COLUMN, CLIENT_TYPES_DESCRIPTION_ROW_LABEL
 
 
 TABLE_PATH = (
@@ -49,8 +48,8 @@ def selected_payload(*, confidence: float = 0.9, name: str = "Консерват
         )
     )
     client_type = next(row for row in definitions() if row.profile_name == name)
-    match = AdvisorClientTypeMatch(
-        profile_name=name,
+    selected = AdvisorSelectedClientType(
+        definition=client_type,
         confidence=confidence,
         evidence=(
             AdvisorClientTypeEvidence(
@@ -62,7 +61,7 @@ def selected_payload(*, confidence: float = 0.9, name: str = "Консерват
             ),
         ),
     )
-    return profile, match
+    return profile, selected
 
 
 @pytest.mark.unit
@@ -87,153 +86,118 @@ def test_real_workbook_rows_validate_and_parse_all_four_rule_columns() -> None:
 
 @pytest.mark.unit
 def test_valid_selection_references_supplied_fact_and_loaded_table_field() -> None:
-    profile, match = selected_payload()
-    selection = AdvisorClientTypeSelection(mode="selected", primary_type=match)
+    profile, selected = selected_payload()
 
-    result = validate_client_type_selection(
-        selection,
+    result = validate_selected_client_type(
+        selected,
         client_profile=profile,
-        client_types=definitions(),
         minimum_confidence=0.75,
     )
 
-    assert result.primary_type.profile_name == "Консервативный"
+    assert result.definition.profile_name == "Консервативный"
 
 
 @pytest.mark.unit
-def test_selection_rejects_unknown_client_type() -> None:
-    profile, match = selected_payload(name="Консервативный")
-    unknown = match.model_copy(update={"profile_name": "Неизвестный"})
+def test_selection_rejects_description_row() -> None:
+    profile, selected = selected_payload()
+    invalid_definition = selected.definition.model_copy(
+        update={"profile_name": CLIENT_TYPES_DESCRIPTION_ROW_LABEL}
+    )
 
-    with pytest.raises(ValueError, match="Unknown selected Client Type"):
-        validate_client_type_selection(
-            AdvisorClientTypeSelection(mode="selected", primary_type=unknown),
+    with pytest.raises(ValueError, match="description row"):
+        validate_selected_client_type(
+            selected.model_copy(update={"definition": invalid_definition}),
             client_profile=profile,
-            client_types=definitions(),
+            minimum_confidence=0.75,
+        )
+
+
+@pytest.mark.unit
+def test_selection_rejects_incomplete_selected_definition() -> None:
+    profile, selected = selected_payload()
+    attributes = dict(selected.definition.attributes)
+    del attributes["notes"]
+    invalid_definition = selected.definition.model_copy(
+        update={"attributes": attributes}
+    )
+
+    with pytest.raises(ValueError, match="incomplete attributes"):
+        validate_selected_client_type(
+            selected.model_copy(update={"definition": invalid_definition}),
+            client_profile=profile,
             minimum_confidence=0.75,
         )
 
 
 @pytest.mark.unit
 def test_selection_rejects_unsupported_evidence() -> None:
-    profile, match = selected_payload()
-    invalid_evidence = match.evidence[0].model_copy(
+    profile, selected = selected_payload()
+    invalid_evidence = selected.evidence[0].model_copy(
         update={"client_value": "Максимальный рост"}
     )
-    invalid_match = match.model_copy(update={"evidence": (invalid_evidence,)})
+    invalid_selected = selected.model_copy(update={"evidence": (invalid_evidence,)})
 
     with pytest.raises(ValueError, match="does not match client field"):
-        validate_client_type_selection(
-            AdvisorClientTypeSelection(mode="selected", primary_type=invalid_match),
+        validate_selected_client_type(
+            invalid_selected,
             client_profile=profile,
-            client_types=definitions(),
             minimum_confidence=0.75,
         )
 
 
 @pytest.mark.unit
 def test_selection_rejects_evidence_with_an_unmapped_table_field() -> None:
-    profile, match = selected_payload()
+    profile, selected = selected_payload()
     client_type = next(
         row for row in definitions() if row.profile_name == "Консервативный"
     )
-    invalid_evidence = match.evidence[0].model_copy(
+    invalid_evidence = selected.evidence[0].model_copy(
         update={
             "table_field": "currency",
             "table_value": client_type.attributes["currency"],
         }
     )
-    invalid_match = match.model_copy(update={"evidence": (invalid_evidence,)})
+    invalid_selected = selected.model_copy(update={"evidence": (invalid_evidence,)})
 
     with pytest.raises(ValueError, match="cannot support"):
-        validate_client_type_selection(
-            AdvisorClientTypeSelection(mode="selected", primary_type=invalid_match),
+        validate_selected_client_type(
+            invalid_selected,
             client_profile=profile,
-            client_types=definitions(),
             minimum_confidence=0.75,
         )
 
 
 @pytest.mark.unit
-def test_low_confidence_selection_requires_one_clarification_question() -> None:
-    profile, match = selected_payload(confidence=0.5)
+def test_low_confidence_selection_requires_clarification() -> None:
+    profile, selected = selected_payload(confidence=0.5)
 
     with pytest.raises(ValueError, match="requires clarification"):
-        validate_client_type_selection(
-            AdvisorClientTypeSelection(mode="selected", primary_type=match),
+        validate_selected_client_type(
+            selected,
             client_profile=profile,
-            client_types=definitions(),
             minimum_confidence=0.75,
         )
 
-    clarification = AdvisorClientTypeSelection(
-        mode="needs_clarification",
-        primary_type=match,
-        missing_fields=["term_months"],
-        clarification_question="На какой срок клиент планирует вложение?",
-    )
-    assert validate_client_type_selection(
-        clarification,
-        client_profile=profile,
-        client_types=definitions(),
-        minimum_confidence=0.75,
-    ) is clarification
+
+@pytest.mark.unit
+def test_selection_rejects_secondary_type() -> None:
+    _, selected = selected_payload()
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        AdvisorSelectedClientType(
+            **selected.model_dump(),
+            secondary_type=selected,
+        )
 
 
 @pytest.mark.unit
-def test_selection_accepts_distinct_secondary_type_with_its_own_evidence() -> None:
-    profile, primary = selected_payload()
-    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
-    secondary = AdvisorClientTypeMatch(
-        profile_name="Умеренный",
-        confidence=0.8,
-        evidence=(
-            AdvisorClientTypeEvidence(
-                client_field="goal",
-                client_value="Сохранение капитала",
-                table_field="client_goal",
-                table_value=moderate.attributes["client_goal"],
-                source_turn="turn-1",
-            ),
-        ),
-    )
-    selection = AdvisorClientTypeSelection(
-        mode="selected",
-        primary_type=primary,
-        secondary_type=secondary,
-    )
+def test_selection_rejects_out_of_range_confidence() -> None:
+    _, selected = selected_payload()
 
-    result = validate_client_type_selection(
-        selection,
-        client_profile=profile,
-        client_types=definitions(),
-        minimum_confidence=0.75,
-    )
-
-    assert result.secondary_type.profile_name == "Умеренный"
-
-
-@pytest.mark.unit
-def test_selection_rejects_out_of_range_confidence_and_multiple_questions() -> None:
     with pytest.raises(ValidationError):
-        AdvisorClientTypeMatch(
-            profile_name="Умеренный",
+        AdvisorSelectedClientType(
+            definition=selected.definition,
             confidence=1.1,
-        )
-
-    profile, match = selected_payload(confidence=0.5)
-    selection = AdvisorClientTypeSelection(
-        mode="needs_clarification",
-        primary_type=match,
-        missing_fields=["term_months"],
-        clarification_question="Какой срок? Какая сумма?",
-    )
-    with pytest.raises(ValueError, match="exactly one question"):
-        validate_client_type_selection(
-            selection,
-            client_profile=profile,
-            client_types=definitions(),
-            minimum_confidence=0.75,
         )
 
 
