@@ -291,7 +291,6 @@ def _make_agent(**kwargs) -> RootAgent:
         product_filter_content_agent=fake_subagent,
         product_filter_format_agent=fake_subagent,
         advisor_content_agent=fake_subagent,
-        advisor_content_repair_agent=fake_subagent,
         advisor_format_agent=fake_subagent,
         **kwargs,
     )
@@ -479,60 +478,31 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_advisor_repairs_contract_structure_once_without_tools() -> None:
+async def test_handle_advisor_does_not_retry_invalid_content_contract() -> None:
     agent = _make_agent()
     ctx = _make_ctx(session_state={})
     labels = []
-    repaired = _advisor_candidate_content_payload()
-    repaired.update(
-        mode="needs_clarification",
-        selected_client_type=None,
-        missing_fields=["term_months"],
-        clarification_question="На какой срок клиент планирует вложение?",
-        products=[],
-    )
 
     async def fake_run_json_leaf_agent(**kwargs):
         labels.append(kwargs["log_label"])
-        if kwargs["log_label"] == "advisor_content_result_json":
-            ctx.session.state["_advisor_content_tool_calls"] = ["execute_sql"]
-            ctx.session.state["_advisor_content_tool_events"] = [
-                {"type": "call", "name": "execute_sql"}
-            ]
-            raise rootagent_module.AgentValidationFailure(
-                log_label="advisor_content_result_json",
-                validation_error=(
-                    "advisor_content_agent validation failed at contract: bad nesting"
-                ),
-                raw='{"mode":"needs_clarification"}',
-                user_message="safe",
-            )
-        assert kwargs["agent"] is agent.advisor_content_repair_agent
-        assert kwargs["validation_tool_calls_state_key"] == (
-            "_advisor_content_tool_calls"
+        raise rootagent_module.AgentValidationFailure(
+            log_label="advisor_content_result_json",
+            validation_error=(
+                "advisor_content_agent validation failed at contract: bad nesting"
+            ),
+            raw='{"mode":"needs_clarification"}',
+            user_message="safe",
         )
-        assert kwargs["validation_tool_events_state_key"] == (
-            "_advisor_content_tool_events"
-        )
-        ctx.session.state["_advisor_content_result_parsed"] = repaired
         if False:
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
 
-    async for _ in agent._handle_advisor(ctx, "Запрос", "Запрос"):
-        pass
+    with pytest.raises(rootagent_module.AgentValidationFailure):
+        async for _ in agent._handle_advisor(ctx, "Request", "Request"):
+            pass
 
-    assert labels == [
-        "advisor_content_result_json",
-        "advisor_content_repair_result_json",
-    ]
-    assert ctx.session.state["advisor_content_repair_raw_json"] == (
-        '{"mode":"needs_clarification"}'
-    )
-    assert ctx.session.state["_root_final_text"] == (
-        "На какой срок клиент планирует вложение?"
-    )
+    assert labels == ["advisor_content_result_json"]
 
 
 @pytest.mark.unit
@@ -2040,6 +2010,20 @@ def test_product_compare_tool_usage_fallback_mentions_unconfirmed_sql_data() -> 
     assert "Не могу подтвердить данные для сравнения" in message
     assert "Укажи два точных названия или кода и критерии" in message
     assert "Сравни 8837 и 8914" in message
+
+
+@pytest.mark.unit
+def test_advisor_validation_fallback_uses_neutral_validation_message() -> None:
+    message = rootagent_module.generate_agent_fallback(
+        "клиенту 45 лет, какой продукт посоветовать?",
+        error_type="validation_failure",
+        agent_name="advisor",
+        context={"validation_error": "advisor contract failed"},
+    )
+
+    assert message == rootagent_module.VALIDATION_ERROR_USER_MESSAGE
+    assert "код продукта" not in message
+    assert "документы" not in message
 
 
 @pytest.mark.unit

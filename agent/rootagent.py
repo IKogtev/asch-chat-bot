@@ -164,7 +164,6 @@ STATE_KEYS_TO_CLEAR = [
     "advisor_search_query", "advisor_client_profile", "advisor_client_profile_json",
     "advisor_dialog_context_json", "advisor_minimum_client_type_confidence",
     "advisor_source_turn", "advisor_updated_at",
-    "advisor_content_repair_raw_json", "advisor_content_repair_error",
     "_advisor_content_result_parsed", "_advisor_result_parsed",
     "advisor_content_result_json", "advisor_ranking_result",
     "advisor_ranking_result_json", "advisor_result_json",
@@ -239,7 +238,6 @@ class RootAgent(BaseAgent):
     product_filter_content_agent: LlmAgent
     product_filter_format_agent: LlmAgent
     advisor_content_agent: LlmAgent
-    advisor_content_repair_agent: LlmAgent
     advisor_format_agent: LlmAgent
     advisor_ranking_service: AdvisorRankingService
     advisor_minimum_client_type_confidence: float
@@ -268,7 +266,6 @@ class RootAgent(BaseAgent):
         product_filter_content_agent: LlmAgent,
         product_filter_format_agent: LlmAgent,
         advisor_content_agent: LlmAgent,
-        advisor_content_repair_agent: LlmAgent,
         advisor_format_agent: LlmAgent,
         advisor_ranking_service: AdvisorRankingService,
         advisor_minimum_client_type_confidence: float = 0.75,
@@ -289,7 +286,6 @@ class RootAgent(BaseAgent):
             product_filter_content_agent=product_filter_content_agent,
             product_filter_format_agent=product_filter_format_agent,
             advisor_content_agent=advisor_content_agent,
-            advisor_content_repair_agent=advisor_content_repair_agent,
             advisor_format_agent=advisor_format_agent,
             advisor_ranking_service=advisor_ranking_service,
             advisor_minimum_client_type_confidence=advisor_minimum_client_type_confidence,
@@ -308,7 +304,6 @@ class RootAgent(BaseAgent):
                 product_filter_content_agent,
                 product_filter_format_agent,
                 advisor_content_agent,
-                advisor_content_repair_agent,
                 advisor_format_agent,
             ],
         )
@@ -3306,36 +3301,18 @@ class RootAgent(BaseAgent):
         )
         log_advisor_input_state(ctx)
 
-        try:
-            async for event in self._run_json_leaf_agent(
-                ctx=ctx,
-                agent=self.advisor_content_agent,
-                output_key="advisor_content_result_json",
-                parsed_state_key="_advisor_content_result_parsed",
-                validator=validate_advisor_content_result,
-                log_label="advisor_content_result_json",
-                validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-                tool_calls_state_key="_advisor_content_tool_calls",
-                tool_events_state_key="_advisor_content_tool_events",
-            ):
-                yield event
-        except AgentValidationFailure as exc:
-            if "validation failed at contract" not in exc.validation_error:
-                raise
-            ctx.session.state["advisor_content_repair_raw_json"] = exc.raw
-            ctx.session.state["advisor_content_repair_error"] = exc.validation_error
-            async for event in self._run_json_leaf_agent(
-                ctx=ctx,
-                agent=self.advisor_content_repair_agent,
-                output_key="advisor_content_result_json",
-                parsed_state_key="_advisor_content_result_parsed",
-                validator=validate_advisor_content_result,
-                log_label="advisor_content_repair_result_json",
-                validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
-                validation_tool_calls_state_key="_advisor_content_tool_calls",
-                validation_tool_events_state_key="_advisor_content_tool_events",
-            ):
-                yield event
+        async for event in self._run_json_leaf_agent(
+            ctx=ctx,
+            agent=self.advisor_content_agent,
+            output_key="advisor_content_result_json",
+            parsed_state_key="_advisor_content_result_parsed",
+            validator=validate_advisor_content_result,
+            log_label="advisor_content_result_json",
+            validation_error_user_message=VALIDATION_ERROR_USER_MESSAGE,
+            tool_calls_state_key="_advisor_content_tool_calls",
+            tool_events_state_key="_advisor_content_tool_events",
+        ):
+            yield event
 
         content = AdvisorContentResult.model_validate(
             self._get_required_state_dict(ctx, "_advisor_content_result_parsed")

@@ -104,9 +104,6 @@ def _load_start_agent_module(monkeypatch):
     advisor_content_stub.create_advisor_content_agent = _agent_factory(
         "advisor_content_agent"
     )
-    advisor_content_stub.create_advisor_content_repair_agent = _agent_factory(
-        "advisor_content_repair_agent"
-    )
     advisor_format_stub = types.ModuleType("agent.agents.advisor_format_agent")
     advisor_format_stub.create_advisor_format_agent = _agent_factory(
         "advisor_format_agent"
@@ -176,10 +173,6 @@ def test_start_agent_exports_app(monkeypatch) -> None:
         == "product_filter_format_agent"
     )
     assert module.root_agent.advisor_content_agent.name == "advisor_content_agent"
-    assert (
-        module.root_agent.advisor_content_repair_agent.name
-        == "advisor_content_repair_agent"
-    )
     assert module.root_agent.advisor_format_agent.name == "advisor_format_agent"
     assert module.root_agent.advisor_ranking_service.policy.version == "test-pilot-v1"
     assert (

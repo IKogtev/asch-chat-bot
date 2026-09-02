@@ -83,7 +83,12 @@ def _context() -> dict[str, object]:
         "advisor_updated_at": NOW.isoformat(),
         "_advisor_executed_sql": [
             "SELECT * FROM typical_client_profiles",
-            "SELECT * FROM products",
+            (
+                "SELECT code, name, is_active, capital_loss_risk, "
+                "product_risk_level, income, currency, product_type, term, "
+                "liquidity, contribution_type, payout_type FROM products "
+                "WHERE is_active = 'Действующий'"
+            ),
         ],
     }
 
@@ -219,6 +224,36 @@ def test_advisor_content_contract_rejects_fabricated_provenance(field: str) -> N
 
 
 @pytest.mark.unit
+def test_advisor_content_contract_rejects_logged_invalid_rule_and_provenance_shape() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["goal"]["source_turn"] = None
+    payload["profile_patch"]["goal"]["updated_at"] = None
+    payload["selected_client_type"]["definition"]["required_properties"] = [
+        "Статус: Действующий"
+    ]
+    payload["selected_client_type"]["evidence"][0]["source_turn"] = None
+
+    with pytest.raises(ValueError, match="validation errors"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_age_with_units() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"] = {
+        "client_age": {
+            "value": "45 лет",
+            "source_turn": "turn-1",
+            "updated_at": NOW.isoformat(),
+            "origin": "explicit",
+        }
+    }
+
+    with pytest.raises(ValueError, match="valid integer"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
 def test_advisor_content_contract_requires_one_valid_clarification() -> None:
     payload = _candidate_payload()
     payload.update(
@@ -238,7 +273,13 @@ def test_advisor_content_contract_requires_current_run_sql_for_both_sources() ->
     with pytest.raises(ValueError, match="typical_client_profiles"):
         validate_advisor_content_result(
             _candidate_payload(),
-            {**_context(), "_advisor_executed_sql": ["SELECT * FROM products"]},
+            {
+                **_context(),
+                "_advisor_executed_sql": [
+                    "SELECT code, name, is_active FROM products "
+                    "WHERE is_active = 'Действующий'"
+                ],
+            },
         )
 
     with pytest.raises(ValueError, match="products"):
@@ -249,6 +290,45 @@ def test_advisor_content_contract_requires_current_run_sql_for_both_sources() ->
                 "_advisor_executed_sql": ["SELECT * FROM typical_client_profiles"],
             },
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("sql", "error"),
+    [
+        (
+            "SELECT * FROM products WHERE is_active = 'Действующий'",
+            "wildcard projection",
+        ),
+        (
+            "SELECT code, name, is_active FROM products",
+            "active status",
+        ),
+    ],
+)
+def test_advisor_content_contract_requires_narrow_active_products_sql(
+    sql: str,
+    error: str,
+) -> None:
+    context = {
+        **_context(),
+        "_advisor_executed_sql": [
+            "SELECT * FROM typical_client_profiles",
+            sql,
+        ],
+    }
+
+    with pytest.raises(ValueError, match=error):
+        validate_advisor_content_result(_candidate_payload(), context)
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_inactive_candidates() -> None:
+    payload = _candidate_payload()
+    payload["products"][0]["is_active"] = "Архивный"
+
+    with pytest.raises(ValueError, match="only active products"):
+        validate_advisor_content_result(payload, _context())
 
 
 @pytest.mark.unit
@@ -389,6 +469,14 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "ровно один короткий вопрос" in content_prompt
     assert "Не фильтруй, не оценивай" in content_prompt
     assert "точное значение `Действующий`" in content_prompt
+    assert "не используй `SELECT *`" in content_prompt
+    assert "WHERE is_active = 'Действующий'" in content_prompt
+    assert "dc_entities" in content_prompt
+    assert "dc_columns" in content_prompt
+    assert "dc_analytics" in content_prompt
+    assert '"product_column"' in content_prompt
+    assert '"expected_values"' in content_prompt
+    assert "JSON-число от 0 до 120" in content_prompt
     assert "client_types_source" not in content_prompt
     assert "products_source" not in content_prompt
     assert "source_row_identity" not in content_prompt
@@ -417,7 +505,16 @@ def test_advisor_prompt_examples_match_content_schema() -> None:
     )
 
     assert len(examples) == 3
-    assert [AdvisorContentResult.model_validate(json.loads(item)).mode for item in examples] == [
+    rendered_examples = [
+        item.replace("{advisor_source_turn}", "turn-1").replace(
+            "{advisor_updated_at}", NOW.isoformat()
+        )
+        for item in examples
+    ]
+    assert [
+        AdvisorContentResult.model_validate(json.loads(item)).mode
+        for item in rendered_examples
+    ] == [
         "candidates",
         "needs_clarification",
         "no_data",
@@ -440,9 +537,6 @@ def test_advisor_agent_factories_follow_product_agent_conventions(monkeypatch) -
     )
 
     content = advisor_content_agent.create_advisor_content_agent(model="content-model")
-    repair = advisor_content_agent.create_advisor_content_repair_agent(
-        model="content-model"
-    )
     formatter = advisor_format_agent.create_advisor_format_agent(model="format-model")
 
     assert content.name == "advisor_content_agent"
@@ -466,11 +560,6 @@ def test_advisor_agent_factories_follow_product_agent_conventions(monkeypatch) -
         content.generate_content_config.temperature
         == advisor_content_agent.ADVISOR_TEMPERATURE
     )
-    assert repair.name == "advisor_content_repair_agent"
-    assert repair.include_contents == "none"
-    assert repair.output_key == "advisor_content_result_json"
-    assert repair.tools == []
-    assert repair.generate_content_config.temperature == 0.0
     assert formatter.name == "advisor_format_agent"
     assert formatter.include_contents == "none"
     assert formatter.output_key == "advisor_result_json"
@@ -483,7 +572,6 @@ def test_advisor_agent_factories_follow_product_agent_conventions(monkeypatch) -
     assert getattr(formatter, "output_schema", None) is None
     assert watched == [
         ("advisor_content_agent_prompt.md", "advisor_content_agent"),
-        ("advisor_content_repair_agent_prompt.md", "advisor_content_repair_agent"),
         ("advisor_format_agent_prompt.md", "advisor_format_agent"),
     ]
 

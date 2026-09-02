@@ -83,11 +83,11 @@ def create_advisor_content_agent(model: LiteLlm) -> LlmAgent:
 
     fallback = """
 You are advisor_content_agent. Return exactly one internal JSON object without Markdown fences.
-Process {advisor_search_query}. The saved typed client profile is {advisor_client_profile_json}. The prior versioned advisor context is {advisor_dialog_context_json}. The current source turn is {advisor_source_turn}, the current update time is {advisor_updated_at}, and the minimum Client Type confidence is {advisor_minimum_client_type_confidence}. Use saved data only as context and extract only a profile_patch supported by the current message. Every supplied field must contain value, the exact current source_turn and updated_at, and origin. Mark a value explicit only when the user stated it directly.
-In every run, query the fixed trusted typical_client_profiles table with read-only execute_sql. Use only rows returned in this run.
+Process {advisor_search_query}. The saved typed client profile is {advisor_client_profile_json}. The prior versioned advisor context is {advisor_dialog_context_json}. The current source turn is {advisor_source_turn}, the current update time is {advisor_updated_at}, and the minimum Client Type confidence is {advisor_minimum_client_type_confidence}. Use saved data only as context and extract only a profile_patch supported by the current message. Every supplied field must contain value, the exact current source_turn and updated_at, and origin. Mark a value explicit only when the user stated it directly. For client_age, return value as a JSON integer from 0 to 120 without words or quotes, for example 45.
+In every run, query the fixed trusted typical_client_profiles table with read-only execute_sql. Use only rows returned in this run. If a technical column or value needs a business description, use search_table, search_column, or search_analytic, which read the dc_entities, dc_columns, and dc_analytics catalog tables.
 Semantically compare all supplied client facts with the descriptive Client Types columns. For candidates mode, return one selected_client_type containing only the complete selected definition from the current SQL result, confidence from 0 to 1, and evidence linking one supplied client field/value/source_turn to one exact table field/value. Never use the four product-rule columns as client-type evidence.
 If confidence is insufficient, return mode needs_clarification, selected_client_type null, at least one top-level missing field, exactly one top-level short question containing one question mark, and no products. Stop before product retrieval.
-When confidence is sufficient, deterministically preserve the selected row's already parsed required_properties, preferred_properties, acceptable_compromises, and contraindications. Query the fixed trusted products table and every product column referenced by those four rule arrays. Execute read-only SQL and return mode candidates with complete code + name + is_active identities and every referenced attribute. Only products whose textual is_active value is exactly "Действующий" are eligible for recommendation.
+When confidence is sufficient, convert each of the selected row's four text rule fields into arrays of objects shaped exactly as {"product_column": "technical_column", "expected_values": ["exact value"]}, without changing values. Query the fixed trusted products table with only code, name, is_active, and the product columns referenced by those four rule arrays; never use SELECT *. The SQL must filter WHERE is_active = 'Действующий'. Return mode candidates with complete code + name + is_active identities and every referenced attribute, and return only products whose textual is_active value is exactly "Действующий".
 Return no_data only after querying typical_client_profiles successfully and either confirming no usable rows or confirming that required catalog data is unavailable. Set selected_client_type to null, include a specific no_data_reason, and return no products.
 Do not rank, score, filter, explain, or format recommendations. Do not invent or rewrite client facts, Client Types rows, rules, products, catalog fields, values, timestamps, or identities. Do not use focus-product or KV values as recommendation inputs.
 """
@@ -113,29 +113,6 @@ Do not rank, score, filter, explain, or format recommendations. Do not invent or
         before_tool_callback=before_tool_debug_trace,
         after_tool_callback=after_tool_debug_trace,
         on_tool_error_callback=on_tool_error_debug_trace,
-    )
-    start_prompt_watcher(prompt_file, agent, logger)
-    return agent
-
-
-def create_advisor_content_repair_agent(model: LiteLlm) -> LlmAgent:
-    """Создает tool-free агент для одной структурной правки advisor JSON."""
-    fallback = """
-You are advisor_content_repair_agent. Correct only the structure of {advisor_content_repair_raw_json} using {advisor_content_repair_error}. Do not call tools, add facts, change SQL-grounded values, or perform new selection. Return exactly one raw JSON object matching the advisor content contract. Use only mode, profile_patch, selected_client_type, missing_fields, clarification_question, products, and no_data_reason. selected_client_type is either null or an object containing only definition, confidence, and evidence. Preserve advisor_source_turn={advisor_source_turn} and advisor_updated_at={advisor_updated_at} exactly.
-"""
-    prompt_file = "advisor_content_repair_agent_prompt.md"
-    agent = LlmAgent(
-        name="advisor_content_repair_agent",
-        model=model,
-        instruction=load_prompt(prompt_file, fallback),
-        tools=[],
-        include_contents="none",
-        output_key="advisor_content_result_json",
-        generate_content_config=GenerateContentConfig(
-            temperature=0.0,
-            presence_penalty=LLM_PRESENCE_PENALTY,
-            max_output_tokens=ADVISOR_MAX_OUTPUT_TOKENS,
-        ),
     )
     start_prompt_watcher(prompt_file, agent, logger)
     return agent

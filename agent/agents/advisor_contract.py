@@ -164,6 +164,30 @@ def _require_current_sql(context: Mapping[str, Any], table: str) -> None:
         raise ValueError(f"Current run requires execute_sql for table {table!r}")
 
 
+def _validate_products_sql(context: Mapping[str, Any]) -> None:
+    """Требует узкий SQL только по действующим продуктам-кандидатам."""
+    table_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(PRODUCTS_TABLE)}(?![A-Za-z0-9_])",
+        re.I,
+    )
+    active_pattern = re.compile(
+        rf"(?:\b[A-Za-z_][A-Za-z0-9_]*\.)?is_active\s*=\s*"
+        rf"(['\"]){re.escape(ACTIVE_PRODUCT_STATUS)}\1",
+        re.I,
+    )
+    product_sql = [
+        sql for sql in _executed_sql_texts(context) if table_pattern.search(sql)
+    ]
+    for sql in product_sql:
+        select_match = re.search(r"\bselect\b(?P<columns>.*?)\bfrom\b", sql, re.I | re.S)
+        if select_match is None or "*" in select_match.group("columns"):
+            raise ValueError("Advisor products SQL must not use wildcard projection")
+        if active_pattern.search(sql) is None:
+            raise ValueError(
+                "Advisor products SQL must filter is_active by the active status"
+            )
+
+
 def _merged_profile(
     result: AdvisorContentResult,
     context: Mapping[str, Any],
@@ -268,6 +292,7 @@ def _validate_content_semantics(
     if result.no_data_reason:
         raise ValueError("Candidate content must not contain no_data_reason")
     _require_current_sql(context, PRODUCTS_TABLE)
+    _validate_products_sql(context)
 
     selected_row = selected.definition
     required_columns = {
@@ -282,6 +307,8 @@ def _validate_content_semantics(
         if rule.product_column != "is_active"
     }
     for product in result.products:
+        if product.is_active != ACTIVE_PRODUCT_STATUS:
+            raise ValueError("Advisor candidates may contain only active products")
         missing_columns = required_columns - set(product.attributes)
         if missing_columns:
             raise ValueError(

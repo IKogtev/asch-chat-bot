@@ -26,10 +26,7 @@ from .agents.product_filter_content_agent import create_product_filter_content_a
 from .agents.product_filter_format_agent import create_product_filter_format_agent
 from .agents.product_info_content_agent import create_product_info_content_agent
 from .agents.product_info_format_agent import create_product_info_format_agent
-from .agents.advisor_content_agent import (
-    create_advisor_content_agent,
-    create_advisor_content_repair_agent,
-)
+from .agents.advisor_content_agent import create_advisor_content_agent
 from .agents.advisor_format_agent import create_advisor_format_agent
 from .advisor_ranking_service import AdvisorRankingService, AdvisorScoringPolicy
 
@@ -52,7 +49,6 @@ def build_agent_chain() -> RootAgent:
     product_filter_content_agent = create_product_filter_content_agent(model)
     product_filter_format_agent = create_product_filter_format_agent(format_model)
     advisor_content_agent = create_advisor_content_agent(model)
-    advisor_content_repair_agent = create_advisor_content_repair_agent(format_model)
     advisor_format_agent = create_advisor_format_agent(format_model)
     advisor_ranking_service = AdvisorRankingService(
         AdvisorScoringPolicy(
@@ -80,7 +76,6 @@ def build_agent_chain() -> RootAgent:
         product_filter_content_agent=product_filter_content_agent,
         product_filter_format_agent=product_filter_format_agent,
         advisor_content_agent=advisor_content_agent,
-        advisor_content_repair_agent=advisor_content_repair_agent,
         advisor_format_agent=advisor_format_agent,
         advisor_ranking_service=advisor_ranking_service,
         advisor_minimum_client_type_confidence=ADVISOR_MINIMUM_CLIENT_TYPE_CONFIDENCE,

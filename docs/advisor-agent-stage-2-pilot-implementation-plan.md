@@ -404,7 +404,6 @@ The response must:
 | `agent/advisor_profile_matcher.py` | Parse Client Types rule columns and deterministically validate the LLM's single selected client type and evidence |
 | `agent/advisor_ranking_service.py` | Deterministic hard filtering, scoring, tie-breaking, and diversity |
 | `kb_storage/prompts/advisor_content/advisor_content_agent_prompt.md` | Profile extraction and grounded catalog-retrieval instructions |
-| `kb_storage/prompts/advisor_content_repair/advisor_content_repair_agent_prompt.md` | One bounded, tool-free structural repair of invalid content JSON |
 | `kb_storage/prompts/advisor_format/advisor_format_agent_prompt.md` | User-facing TOP-3 and clarification formatting instructions |
 | `tests/unit/agent/test_advisor_contract.py` | Contract tests |
 | `tests/unit/agent/test_advisor_profile.py` | Profile merge and clarification tests |
@@ -528,7 +527,7 @@ Implementation status (August 28, 2026): the Phase 1 code is implemented in `age
 7. Add a strict content contract and verify current-run SQL use for `typical_client_profiles`; candidate mode must also verify current-run SQL use for the products table.
 8. Create a no-tool `advisor_format_agent` with temperature `0.0`.
 9. Add a final response contract that preserves the validated client-type selection, exact TOP-3 order, and product identities.
-10. Add prompt fallback text and prompt-watcher registration, matching current conventions, plus one bounded tool-free repair agent for structural contract failures.
+10. Add prompt fallback text and prompt-watcher registration, matching current conventions.
 
 Exit criterion: client-type evaluation cases meet the approved accuracy threshold, and contract tests reject unknown type names, unsupported modes, unsupported evidence, invalid confidence, invalid clarification payloads, invented products, incomplete identities, and reordered recommendations.
 
