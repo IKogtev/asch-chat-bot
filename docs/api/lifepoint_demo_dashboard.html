@@ -136,7 +136,7 @@
       <h2>⚙️ Глобальные настройки окружения</h2>
       <div class="row" style="margin-bottom: 10px;">
         <button class="btn btn-secondary" onclick="applyPreset('local')">🖥️ Пресет: Local</button>
-        <button class="btn btn-secondary" onclick="applyPreset('prod')">🌐 Пресет: Production</button>
+        <button class="btn btn-secondary" onclick="applyPreset('dev')">🌐 Пресет: Dev-стенд</button>
       </div>
       <div class="row">
         <div class="form-group" style="flex: 0.8;">
@@ -279,11 +279,11 @@
       document.getElementById('envKcHost').value = 'localhost:8088';
       document.getElementById('envRealm').value = 'kb-manager-test';
       document.getElementById('envNstHost').value = 'localhost:5000';
-    } else if (preset === 'prod') {
+    } else if (preset === 'dev') {
       document.getElementById('envScheme').value = 'https';
-      document.getElementById('envKcHost').value = 'auth.yourdomain.com';
-      document.getElementById('envRealm').value = 'production';
-      document.getElementById('envNstHost').value = 'api.yourdomain.com';
+      document.getElementById('envKcHost').value = 'id.sandbox-2.wwwnstcloud.ru';
+      document.getElementById('envRealm').value = 'private';
+      document.getElementById('envNstHost').value = 'kb-manager-chatbot-dev.sandbox-2.wwwnstcloud.ru';
     }
     updateCalculatedUrls();
   }
