@@ -367,6 +367,24 @@
           "clientRole": true,
           "containerId": "6e6289b3-fa6e-4dc2-a2ec-a870d63fde97",
           "attributes": {}
+        },
+        {
+          "id": "37299258-087c-4065-bb1f-750a7bf81ceb",
+          "name": "manager",
+          "description": "Роль менеджера",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "6e6289b3-fa6e-4dc2-a2ec-a870d63fde97",
+          "attributes": {}
+        },
+        {
+          "id": "44b8e834-d814-41ec-b7a8-5d3e27dd6a04",
+          "name": "admin",
+          "description": "Роль администратора kb-manager",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "6e6289b3-fa6e-4dc2-a2ec-a870d63fde97",
+          "attributes": {}
         }
       ],
       "account-console": [],
@@ -775,7 +793,7 @@
         "http://localhost:5000/auth/callback"
       ],
       "webOrigins": [
-        "http://localhost:5000/auth/callback"
+        "http://localhost:5000"
       ],
       "notBefore": 0,
       "bearerOnly": false,
@@ -793,7 +811,7 @@
         "standard.token.exchange.enabled": "false",
         "oauth2.jwt.authorization.grant.enabled": "false",
         "login_theme": "kb-manager-theme",
-        "post.logout.redirect.uris": "+##http://localhost:5000/auth/callback",
+        "post.logout.redirect.uris": "+##http://localhost:5000/auth/callback##http://localhost:5000/*",
         "frontchannel.logout.session.required": "true",
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false",
@@ -1948,6 +1966,20 @@
         }
       },
       {
+        "id": "764802a7-15d7-476f-b1b9-dea55be74bba",
+        "name": "fallback-HS256",
+        "providerId": "hmac-generated",
+        "subComponents": {},
+        "config": {
+          "priority": [
+            "-100"
+          ],
+          "algorithm": [
+            "HS256"
+          ]
+        }
+      },
+      {
         "id": "a98c0ee1-59f0-4087-9033-9b943671f3a4",
         "name": "rsa-generated",
         "providerId": "rsa-generated",
@@ -1960,7 +1992,12 @@
       }
     ]
   },
-  "internationalizationEnabled": false,
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "ru",
+    "en"
+  ],
+  "defaultLocale": "ru",
   "authenticationFlows": [
     {
       "id": "509fd3ec-e108-493f-863d-b471c9219856",

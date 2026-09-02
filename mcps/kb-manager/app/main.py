@@ -1128,8 +1128,13 @@ def get_keycloak_user_role(payload: dict) -> Optional[str]:
     """
     Извлекает роль пользователя из Keycloak JWT.
     """
-    realm_access = payload.get("realm_access", {})
-    roles = realm_access.get("roles", [])
+    if not payload:
+        return None
+    resource_access = payload.get("resource_access", {})
+    client_access = resource_access.get(KEYCLOAK_CLIENT_ID, {})
+    roles = client_access.get("roles", [])
+    if not isinstance(roles, list):
+        return None
     if "admin" in roles:
         return "admin"
     if "manager" in roles:
