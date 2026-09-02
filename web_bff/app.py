@@ -218,6 +218,8 @@ def refresh_file_urls(
         if not isinstance(raw_block, dict):
             continue
         block = dict(raw_block)
+        if block.get("type") == "text":
+            block.setdefault("format", "markdown")
         if block.get("type") == "documents" and isinstance(block.get("items"), list):
             items: list[dict[str, Any]] = []
             for raw_item in block["items"]:

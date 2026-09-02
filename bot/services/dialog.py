@@ -38,7 +38,7 @@ def build_blocks(
     blocks: list[dict[str, Any]] = []
     text = (answer or "").strip()
     if text:
-        blocks.append({"type": "text", "content": text})
+        blocks.append({"type": "text", "format": "markdown", "content": text})
     items = [item for item in (documents or []) if item.get("name")]
     if items or total is not None:
         block: dict[str, Any] = {"type": "documents", "items": items}

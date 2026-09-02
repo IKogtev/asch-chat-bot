@@ -7,13 +7,15 @@ from bot.services.dialog import build_blocks, paginate_search, run_turn
 
 @pytest.mark.unit
 def test_build_blocks_text_only() -> None:
-    assert build_blocks("Привет", None) == [{"type": "text", "content": "Привет"}]
+    assert build_blocks("Привет", None) == [
+        {"type": "text", "format": "markdown", "content": "Привет"}
+    ]
 
 
 @pytest.mark.unit
 def test_build_blocks_includes_documents() -> None:
     blocks = build_blocks("ok", [{"name": "a.pdf", "url": "/files/x"}])
-    assert blocks[0] == {"type": "text", "content": "ok"}
+    assert blocks[0] == {"type": "text", "format": "markdown", "content": "ok"}
     assert blocks[1] == {"type": "documents", "items": [{"name": "a.pdf", "url": "/files/x"}]}
 
 
@@ -74,7 +76,9 @@ async def test_run_turn_writes_history_for_channel() -> None:
     assert first.args[:3] == (0, "user", "вопрос")
     assert first.kwargs["channel"] == "web"
     model = store.append.await_args_list[1]
-    assert model.kwargs["blocks"] == [{"type": "text", "content": "ответ"}]
+    assert model.kwargs["blocks"] == [
+        {"type": "text", "format": "markdown", "content": "ответ"}
+    ]
 
 
 @pytest.mark.unit
