@@ -33,6 +33,14 @@ def _load_start_agent_module(monkeypatch):
     config_stub = types.ModuleType("agent.config")
     config_stub.ACTIVE_DOCUMENTS_COLLECTION = "active_docs"
     config_stub.KB_DOCUMENTS_COLLECTION = "kb_docs"
+    config_stub.ADVISOR_COMPROMISE_PENALTY = 20
+    config_stub.ADVISOR_DIVERSITY_MAX_PER_FAMILY = 1
+    config_stub.ADVISOR_DIVERSITY_MAX_SCORE_GAP = 25
+    config_stub.ADVISOR_MINIMUM_CLIENT_TYPE_CONFIDENCE = 0.75
+    config_stub.ADVISOR_MINIMUM_SCORE = 0
+    config_stub.ADVISOR_PREFERRED_WEIGHT = 100
+    config_stub.ADVISOR_SCORING_POLICY_VERSION = "test-pilot-v1"
+    config_stub.ADVISOR_TOP_N = 3
     common_model = object()
     format_model = object()
     owasp_model = object()
@@ -92,6 +100,29 @@ def _load_start_agent_module(monkeypatch):
         "product_filter_format_agent"
     )
 
+    advisor_content_stub = types.ModuleType("agent.agents.advisor_content_agent")
+    advisor_content_stub.create_advisor_content_agent = _agent_factory(
+        "advisor_content_agent"
+    )
+    advisor_format_stub = types.ModuleType("agent.agents.advisor_format_agent")
+    advisor_format_stub.create_advisor_format_agent = _agent_factory(
+        "advisor_format_agent"
+    )
+
+    advisor_ranking_stub = types.ModuleType("agent.advisor_ranking_service")
+
+    class AdvisorScoringPolicy:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class AdvisorRankingService:
+        def __init__(self, policy):
+            self.policy = policy
+
+    advisor_ranking_stub.AdvisorScoringPolicy = AdvisorScoringPolicy
+    advisor_ranking_stub.AdvisorRankingService = AdvisorRankingService
+
     for name, module in {
         "agent": agent_pkg,
         "google.adk.apps.app": app_stub,
@@ -107,6 +138,9 @@ def _load_start_agent_module(monkeypatch):
         "agent.agents.product_info_format_agent": product_info_format_stub,
         "agent.agents.product_filter_content_agent": product_filter_content_stub,
         "agent.agents.product_filter_format_agent": product_filter_format_stub,
+        "agent.agents.advisor_content_agent": advisor_content_stub,
+        "agent.agents.advisor_format_agent": advisor_format_stub,
+        "agent.advisor_ranking_service": advisor_ranking_stub,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -138,6 +172,9 @@ def test_start_agent_exports_app(monkeypatch) -> None:
         module.root_agent.product_filter_format_agent.name
         == "product_filter_format_agent"
     )
+    assert module.root_agent.advisor_content_agent.name == "advisor_content_agent"
+    assert module.root_agent.advisor_format_agent.name == "advisor_format_agent"
+    assert module.root_agent.advisor_ranking_service.policy.version == "test-pilot-v1"
     assert (
         module.root_agent.product_info_content_agent.model
         is module.root_agent.dispatcher_agent.model

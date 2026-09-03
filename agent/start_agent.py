@@ -3,6 +3,14 @@ from google.adk.apps.app import App
 from .rootagent import RootAgent
 from .config import (
     ACTIVE_DOCUMENTS_COLLECTION,
+    ADVISOR_COMPROMISE_PENALTY,
+    ADVISOR_DIVERSITY_MAX_PER_FAMILY,
+    ADVISOR_DIVERSITY_MAX_SCORE_GAP,
+    ADVISOR_MINIMUM_CLIENT_TYPE_CONFIDENCE,
+    ADVISOR_MINIMUM_SCORE,
+    ADVISOR_PREFERRED_WEIGHT,
+    ADVISOR_SCORING_POLICY_VERSION,
+    ADVISOR_TOP_N,
     KB_DOCUMENTS_COLLECTION,
     build_common_model,
     build_format_model,
@@ -18,6 +26,9 @@ from .agents.product_filter_content_agent import create_product_filter_content_a
 from .agents.product_filter_format_agent import create_product_filter_format_agent
 from .agents.product_info_content_agent import create_product_info_content_agent
 from .agents.product_info_format_agent import create_product_info_format_agent
+from .agents.advisor_content_agent import create_advisor_content_agent
+from .agents.advisor_format_agent import create_advisor_format_agent
+from .advisor_ranking_service import AdvisorRankingService, AdvisorScoringPolicy
 
 def build_agent_chain() -> RootAgent:
     """
@@ -37,6 +48,19 @@ def build_agent_chain() -> RootAgent:
     product_info_format_agent = create_product_info_format_agent(format_model)
     product_filter_content_agent = create_product_filter_content_agent(model)
     product_filter_format_agent = create_product_filter_format_agent(format_model)
+    advisor_content_agent = create_advisor_content_agent(model)
+    advisor_format_agent = create_advisor_format_agent(format_model)
+    advisor_ranking_service = AdvisorRankingService(
+        AdvisorScoringPolicy(
+            version=ADVISOR_SCORING_POLICY_VERSION,
+            preferred_weight=ADVISOR_PREFERRED_WEIGHT,
+            compromise_penalty=ADVISOR_COMPROMISE_PENALTY,
+            minimum_score=ADVISOR_MINIMUM_SCORE,
+            diversity_max_score_gap=ADVISOR_DIVERSITY_MAX_SCORE_GAP,
+            diversity_max_per_family=ADVISOR_DIVERSITY_MAX_PER_FAMILY,
+            top_n=ADVISOR_TOP_N,
+        )
+    )
     dispatcher_agent = create_dispatcher_agent(model)
     owasp_agent = create_owasp_agent(owasp_model)
     smalltalk_agent = create_smalltalk_agent(model)
@@ -51,6 +75,10 @@ def build_agent_chain() -> RootAgent:
         product_info_format_agent=product_info_format_agent,
         product_filter_content_agent=product_filter_content_agent,
         product_filter_format_agent=product_filter_format_agent,
+        advisor_content_agent=advisor_content_agent,
+        advisor_format_agent=advisor_format_agent,
+        advisor_ranking_service=advisor_ranking_service,
+        advisor_minimum_client_type_confidence=ADVISOR_MINIMUM_CLIENT_TYPE_CONFIDENCE,
         kb_collection=KB_DOCUMENTS_COLLECTION,
     )
 

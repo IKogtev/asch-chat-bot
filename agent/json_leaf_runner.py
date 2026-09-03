@@ -16,6 +16,13 @@ from pydantic import BaseModel
 from utils.logger import setup_logger
 from .doc_search_kb_context import format_kb_hits_summary, parse_kb_search_hits
 from .doc_search_validation import DocSearchRetryableValidationError
+from .debug_trace import (
+    classify_tool_call_text,
+    debug_trace_enabled,
+    summarize_adk_event,
+    trace_debug,
+    trace_debug_safely,
+)
 from .helpers import extract_json, truncate_for_log
 from .stage_metrics import (
     event_has_model_output,
@@ -340,6 +347,16 @@ async def run_json_leaf_agent(
     async for event in agent.run_async(ctx):
         tool_calls.extend(_extract_function_call_names(event))
         tool_event_summaries.extend(_extract_tool_event_summaries(event))
+        agent_name = str(getattr(agent, "name", "") or "")
+        if debug_trace_enabled(agent_name):
+            trace_debug_safely(
+                "adk_event",
+                lambda: {
+                    "log_label": log_label,
+                    "event_summary": summarize_adk_event(event),
+                },
+                agent_name=agent_name,
+            )
         # блок диагностики мыслей
         SHOW_LLM_RAW = os.getenv("SHOW_LLM_RAW", "False").lower() == "true"
         if SHOW_LLM_RAW:
@@ -436,6 +453,17 @@ async def run_json_leaf_agent(
         json.dumps(tool_event_summaries, ensure_ascii=False),
     )
     logger.debug("%s raw: %s", log_label, truncate_for_log(raw_payload, 500))
+    tool_call_text_diagnostic = classify_tool_call_text(raw_payload)
+    if tool_call_text_diagnostic["classification"] != "none":
+        trace_debug(
+            "tool_call_text_diagnostic",
+            {
+                "log_label": log_label,
+                "structured_tool_call_count": len(tool_calls),
+                **tool_call_text_diagnostic,
+            },
+            agent_name=str(getattr(agent, "name", "") or ""),
+        )
 
     _t_parse0 = time.monotonic() if _doc_timing else None
     try:

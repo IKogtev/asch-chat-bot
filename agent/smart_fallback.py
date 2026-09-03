@@ -65,6 +65,10 @@ def _generate_validation_fallback(
     # === KB_ANSWER ===
     if agent_name == "kb_answer":
         return _kb_answer_validation_fallback(user_text, context)
+
+    # === ADVISOR ===
+    if agent_name == "advisor":
+        return VALIDATION_ERROR_USER_MESSAGE
     
     # === PRODUCT AGENTS ===
     if agent_name in {"product_info", "product_filter"}:

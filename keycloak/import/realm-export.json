@@ -359,7 +359,34 @@
       "security-admin-console": [],
       "admin-cli": [],
       "lifepoint": [],
-      "kb-manager-ui": [],
+      "kb-manager-ui": [
+        {
+          "id": "262cdf9f-4a65-4318-adb9-2bdf91a00341",
+          "name": "uma_protection",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "6e6289b3-fa6e-4dc2-a2ec-a870d63fde97",
+          "attributes": {}
+        },
+        {
+          "id": "37299258-087c-4065-bb1f-750a7bf81ceb",
+          "name": "manager",
+          "description": "Роль менеджера",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "6e6289b3-fa6e-4dc2-a2ec-a870d63fde97",
+          "attributes": {}
+        },
+        {
+          "id": "44b8e834-d814-41ec-b7a8-5d3e27dd6a04",
+          "name": "admin",
+          "description": "Роль администратора kb-manager",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "6e6289b3-fa6e-4dc2-a2ec-a870d63fde97",
+          "attributes": {}
+        }
+      ],
       "account-console": [],
       "broker": [
         {
@@ -761,11 +788,12 @@
       "enabled": true,
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
+      "secret": "**********",
       "redirectUris": [
         "http://localhost:5000/auth/callback"
       ],
       "webOrigins": [
-        "http://localhost:5000/auth/callback"
+        "http://localhost:5000"
       ],
       "notBefore": 0,
       "bearerOnly": false,
@@ -774,7 +802,7 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "publicClient": true,
+      "publicClient": false,
       "frontchannelLogout": true,
       "protocol": "openid-connect",
       "attributes": {
@@ -782,7 +810,8 @@
         "client.secret.creation.time": "1787928723",
         "standard.token.exchange.enabled": "false",
         "oauth2.jwt.authorization.grant.enabled": "false",
-        "post.logout.redirect.uris": "+",
+        "login_theme": "kb-manager-theme",
+        "post.logout.redirect.uris": "+##http://localhost:5000/auth/callback##http://localhost:5000/*",
         "frontchannel.logout.session.required": "true",
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false",
@@ -848,12 +877,12 @@
         "/*"
       ],
       "webOrigins": [
-        "/*"
+        "*"
       ],
       "notBefore": 0,
       "bearerOnly": false,
       "consentRequired": false,
-      "standardFlowEnabled": false,
+      "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
@@ -861,15 +890,18 @@
       "frontchannelLogout": true,
       "protocol": "openid-connect",
       "attributes": {
-        "realm_client": "false",
-        "oidc.ciba.grant.enabled": "false",
+        "logout.confirmation.enabled": "false",
         "client.secret.creation.time": "1787740854",
-        "backchannel.logout.session.required": "true",
         "standard.token.exchange.enabled": "false",
         "oauth2.jwt.authorization.grant.enabled": "false",
         "post.logout.redirect.uris": "+",
+        "frontchannel.logout.session.required": "true",
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false",
+        "realm_client": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "display.on.consent.screen": "false",
         "dpop.bound.access.tokens": "false"
       },
       "authenticationFlowBindingOverrides": {},
@@ -1807,14 +1839,14 @@
         "subComponents": {},
         "config": {
           "allowed-protocol-mapper-types": [
-            "oidc-full-name-mapper",
-            "saml-user-attribute-mapper",
-            "oidc-usermodel-attribute-mapper",
             "oidc-usermodel-property-mapper",
             "saml-role-list-mapper",
-            "saml-user-property-mapper",
+            "oidc-address-mapper",
+            "oidc-usermodel-attribute-mapper",
             "oidc-sha256-pairwise-sub-mapper",
-            "oidc-address-mapper"
+            "saml-user-attribute-mapper",
+            "oidc-full-name-mapper",
+            "saml-user-property-mapper"
           ]
         }
       },
@@ -1841,13 +1873,13 @@
         "subComponents": {},
         "config": {
           "allowed-protocol-mapper-types": [
+            "saml-user-property-mapper",
+            "oidc-address-mapper",
             "oidc-usermodel-attribute-mapper",
             "saml-user-attribute-mapper",
-            "saml-user-property-mapper",
-            "saml-role-list-mapper",
             "oidc-usermodel-property-mapper",
-            "oidc-address-mapper",
             "oidc-sha256-pairwise-sub-mapper",
+            "saml-role-list-mapper",
             "oidc-full-name-mapper"
           ]
         }
@@ -1934,6 +1966,20 @@
         }
       },
       {
+        "id": "764802a7-15d7-476f-b1b9-dea55be74bba",
+        "name": "fallback-HS256",
+        "providerId": "hmac-generated",
+        "subComponents": {},
+        "config": {
+          "priority": [
+            "-100"
+          ],
+          "algorithm": [
+            "HS256"
+          ]
+        }
+      },
+      {
         "id": "a98c0ee1-59f0-4087-9033-9b943671f3a4",
         "name": "rsa-generated",
         "providerId": "rsa-generated",
@@ -1946,7 +1992,12 @@
       }
     ]
   },
-  "internationalizationEnabled": false,
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "ru",
+    "en"
+  ],
+  "defaultLocale": "ru",
   "authenticationFlows": [
     {
       "id": "509fd3ec-e108-493f-863d-b471c9219856",

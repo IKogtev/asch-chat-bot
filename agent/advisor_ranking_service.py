@@ -9,7 +9,7 @@ from typing_extensions import Annotated
 from agent.advisor_profile_matcher import (
     AdvisorClientTypeDefinition,
     AdvisorClientTypeEvidence,
-    AdvisorClientTypeSelection,
+    AdvisorSelectedClientType,
 )
 from utils.client_types import ClientTypeRule
 
@@ -167,9 +167,7 @@ class AdvisorRankingResult(BaseModel):
 
     # Основной тип клиента, использованный для правил. Пример: «Умеренный».
     primary_client_type: NonEmptyText
-    # Необязательный дополнительный тип смешанного профиля. Пример: «Консервативный».
-    secondary_client_type: str | None = None
-    # Проверенные доказательства выбора основного и дополнительного типов.
+    # Проверенные доказательства выбора типа клиента.
     match_evidence: tuple[AdvisorClientTypeEvidence, ...] = ()
     # Прошедшие жесткие правила и минимальный порог продукты в порядке балла.
     accepted_candidates: tuple[AdvisorRankedProduct, ...]
@@ -208,8 +206,7 @@ class AdvisorRankingService:
         self,
         *,
         products: list[AdvisorProductFacts],
-        primary_client_type: AdvisorClientTypeDefinition,
-        selection: AdvisorClientTypeSelection | None = None,
+        selected_client_type: AdvisorSelectedClientType,
     ) -> AdvisorRankingResult:
         """Выполняет полный цикл фильтрации и ранжирования.
 
@@ -220,20 +217,15 @@ class AdvisorRankingService:
 
         Аргументы:
             products: Проверенные факты о продуктах-кандидатах.
-            primary_client_type: Предварительно выбранный основной тип клиента.
-            selection: Проверенный результат LLM-выбора типа, если он доступен.
+            selected_client_type: Проверенный единственный тип клиента.
 
         Возвращает:
             Полный результат с кандидатами, исключениями, TOP и объяснениями.
 
         Исключения:
-            ValueError: Если основной тип не совпадает с переданным выбором LLM.
+            ValueError: Если данные выбранного типа нарушают контракт.
         """
-        if selection and (
-            selection.primary_type is None
-            or selection.primary_type.profile_name != primary_client_type.profile_name
-        ):
-            raise ValueError("Ranking Client Type does not match the validated selection")
+        primary_client_type = selected_client_type.definition
 
         excluded: list[AdvisorExclusion] = []
         accepted: list[AdvisorRankedProduct] = []
@@ -271,18 +263,9 @@ class AdvisorRankingService:
         )
         top_products, replacements = self._select_diverse(accepted)
 
-        primary_match = selection.primary_type if selection else None
-        secondary_match = selection.secondary_type if selection else None
-        evidence = tuple(primary_match.evidence) if primary_match else ()
-        if secondary_match:
-            evidence += tuple(secondary_match.evidence)
-
         return AdvisorRankingResult(
             primary_client_type=primary_client_type.profile_name,
-            secondary_client_type=(
-                secondary_match.profile_name if secondary_match else None
-            ),
-            match_evidence=evidence,
+            match_evidence=tuple(selected_client_type.evidence),
             accepted_candidates=tuple(accepted),
             excluded_candidates=tuple(excluded),
             top_products=tuple(top_products),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -9,8 +11,7 @@ import pytest
 from agent.advisor_profile import AdvisorClientProfile, AdvisorProfileField
 from agent.advisor_profile_matcher import (
     AdvisorClientTypeEvidence,
-    AdvisorClientTypeMatch,
-    AdvisorClientTypeSelection,
+    AdvisorSelectedClientType,
 )
 from agent.advisor_ranking_service import (
     AdvisorProductFacts,
@@ -21,6 +22,7 @@ from agent.advisor_ranking_service import (
 from agent.agents import advisor_content_agent, advisor_format_agent
 from agent.agents.advisor_content_agent import ADVISOR_TOOL_FILTER
 from agent.agents.advisor_contract import (
+    AdvisorContentResult,
     validate_advisor_content_result,
     validate_advisor_final_result,
 )
@@ -55,11 +57,12 @@ def _profile() -> AdvisorClientProfile:
     )
 
 
-def _selection(*, profile_name: str = "Консервативный", confidence: float = 0.9):
-    """Создает selection с доказательством из реальной строки workbook."""
+def _selected(*, profile_name: str = "Консервативный", confidence: float = 0.9):
+    """Создает единственный выбранный тип из реальной строки workbook."""
     row = next(item for item in _definitions() if item.profile_name == "Консервативный")
-    match = AdvisorClientTypeMatch(
-        profile_name=profile_name,
+    definition = row.model_copy(update={"profile_name": profile_name})
+    return AdvisorSelectedClientType(
+        definition=definition,
         confidence=confidence,
         evidence=(
             AdvisorClientTypeEvidence(
@@ -71,17 +74,21 @@ def _selection(*, profile_name: str = "Консервативный", confidence
             ),
         ),
     )
-    return AdvisorClientTypeSelection(mode="selected", primary_type=match)
-
-
 def _context() -> dict[str, object]:
     """Возвращает validation context с SQL только текущего запуска."""
     return {
         "advisor_client_profile": AdvisorClientProfile(),
         "advisor_minimum_client_type_confidence": 0.75,
+        "advisor_source_turn": "turn-1",
+        "advisor_updated_at": NOW.isoformat(),
         "_advisor_executed_sql": [
             "SELECT * FROM typical_client_profiles",
-            "SELECT * FROM products",
+            (
+                "SELECT code, name, is_active, capital_loss_risk, "
+                "product_risk_level, income, currency, product_type, term, "
+                "liquidity, contribution_type, payout_type FROM products "
+                "WHERE is_active = 'Действующий'"
+            ),
         ],
     }
 
@@ -104,8 +111,7 @@ def _candidate_payload() -> dict[str, object]:
     return {
         "mode": "candidates",
         "profile_patch": _profile().model_dump(mode="json"),
-        "client_types": [row.model_dump(mode="json") for row in definitions],
-        "client_type_selection": _selection().model_dump(mode="json"),
+        "selected_client_type": _selected().model_dump(mode="json"),
         "missing_fields": [],
         "clarification_question": None,
         "products": [
@@ -157,7 +163,7 @@ def test_advisor_content_contract_accepts_grounded_candidates() -> None:
     result = validate_advisor_content_result(_candidate_payload(), _context())
 
     assert result["mode"] == "candidates"
-    assert result["client_type_selection"]["primary_type"]["profile_name"] == "Консервативный"
+    assert result["selected_client_type"]["definition"]["profile_name"] == "Консервативный"
     assert result["products"][0]["code"] == "P-1"
 
 
@@ -172,27 +178,25 @@ def test_advisor_content_contract_rejects_unsupported_modes(mode: str) -> None:
 
 
 @pytest.mark.unit
-def test_advisor_content_contract_rejects_unknown_type_name() -> None:
+def test_advisor_content_contract_rejects_description_row() -> None:
     payload = _candidate_payload()
-    payload["client_type_selection"] = _selection(
-        profile_name="Неизвестный"
+    payload["selected_client_type"] = _selected(
+        profile_name="Тип профиля"
     ).model_dump(mode="json")
 
-    with pytest.raises(ValueError, match="Unknown selected Client Type"):
+    with pytest.raises(ValueError, match="description row"):
         validate_advisor_content_result(payload, _context())
 
 
 @pytest.mark.unit
 def test_advisor_content_contract_rejects_unsupported_evidence() -> None:
     payload = _candidate_payload()
-    selection = _selection()
-    evidence = selection.primary_type.evidence[0].model_copy(
+    selected = _selected()
+    evidence = selected.evidence[0].model_copy(
         update={"client_value": "Несуществующий факт"}
     )
-    selection.primary_type = selection.primary_type.model_copy(
-        update={"evidence": (evidence,)}
-    )
-    payload["client_type_selection"] = selection.model_dump(mode="json")
+    selected = selected.model_copy(update={"evidence": (evidence,)})
+    payload["selected_client_type"] = selected.model_dump(mode="json")
 
     with pytest.raises(ValueError, match="does not match client field"):
         validate_advisor_content_result(payload, _context())
@@ -201,10 +205,51 @@ def test_advisor_content_contract_rejects_unsupported_evidence() -> None:
 @pytest.mark.unit
 def test_advisor_content_contract_rejects_invalid_confidence() -> None:
     payload = _candidate_payload()
-    selection = payload["client_type_selection"]
-    selection["primary_type"]["confidence"] = 1.1
+    payload["selected_client_type"]["confidence"] = 1.1
 
     with pytest.raises(ValueError, match="less than or equal to 1"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["source_turn", "updated_at"])
+def test_advisor_content_contract_rejects_fabricated_provenance(field: str) -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["goal"][field] = (
+        "another-turn" if field == "source_turn" else "2026-08-30T00:00:00Z"
+    )
+
+    with pytest.raises(ValueError, match="current advisor"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_logged_invalid_rule_and_provenance_shape() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["goal"]["source_turn"] = None
+    payload["profile_patch"]["goal"]["updated_at"] = None
+    payload["selected_client_type"]["definition"]["required_properties"] = [
+        "Статус: Действующий"
+    ]
+    payload["selected_client_type"]["evidence"][0]["source_turn"] = None
+
+    with pytest.raises(ValueError, match="validation errors"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_age_with_units() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"] = {
+        "client_age": {
+            "value": "45 лет",
+            "source_turn": "turn-1",
+            "updated_at": NOW.isoformat(),
+            "origin": "explicit",
+        }
+    }
+
+    with pytest.raises(ValueError, match="valid integer"):
         validate_advisor_content_result(payload, _context())
 
 
@@ -213,12 +258,7 @@ def test_advisor_content_contract_requires_one_valid_clarification() -> None:
     payload = _candidate_payload()
     payload.update(
         mode="needs_clarification",
-        client_type_selection={
-            **_selection(confidence=0.5).model_dump(mode="json"),
-            "mode": "needs_clarification",
-            "missing_fields": ["term_months"],
-            "clarification_question": "На какой срок планируется вложение? Когда?",
-        },
+        selected_client_type=None,
         missing_fields=["term_months"],
         clarification_question="На какой срок планируется вложение? Когда?",
         products=[],
@@ -229,11 +269,38 @@ def test_advisor_content_contract_requires_one_valid_clarification() -> None:
 
 
 @pytest.mark.unit
+def test_advisor_content_contract_uses_client_profile_names_for_missing_fields() -> None:
+    payload = _candidate_payload()
+    payload.update(
+        mode="needs_clarification",
+        profile_patch={},
+        selected_client_type=None,
+        missing_fields=["goal"],
+        clarification_question="Какова финансовая цель клиента?",
+        products=[],
+    )
+
+    result = validate_advisor_content_result(payload, _context())
+
+    assert result["missing_fields"] == ["goal"]
+
+    payload["missing_fields"] = ["client_goal"]
+    with pytest.raises(ValueError, match="Unknown missing client field: 'client_goal'"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
 def test_advisor_content_contract_requires_current_run_sql_for_both_sources() -> None:
     with pytest.raises(ValueError, match="typical_client_profiles"):
         validate_advisor_content_result(
             _candidate_payload(),
-            {**_context(), "_advisor_executed_sql": ["SELECT * FROM products"]},
+            {
+                **_context(),
+                "_advisor_executed_sql": [
+                    "SELECT code, name, is_active FROM products "
+                    "WHERE is_active = 'Действующий'"
+                ],
+            },
         )
 
     with pytest.raises(ValueError, match="products"):
@@ -244,6 +311,45 @@ def test_advisor_content_contract_requires_current_run_sql_for_both_sources() ->
                 "_advisor_executed_sql": ["SELECT * FROM typical_client_profiles"],
             },
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("sql", "error"),
+    [
+        (
+            "SELECT * FROM products WHERE is_active = 'Действующий'",
+            "wildcard projection",
+        ),
+        (
+            "SELECT code, name, is_active FROM products",
+            "active status",
+        ),
+    ],
+)
+def test_advisor_content_contract_requires_narrow_active_products_sql(
+    sql: str,
+    error: str,
+) -> None:
+    context = {
+        **_context(),
+        "_advisor_executed_sql": [
+            "SELECT * FROM typical_client_profiles",
+            sql,
+        ],
+    }
+
+    with pytest.raises(ValueError, match=error):
+        validate_advisor_content_result(_candidate_payload(), context)
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_inactive_candidates() -> None:
+    payload = _candidate_payload()
+    payload["products"][0]["is_active"] = "Архивный"
+
+    with pytest.raises(ValueError, match="only active products"):
+        validate_advisor_content_result(payload, _context())
 
 
 @pytest.mark.unit
@@ -280,7 +386,6 @@ def test_advisor_final_contract_preserves_ranked_products() -> None:
         "mode": "recommendation",
         "message": "Варианты для проверки менеджером.",
         "primary_client_type": "Консервативный",
-        "secondary_client_type": None,
         "products": [
             {
                 "code": item.product.code,
@@ -309,7 +414,6 @@ def test_advisor_final_contract_rejects_inactive_ranked_product() -> None:
                 "mode": "recommendation",
                 "message": "Рекомендация.",
                 "primary_client_type": "Консервативный",
-                "secondary_client_type": None,
                 "products": [
                     {
                         "code": item.product.code,
@@ -352,7 +456,6 @@ def test_advisor_final_contract_rejects_invented_or_reordered_products(
                 "mode": "recommendation",
                 "message": "Рекомендация.",
                 "primary_client_type": "Консервативный",
-                "secondary_client_type": None,
                 "products": products,
             },
             {"advisor_ranking_result": ranking},
@@ -387,11 +490,74 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "ровно один короткий вопрос" in content_prompt
     assert "Не фильтруй, не оценивай" in content_prompt
     assert "точное значение `Действующий`" in content_prompt
+    assert "не используй `SELECT *`" in content_prompt
+    assert "WHERE is_active = 'Действующий'" in content_prompt
+    assert "dc_entities" in content_prompt
+    assert "dc_columns" in content_prompt
+    assert "dc_analytics" in content_prompt
+    assert '"product_column"' in content_prompt
+    assert '"expected_values"' in content_prompt
+    assert "JSON-число от 0 до 120" in content_prompt
+    assert "{advisor_profile_field_names_json}" in content_prompt
+    assert "{advisor_profile_field_names_json}" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "Client Types table column name in missing_fields" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "имена колонок таблицы Client Types" in content_prompt
     assert "client_types_source" not in content_prompt
     assert "products_source" not in content_prompt
     assert "source_row_identity" not in content_prompt
+    assert '"secondary_type":' not in content_prompt
+    assert '"secondary_client_type":' not in format_prompt
+    assert '"selected_client_type"' in content_prompt
+    assert '"definition"' in content_prompt
+    assert '"client_type_selection"' not in content_prompt
     assert "исходный порядок `top_products`" in format_prompt
     assert "Запрещено добавлять, удалять, заменять или переставлять продукты" in format_prompt
+    assert "code, name, is_active, commission" in content_prompt
+    assert '"commission": "значение из SQL"' in content_prompt
+    assert "<номер списка>. <code> <name> (КВ <commission>%)" in format_prompt
+    assert "1. NNNN Юнит Линк Двойной доход (КВ K1%)" in format_prompt
+    assert "code, name, is_active, commission" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "<list number>. <code> <name> (КВ <attributes.commission>%)" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+
+
+@pytest.mark.unit
+def test_advisor_prompt_examples_match_content_schema() -> None:
+    prompt = (
+        REPO_ROOT
+        / "kb_storage"
+        / "prompts"
+        / "advisor_content"
+        / "advisor_content_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+    examples = re.findall(
+        r"`(?:candidates|needs_clarification|no_data)`:\s*```json\s*(\{.*?\})\s*```",
+        prompt,
+        flags=re.DOTALL,
+    )
+
+    assert len(examples) == 3
+    rendered_examples = [
+        item.replace("{advisor_source_turn}", "turn-1").replace(
+            "{advisor_updated_at}", NOW.isoformat()
+        )
+        for item in examples
+    ]
+    assert [
+        AdvisorContentResult.model_validate(json.loads(item)).mode
+        for item in rendered_examples
+    ] == [
+        "candidates",
+        "needs_clarification",
+        "no_data",
+    ]
 
 
 @pytest.mark.unit
@@ -417,6 +583,13 @@ def test_advisor_agent_factories_follow_product_agent_conventions(monkeypatch) -
     assert content.output_key == "advisor_content_result_json"
     assert len(content.tools) == 1
     assert content.tools[0]._mcp_tool_filter == ADVISOR_TOOL_FILTER
+    assert content.tools[0]._trace_agent_name == "advisor_content_agent"
+    assert content.before_model_callback is advisor_content_agent.before_model_debug_trace
+    assert content.after_model_callback is advisor_content_agent.after_model_debug_trace
+    assert content.on_model_error_callback is advisor_content_agent.on_model_error_debug_trace
+    assert content.before_tool_callback is advisor_content_agent.before_tool_debug_trace
+    assert content.after_tool_callback is advisor_content_agent.after_tool_debug_trace
+    assert content.on_tool_error_callback is advisor_content_agent.on_tool_error_debug_trace
     assert getattr(content, "output_schema", None) is None
     assert (
         content.generate_content_config.max_output_tokens
@@ -446,6 +619,9 @@ def test_advisor_agent_factories_follow_product_agent_conventions(monkeypatch) -
 def test_compose_exposes_advisor_runtime_settings() -> None:
     """Проверяет Advisor settings в обоих Compose runtime-сервисах."""
     compose = (REPO_ROOT / "docker-compose.yaml").read_text(encoding="utf-8")
+
+    assert compose.count("LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-true}") == 2
+    assert compose.count("LLM_TRACE_AGENTS=${LLM_TRACE_AGENTS:-advisor_content_agent}") == 2
 
     assert compose.count("ADVISOR_TEMPERATURE=0.5") == 2
     assert (

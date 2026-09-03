@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 import os
 import warnings
@@ -57,7 +58,27 @@ KB_ANSWER_TEMPERATURE = float(os.getenv("KB_ANSWER_TEMPERATURE", ROOT_TEMPERATUR
 SMALLTALK_TEMPERATURE = float(os.getenv("SMALLTALK_TEMPERATURE", ROOT_TEMPERATURE))
 PRODUCT_INFO_TEMPERATURE = float(os.getenv("PRODUCT_INFO_TEMPERATURE", ROOT_TEMPERATURE))
 PRODUCT_FILTER_TEMPERATURE = float(os.getenv("PRODUCT_FILTER_TEMPERATURE", ROOT_TEMPERATURE))
+# Температура content agent при извлечении профиля и SQL-grounded фактов.
 ADVISOR_TEMPERATURE = float(os.getenv("ADVISOR_TEMPERATURE", ROOT_TEMPERATURE))
+
+# Явная версия и параметры детерминированной политики advisor.
+# Правила пригодности остаются в таблице Client Types, здесь хранятся только веса.
+# Версия политики сохраняется в advisor-контексте для воспроизводимости результата.
+ADVISOR_SCORING_POLICY_VERSION = os.getenv("ADVISOR_SCORING_POLICY_VERSION", "pilot-v1").strip()
+# Максимальная сумма баллов за совпавшие предпочтительные свойства.
+ADVISOR_PREFERRED_WEIGHT = Decimal(os.getenv("ADVISOR_PREFERRED_WEIGHT", "100"))
+# Максимальный штраф за допустимые компромиссы продукта.
+ADVISOR_COMPROMISE_PENALTY = Decimal(os.getenv("ADVISOR_COMPROMISE_PENALTY", "20"))
+# Минимальный итоговый балл продукта для включения в список кандидатов.
+ADVISOR_MINIMUM_SCORE = Decimal(os.getenv("ADVISOR_MINIMUM_SCORE", "0"))
+# Допустимая потеря баллов при замене похожего продукта ради разнообразия TOP.
+ADVISOR_DIVERSITY_MAX_SCORE_GAP = Decimal(os.getenv("ADVISOR_DIVERSITY_MAX_SCORE_GAP", "25"))
+# Максимальное количество продуктов одного семейства в итоговом TOP.
+ADVISOR_DIVERSITY_MAX_PER_FAMILY = int(os.getenv("ADVISOR_DIVERSITY_MAX_PER_FAMILY", "1"))
+# Максимальное количество продуктов в итоговой рекомендации.
+ADVISOR_TOP_N = int(os.getenv("ADVISOR_TOP_N", "3"))
+# Минимальная уверенность выбора Client Type; ниже порога требуется уточнение.
+ADVISOR_MINIMUM_CLIENT_TYPE_CONFIDENCE = float(os.getenv("ADVISOR_MINIMUM_CLIENT_TYPE_CONFIDENCE", "0.75"))
 
 # =============================================================================
 # COLLECTIONS

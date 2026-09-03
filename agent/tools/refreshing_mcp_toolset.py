@@ -1,10 +1,12 @@
 import asyncio
+import time
 from typing import Any, Callable, Optional
 
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.mcp_tool import McpToolset
 
 from utils.logger import setup_logger
+from ..debug_trace import debug_trace_enabled, summarize_tool_definition, trace_debug
 
 logger = setup_logger("refreshing_mcp_toolset", "agent.log")
 
@@ -69,6 +71,7 @@ class RefreshingMcpToolset(BaseToolset):
         tool_filter: Any = None,
         tool_name_prefix: Optional[str] = None,
         mcp_toolset_factory: Callable[..., McpToolset] = McpToolset,
+        trace_agent_name: str | None = None,
         **mcp_toolset_kwargs: Any,
     ) -> None:
         super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -76,6 +79,7 @@ class RefreshingMcpToolset(BaseToolset):
         self._mcp_tool_filter = tool_filter
         self._mcp_tool_name_prefix = tool_name_prefix
         self._mcp_toolset_factory = mcp_toolset_factory
+        self._trace_agent_name = trace_agent_name
         self._mcp_toolset_kwargs = dict(mcp_toolset_kwargs)
         self._toolset = self._create_toolset()
         self._refresh_lock: asyncio.Lock | None = None
@@ -111,8 +115,11 @@ class RefreshingMcpToolset(BaseToolset):
 
     async def get_tools(self, readonly_context: Any = None) -> list[Any]:
         current_toolset = self._toolset
+        started = time.monotonic()
         try:
-            return await current_toolset.get_tools(readonly_context)
+            tools = await current_toolset.get_tools(readonly_context)
+            self._trace_tool_discovery(tools, started=started, refreshed=False)
+            return tools
         except Exception as exc:
             if not is_mcp_session_error(exc):
                 raise
@@ -123,7 +130,36 @@ class RefreshingMcpToolset(BaseToolset):
                 exc_info=True,
             )
             refreshed_toolset = await self._refresh_toolset(current_toolset)
-            return await refreshed_toolset.get_tools(readonly_context)
+            tools = await refreshed_toolset.get_tools(readonly_context)
+            self._trace_tool_discovery(tools, started=started, refreshed=True)
+            return tools
+
+    def _trace_tool_discovery(
+        self,
+        tools: list[Any],
+        *,
+        started: float,
+        refreshed: bool,
+    ) -> None:
+        if not debug_trace_enabled(self._trace_agent_name):
+            return
+        try:
+            summaries = [summarize_tool_definition(tool) for tool in tools]
+            trace_debug(
+                "mcp_tool_discovery",
+                {
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "refreshed": refreshed,
+                    "tool_count": len(summaries),
+                    "execute_sql_available": any(
+                        item.get("name") == "execute_sql" for item in summaries
+                    ),
+                    "tools": summaries,
+                },
+                agent_name=self._trace_agent_name,
+            )
+        except Exception:
+            logger.debug("MCP DEBUG trace collection failed", exc_info=True)
 
     async def close(self) -> None:
         await self._close_toolset(self._toolset)

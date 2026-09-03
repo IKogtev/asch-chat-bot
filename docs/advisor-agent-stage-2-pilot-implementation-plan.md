@@ -19,6 +19,21 @@ The pilot must add a standalone `advisor` route that:
 
 The pilot is successful when the agreed reference cases produce valid, explainable recommendations, all hard restrictions are enforced, context-dependent follow-ups work, and no existing route regresses.
 
+### 1.1. Current implementation snapshot
+
+Status as of September 3, 2026:
+
+| Phase | Current status | Implemented result | Remaining gate |
+|---|---|---|---|
+| Phase 1 | Implemented | Typed profile/provenance, Client Type validation, deterministic rule parsing, hard filtering, scoring, stable tie-breaking, and diversity selection | Business approval of the `pilot-v1` policy values and reference results |
+| Phase 2 | Implemented | DBHub-enabled content agent, no-tool format agent, strict content/final contracts, prompt files and fallbacks, current-run SQL checks, and canonical client-profile names for clarification fields | Approved client-type accuracy evaluation |
+| Phase 3 | Implemented | `advisor` route and `advisor_recommendation` intent, semantic route/intent validation, self-healing, prompt matrix, and route-boundary tests | Live routing evaluation on the approved reference conversations |
+| Phase 4 | Implemented | Agent construction/injection, OWASP-before-advisor execution, validated profile merge and ranking, formatter validation, schema-version-2 persistent context, state-delta/cache recovery, and safe failure handling | Live DBHub/LLM end-to-end validation |
+
+Phases 5–7 remain planned. In particular, ordinal follow-ups and `product_info` handoff, the `ADVISOR_ENABLED` pilot flag, advisor-specific observability, deployment validation, and business release approval are not part of the current Phase 1–4 implementation.
+
+Current verification: the focused Phase 0–4 unit set passes (`224 passed` on September 3, 2026). The full unit runner still stops during collection on two unrelated existing issues: the missing `build_download_rank_patterns` export and the Windows attempt to create `\\app\\data\\settings`. The PowerShell wrapper currently returns exit code `0` despite those pytest collection errors, so its process exit code alone is not proof of a successful full run.
+
 ## 2. Scope
 
 ### 2.1. Included
@@ -205,16 +220,19 @@ Minimum structure:
 {
   "mode": "candidates",
   "profile_patch": {},
-  "client_types": [
-    {
+  "selected_client_type": {
+    "definition": {
+      "client_type_code": "CT-001",
       "profile_name": "Консервативный",
       "attributes": {},
       "required_properties": [],
       "preferred_properties": [],
       "acceptable_compromises": [],
       "contraindications": []
-    }
-  ],
+    },
+    "confidence": 0.9,
+    "evidence": []
+  },
   "missing_fields": [],
   "clarification_question": "",
   "products": [
@@ -231,8 +249,8 @@ Minimum structure:
 Contract rules:
 
 - `needs_clarification` requires one non-empty question and at least one missing field;
-- `candidates` requires at least one validated client-type row, at least one product, and current-run `execute_sql` calls for the fixed trusted `typical_client_profiles` and `products` tables;
-- every client-type row requires a non-empty `profile_name` and the four product-rule fields;
+- `candidates` requires exactly one validated `selected_client_type`, at least one product, and current-run `execute_sql` calls for the fixed trusted `typical_client_profiles` and `products` tables;
+- the selected definition requires a non-empty `profile_name` and the four product-rule fields;
 - a row with `profile_name="Тип профиля"` is descriptive metadata and must never be treated as a client type;
 - only the three rows currently present in the workbook are expected initially, but code must be data-driven and accept newly approved rows without a release;
 - every product requires a complete stable `code + name + is_active` identity, and only the textual status `is_active = "Действующий"` is eligible;
@@ -245,8 +263,8 @@ Contract rules:
 
 `AdvisorRankingService` returns a typed result containing:
 
-- matched client types and criterion-level match evidence;
-- the primary client type used for ranking, plus any secondary match;
+- the single selected client type and criterion-level match evidence;
+- the primary client-type name used for ranking;
 - accepted candidates;
 - excluded candidates and machine-readable exclusion codes;
 - total client-fit score for every accepted candidate;
@@ -263,9 +281,9 @@ Store one versioned object under `advisor_dialog_context`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "profile": {},
-  "matched_client_types": [],
+  "selected_client_type": null,
   "primary_client_type": null,
   "missing_fields": [],
   "candidate_products": [],
@@ -305,7 +323,7 @@ The question must be short, ask for only one decision, and explain why it matter
 
 ### 7.3. Recommendation threshold
 
-The scoring policy must define a minimum client-type match confidence and a minimum profile completeness level. If either is not met, the flow must return `needs_clarification`; it must not generate a provisional TOP-3 that appears authoritative. A client may partially match multiple table rows, so the matcher must retain a primary and optional secondary type rather than forcing a match without evidence.
+The scoring policy must define a minimum client-type match confidence and a minimum profile completeness level. If either is not met, the flow must return `needs_clarification`; it must not generate a provisional TOP-3 that appears authoritative. The matcher must select exactly one supported Client Type or request clarification rather than forcing a match without evidence.
 
 ## 8. Hard Filtering and Ranking
 
@@ -398,28 +416,27 @@ The response must:
 | `agent/agents/advisor_format_agent.py` | Format validated ranking results without tools |
 | `agent/agents/advisor_contract.py` | Validate content and final advisor contracts |
 | `agent/advisor_profile.py` | Typed profile, merge rules, conflict handling, and completeness checks |
-| `agent/advisor_profile_matcher.py` | Parse Client Types rule columns and deterministically validate the LLM's primary/secondary client-type selection and evidence |
+| `agent/advisor_profile_matcher.py` | Parse Client Types rule columns and deterministically validate the LLM's single selected client type and evidence |
 | `agent/advisor_ranking_service.py` | Deterministic hard filtering, scoring, tie-breaking, and diversity |
 | `kb_storage/prompts/advisor_content/advisor_content_agent_prompt.md` | Profile extraction and grounded catalog-retrieval instructions |
 | `kb_storage/prompts/advisor_format/advisor_format_agent_prompt.md` | User-facing TOP-3 and clarification formatting instructions |
-| `tests/unit/agent/test_advisor_contract.py` | Contract tests |
 | `tests/unit/agent/test_advisor_profile.py` | Profile merge and clarification tests |
 | `tests/unit/agent/test_advisor_profile_matcher.py` | Client Types parsing and matching tests |
 | `tests/unit/agent/test_advisor_ranking_service.py` | Filtering and scoring tests |
-| `tests/unit/agent/test_advisor_agent.py` | Agent factory and prompt tests |
+| `tests/unit/agent/test_advisor_agent.py` | Content/final contract, agent factory, tool allowlist, and prompt tests |
 
 Use `kb_storage/manager/tables/typical_client_profiles_active.xlsx` as the single source of client-type definitions and product-property rules. Python may define parsing, confidence thresholds, and weights, but must not duplicate the workbook's type names or property lists.
 
-### 10.2. Existing files to update
+### 10.2. Existing files changed or still planned
 
-| File | Planned change |
+| File | Current Phase 1–4 status |
 |---|---|
-| `agent/agents/dispatcher_agent.py` | Add `advisor` route, `advisor_recommendation` intent/reason, validation, and self-healing mapping |
-| `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md` | Add advisor examples and boundaries versus `product_filter` and `product_info` |
-| `agent/rootagent.py` | Register advisor components, state keys, route handler, follow-up resolution, persistence, and error handling |
-| `agent/start_agent.py` | Construct and inject advisor content and format agents |
-| `agent/config.py` | Add advisor token/temperature settings and `ADVISOR_ENABLED` |
-| `agent/agents/__init__.py` | Export advisor factories if this remains the package convention |
+| `agent/agents/dispatcher_agent.py` | Implemented in Phase 3: `advisor` route, `advisor_recommendation` intent/reason, validation, and self-healing mapping |
+| `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md` | Implemented in Phase 3: advisor examples and boundaries versus `product_filter`, `product_info`, and `kb_answer` |
+| `agent/rootagent.py` | Phase 4 core integration is implemented: registration, per-turn keys, route handler, persistence, recovery, and safe errors. Ordinal follow-ups and product-info handoff remain Phase 5 |
+| `agent/start_agent.py` | Implemented in Phase 4: constructs and injects both advisor agents and the configured ranking service |
+| `agent/config.py` | Phase 2/4 token, temperature, confidence, and scoring-policy settings are implemented. `ADVISOR_ENABLED` remains Phase 6 |
+| `agent/agents/__init__.py` | No change was required; current code imports the advisor factories directly |
 | `mcps/kb-manager/app/services/tables_loader_service.py` | Ensure the Client Types workbook loads as `typical_client_profiles` and its Russian business-label row is excluded from data |
 | `mcps/kb-manager/app/scripts/load_tables.py` | Treat `typical_client_profiles` as a required advisor table, emit its source/row/column result, and return failure on validation errors in strict mode |
 | `load_tables.ps1` | Run the shared loader with `--strict-validation` and preserve its nonzero exit code when the Client Types table is missing or invalid |
@@ -502,8 +519,8 @@ Implementation status (August 27, 2026): the technical Phase 0 work is implement
 1. Add the typed client-profile model and per-field provenance.
 2. Implement profile merge, explicit correction, conflict detection, and reset-for-new-client behavior.
 3. Reuse the Phase 0 validation of the 21 source-column Client Types schema and implement deterministic runtime parsing only for the four semicolon-separated product-rule columns: `required_properties`, `preferred_properties`, `acceptable_compromises`, and `contraindications`. Do not deterministically parse the descriptive client-profile columns; the LLM uses those columns for semantic client-type selection.
-4. Add typed models for the LLM's client-type selection: primary type, optional secondary type, confidence, criterion-level evidence, missing fields, and one clarification question.
-5. Implement deterministic validation of the LLM result: selected type names must exist in the loaded table, confidence must be in range, evidence must reference supplied client facts and table fields, and clarification mode must contain exactly one question.
+4. Add typed models for one `selected_client_type` containing its complete SQL row, confidence, and criterion-level evidence; keep mode, missing fields, and clarification question only at the content-result level.
+5. Implement deterministic validation of the LLM result: confidence must be in range, evidence must reference supplied client facts and fields of the selected definition, and clarification mode must contain exactly one question and no selected type.
 6. Add typed product facts and ranking-result models.
 7. Implement hard-filter predicates from `required_properties` and `contraindications` with stable exclusion codes.
 8. Implement weighted product scoring from the selected Client Types row's `preferred_properties` and `acceptable_compromises`, with stable tie-breaking, minimum threshold, and diversity selection.
@@ -511,16 +528,16 @@ Implementation status (August 27, 2026): the technical Phase 0 work is implement
 
 Exit criterion: pure Python tests validate the Client Types schema, parse the four product-rule columns, reject invalid LLM selection payloads, and produce the approved exclusions and TOP-3 from a preselected valid client type without a live database.
 
-Implementation status (August 28, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime now use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. Production ranking still requires the business-owned `pilot-v1` weights and thresholds identified in Phase 0; the code intentionally requires an explicit policy rather than embedding unapproved defaults.
+Implementation status (updated September 3, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. `agent/config.py` now supplies environment-backed technical defaults for the versioned `pilot-v1` policy, and `agent/start_agent.py` constructs the ranking service explicitly from them. These defaults make the runtime constructible but do not replace the pending business approval of the weights, thresholds, and reference results.
 
 ### Phase 2. Implement advisor agents and contracts
 
 1. Create `advisor_content_agent` with the same refreshing DBHub toolset pattern as the current product content agents.
 2. Limit its tool filter to table-discovery tools and `execute_sql`.
-3. Instruct it to retrieve `typical_client_profiles`, semantically compare the manager's client description with the loaded rows, and select a primary and optional secondary client type.
-4. Require the LLM to return the selected type, confidence, supporting client facts, table-field evidence, missing fields, and exactly one clarification question when confidence is insufficient.
+3. Instruct it to retrieve `typical_client_profiles`, semantically compare the manager's client description with the loaded rows, and return exactly one `selected_client_type` only in candidate mode.
+4. Require the LLM to return the complete selected SQL row, confidence, and supporting evidence; when confidence is insufficient, require `selected_client_type: null`, missing fields, and exactly one top-level clarification question.
 5. When selection confidence is sufficient, retrieve product facts required by the selected row's four product-rule columns; Python must validate the complete selection and evidence before any filtering or ranking occurs.
-6. Instruct the agent to return only profile patches, client-type selection evidence, missing fields, clarification data, validated client-type rows, and SQL-grounded product facts.
+6. Instruct the agent to return only profile patches with current-turn provenance, one selected client-type object, top-level clarification data, and SQL-grounded product facts.
 7. Add a strict content contract and verify current-run SQL use for `typical_client_profiles`; candidate mode must also verify current-run SQL use for the products table.
 8. Create a no-tool `advisor_format_agent` with temperature `0.0`.
 9. Add a final response contract that preserves the validated client-type selection, exact TOP-3 order, and product identities.
@@ -528,7 +545,7 @@ Implementation status (August 28, 2026): the Phase 1 code is implemented in `age
 
 Exit criterion: client-type evaluation cases meet the approved accuracy threshold, and contract tests reject unknown type names, unsupported modes, unsupported evidence, invalid confidence, invalid clarification payloads, invented products, incomplete identities, and reordered recommendations.
 
-Implementation status (August 31, 2026): the Phase 2 agent and contract code is implemented in `agent/agents/advisor_content_agent.py`, `agent/agents/advisor_contract.py`, and `agent/agents/advisor_format_agent.py`. The content agent uses a refreshing DBHub toolset limited to discovery tools and `execute_sql`; the no-tool format agent uses temperature `0.0`. Both agents have UTF-8 prompt files, fallback prompts, and prompt-watcher registration. The strict content contract reuses the Phase 1 profile and Client Type validators, requires current-run SQL for the fixed trusted `typical_client_profiles` and `products` tables, validates complete `code + name + is_active` identities, and requires all product fields referenced by the selected row's rules. Per-run source table/file/load/freshness metadata is intentionally omitted. `AdvisorRankingService` excludes products whose textual `is_active` value is not `ACTIVE_PRODUCT_STATUS` (`"Действующий"`), and the final contract rejects inactive, invented, incomplete, or reordered TOP identities. The focused Phase 1 and Phase 2 tests pass. The full unit runner remains blocked during unrelated test collection by the existing missing `build_download_rank_patterns` export and the bot settings test's attempt to create `\\app\\data\\settings` on Windows. The approved client-type accuracy evaluation remains pending because the Phase 0 reference set and threshold are not yet available.
+Implementation status (updated September 3, 2026): the Phase 2 agent and contract code is implemented in `agent/agents/advisor_content_agent.py`, `agent/agents/advisor_contract.py`, and `agent/agents/advisor_format_agent.py`. The content agent uses a refreshing DBHub toolset limited to discovery tools and `execute_sql`; the no-tool format agent uses temperature `0.0`. Both agents have UTF-8 prompt files, synchronized fallback prompts, and prompt-watcher registration. The strict content contract reuses the Phase 1 validators, requires current-run SQL for the fixed trusted `typical_client_profiles` and `products` tables, rejects wildcard product projections, requires the active-status SQL filter, validates complete `code + name + is_active` identities, and requires every product field referenced by the selected row's rules. Clarification `missing_fields` must use canonical `AdvisorClientProfile` field names; `RootAgent` exposes that allowlist to the content prompt. Per-run source table/file/load/freshness metadata remains intentionally omitted. The final contract rejects inactive, invented, incomplete, or reordered TOP identities. The approved client-type accuracy evaluation remains pending because the Phase 0 reference set and threshold are not yet available.
 
 ### Phase 3. Add dispatcher routing
 
@@ -548,16 +565,18 @@ Implementation status (August 31, 2026): the Phase 2 agent and contract code is 
 
 Exit criterion: the dispatcher test matrix passes with no route ambiguity in the agreed examples.
 
+Implementation status (September 3, 2026): Phase 3 is implemented in `agent/agents/dispatcher_agent.py` and `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md`. The dispatcher schema accepts the `advisor` route and `advisor_recommendation` intent/reason, self-heals that intent to the advisor route, and rejects an advisor intent paired with another route. The prompt and fallback contain the positive recommendation cases, the `product_filter`/`product_info`/`kb_answer` boundaries, and follow-up routing guidance. Unit tests cover the accepted payload, self-healing, prompt matrix, boundaries, and invalid route/intent pairing. Phase 5 ordinal handoff behavior is not claimed by this status.
+
 ### Phase 4. Integrate `RootAgent` and session state
 
-1. Inject both advisor agents, the client-type selection validator, and `AdvisorRankingService` into `RootAgent`.
+1. Inject the content and format advisor agents plus `AdvisorRankingService` into `RootAgent`; call the single-client-type validator directly.
 2. Register advisor agents in `sub_agents`.
 3. Add per-turn advisor keys to `STATE_KEYS_TO_CLEAR`.
 4. Add `_handle_advisor` with this order:
    - prepare query and context;
    - run content agent;
    - validate and merge profile;
-   - validate the LLM-selected client type against the retrieved Client Types rows;
+   - validate the LLM-selected type's full definition and evidence;
    - return one clarification question when required;
    - parse the selected row's four product-rule columns;
    - run deterministic product filtering and ranking;
@@ -570,6 +589,8 @@ Exit criterion: the dispatcher test matrix passes with no route ambiguity in the
 8. Ensure OWASP checks still run before advisor processing.
 
 Exit criterion: RootAgent tests prove that only a contract-valid, table-grounded LLM selection reaches deterministic product ranking, advisor state survives turns, per-turn intermediate state does not leak, and failures do not emit recommendations.
+
+Implementation status (updated September 3, 2026): Phase 4 is implemented. `RootAgent` receives and registers the content and format advisor agents plus an explicitly configured `AdvisorRankingService`; there is no separate advisor structural-repair agent and an invalid content contract is not retried. The advisor route runs after OWASP, binds profile-patch provenance to the current invocation, exposes the canonical profile-field allowlist, validates exactly one complete `selected_client_type`, returns a single validated clarification directly, ranks only validated candidates in Python, validates formatter output, and stores schema-version-2 `advisor_dialog_context`. Advisor intermediate keys are cleared per turn, while persistent context is included in final state deltas and the existing cross-session cache snapshot/recovery flow. Validation or tool failures use the existing neutral safe-error path and do not persist a partial recommendation. The content prompt receives the current query, serialized saved profile, canonical field names, prior advisor context, confidence threshold, source turn, and timestamp. The focused Phase 0–4 suite passes (`224 passed`); the full-run collection blockers are recorded in Section 1.1. The environment-backed `pilot-v1` values remain technical defaults pending business approval and manual reference cases.
 
 ### Phase 5. Implement follow-ups and product-info handoff
 
@@ -642,7 +663,7 @@ Client Types schema and parser tests:
 Client-type selection contract tests:
 
 - accept a primary type that exactly matches a row loaded in the current run;
-- accept an optional secondary type and distinct evidence for a mixed profile;
+- reject ambiguous mixed profiles with a clarification request instead of selecting multiple types;
 - reject a type name not present in the loaded table;
 - reject evidence that does not reference supplied client facts and table fields;
 - reject confidence outside the allowed range;
@@ -692,7 +713,7 @@ LLM client-type evaluation cases:
 
 - complete conservative, moderate, and aggressive descriptions select the expected workbook rows;
 - paraphrases and reordered facts preserve the expected type;
-- mixed profiles return primary and secondary types with evidence rather than an unsupported forced classification;
+- mixed profiles request clarification rather than returning multiple types or an unsupported forced classification;
 - insufficient descriptions return one useful clarification question;
 - explicit client corrections update the selected type;
 - irrelevant or contradictory facts do not produce unsupported evidence;

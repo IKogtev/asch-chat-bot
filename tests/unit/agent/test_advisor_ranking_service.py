@@ -15,7 +15,10 @@ from agent.advisor_ranking_service import (
     AdvisorRankingService,
     AdvisorScoringPolicy,
 )
-from agent.advisor_profile_matcher import AdvisorClientTypeDefinition
+from agent.advisor_profile_matcher import (
+    AdvisorClientTypeDefinition,
+    AdvisorSelectedClientType,
+)
 from tests.unit.agent._advisor_workbook import (
     load_client_type_definitions,
     read_first_xlsx_sheet,
@@ -34,6 +37,10 @@ CLIENT_TYPES_PATH = PRODUCTS_PATH.with_name("typical_client_profiles_active.xlsx
 
 def definitions() -> list[AdvisorClientTypeDefinition]:
     return load_client_type_definitions(CLIENT_TYPES_PATH)
+
+
+def selected(definition: AdvisorClientTypeDefinition) -> AdvisorSelectedClientType:
+    return AdvisorSelectedClientType(definition=definition, confidence=0.9)
 
 
 def policy(**overrides) -> AdvisorScoringPolicy:
@@ -107,7 +114,7 @@ def test_real_workbook_client_type_filters_real_product_rows() -> None:
 
     result = AdvisorRankingService(policy()).rank(
         products=products,
-        primary_client_type=conservative,
+        selected_client_type=selected(conservative),
     )
 
     assert result.primary_client_type == "Консервативный"
@@ -150,7 +157,7 @@ def test_required_and_contraindicated_rules_return_stable_exclusion_codes() -> N
 
     result = AdvisorRankingService(policy()).rank(
         products=[product("X1", **attributes)],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     codes = [item.code for item in result.excluded_candidates]
@@ -172,7 +179,7 @@ def test_inactive_status_product_is_excluded_before_ranking(
             product("ACTIVE", is_active=ACTIVE_PRODUCT_STATUS, **attributes),
             product("INACTIVE", is_active=inactive_status, **attributes),
         ],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     assert [item.product.code for item in result.top_products] == ["ACTIVE"]
@@ -191,7 +198,7 @@ def test_preferred_properties_and_compromises_have_bounded_soft_effects() -> Non
 
     result = AdvisorRankingService(policy()).rank(
         products=[product("P1", **full_fit), product("P2", **compromise)],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     ranked = {item.product.code: item for item in result.accepted_candidates}
@@ -213,7 +220,7 @@ def test_ties_use_priority_then_product_code() -> None:
             product("C", priority=10, **attributes),
             product("A", priority=10, **attributes),
         ],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     assert [item.product.code for item in result.top_products] == ["A", "C", "B"]
@@ -238,7 +245,7 @@ def test_diversity_replaces_duplicate_family_only_within_score_gap() -> None:
             product("P3", family="B", **family_b),
             product("P4", family="C", **family_c),
         ],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     assert [item.product.code for item in result.top_products] == ["P1", "P3", "P4"]
@@ -256,7 +263,7 @@ def test_focus_and_kv_attributes_do_not_affect_ranking() -> None:
         policy(diversity_max_per_family=2)
     ).rank(
         products=[product("P1", **first), product("P2", **second)],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     assert result.accepted_candidates[0].score == result.accepted_candidates[1].score
@@ -278,7 +285,7 @@ def test_minimum_score_excludes_weak_candidates_without_padding_top_three() -> N
         policy(minimum_score=Decimal("70"), diversity_max_per_family=3)
     ).rank(
         products=[product("P1", **full), product("P2", **weak)],
-        primary_client_type=moderate,
+        selected_client_type=selected(moderate),
     )
 
     assert [item.product.code for item in result.top_products] == ["P1"]
@@ -297,7 +304,7 @@ def test_repeated_ranking_is_byte_for_byte_deterministic() -> None:
         product("P1", **moderate_product_attributes()),
     ]
 
-    first = service.rank(products=products, primary_client_type=moderate)
-    second = service.rank(products=products, primary_client_type=moderate)
+    first = service.rank(products=products, selected_client_type=selected(moderate))
+    second = service.rank(products=products, selected_client_type=selected(moderate))
 
     assert first.model_dump_json() == second.model_dump_json()

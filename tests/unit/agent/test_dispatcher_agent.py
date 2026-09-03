@@ -60,6 +60,7 @@ def _load_dispatcher_module():
 
 dispatcher_module = _load_dispatcher_module()
 validate_dispatcher_result = dispatcher_module.validate_dispatcher_result
+DispatcherResponseSchema = dispatcher_module.DispatcherResponseSchema
 VALIDATION_CONTEXT = {}
 TARGET_PRODUCT_FILTER_QUERY = "Какие активные продукты без риска и с гарантированным доходом?"
 TARGET_PRODUCT_FILTER_SEARCH_QUERY = "активные продукты без риска и с гарантированным доходом"
@@ -143,14 +144,44 @@ def test_validate_dispatcher_result_accepts_product_routes_with_query(route: str
             "route": route,
             "intent": intent,
             "reason": "product comparison",
-            "search_query": "Fort Knox and protected capital",
+            "search_query": "Fort Knox и Защищенный капитал",
         },
         VALIDATION_CONTEXT,
     )
 
     assert result["route"] == route
     assert result["intent"] == intent
-    assert result["search_query"] == "Fort Knox and protected capital"
+    assert result["search_query"] == "Fort Knox и Защищенный капитал"
+
+
+@pytest.mark.unit
+def test_validate_dispatcher_result_accepts_advisor_recommendation() -> None:
+    result = validate_dispatcher_result(
+        {
+            "status": "ok",
+            "route": "advisor",
+            "intent": "advisor_recommendation",
+            "reason": "advisor_recommendation",
+            "search_query": "осторожный клиент с горизонтом семь лет",
+        },
+        VALIDATION_CONTEXT,
+    )
+
+    assert result["route"] == "advisor"
+    assert result["intent"] == "advisor_recommendation"
+
+
+@pytest.mark.unit
+def test_dispatcher_schema_heals_advisor_route_from_intent() -> None:
+    result = DispatcherResponseSchema(
+        status="ok",
+        route="kb_answer",
+        intent="advisor_recommendation",
+        reason="advisor_recommendation",
+        search_query="что предложить этому клиенту",
+    )
+
+    assert result.route == "advisor"
 
 
 @pytest.mark.unit
@@ -167,6 +198,31 @@ def test_dispatcher_prompt_routes_focus_questions_to_product_filter() -> None:
 
     assert "что сейчас в фокусе" in prompt
     assert "`product_filter`" in prompt
+
+
+@pytest.mark.unit
+def test_dispatcher_prompt_contains_advisor_route_matrix() -> None:
+    prompt = _read_dispatcher_prompt()
+
+    # Примеры покрывают новый запрос, уточнение профиля и объяснение рекомендации.
+    assert "клиенту 30 лет, имеет опыт инвестирования" in prompt
+    assert "клиент хочет спасти свои большие накопления от инфляции" in prompt
+    assert "клиент 50 лет, хочет заниматься своим здоровьем" in prompt
+    assert "что предложить осторожному клиенту с горизонтом 7 лет" in prompt
+    assert "клиент всё-таки не готов к потере капитала" in prompt
+    assert "почему вариант 3 хуже 1" in prompt
+    assert 'route="advisor"' in prompt
+    assert 'intent="advisor_recommendation"' in prompt
+
+
+@pytest.mark.unit
+def test_dispatcher_prompt_preserves_advisor_route_boundaries() -> None:
+    prompt = _read_dispatcher_prompt()
+
+    assert "список только по параметрам каталога остаётся в `product_filter`" in prompt
+    assert "сравнение названных продуктов остаётся в `product_filter`" in prompt
+    assert "карточка и комплект продукта остаются в `product_info`" in prompt
+    assert "общий вопрос о правилах продукта остаётся в `kb_answer`" in prompt
 
 
 @pytest.mark.unit
@@ -189,7 +245,7 @@ def test_assistant_capabilities_smalltalk_examples_include_conversational_varian
                 "route": "doc_search",
                 "intent": "doc_search",
                 "reason": "x",
-                "search_query": "q",
+                "search_query": "запрос",
             },
             ("dispatcher_agent", "basic_fields", "invalid status"),
         ),
@@ -199,7 +255,7 @@ def test_assistant_capabilities_smalltalk_examples_include_conversational_varian
                 "route": "other",
                 "intent": "doc_search",
                 "reason": "x",
-                "search_query": "q",
+                "search_query": "запрос",
             },
             ("dispatcher_agent", "basic_fields", "invalid route"),
         ),
@@ -209,7 +265,7 @@ def test_assistant_capabilities_smalltalk_examples_include_conversational_varian
                 "route": "doc_search",
                 "intent": "other",
                 "reason": "x",
-                "search_query": "q",
+                "search_query": "запрос",
             },
             ("dispatcher_agent", "basic_fields", "invalid intent"),
         ),
@@ -267,12 +323,29 @@ def test_validate_dispatcher_result_rejects_product_intent_with_wrong_route() ->
                 "route": "kb_answer",
                 "intent": "product_filter",
                 "reason": "wrong route",
-                "search_query": "capital protection",
+                "search_query": "защита капитала",
             },
             VALIDATION_CONTEXT,
         )
 
     assert "product filter intents must use route='product_filter'" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_validate_dispatcher_result_rejects_advisor_intent_with_wrong_route() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "kb_answer",
+                "intent": "advisor_recommendation",
+                "reason": "advisor_recommendation",
+                "search_query": "подобрать продукты для этого клиента",
+            },
+            VALIDATION_CONTEXT,
+        )
+
+    assert "advisor recommendation intent must use route='advisor'" in str(exc.value)
 
 
 @pytest.mark.unit
@@ -289,7 +362,7 @@ def test_validate_dispatcher_result_requires_search_query_for_main_intent() -> N
             VALIDATION_CONTEXT,
         )
 
-    assert "search_query is required for doc_search, kb_answer, and product intents" in str(exc.value)
+    assert "search_query is required for non-follow-up intents" in str(exc.value)
 
 
 @pytest.mark.unit
@@ -306,7 +379,7 @@ def test_validate_dispatcher_result_requires_search_query_for_product_intent() -
             VALIDATION_CONTEXT,
         )
 
-    assert "search_query is required for doc_search, kb_answer, and product intents" in str(exc.value)
+    assert "search_query is required for non-follow-up intents" in str(exc.value)
 
 
 @pytest.mark.unit
