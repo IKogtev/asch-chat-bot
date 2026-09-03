@@ -319,6 +319,9 @@ services:
       - KEYCLOAK_INTERNAL_URL=http://keycloak:8080
       - KEYCLOAK_REALM=kb-manager-test
       - KEYCLOAK_CLIENT_ID=kb-manager-ui
+      # Адреса FileGator для main.py:
+      - FILEGATOR_INTERNAL=http://file-manager:8080
+      - FILEGATOR_PUBLIC=http://localhost:8081
       
     depends_on:
       migration:
@@ -479,6 +482,22 @@ services:
     networks:
       - aszh-bot-network
   
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy для снятия ограничений iframe
+  # ---------------------------------------------------------------------------
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: kb-filegator-proxy
+    restart: unless-stopped
+    ports:
+      - "8081:80"  # Наружу отдаем 8081 — браузер и iframe стучатся сюда
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - file-manager
+    networks:
+      - aszh-bot-network
+
   file-manager:
     image: filegator/filegator:latest
     container_name: kb-file-ui
@@ -486,7 +505,7 @@ services:
     restart: unless-stopped
     entrypoint: ["/filegator_init.sh"]
     ports:
-      - "8081:8080"
+      - "8080"
     volumes:
       - ./kb_storage:/var/www/filegator/repository
       - ./filegator_data:/var/www/filegator/private
@@ -497,6 +516,8 @@ services:
       - FILEGATOR_USER=ASLife
       - FILEGATOR_PASS=YourSuperSecretPassword  
       - FILEGATOR_HOMEDIR=/manager             # Папка внутри repository
+      - FILEGATOR_ADMIN_PASS=${FILEGATOR_ADMIN_PASS:-admin_secret_pass}
+      - FILEGATOR_MANAGER_PASS=${FILEGATOR_MANAGER_PASS:-manager_secret_pass}
     networks:
       - aszh-bot-network
 

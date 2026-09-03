@@ -17,6 +17,8 @@ mkdir -p "$PRIVATE_DIR/logs"
 mkdir -p "$PRIVATE_DIR/cache"
 mkdir -p /tmp/empty_dir_for_guest
 
+ADMIN_HASH=$(php -r "echo password_hash('${FILEGATOR_ADMIN_PASS}', PASSWORD_DEFAULT);")
+MANAGER_HASH=$(php -r "echo password_hash('${FILEGATOR_MANAGER_PASS}', PASSWORD_DEFAULT);")
 # 2. Проверяем, существует ли users.json
 # 2. Создаем базовый users.json, если он вообще отсутствует
 if [ ! -f "$PRIVATE_DIR/users.json" ] || [ ! -s "$PRIVATE_DIR/users.json" ]; then
@@ -33,10 +35,18 @@ if [ ! -f "$PRIVATE_DIR/users.json" ] || [ ! -s "$PRIVATE_DIR/users.json" ]; the
   "admin": {
     "username": "admin",
     "name": "Administrator",
-    "password": "$2a$12$DRCtREKjLohB1yqD0mcvPuSM/NylTs2DP77S50j51.tIIjm03kRNW",
+    "password": "$ADMIN_HASH",
     "role": "admin",
     "homedir": "/",
     "permissions": "read|write|upload|download|batchdownload|zip"
+  },
+  "manager": {
+    "username": "manager",
+    "name": "Manager",
+    "password": "$MANAGER_HASH",
+    "role": "user",
+    "homedir": "/manager",
+    "permissions": "read|write|upload|download"
   }
 }
 EOF

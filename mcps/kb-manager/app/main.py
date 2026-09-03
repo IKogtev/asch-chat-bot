@@ -53,7 +53,10 @@ TOKEN_URL = (f"{REALM_URL_INT}/token")
 LOGOUT_URL = (f"{REALM_URL_PUB}/logout")
 LOGOUT_INT_URL = f"{REALM_URL_INT}/logout"
 JWKS_URL = (f"{REALM_URL_INT}/certs")
-
+FILEGATOR_INTERNAL_URL = os.getenv("FILEGATOR_INTERNAL", "http://file-manager:8080")
+FILEGATOR_PUBLIC_URL = os.getenv("FILEGATOR_PUBLIC", "http://localhost:8081")
+FILEGATOR_ADMIN_PASS = os.getenv("FILEGATOR_ADMIN_PASS", "admin_secret_pass")
+FILEGATOR_MANAGER_PASS = os.getenv("FILEGATOR_MANAGER_PASS", "manager_secret_pass")
 _keycloak_jwks_cache : Optional[dict] = None
 # =====================
 # KEYCLOAK AUTH ROUTES
@@ -162,6 +165,47 @@ async def keycloak_logout(request: Request):
     response = RedirectResponse(url=keycloak_logout_url, status_code=303)
     # 3. Полностью удаляем все куки авторизации с явным указанием path="/"
     return clear_auth_cookies(response)
+
+@auth_router.get("/filegator-sso")
+async def filegator_sso_bridge(request: Request, response: Response):
+    # 1. Извлекаем роль из Keycloak (из токена в cookies/заголовках)
+    # Пример логики проверки роли:
+    try:
+        user_info = await get_current_user(request)
+    except HTTPException:
+        return RedirectResponse(url="/auth/login", status_code=302)
+
+    role = user_info.get("role", "")
+    is_admin = role == "admin"
+    
+    fg_username = "admin" if is_admin else "manager"
+    fg_password = FILEGATOR_ADMIN_PASS if is_admin else FILEGATOR_MANAGER_PASS
+
+    # 2. Серверный вход в FileGator по внутренней Docker-сети
+    try:
+        async with httpx.AsyncClient(base_url=FILEGATOR_INTERNAL_URL, timeout=5.0) as client:
+            auth_resp = await client.post(
+                "/backend/login",
+                json={"username": fg_username, "password": fg_password}
+            )
+            if auth_resp.status_code != 200:
+                logger.error(f"FileGator login failed: {auth_resp.status_code} {auth_resp.text}")
+                raise HTTPException(status_code=502, detail="Failed to authenticate in FileGator")
+
+            # 3. Переносим сессионные куки FileGator в ответ клиенту
+            redirect = RedirectResponse(url=FILEGATOR_PUBLIC_URL, status_code=303)
+            for cookie_name, cookie_value in auth_resp.cookies.items():
+                redirect.set_cookie(
+                    key=cookie_name,
+                    value=cookie_value,
+                    path="/",
+                    httponly=True,
+                    samesite="lax"
+                )
+            return redirect
+    except httpx.RequestError as exc:
+        logger.error(f"Cannot connect to FileGator backend: {exc}")
+        raise HTTPException(status_code=502, detail="FileGator service is unreachable")
 
 # Используем современный Lifespan вместо @app.on_event("startup")
 @asynccontextmanager

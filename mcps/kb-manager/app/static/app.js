@@ -2647,7 +2647,8 @@ function applyRoleAccess() {
         "user_groups",
         "logs",
         "analytics",
-        "dialogs"
+        "dialogs",
+        "filegator",
     ];
     tabNames.forEach(name => {
         const tab = document.getElementById(`${name}-tab`);
@@ -2668,7 +2669,8 @@ function applyRoleAccess() {
             "news_send",
             "user_groups",
             "analytics",
-            "dialogs"
+            "dialogs",
+            "filegator"
         ];
         allowed.forEach(name => {
             showTabButton(name);
