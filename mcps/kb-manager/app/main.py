@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 # Auth dependencies
 from jose import JWTError, jwt
 import asyncpg
+import hmac, hashlib, time
 import pandas as pd
 # простая токенизация
 from collections import Counter
@@ -167,45 +168,58 @@ async def keycloak_logout(request: Request):
     return clear_auth_cookies(response)
 
 @auth_router.get("/filegator-sso")
-async def filegator_sso_bridge(request: Request, response: Response):
-    # 1. Извлекаем роль из Keycloak (из токена в cookies/заголовках)
-    # Пример логики проверки роли:
+async def filegator_sso_bridge(request: Request):
+    """
+    Прозрачный SSO в FileGator:
+    1. Получаем роль пользователя из Keycloak.
+    2. По внутренней сети получаем CSRF-токен и авторизуемся в API FileGator.
+    3. Прокидываем сессионную cookie в браузер и перенаправляем в интерфейс.
+    """
     try:
         user_info = await get_current_user(request)
     except HTTPException:
         return RedirectResponse(url="/auth/login", status_code=302)
 
-    role = user_info.get("role", "")
-    is_admin = role == "admin"
-    
+    role = user_info.get("role", "manager")
+    is_admin = (role == "admin")
     fg_username = "admin" if is_admin else "manager"
     fg_password = FILEGATOR_ADMIN_PASS if is_admin else FILEGATOR_MANAGER_PASS
 
-    # 2. Серверный вход в FileGator по внутренней Docker-сети
-    try:
-        async with httpx.AsyncClient(base_url=FILEGATOR_INTERNAL_URL, timeout=5.0) as client:
-            auth_resp = await client.post(
-                "/backend/login",
-                json={"username": fg_username, "password": fg_password}
-            )
-            if auth_resp.status_code != 200:
-                logger.error(f"FileGator login failed: {auth_resp.status_code} {auth_resp.text}")
-                raise HTTPException(status_code=502, detail="Failed to authenticate in FileGator")
+    async with httpx.AsyncClient(base_url=FILEGATOR_INTERNAL_URL, timeout=10.0) as client:
+        # 1. Получаем конфиг и CSRF токен (клиент сам сохранит сессионную cookie)
+        config_resp = await client.get("/?r=/getconfig")
+        if config_resp.status_code != 200:
+            logger.error(f"FileGator getconfig failed: {config_resp.status_code}")
+            raise HTTPException(status_code=502, detail="Failed to connect to FileGator")
 
-            # 3. Переносим сессионные куки FileGator в ответ клиенту
-            redirect = RedirectResponse(url=FILEGATOR_PUBLIC_URL, status_code=303)
-            for cookie_name, cookie_value in auth_resp.cookies.items():
-                redirect.set_cookie(
-                    key=cookie_name,
-                    value=cookie_value,
-                    path="/",
-                    httponly=True,
-                    samesite="lax"
-                )
-            return redirect
-    except httpx.RequestError as exc:
-        logger.error(f"Cannot connect to FileGator backend: {exc}")
-        raise HTTPException(status_code=502, detail="FileGator service is unreachable")
+        csrf_token = config_resp.json().get("csrf_token")
+
+        # 2. Логинимся через официальный маршрут FileGator с CSRF-токеном
+        headers = {"Content-Type": "application/json"}
+        if csrf_token:
+            headers["x-csrf-token"] = csrf_token
+
+        login_resp = await client.post(
+            "/?r=/login",
+            headers=headers,
+            json={"username": fg_username, "password": fg_password}
+        )
+
+        if login_resp.status_code != 200:
+            logger.error(f"FileGator login failed: {login_resp.status_code} {login_resp.text}")
+            raise HTTPException(status_code=502, detail="FileGator authentication failed")
+
+        # 3. Перенаправляем iframe на внешний порт и выставляем куку в браузер
+        redirect = RedirectResponse(url=FILEGATOR_PUBLIC_URL, status_code=303)
+        for cookie_name, cookie_value in client.cookies.items():
+            redirect.set_cookie(
+                key=cookie_name,
+                value=cookie_value,
+                path="/",
+                httponly=True,
+                samesite="lax"
+            )
+        return redirect
 
 # Используем современный Lifespan вместо @app.on_event("startup")
 @asynccontextmanager

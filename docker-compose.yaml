@@ -322,6 +322,8 @@ services:
       # Адреса FileGator для main.py:
       - FILEGATOR_INTERNAL=http://file-manager:8080
       - FILEGATOR_PUBLIC=http://localhost:8081
+      - FILEGATOR_ADMIN_PASS=${FILEGATOR_ADMIN_PASS:-admin_secret_pass}
+      - FILEGATOR_MANAGER_PASS=${FILEGATOR_MANAGER_PASS:-manager_secret_pass}
       
     depends_on:
       migration:
@@ -513,9 +515,7 @@ services:
     environment:
       - TZ=Europe/Moscow
       # Переменные для автоматического создания пользователя:
-      - FILEGATOR_USER=ASLife
-      - FILEGATOR_PASS=YourSuperSecretPassword  
-      - FILEGATOR_HOMEDIR=/manager             # Папка внутри repository
+      - SECRET_KEY=super-secret-key-change-this
       - FILEGATOR_ADMIN_PASS=${FILEGATOR_ADMIN_PASS:-admin_secret_pass}
       - FILEGATOR_MANAGER_PASS=${FILEGATOR_MANAGER_PASS:-manager_secret_pass}
     networks:

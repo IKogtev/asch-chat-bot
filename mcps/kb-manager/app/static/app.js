@@ -473,6 +473,12 @@ function showTab(tabName, event=null) {
         analyticsLoaded = true;
     } else if (tabName === 'dialogs'){
         updateDialogs()
+    } else if (tabName === 'filegator') {
+        const iframe = document.getElementById('filegator-frame');
+        // Ленивая инициализация: загружаем SSO только при первом входе во вкладку
+        if (!iframe.src || iframe.src === 'about:blank' || iframe.src.endsWith('about:blank')) {
+            iframe.src = '/auth/filegator-sso';
+        }
     }
 }
 
@@ -2585,7 +2591,6 @@ function exportUsers() {
 /// #############################
 // AUTH ACCESS LOGIC
 // #############################
-
 const originalFetch = window.fetch;
 
 window.fetch = async function (...args) {
