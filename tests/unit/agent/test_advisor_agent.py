@@ -516,6 +516,16 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert '"client_type_selection"' not in content_prompt
     assert "исходный порядок `top_products`" in format_prompt
     assert "Запрещено добавлять, удалять, заменять или переставлять продукты" in format_prompt
+    assert "code, name, is_active, commission" in content_prompt
+    assert '"commission": "значение из SQL"' in content_prompt
+    assert "<номер списка>. <code> <name> (КВ <commission>%)" in format_prompt
+    assert "1. NNNN Юнит Линк Двойной доход (КВ K1%)" in format_prompt
+    assert "code, name, is_active, commission" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "<list number>. <code> <name> (КВ <attributes.commission>%)" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
 
 
 @pytest.mark.unit
