@@ -162,7 +162,8 @@ STATE_KEYS_TO_CLEAR = [
     "dialog_context_json",
     "product_dialog_context_json",
     "advisor_search_query", "advisor_client_profile", "advisor_client_profile_json",
-    "advisor_dialog_context_json", "advisor_minimum_client_type_confidence",
+    "advisor_dialog_context_json", "advisor_profile_field_names_json",
+    "advisor_minimum_client_type_confidence",
     "advisor_source_turn", "advisor_updated_at",
     "_advisor_content_result_parsed", "_advisor_result_parsed",
     "advisor_content_result_json", "advisor_ranking_result",
@@ -3286,6 +3287,10 @@ class RootAgent(BaseAgent):
         ctx.session.state["search_query"] = effective_query
         ctx.session.state["advisor_client_profile"] = current_profile.model_dump(mode="json")
         ctx.session.state["advisor_client_profile_json"] = current_profile.model_dump_json()
+        ctx.session.state["advisor_profile_field_names_json"] = json.dumps(
+            list(AdvisorClientProfile.model_fields),
+            ensure_ascii=False,
+        )
         ctx.session.state["advisor_minimum_client_type_confidence"] = (
             self.advisor_minimum_client_type_confidence
         )

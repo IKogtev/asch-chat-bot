@@ -507,15 +507,16 @@ async def test_handle_advisor_does_not_retry_invalid_content_contract() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_advisor_returns_exactly_one_validated_clarification(
+async def test_handle_advisor_returns_health_request_goal_clarification(
     monkeypatch,
 ) -> None:
     content_payload = _advisor_candidate_content_payload()
     content_payload.update(
         mode="needs_clarification",
+        profile_patch={},
         selected_client_type=None,
-        missing_fields=["term_months"],
-        clarification_question="На какой срок клиент готов разместить средства?",
+        missing_fields=["goal"],
+        clarification_question="Какова финансовая цель клиента?",
         products=[],
     )
     calls = []
@@ -531,21 +532,23 @@ async def test_handle_advisor_returns_exactly_one_validated_clarification(
     async def fake_run_json_leaf_agent(**kwargs):
         if kwargs["log_label"] != "advisor_content_result_json":
             raise AssertionError("clarification must stop before format agent")
+        assert json.loads(ctx.session.state["advisor_profile_field_names_json"]) == list(
+            rootagent_module.AdvisorClientProfile.model_fields
+        )
         ctx.session.state["_advisor_content_result_parsed"] = content_payload
         if False:
             yield None
 
     agent._run_json_leaf_agent = fake_run_json_leaf_agent
 
-    async for _ in agent._handle_advisor(ctx, "Запрос", "Запрос"):
+    request = "что посоветовать клиенту, который хочет заняться своим здоровьем?"
+    async for _ in agent._handle_advisor(ctx, request, request):
         pass
 
     assert calls == []
-    assert ctx.session.state["_root_final_text"] == (
-        "На какой срок клиент готов разместить средства?"
-    )
+    assert ctx.session.state["_root_final_text"] == "Какова финансовая цель клиента?"
     stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
-    assert stored["missing_fields"] == ["term_months"]
+    assert stored["missing_fields"] == ["goal"]
     assert stored["candidate_products"] == []
     assert stored["top_products"] == []
 

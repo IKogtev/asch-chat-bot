@@ -269,6 +269,27 @@ def test_advisor_content_contract_requires_one_valid_clarification() -> None:
 
 
 @pytest.mark.unit
+def test_advisor_content_contract_uses_client_profile_names_for_missing_fields() -> None:
+    payload = _candidate_payload()
+    payload.update(
+        mode="needs_clarification",
+        profile_patch={},
+        selected_client_type=None,
+        missing_fields=["goal"],
+        clarification_question="Какова финансовая цель клиента?",
+        products=[],
+    )
+
+    result = validate_advisor_content_result(payload, _context())
+
+    assert result["missing_fields"] == ["goal"]
+
+    payload["missing_fields"] = ["client_goal"]
+    with pytest.raises(ValueError, match="Unknown missing client field: 'client_goal'"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
 def test_advisor_content_contract_requires_current_run_sql_for_both_sources() -> None:
     with pytest.raises(ValueError, match="typical_client_profiles"):
         validate_advisor_content_result(
@@ -477,6 +498,14 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert '"product_column"' in content_prompt
     assert '"expected_values"' in content_prompt
     assert "JSON-число от 0 до 120" in content_prompt
+    assert "{advisor_profile_field_names_json}" in content_prompt
+    assert "{advisor_profile_field_names_json}" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "Client Types table column name in missing_fields" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "имена колонок таблицы Client Types" in content_prompt
     assert "client_types_source" not in content_prompt
     assert "products_source" not in content_prompt
     assert "source_row_identity" not in content_prompt

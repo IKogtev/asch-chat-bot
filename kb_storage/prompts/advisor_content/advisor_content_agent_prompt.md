@@ -8,6 +8,7 @@
 
 - Запрос для обработки: `{advisor_search_query}`.
 - Сохраненный типизированный профиль клиента: `{advisor_client_profile_json}`.
+- Канонические имена полей `AdvisorClientProfile`: `{advisor_profile_field_names_json}`.
 - Версионированный advisor-контекст предыдущих ходов: `{advisor_dialog_context_json}`.
 - Минимальная допустимая уверенность выбора Client Type: `{advisor_minimum_client_type_confidence}`.
 - Идентификатор текущей реплики: `{advisor_source_turn}`.
@@ -58,7 +59,7 @@
 - Для evidence запрещены `required_properties`, `preferred_properties`, `acceptable_compromises` и `contraindications`: это правила продуктов, а не характеристики клиента.
 - Не изменяй значения таблицы и не подменяй их пересказом.
 
-Если уверенности недостаточно, верни `mode = "needs_clarification"`, хотя бы одно поле в `missing_fields`, ровно один короткий вопрос с одним знаком `?` и пустые `products`. Не запрашивай продукты.
+Если уверенности недостаточно, верни `mode = "needs_clarification"`, хотя бы одно поле в `missing_fields`, ровно один короткий вопрос (в вопросе обращайся к клиенту в третьем лице, например, "Какая цель накопления у клиента?") с одним знаком `?` и пустые `products`. Каждое значение `missing_fields` дословно копируй из `{advisor_profile_field_names_json}`. Не используй в `missing_fields` имена колонок таблицы Client Types: указывай соответствующее каноническое поле профиля клиента. Не запрашивай продукты.
 
 # Получение продуктов
 

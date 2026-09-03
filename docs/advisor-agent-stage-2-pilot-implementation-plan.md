@@ -19,6 +19,21 @@ The pilot must add a standalone `advisor` route that:
 
 The pilot is successful when the agreed reference cases produce valid, explainable recommendations, all hard restrictions are enforced, context-dependent follow-ups work, and no existing route regresses.
 
+### 1.1. Current implementation snapshot
+
+Status as of September 3, 2026:
+
+| Phase | Current status | Implemented result | Remaining gate |
+|---|---|---|---|
+| Phase 1 | Implemented | Typed profile/provenance, Client Type validation, deterministic rule parsing, hard filtering, scoring, stable tie-breaking, and diversity selection | Business approval of the `pilot-v1` policy values and reference results |
+| Phase 2 | Implemented | DBHub-enabled content agent, no-tool format agent, strict content/final contracts, prompt files and fallbacks, current-run SQL checks, and canonical client-profile names for clarification fields | Approved client-type accuracy evaluation |
+| Phase 3 | Implemented | `advisor` route and `advisor_recommendation` intent, semantic route/intent validation, self-healing, prompt matrix, and route-boundary tests | Live routing evaluation on the approved reference conversations |
+| Phase 4 | Implemented | Agent construction/injection, OWASP-before-advisor execution, validated profile merge and ranking, formatter validation, schema-version-2 persistent context, state-delta/cache recovery, and safe failure handling | Live DBHub/LLM end-to-end validation |
+
+Phases 5–7 remain planned. In particular, ordinal follow-ups and `product_info` handoff, the `ADVISOR_ENABLED` pilot flag, advisor-specific observability, deployment validation, and business release approval are not part of the current Phase 1–4 implementation.
+
+Current verification: the focused Phase 0–4 unit set passes (`224 passed` on September 3, 2026). The full unit runner still stops during collection on two unrelated existing issues: the missing `build_download_rank_patterns` export and the Windows attempt to create `\\app\\data\\settings`. The PowerShell wrapper currently returns exit code `0` despite those pytest collection errors, so its process exit code alone is not proof of a successful full run.
+
 ## 2. Scope
 
 ### 2.1. Included
@@ -405,24 +420,23 @@ The response must:
 | `agent/advisor_ranking_service.py` | Deterministic hard filtering, scoring, tie-breaking, and diversity |
 | `kb_storage/prompts/advisor_content/advisor_content_agent_prompt.md` | Profile extraction and grounded catalog-retrieval instructions |
 | `kb_storage/prompts/advisor_format/advisor_format_agent_prompt.md` | User-facing TOP-3 and clarification formatting instructions |
-| `tests/unit/agent/test_advisor_contract.py` | Contract tests |
 | `tests/unit/agent/test_advisor_profile.py` | Profile merge and clarification tests |
 | `tests/unit/agent/test_advisor_profile_matcher.py` | Client Types parsing and matching tests |
 | `tests/unit/agent/test_advisor_ranking_service.py` | Filtering and scoring tests |
-| `tests/unit/agent/test_advisor_agent.py` | Agent factory and prompt tests |
+| `tests/unit/agent/test_advisor_agent.py` | Content/final contract, agent factory, tool allowlist, and prompt tests |
 
 Use `kb_storage/manager/tables/typical_client_profiles_active.xlsx` as the single source of client-type definitions and product-property rules. Python may define parsing, confidence thresholds, and weights, but must not duplicate the workbook's type names or property lists.
 
-### 10.2. Existing files to update
+### 10.2. Existing files changed or still planned
 
-| File | Planned change |
+| File | Current Phase 1–4 status |
 |---|---|
-| `agent/agents/dispatcher_agent.py` | Add `advisor` route, `advisor_recommendation` intent/reason, validation, and self-healing mapping |
-| `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md` | Add advisor examples and boundaries versus `product_filter` and `product_info` |
-| `agent/rootagent.py` | Register advisor components, state keys, route handler, follow-up resolution, persistence, and error handling |
-| `agent/start_agent.py` | Construct and inject advisor content and format agents |
-| `agent/config.py` | Add advisor token/temperature settings and `ADVISOR_ENABLED` |
-| `agent/agents/__init__.py` | Export advisor factories if this remains the package convention |
+| `agent/agents/dispatcher_agent.py` | Implemented in Phase 3: `advisor` route, `advisor_recommendation` intent/reason, validation, and self-healing mapping |
+| `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md` | Implemented in Phase 3: advisor examples and boundaries versus `product_filter`, `product_info`, and `kb_answer` |
+| `agent/rootagent.py` | Phase 4 core integration is implemented: registration, per-turn keys, route handler, persistence, recovery, and safe errors. Ordinal follow-ups and product-info handoff remain Phase 5 |
+| `agent/start_agent.py` | Implemented in Phase 4: constructs and injects both advisor agents and the configured ranking service |
+| `agent/config.py` | Phase 2/4 token, temperature, confidence, and scoring-policy settings are implemented. `ADVISOR_ENABLED` remains Phase 6 |
+| `agent/agents/__init__.py` | No change was required; current code imports the advisor factories directly |
 | `mcps/kb-manager/app/services/tables_loader_service.py` | Ensure the Client Types workbook loads as `typical_client_profiles` and its Russian business-label row is excluded from data |
 | `mcps/kb-manager/app/scripts/load_tables.py` | Treat `typical_client_profiles` as a required advisor table, emit its source/row/column result, and return failure on validation errors in strict mode |
 | `load_tables.ps1` | Run the shared loader with `--strict-validation` and preserve its nonzero exit code when the Client Types table is missing or invalid |
@@ -514,7 +528,7 @@ Implementation status (August 27, 2026): the technical Phase 0 work is implement
 
 Exit criterion: pure Python tests validate the Client Types schema, parse the four product-rule columns, reject invalid LLM selection payloads, and produce the approved exclusions and TOP-3 from a preselected valid client type without a live database.
 
-Implementation status (August 28, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime now use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. Production ranking still requires the business-owned `pilot-v1` weights and thresholds identified in Phase 0; the code intentionally requires an explicit policy rather than embedding unapproved defaults.
+Implementation status (updated September 3, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. `agent/config.py` now supplies environment-backed technical defaults for the versioned `pilot-v1` policy, and `agent/start_agent.py` constructs the ranking service explicitly from them. These defaults make the runtime constructible but do not replace the pending business approval of the weights, thresholds, and reference results.
 
 ### Phase 2. Implement advisor agents and contracts
 
@@ -531,7 +545,7 @@ Implementation status (August 28, 2026): the Phase 1 code is implemented in `age
 
 Exit criterion: client-type evaluation cases meet the approved accuracy threshold, and contract tests reject unknown type names, unsupported modes, unsupported evidence, invalid confidence, invalid clarification payloads, invented products, incomplete identities, and reordered recommendations.
 
-Implementation status (August 31, 2026): the Phase 2 agent and contract code is implemented in `agent/agents/advisor_content_agent.py`, `agent/agents/advisor_contract.py`, and `agent/agents/advisor_format_agent.py`. The content agent uses a refreshing DBHub toolset limited to discovery tools and `execute_sql`; the no-tool format agent uses temperature `0.0`. Both agents have UTF-8 prompt files, fallback prompts, and prompt-watcher registration. The strict content contract reuses the Phase 1 profile and Client Type validators, requires current-run SQL for the fixed trusted `typical_client_profiles` and `products` tables, validates complete `code + name + is_active` identities, and requires all product fields referenced by the selected row's rules. Per-run source table/file/load/freshness metadata is intentionally omitted. `AdvisorRankingService` excludes products whose textual `is_active` value is not `ACTIVE_PRODUCT_STATUS` (`"Действующий"`), and the final contract rejects inactive, invented, incomplete, or reordered TOP identities. The focused Phase 1 and Phase 2 tests pass. The full unit runner remains blocked during unrelated test collection by the existing missing `build_download_rank_patterns` export and the bot settings test's attempt to create `\\app\\data\\settings` on Windows. The approved client-type accuracy evaluation remains pending because the Phase 0 reference set and threshold are not yet available.
+Implementation status (updated September 3, 2026): the Phase 2 agent and contract code is implemented in `agent/agents/advisor_content_agent.py`, `agent/agents/advisor_contract.py`, and `agent/agents/advisor_format_agent.py`. The content agent uses a refreshing DBHub toolset limited to discovery tools and `execute_sql`; the no-tool format agent uses temperature `0.0`. Both agents have UTF-8 prompt files, synchronized fallback prompts, and prompt-watcher registration. The strict content contract reuses the Phase 1 validators, requires current-run SQL for the fixed trusted `typical_client_profiles` and `products` tables, rejects wildcard product projections, requires the active-status SQL filter, validates complete `code + name + is_active` identities, and requires every product field referenced by the selected row's rules. Clarification `missing_fields` must use canonical `AdvisorClientProfile` field names; `RootAgent` exposes that allowlist to the content prompt. Per-run source table/file/load/freshness metadata remains intentionally omitted. The final contract rejects inactive, invented, incomplete, or reordered TOP identities. The approved client-type accuracy evaluation remains pending because the Phase 0 reference set and threshold are not yet available.
 
 ### Phase 3. Add dispatcher routing
 
@@ -551,9 +565,11 @@ Implementation status (August 31, 2026): the Phase 2 agent and contract code is 
 
 Exit criterion: the dispatcher test matrix passes with no route ambiguity in the agreed examples.
 
+Implementation status (September 3, 2026): Phase 3 is implemented in `agent/agents/dispatcher_agent.py` and `kb_storage/prompts/dispatcher/dispatcher_agent_prompt.md`. The dispatcher schema accepts the `advisor` route and `advisor_recommendation` intent/reason, self-heals that intent to the advisor route, and rejects an advisor intent paired with another route. The prompt and fallback contain the positive recommendation cases, the `product_filter`/`product_info`/`kb_answer` boundaries, and follow-up routing guidance. Unit tests cover the accepted payload, self-healing, prompt matrix, boundaries, and invalid route/intent pairing. Phase 5 ordinal handoff behavior is not claimed by this status.
+
 ### Phase 4. Integrate `RootAgent` and session state
 
-1. Inject the content, structural-repair, and format advisor agents plus `AdvisorRankingService` into `RootAgent`; call the single-client-type validator directly.
+1. Inject the content and format advisor agents plus `AdvisorRankingService` into `RootAgent`; call the single-client-type validator directly.
 2. Register advisor agents in `sub_agents`.
 3. Add per-turn advisor keys to `STATE_KEYS_TO_CLEAR`.
 4. Add `_handle_advisor` with this order:
@@ -574,7 +590,7 @@ Exit criterion: the dispatcher test matrix passes with no route ambiguity in the
 
 Exit criterion: RootAgent tests prove that only a contract-valid, table-grounded LLM selection reaches deterministic product ranking, advisor state survives turns, per-turn intermediate state does not leak, and failures do not emit recommendations.
 
-Implementation status (September 1, 2026): Phase 4 is implemented. `RootAgent` now receives and registers the content, one-shot structural-repair, and format advisor agents plus an explicitly configured `AdvisorRankingService`. The advisor route runs after OWASP, binds profile-patch provenance to the current invocation, validates exactly one complete `selected_client_type`, returns a single clarification when required, ranks only validated candidates in Python, validates formatter output, and stores schema-version-2 `advisor_dialog_context`. Contract failures get at most one tool-free structural repair while reusing the original SQL evidence; no SQL is repeated. Advisor intermediate keys are cleared per turn, while the persistent context is included in final state deltas and in the existing cross-session cache snapshot and recovery flow. The content prompt contains complete mode-specific examples and receives the current query, serialized saved profile, prior advisor context, confidence threshold, source turn, and timestamp. The complete agent unit set passes (412 tests). The full unit runner still stops during unrelated collection on the pre-existing missing `build_download_rank_patterns` export and the Windows attempt to create `\\app\\data\\settings`. The environment-backed `pilot-v1` weights use the Phase 1 deterministic test-policy values as technical defaults; business approval of those values and the manual reference cases remains a release gate.
+Implementation status (updated September 3, 2026): Phase 4 is implemented. `RootAgent` receives and registers the content and format advisor agents plus an explicitly configured `AdvisorRankingService`; there is no separate advisor structural-repair agent and an invalid content contract is not retried. The advisor route runs after OWASP, binds profile-patch provenance to the current invocation, exposes the canonical profile-field allowlist, validates exactly one complete `selected_client_type`, returns a single validated clarification directly, ranks only validated candidates in Python, validates formatter output, and stores schema-version-2 `advisor_dialog_context`. Advisor intermediate keys are cleared per turn, while persistent context is included in final state deltas and the existing cross-session cache snapshot/recovery flow. Validation or tool failures use the existing neutral safe-error path and do not persist a partial recommendation. The content prompt receives the current query, serialized saved profile, canonical field names, prior advisor context, confidence threshold, source turn, and timestamp. The focused Phase 0–4 suite passes (`224 passed`); the full-run collection blockers are recorded in Section 1.1. The environment-backed `pilot-v1` values remain technical defaults pending business approval and manual reference cases.
 
 ### Phase 5. Implement follow-ups and product-info handoff
 
