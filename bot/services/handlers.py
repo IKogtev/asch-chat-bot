@@ -16,6 +16,7 @@ from bot.services.config import Settings
 #  импортируем функции вспомогательные для бота
 from bot.services.adk_events import extract_bot_action, extract_timing
 from bot.services.product_kits import get_product_kit
+from utils.channel_session import build_session_id
 
 from bot.services.utils import (
     markdown_to_safe_html,
@@ -571,9 +572,9 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 CURRENT_USER_SESSION.pop(str(global_user_id), None)
             
             # Очищаем историю в БД
-            await store.reset(user_id, global_user_id)
-            # Удаляем состояние результатов поиска
-            await store.reset_search_state(global_user_id, str(global_user_id))
+            await store.reset(user_id, global_user_id, channel=platform)
+            # Удаляем состояние результатов поиска этого канала
+            await store.reset_search_state_for_channel(global_user_id, platform)
 
             # После /reset не создаем новую ADK-сессию
             # и не вызываем set_user_state.
@@ -918,7 +919,7 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
         # Если это не контакт — проверяем авторизацию как обычно
         
         turn_id = str(uuid.uuid4())
-        session_id = f"{global_user_id}_{turn_id}"
+        session_id = build_session_id(str(global_user_id), platform, turn_id)
         start_time = time.time()
         user_key = str(global_user_id)
         # отменяем запрос пользователя при повторном сообщении используем только последнее
@@ -984,8 +985,8 @@ def register_handlers(dp, store, subscriber_store, user_resolver, adk, doc_handl
                 work = answer or ""
 
                 # сохраняем историю диалога
-                await store.append(user_id, "user", user_text, global_user_id)
-                await store.append(user_id, "model", answer, global_user_id)
+                await store.append(user_id, "user", user_text, global_user_id, channel=platform)
+                await store.append(user_id, "model", answer, global_user_id, channel=platform)
 
                 bot_action = extract_bot_action(events)
                 if isinstance(bot_action, dict) and bot_action.get("type") == "send_product_kit":

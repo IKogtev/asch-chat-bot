@@ -32,7 +32,15 @@ class PostgresChatStore:
             logger.error(f"Ошибка подключения к БД: {e}", exc_info=True)
             raise
 
-    async def append(self, user_id: str, role: str, content: str, global_user_id=None) -> None:
+    async def append(
+        self,
+        user_id: str,
+        role: str,
+        content: str,
+        global_user_id=None,
+        channel: str | None = None,
+        blocks: list[dict] | None = None,
+    ) -> None:
         """Добавление сообщения в историю"""
         if not self.pool:
             logger.warning("Pool не инициализирован, сообщение не сохранено")
@@ -43,26 +51,58 @@ class PostgresChatStore:
             logger.warning(f"Skip append: no global_user_id for user_id={user_id}")
             return
         query = """
-        INSERT INTO chat_history (user_id, global_user_id, role, content)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO chat_history (user_id, global_user_id, role, content, channel, blocks)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         """
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute(query, user_id, global_user_id, role, content)
+                encoded_blocks = (
+                    json.dumps(blocks, ensure_ascii=False) if blocks is not None else None
+                )
+                await conn.execute(
+                    query,
+                    user_id,
+                    global_user_id,
+                    role,
+                    content,
+                    channel,
+                    encoded_blocks,
+                )
             logger.debug(f"Сохранено сообщение: user={user_id}, role={role}, len={len(content)}")
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}", exc_info=True)
 
-    async def get_history(self, user_id: str, global_user_id=None) -> list[dict]:
+    async def get_history(
+        self,
+        user_id: str,
+        global_user_id=None,
+        channel: str | None = None,
+    ) -> list[dict]:
         """Получение истории диалога"""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return []
         try:
             async with self.pool.acquire() as conn:
-                if global_user_id:
+                if global_user_id and channel:
                     rows = await conn.fetch("""
-                        SELECT role, content, created_at
+                        SELECT role, content, blocks, created_at
+                        FROM chat_history
+                        WHERE global_user_id = $1 AND channel = $2
+                        ORDER BY created_at DESC
+                        LIMIT $3
+                    """, global_user_id, channel, self.max_turns)
+                    history = [self._history_item(row) for row in reversed(rows)]
+                    logger.debug(
+                        "[CHANNEL] История для global_user_id=%s channel=%s: %s",
+                        global_user_id,
+                        channel,
+                        len(history),
+                    )
+                    return history
+                elif global_user_id:
+                    rows = await conn.fetch("""
+                        SELECT role, content, blocks, created_at
                         FROM chat_history
                         WHERE global_user_id = $1
                         ORDER BY created_at DESC
@@ -70,15 +110,12 @@ class PostgresChatStore:
                     """, global_user_id, self.max_turns)
 
                     if rows:
-                        history = [
-                            {"role": row["role"], "content": row["content"]}
-                            for row in reversed(rows)
-                        ]
+                        history = [self._history_item(row) for row in reversed(rows)]
                         logger.debug(f"[GLOBAL] История для global_user_id={global_user_id}: {len(history)}")
                         return history
                 # fallback
                 query = """
-                SELECT role, content, created_at
+                SELECT role, content, blocks, created_at
                 FROM chat_history
                 WHERE user_id = $1
                 ORDER BY created_at DESC
@@ -87,10 +124,7 @@ class PostgresChatStore:
 
                 rows = await conn.fetch(query, user_id, self.max_turns)
 
-            history = [
-                {"role": row["role"], "content": row["content"]}
-                for row in reversed(rows)
-            ]
+            history = [self._history_item(row) for row in reversed(rows)]
             logger.debug(f"[LEGACY] История для user={user_id}: {len(history)} сообщений")
             return history
 
@@ -98,14 +132,42 @@ class PostgresChatStore:
             logger.error(f"Ошибка загрузки истории: {e}", exc_info=True)
             return []
 
-    async def reset(self, user_id: str, global_user_id=None) -> None:
-        """Очистка истории пользователя"""
+    @staticmethod
+    def _history_item(row) -> dict:
+        blocks = row["blocks"]
+        if isinstance(blocks, str):
+            try:
+                blocks = json.loads(blocks)
+            except json.JSONDecodeError:
+                blocks = None
+        return {
+            "role": row["role"],
+            "content": row["content"],
+            "blocks": blocks if isinstance(blocks, list) else None,
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        }
+
+    async def reset(self, user_id: str, global_user_id=None, channel: str | None = None) -> None:
+        """Очистка истории пользователя (при channel — только этот канал)."""
         if not self.pool:
             logger.warning("Pool не инициализирован")
             return
 
         try:
             async with self.pool.acquire() as conn:
+                if global_user_id and channel:
+                    result = await conn.execute(
+                        "DELETE FROM chat_history WHERE global_user_id = $1 AND channel = $2",
+                        global_user_id,
+                        channel,
+                    )
+                    logger.info(
+                        "[CHANNEL RESET] global_user_id=%s channel=%s: %s",
+                        global_user_id,
+                        channel,
+                        result,
+                    )
+                    return
                 if global_user_id:
                     result = await conn.execute(
                         "DELETE FROM chat_history WHERE global_user_id = $1",
@@ -157,10 +219,29 @@ class PostgresChatStore:
             row = await conn.fetchrow(query, user_id, session_id)
         return dict(row) if row else None
 
-    async def get_latest_search_session_id(self, user_id: str) -> str | None:
-        """Последний session_id с сохранённым поиском для пользователя."""
+    async def get_latest_search_session_id(
+        self,
+        user_id: str,
+        channel: str | None = None,
+    ) -> str | None:
+        """Последний session_id с сохранённым поиском для пользователя (опционально канал)."""
         if not self.pool:
             return None
+
+        from utils.channel_session import LEGACY_CHANNEL, session_id_prefix
+
+        if channel and channel != LEGACY_CHANNEL:
+            prefix = session_id_prefix(str(user_id), channel)
+            query = """
+            SELECT session_id
+            FROM search_meta
+            WHERE user_id = $1 AND session_id LIKE $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(query, user_id, f"{prefix}%")
+            return row["session_id"] if row else None
 
         query = """
         SELECT session_id
@@ -229,6 +310,26 @@ class PostgresChatStore:
                 await conn.execute(
                     "DELETE FROM search_meta WHERE user_id = $1 AND session_id = $2",
                     user_id, session_id
+                )
+
+    async def reset_search_state_for_channel(self, user_id: str, channel: str) -> None:
+        """Удаляет search_meta/results этого канала (по префиксу session_id)."""
+        if not self.pool:
+            return
+        from utils.channel_session import session_id_prefix
+
+        prefix = f"{session_id_prefix(str(user_id), channel)}%"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM search_results WHERE user_id = $1 AND session_id LIKE $2",
+                    user_id,
+                    prefix,
+                )
+                await conn.execute(
+                    "DELETE FROM search_meta WHERE user_id = $1 AND session_id LIKE $2",
+                    user_id,
+                    prefix,
                 )
 
     async def close(self) -> None:
@@ -441,6 +542,60 @@ class NewsStore:
 
         d.setdefault("target_group", "all")
         return d
+
+    _WEB_PUBLISHED_SELECT = """
+        SELECT n.id, n.text, n.files, n.created_at, n.scheduled_at
+        FROM news n
+        CROSS JOIN (
+            SELECT
+                COALESCE(BOOL_OR(s.manager_group), FALSE) AS is_manager,
+                COALESCE(BOOL_OR(s.coach_group), FALSE) AS is_coach
+            FROM user_accounts ua
+            LEFT JOIN subscribers s
+                ON s.user_id = ua.platform_user_id
+               AND s.platform = ua.platform
+            WHERE ua.user_id = $1
+        ) ug
+        WHERE n.status = 'sent'
+          AND (
+                n.target_group IS NULL
+                OR n.target_group = 'all'
+                OR (n.target_group = 'manager_group' AND ug.is_manager)
+                OR (n.target_group = 'coach_group' AND ug.is_coach)
+          )
+    """
+
+    async def get_published_for_web(
+        self,
+        global_user_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[dict]:
+        """Опубликованные новости, доступные глобальному пользователю WebUI."""
+        query = (
+            self._WEB_PUBLISHED_SELECT
+            + """
+        ORDER BY COALESCE(n.scheduled_at, n.created_at) DESC
+        LIMIT $2 OFFSET $3
+        """
+        )
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, global_user_id, limit + 1, offset)
+        return [self._parse_news_row(r) for r in rows]
+
+    async def get_published_for_web_by_id(
+        self,
+        global_user_id: str,
+        news_id: int,
+    ) -> dict | None:
+        """Одна опубликованная новость с теми же правилами доступа, что и список."""
+        query = self._WEB_PUBLISHED_SELECT + " AND n.id = $2"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, global_user_id, news_id)
+        if not row:
+            return None
+        return self._parse_news_row(row)
 
     async def get_all(self):
         """Получение всех новостей"""

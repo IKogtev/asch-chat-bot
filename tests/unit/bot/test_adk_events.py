@@ -1,6 +1,10 @@
 import pytest
 
-from bot.services.adk_events import extract_bot_action, extract_timing
+from bot.services.adk_events import (
+    extract_bot_action,
+    extract_selected_product,
+    extract_timing,
+)
 
 
 @pytest.mark.unit
@@ -33,6 +37,69 @@ def test_extract_bot_action_from_state_delta() -> None:
 @pytest.mark.unit
 def test_extract_bot_action_returns_none_without_action() -> None:
     assert extract_bot_action([{"actions": {"stateDelta": {"x": 1}}}]) is None
+
+
+@pytest.mark.unit
+def test_extract_selected_product_from_dialog_context() -> None:
+    events = [
+        {
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {
+                    "last_product": "Старый продукт (код 1111)",
+                    "_product_dialog_context": {
+                        "selected_product": {
+                            "code": "2832",
+                            "name": "Fort Knox",
+                            "folder_kit": "Fort Knox (2832)",
+                        }
+                    },
+                }
+            },
+        }
+    ]
+
+    assert extract_selected_product(events) == {
+        "code": "2832",
+        "name": "Fort Knox",
+    }
+
+
+@pytest.mark.unit
+def test_extract_selected_product_ignores_stale_last_product() -> None:
+    events = [
+        {
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {
+                    "last_product": "Unit Linked Стратегия роста (код 7698)"
+                }
+            },
+        }
+    ]
+
+    assert extract_selected_product(events) is None
+
+
+@pytest.mark.unit
+def test_extract_selected_product_none_when_nothing_selected() -> None:
+    events = [
+        {
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {
+                    "last_product": "Fort Knox 1 год (код 8914)",
+                    "_product_dialog_context": {
+                        "last_mode": "product_filter",
+                        "products": [{"code": "8914"}, {"code": "8942"}],
+                        "selected_product": None,
+                    },
+                }
+            },
+        }
+    ]
+
+    assert extract_selected_product(events) is None
 
 
 @pytest.mark.unit

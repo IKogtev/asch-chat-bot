@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pip.conf /etc/pip.conf
+
+COPY requirements-bot.txt .
+RUN pip install --no-cache-dir -r requirements-bot.txt
+
+COPY utils/ ./utils/
+COPY bot/ ./bot/
+COPY web_bff/ ./web_bff/
+COPY scripts/ ./scripts/
+COPY alembic.ini .
+COPY alembic/ ./alembic/
+
+RUN mkdir -p /app/logs /app/data/upload /app/data/settings
+
+ENV PYTHONPATH=/app
+
+EXPOSE 8010
+
+CMD ["python", "-m", "web_bff.app"]

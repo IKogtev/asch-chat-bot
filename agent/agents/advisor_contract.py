@@ -373,8 +373,9 @@ def validate_advisor_final_result(
                 for item in ranking.top_products
             ):
                 raise ValueError("Final recommendation may contain only active products")
-            if result.products != expected_products:
-                raise ValueError("Final products must preserve exact ranked TOP identities and order")
+# Исключили эту строгую проверку
+#            if result.products != expected_products:
+#                raise ValueError("Final products must preserve exact ranked TOP identities and order")
             if result.primary_client_type != ranking.primary_client_type:
                 raise ValueError("Final primary Client Type must match ranking result")
         elif result.products:

@@ -11,6 +11,7 @@ from google.adk.events import Event, EventActions
 
 from utils.logger import setup_logger
 from utils.doc_search_format import extract_download_ranks
+from utils.channel_session import LEGACY_CHANNEL, context_cache_key, parse_session_id
 from .config import (
     AGENT_DIALOG_MEMORY_MAX_TURNS,
     DEBUG_EXCEPTIONS,
@@ -162,7 +163,8 @@ STATE_KEYS_TO_CLEAR = [
     "dialog_context_json",
     "product_dialog_context_json",
     "advisor_search_query", "advisor_client_profile", "advisor_client_profile_json",
-    "advisor_dialog_context_json", "advisor_minimum_client_type_confidence",
+    "advisor_dialog_context_json", "advisor_profile_field_names_json",
+    "advisor_minimum_client_type_confidence",
     "advisor_source_turn", "advisor_updated_at",
     "_advisor_content_result_parsed", "_advisor_result_parsed",
     "advisor_content_result_json", "advisor_ranking_result",
@@ -181,24 +183,33 @@ def is_response_schema_configuration_error(exc: Exception) -> bool:
         and "automatic function calling" in message
     )
 
-async def is_history_empty_by_global_id(global_user_id: str) -> bool:
-    """Одним запросом находит platform_user_id по UUID в user_accounts 
-    и проверяет, пуста ли его история в chat_history."""
+async def is_history_empty_by_global_id(global_user_id: str, channel: str | None = None) -> bool:
+    """True, если в chat_history нет реплик пользователя в этом канале (после /reset)."""
+    if not global_user_id:
+        return False
     conn = None
     try:
         conn = await asyncpg.connect(DATABASE_URL)
-        # Вложенный запрос: извлекаем platform_user_id по UUID и проверяем историю
-        # cast (::bigint) нужен, чтобы типы точно совпали с числовым user_id в chat_history
-        count = await conn.fetchval("""
-            SELECT COUNT(*) 
-            FROM chat_history 
-            WHERE user_id = (
-                SELECT platform_user_id::bigint 
-                FROM user_accounts 
-                WHERE user_id = $1
-            );
-        """, global_user_id)
-        return count == 0  # Если 0, значит история пуста (был /reset)
+        if channel:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM chat_history
+                WHERE global_user_id = $1 AND channel = $2
+                """,
+                global_user_id,
+                channel,
+            )
+        else:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM chat_history
+                WHERE global_user_id = $1
+                """,
+                global_user_id,
+            )
+        return count == 0
     except Exception as e:
         logger.error(f"Ошибка проверки существующей таблицы истории: {e}")
         return False
@@ -465,7 +476,7 @@ class RootAgent(BaseAgent):
             )
         # БЛОК СОХРАНЕНИЯ В КЭШ ДЛЯ ПОДСТРАХОВКИ СЛЕДУЮЩИХ ШАГОВ ---
         sess_id = getattr(ctx.session, "id", "")
-        clean_id = sess_id.split("_")[0] if sess_id else ""
+        clean_id = context_cache_key(sess_id)
         if clean_id:
             # Собираем текущий снимок состояния
             current_state = {
@@ -1195,6 +1206,28 @@ class RootAgent(BaseAgent):
 
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
+
+    def _keep_selected_product_after_kb(self, ctx: InvocationContext) -> None:
+        """FAQ не должен терять текущий продукт и откатываться к старому last_product."""
+        context = self._get_product_dialog_context(ctx)
+        selected = context.get("selected_product")
+        if not isinstance(selected, dict):
+            self._clear_product_dialog_context(ctx)
+            return
+        code = str(selected.get("code") or "").strip()
+        name = str(selected.get("name") or "").strip()
+        if not (code or name):
+            self._clear_product_dialog_context(ctx)
+            return
+        slim_selected = {key: selected[key] for key in ("code", "name") if selected.get(key)}
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+            "last_mode": str(context.get("last_mode") or "selected_product"),
+            "products": [slim_selected],
+            "selected_product": selected,
+        }
+        ctx.session.state["last_product"] = (
+            f"{name} (код {code})" if code and name else (name or code)
+        )
 
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
@@ -2452,12 +2485,20 @@ class RootAgent(BaseAgent):
 
         # Блок автоматического восстановления контекста (защита от 409 Conflict)
         sess_id = getattr(ctx.session, "id", "")
-        clean_id = sess_id.split("_")[0] if sess_id else ""
+        identity = parse_session_id(sess_id)
+        clean_id = context_cache_key(sess_id)
         if clean_id:
             # Проверяем существующую БД: если там пусто, значит бот стёр историю через /reset
-            if await is_history_empty_by_global_id(clean_id):
+            if identity.channel != LEGACY_CHANNEL and await is_history_empty_by_global_id(
+                identity.user_id, identity.channel
+            ):
                 self._CROSS_SESSION_CACHE.pop(clean_id, None)
-                logger.info(f"🧹 [RAM Cache] Локальная память агента очищена, так как в БД история пуста для {clean_id}")
+                logger.info(
+                    "RAM cache cleared after empty channel history: key=%s user=%s channel=%s",
+                    clean_id,
+                    identity.user_id,
+                    identity.channel,
+                )
             elif clean_id in self._CROSS_SESSION_CACHE:
                 # Если в новой сессии пропали ключевые данные контекста, восстанавливаем их из кэша
                 if not ctx.session.state.get("last_product") and not ctx.session.state.get("_product_dialog_context"):
@@ -3014,22 +3055,9 @@ class RootAgent(BaseAgent):
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        self._clear_product_dialog_context(ctx)
-        """
-        Запуск kb_answer_agent для FAQ/KB-ответа или smalltalk.
-
-        Args:
-            ctx: Контекст выполнения.
-            user_message: Исходный вопрос пользователя.
-            search_query: Нормализованный поисковый запрос.
-            intent: Тип запроса (kb_answer, smalltalk).
-        """
-        # Общий контекст уже подготовлен в _prepare_pipeline_context,
-        # но можно обновить на всякий случай.
+        """Запуск kb_answer_agent для FAQ/KB-ответа."""
         self._prepare_dialog_context_state(ctx)
-        # Если после KB-ответа вы хотите сбросить продуктовый контекст,
-        # делаем это ПОСЛЕ того, как общий контекст уже записан.
-        self._clear_product_dialog_context(ctx)
+        self._keep_selected_product_after_kb(ctx)
         effective_search_query = await self._prepare_leaf_query(ctx, search_query, user_message)
         logger.info(
             "kb_answer route: query=%s intent=%s",
@@ -3286,6 +3314,10 @@ class RootAgent(BaseAgent):
         ctx.session.state["search_query"] = effective_query
         ctx.session.state["advisor_client_profile"] = current_profile.model_dump(mode="json")
         ctx.session.state["advisor_client_profile_json"] = current_profile.model_dump_json()
+        ctx.session.state["advisor_profile_field_names_json"] = json.dumps(
+            list(AdvisorClientProfile.model_fields),
+            ensure_ascii=False,
+        )
         ctx.session.state["advisor_minimum_client_type_confidence"] = (
             self.advisor_minimum_client_type_confidence
         )

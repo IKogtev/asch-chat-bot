@@ -120,6 +120,42 @@ async def test_postgres_chat_store_get_history_returns_empty_without_pool() -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgres_chat_store_persists_and_reads_blocks() -> None:
+    now = datetime.now()
+    blocks = [
+        {"type": "text", "content": "Найдено документов: 1."},
+        {"type": "documents", "items": [{"name": "a.pdf", "url": "/files/token"}]},
+    ]
+    conn = _FakeConn(
+        fetch_result=[
+            {
+                "role": "model",
+                "content": "Найдено документов: 1.",
+                "blocks": json.dumps(blocks),
+                "created_at": now,
+            }
+        ]
+    )
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    await store.append(
+        0,
+        "model",
+        "Найдено документов: 1.",
+        "user-1",
+        channel="web",
+        blocks=blocks,
+    )
+    history = await store.get_history("0", global_user_id="user-1", channel="web")
+
+    assert json.loads(conn.executed[0][1][5]) == blocks
+    assert history[0]["blocks"] == blocks
+    assert history[0]["created_at"] == now.isoformat()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_postgres_chat_store_save_search_results_uses_min_shown_count(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
@@ -175,11 +211,41 @@ async def test_postgres_chat_store_get_latest_search_session_id_returns_value() 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgres_chat_store_get_latest_search_session_id_filters_channel() -> None:
+    conn = _FakeConn(fetchrow_result={"session_id": "user-1::telegram::t1"})
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    result = await store.get_latest_search_session_id("user-1", channel="telegram")
+
+    assert result == "user-1::telegram::t1"
+    query, args = conn.executed[0]
+    assert "LIKE" in query
+    assert args[1] == "user-1::telegram::%"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_postgres_chat_store_get_latest_search_session_id_returns_none_without_pool() -> None:
     store = PostgresChatStore("postgres://dsn")
     store.pool = None
 
     assert await store.get_latest_search_session_id("user-uuid") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgres_chat_store_reset_deletes_only_requested_channel() -> None:
+    conn = _FakeConn()
+    store = PostgresChatStore("postgres://dsn")
+    store.pool = _FakePool(conn)
+
+    await store.reset(1, "user-1", channel="telegram")
+
+    query, args = conn.executed[0]
+    assert "DELETE FROM chat_history" in query
+    assert "channel" in query
+    assert args == ("user-1", "telegram")
 
 
 @pytest.mark.unit
@@ -213,6 +279,41 @@ def test_news_store_parse_news_row_handles_invalid_files_json() -> None:
     result = store._parse_news_row({"id": 1, "files": "{bad-json}"})
 
     assert result["files"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_published_for_web_fetches_limit_plus_one_and_joins_platform() -> None:
+    conn = _FakeConn(fetch_result=[{"id": 1, "text": "a", "files": [], "created_at": None, "scheduled_at": None}])
+    store = NewsStore(pool=_FakePool(conn))
+
+    rows = await store.get_published_for_web("user-1", limit=20, offset=0)
+
+    query, args = conn.executed[0]
+    assert "n.status = 'sent'" in query
+    assert "s.user_id = ua.platform_user_id" in query
+    assert "s.platform = ua.platform" in query
+    assert "BOOL_OR(s.manager_group)" in query
+    assert "BOOL_OR(s.coach_group)" in query
+    assert "ORDER BY COALESCE(n.scheduled_at, n.created_at) DESC" in query
+    assert args == ("user-1", 21, 0)
+    assert rows[0]["id"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_published_for_web_by_id_reuses_access_rules() -> None:
+    conn = _FakeConn(fetchrow_result={"id": 12, "text": "a", "files": [], "created_at": None, "scheduled_at": None})
+    store = NewsStore(pool=_FakePool(conn))
+
+    row = await store.get_published_for_web_by_id("user-1", 12)
+
+    query, args = conn.executed[0]
+    assert "n.status = 'sent'" in query
+    assert "s.platform = ua.platform" in query
+    assert "AND n.id = $2" in query
+    assert args == ("user-1", 12)
+    assert row["id"] == 12
 
 
 @pytest.mark.unit

@@ -174,7 +174,7 @@ services:
       kb-manager:
         condition: service_started
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     env_file:
       - .env
     volumes:
@@ -189,7 +189,7 @@ services:
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - KB_MANAGER_URL=http://kb-manager:5000
       - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
-      - PLATFORM_VERSION=0.8.5
+      - PLATFORM_VERSION=0.8.6
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
@@ -198,6 +198,7 @@ services:
       #  API Telegram
       - RECONNECT_DELAY_SEC=60
       - KB_TOP_K=${KB_TOP_K:-20}
+      - OTP_INTERNAL_SECRET=${OTP_INTERNAL_SECRET:-dev-otp-internal-secret}
       - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
     command: ["sh", "-c", "cd /app && exec python -m bot.bot_v6"]
     networks:
@@ -218,7 +219,7 @@ services:
       kb-manager:
         condition: service_started
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
     env_file:
       - .env
     volumes:
@@ -233,17 +234,62 @@ services:
       - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
       - KB_MANAGER_URL=http://kb-manager:5000
       - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
-      - PLATFORM_VERSION=0.8.5
+      - PLATFORM_VERSION=0.8.6
       - SHOW_LIST_SIZE=${SHOW_LIST_SIZE:-5}
       - SHOW_BY_PAGE=${SHOW_BY_PAGE:-False}
       - BOT_START_MESSAGE_FILE=/app/data/settings/bot_start_message.md
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
       - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
       - DOC_SEARCH_ARCHIVE_SECTION=${DOC_SEARCH_ARCHIVE_SECTION:-6 Архив}
+      - OTP_INTERNAL_SECRET=${OTP_INTERNAL_SECRET:-dev-otp-internal-secret}
     command: ["sh", "-c", "cd /app && exec python -m bot.max_bot"]
     networks:
       - aszh-bot-network
-    
+
+  web-bff:
+    build:
+      context: .
+      dockerfile: Dockerfile.web-bff
+    container_name: aszh-web-bff
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      adk-agent:
+        condition: service_started
+      kb-manager:
+        condition: service_started
+      bot:
+        condition: service_started
+      bot-max:
+        condition: service_started
+    ports:
+      - "8010:8010"
+    env_file:
+      - .env
+    volumes:
+      - ./kb_storage/manager/kb:/app/kb_storage/manager/kb:ro
+    environment:
+      - DATABASE_URL=postgresql://aszh-bot:aszh-bot@postgres:5432/aszh-bot
+      - ADK_API_BASE=http://adk-agent:8000
+      - ADK_APP_NAME=agent
+      - ADK_TIMEOUT_SEC=${ADK_TIMEOUT_SEC:-180}
+      - WEB_BFF_ALLOW_DEV_AUTH=true
+      - WEB_BFF_OTP_STUB=false
+      - WEB_BFF_OTP_STUB_PHONE=${WEB_BFF_OTP_STUB_PHONE:-}
+      - WEB_BFF_OTP_STUB_CODE=${WEB_BFF_OTP_STUB_CODE:-}
+      - OTP_INTERNAL_SECRET=${OTP_INTERNAL_SECRET:-dev-otp-internal-secret}
+      - BOT_TELEGRAM_API=http://bot:8001
+      - BOT_MAX_API=http://bot-max:8002
+      - WEB_BFF_PORT=8010
+      - KB_MANAGER_URL=http://kb-manager:5000
+      - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
+      - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
+      - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
+      - DOWNLOADS_DIR=/app/data/upload/web_files
+    command: ["sh", "-c", "cd /app && exec python -m web_bff.app"]
+    networks:
+      - aszh-bot-network
 
   qdrant:
     image: qdrant/qdrant:v1.16.3
@@ -290,7 +336,7 @@ services:
       - FAQ_COLLECTION_NAME=faq_collection
       - KB_STORAGE_ROOT=/app/data/kb_documents
       - PROMPTS_STORAGE_ROOT=/app/data/kb_documents/prompts
-      - PLATFORM_VERSION=0.8.5
+      - PLATFORM_VERSION=0.8.6
       - BOT_TELEGRAM_API=http://bot:8001
       - BOT_MAX_API=http://bot-max:8002
       - UI_USERS_DATA=admin:admin123:admin,manager:manager:manager # формируем пользователей, две роли - admin и manager
