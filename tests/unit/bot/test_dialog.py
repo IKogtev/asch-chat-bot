@@ -2,7 +2,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bot.services.dialog import build_blocks, paginate_search, run_turn
+from bot.services.dialog import (
+    build_blocks,
+    build_product_suggestions,
+    paginate_search,
+    run_turn,
+)
 
 
 @pytest.mark.unit
@@ -34,6 +39,24 @@ def test_build_blocks_includes_search_pagination() -> None:
 
 
 @pytest.mark.unit
+def test_build_product_suggestions_separates_label_and_message() -> None:
+    suggestions = build_product_suggestions(
+        {"name": "Fort Knox 1 год", "code": "8914"}
+    )
+
+    assert suggestions == [
+        {
+            "label": "Карточка Fort Knox 1 год 8914",
+            "message": "Карточка",
+        },
+        {
+            "label": "Комплект Fort Knox 1 год 8914",
+            "message": "Комплект",
+        },
+    ]
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_turn_calls_adk_and_returns_complete() -> None:
     adk = AsyncMock()
@@ -51,6 +74,54 @@ async def test_run_turn_calls_adk_and_returns_complete() -> None:
     adk.ensure_session.assert_awaited()
     adk.run.assert_awaited_once()
     assert adk.run.await_args.kwargs["text"] == "покажи карточку"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_turn_adds_suggestions_for_selected_product() -> None:
+    adk = AsyncMock()
+    adk.run.return_value = (
+        "Карточка продукта",
+        [
+            {
+                "author": "root_agent",
+                "actions": {
+                    "stateDelta": {
+                        "_product_dialog_context": {
+                            "selected_product": {
+                                "code": "8914",
+                                "name": "Fort Knox 1 год",
+                            }
+                        },
+                    }
+                },
+            }
+        ],
+    )
+
+    disabled = await run_turn(adk, global_user_id="user-uuid", text="8914")
+    assert all(block.get("type") != "suggestions" for block in disabled.blocks)
+
+    result = await run_turn(
+        adk,
+        global_user_id="user-uuid",
+        text="8914",
+        include_suggestions=True,
+    )
+
+    assert result.blocks[-1] == {
+        "type": "suggestions",
+        "items": [
+            {
+                "label": "Карточка Fort Knox 1 год 8914",
+                "message": "Карточка",
+            },
+            {
+                "label": "Комплект Fort Knox 1 год 8914",
+                "message": "Комплект",
+            },
+        ],
+    }
 
 
 @pytest.mark.unit

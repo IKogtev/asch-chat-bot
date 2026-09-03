@@ -87,11 +87,12 @@ async def lifespan(app: FastAPI):
     app.state.doc_handler = doc_handler
     app.state.otp = OtpService(pool, settings)
     logger.info(
-        "web-bff started adk=%s app=%s stub_otp=%s dev_auth=%s",
+        "web-bff started adk=%s app=%s stub_otp=%s dev_auth=%s suggestions=%s",
         settings.adk_api_base,
         settings.adk_app_name,
         settings.otp_stub,
         settings.allow_dev_auth,
+        settings.suggestions,
     )
     try:
         yield
@@ -218,6 +219,8 @@ def refresh_file_urls(
         if not isinstance(raw_block, dict):
             continue
         block = dict(raw_block)
+        if block.get("type") == "suggestions" and not settings.suggestions:
+            continue
         if block.get("type") == "text":
             block.setdefault("format", "markdown")
         if block.get("type") == "documents" and isinstance(block.get("items"), list):
@@ -257,6 +260,7 @@ async def post_message(
             store=request.app.state.store,
             platform_user_id=0,
             file_urls=request.app.state.file_urls,
+            include_suggestions=settings.suggestions,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

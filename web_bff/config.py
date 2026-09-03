@@ -37,6 +37,7 @@ class WebBffSettings:
     kb_manager_token: str | None = os.getenv("KB_MANAGER_TOKEN", "").strip() or None
     downloads_dir: str = os.getenv("DOWNLOADS_DIR", "/app/data/upload/web_files").strip()
     file_secret: str = os.getenv("WEB_BFF_FILE_SECRET", "").strip() or "dev-file-secret-change-me"
+    suggestions: bool = _as_bool(os.getenv("WEB_BFF_SUGGESTIONS"), default=False)
     cors_origins: list[str] = [
         part.strip()
         for part in (os.getenv("WEB_BFF_CORS_ORIGINS") or "").split(",")

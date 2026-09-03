@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from bot.services.adk_events import extract_bot_action
+from bot.services.adk_events import extract_bot_action, extract_selected_product
 from bot.services.bot_actions import FileUrlIssuer, apply_bot_action
 from bot.services.database import AdkApiClient
 from utils.channel_session import build_session_id
@@ -31,6 +31,7 @@ def build_blocks(
     answer: str,
     documents: list[dict[str, Any]] | None = None,
     *,
+    suggestions: list[dict[str, str]] | None = None,
     shown: int | None = None,
     total: int | None = None,
     has_more: bool | None = None,
@@ -47,7 +48,28 @@ def build_blocks(
             block["total"] = total
             block["has_more"] = bool(has_more)
         blocks.append(block)
+    suggestion_items = [
+        item
+        for item in (suggestions or [])
+        if item.get("label") and item.get("message")
+    ]
+    if suggestion_items:
+        blocks.append({"type": "suggestions", "items": suggestion_items})
     return blocks
+
+
+def build_product_suggestions(product: dict[str, str] | None) -> list[dict[str, str]]:
+    if not product:
+        return []
+    name = str(product.get("name") or "").strip()
+    code = str(product.get("code") or "").strip()
+    product_label = " ".join(part for part in (name, code) if part)
+    if not product_label:
+        return []
+    return [
+        {"label": f"Карточка {product_label}", "message": "Карточка"},
+        {"label": f"Комплект {product_label}", "message": "Комплект"},
+    ]
 
 
 def _blocks_from_delivery(delivery, fallback_text: str = "") -> list[dict[str, Any]]:
@@ -114,6 +136,7 @@ async def run_turn(
     store=None,
     platform_user_id: int | str = 0,
     file_urls: FileUrlIssuer | None = None,
+    include_suggestions: bool = False,
 ) -> TurnResult:
     """Один ход: новая ADK-сессия как у бота, action → files, ответ в blocks."""
     user_text = (text or "").strip()
@@ -144,6 +167,7 @@ async def run_turn(
 
     answer, events = await adk.run(user_id=adk_user_id, session_id=session_id, text=user_text)
     bot_action = extract_bot_action(events)
+    selected_product = extract_selected_product(events)
     if bot_action:
         logger.info("run_turn bot_action type=%s", bot_action.get("type"))
 
@@ -163,6 +187,7 @@ async def run_turn(
     blocks = build_blocks(
         final_text,
         delivery.documents,
+        suggestions=build_product_suggestions(selected_product) if include_suggestions else None,
         shown=delivery.shown,
         total=delivery.total,
         has_more=delivery.has_more,

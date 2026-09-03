@@ -1162,6 +1162,28 @@ class RootAgent(BaseAgent):
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
 
+    def _keep_selected_product_after_kb(self, ctx: InvocationContext) -> None:
+        """FAQ не должен терять текущий продукт и откатываться к старому last_product."""
+        context = self._get_product_dialog_context(ctx)
+        selected = context.get("selected_product")
+        if not isinstance(selected, dict):
+            self._clear_product_dialog_context(ctx)
+            return
+        code = str(selected.get("code") or "").strip()
+        name = str(selected.get("name") or "").strip()
+        if not (code or name):
+            self._clear_product_dialog_context(ctx)
+            return
+        slim_selected = {key: selected[key] for key in ("code", "name") if selected.get(key)}
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+            "last_mode": str(context.get("last_mode") or "selected_product"),
+            "products": [slim_selected],
+            "selected_product": selected,
+        }
+        ctx.session.state["last_product"] = (
+            f"{name} (код {code})" if code and name else (name or code)
+        )
+
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
         if not isinstance(value, list):
@@ -2979,22 +3001,9 @@ class RootAgent(BaseAgent):
         search_query: str,
         intent: str,
     ) -> AsyncGenerator[Event, None]:
-        self._clear_product_dialog_context(ctx)
-        """
-        Запуск kb_answer_agent для FAQ/KB-ответа или smalltalk.
-
-        Args:
-            ctx: Контекст выполнения.
-            user_message: Исходный вопрос пользователя.
-            search_query: Нормализованный поисковый запрос.
-            intent: Тип запроса (kb_answer, smalltalk).
-        """
-        # Общий контекст уже подготовлен в _prepare_pipeline_context,
-        # но можно обновить на всякий случай.
+        """Запуск kb_answer_agent для FAQ/KB-ответа."""
         self._prepare_dialog_context_state(ctx)
-        # Если после KB-ответа вы хотите сбросить продуктовый контекст,
-        # делаем это ПОСЛЕ того, как общий контекст уже записан.
-        self._clear_product_dialog_context(ctx)
+        self._keep_selected_product_after_kb(ctx)
         effective_search_query = await self._prepare_leaf_query(ctx, search_query, user_message)
         logger.info(
             "kb_answer route: query=%s intent=%s",
