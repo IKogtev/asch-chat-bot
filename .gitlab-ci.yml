@@ -5,6 +5,7 @@ variables:
   # Docker image names (tagged on release tags)
   IMAGE_AGENT: "${YC_REPO}/adk-agent"
   IMAGE_CHATBOT: "${YC_REPO}/chatbot"
+  IMAGE_WEB_BFF: "${YC_REPO}/web-bff"
   IMAGE_KB_MANAGER: "${YC_REPO}/kb-manager"
   IMAGE_KBSEARCH: "${YC_REPO}/kbsearch"
   IMAGE_FAQ: "${YC_REPO}/faq"
@@ -75,6 +76,21 @@ build:image:chatbot:
         --compressed-caching=false \
         --snapshot-mode=redo
 
+build:image:web-bff:
+  <<: *kaniko-template
+  script:
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile.web-bff" \
+        --destination "${IMAGE_WEB_BFF}:${CI_COMMIT_TAG}-amd64" \
+        --destination "${IMAGE_WEB_BFF}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${IMAGE_WEB_BFF}:latest" \
+        --cache=${KANIKO_CACHE} \
+        --cache-repo=${KANIKO_CACHE_REPO} \
+        --compressed-caching=false \
+        --snapshot-mode=redo
+
 build:image:kb-manager:
   <<: *kaniko-template
   script:
@@ -134,6 +150,7 @@ release:gitlab:
   needs:
     - job: build:image:agent
     - job: build:image:chatbot
+    - job: build:image:web-bff
     - job: build:image:kb-manager
     - job: build:image:kbsearch
     - job: build:image:faq
@@ -147,6 +164,7 @@ release:gitlab:
 
           docker pull ${IMAGE_AGENT}:${CI_COMMIT_TAG}-amd64
           docker pull ${IMAGE_CHATBOT}:${CI_COMMIT_TAG}-amd64
+          docker pull ${IMAGE_WEB_BFF}:${CI_COMMIT_TAG}-amd64
           docker pull ${IMAGE_KB_MANAGER}:${CI_COMMIT_TAG}-amd64
           docker pull ${IMAGE_KBSEARCH}:${CI_COMMIT_TAG}-amd64
           docker pull ${IMAGE_FAQ}:${CI_COMMIT_TAG}-amd64

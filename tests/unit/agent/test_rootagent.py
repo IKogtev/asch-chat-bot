@@ -1883,6 +1883,24 @@ async def test_handle_product_filter_does_not_select_among_several_products() ->
 
 
 @pytest.mark.unit
+def test_keep_selected_product_after_kb_clears_empty_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                "last_mode": "product_filter",
+                "products": [{"code": "7698", "name": "Unit Linked Стратегия роста"}],
+                "selected_product": None,
+            }
+        }
+    )
+
+    agent._keep_selected_product_after_kb(ctx)
+
+    assert rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY not in ctx.session.state
+
+
+@pytest.mark.unit
 def test_filter_single_product_followup_uses_selected_product() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
@@ -3727,15 +3745,22 @@ async def test_run_async_impl_sets_from_glossary_before_dispatcher() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_kb_answer_clears_product_dialog_context() -> None:
+async def test_handle_kb_answer_keeps_selected_product_and_syncs_last_product() -> None:
     agent = _make_agent()
     ctx = _make_ctx(
         session_state={
+            "last_product": "Многоуровневый доход 8 льготных (код 5793)",
             rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
                 "last_mode": "product_card",
-                "products": [{"code": "7725", "name": "Альфа Kids+ 5 лет"}],
-                "selected_product": {"code": "7725", "name": "Альфа Kids+ 5 лет"},
-            }
+                "products": [
+                    {"code": "5793", "name": "Многоуровневый доход 8 льготных"},
+                    {"code": "8942", "name": "Фиксированный доход 18 месяцев + Альфа-Вклад Актив"},
+                ],
+                "selected_product": {
+                    "code": "8942",
+                    "name": "Фиксированный доход 18 месяцев + Альфа-Вклад Актив",
+                },
+            },
         }
     )
 
@@ -3751,15 +3776,26 @@ async def test_handle_kb_answer_clears_product_dialog_context() -> None:
         event
         async for event in agent._handle_kb_answer(
             ctx,
-            "Что такое НСЖ?",
-            "Что такое НСЖ?",
+            "Что такое ДОГ?",
+            "Что такое ДОГ?",
             "kb_answer",
         )
     ]
 
     assert events == []
     assert ctx.session.state["_root_final_text"] == "ok"
-    assert rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY not in ctx.session.state
+    stored = ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["selected_product"]["code"] == "8942"
+    assert stored["products"] == [
+        {"code": "8942", "name": "Фиксированный доход 18 месяцев + Альфа-Вклад Актив"}
+    ]
+    assert ctx.session.state["last_product"] == (
+        "Фиксированный доход 18 месяцев + Альфа-Вклад Актив (код 8942)"
+    )
+    dispatch = agent._product_followup_dispatch(ctx, "карточка")
+    assert dispatch["intent"] == "product_card"
+    assert "8942" in dispatch["search_query"]
+    assert "5793" not in dispatch["search_query"]
 
 
 @pytest.mark.unit

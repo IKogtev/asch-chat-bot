@@ -1,4 +1,4 @@
-# Test output
+  # Test output
 test_report_*.txt
 test_results_*.json
 
@@ -70,3 +70,5 @@ setup-assistant-env.ps1
 AGENTS.md
 
 deployment/kubernetes/overlays/local
+
+cookies.txt

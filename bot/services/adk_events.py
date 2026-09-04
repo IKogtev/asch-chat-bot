@@ -1,4 +1,5 @@
 TIMING_STATE_DELTA_KEY = "_timing"
+PRODUCT_DIALOG_CONTEXT_KEY = "_product_dialog_context"
 
 
 def _iter_state_deltas(event: dict):
@@ -39,6 +40,38 @@ def extract_bot_action(events: list) -> dict | None:
                 return action
 
     return None
+
+
+def extract_selected_product(events: list) -> dict[str, str] | None:
+    """Выбранный продукт из финального состояния root-агента.
+
+    Плоский last_product не используется: он переживает сам выбор
+    (kb_answer снимает только _product_dialog_context) и подсовывает
+    продукт из более раннего хода.
+    """
+    if not events:
+        return None
+
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+
+        for delta in _iter_state_deltas(event):
+            context = delta.get(PRODUCT_DIALOG_CONTEXT_KEY)
+            if isinstance(context, dict):
+                return _normalize_product(context.get("selected_product"))
+
+    return None
+
+
+def _normalize_product(value) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    code = str(value.get("code") or value.get("product_code") or "").strip()
+    name = str(value.get("name") or value.get("product_name") or "").strip()
+    if not (code or name):
+        return None
+    return {"code": code, "name": name}
 
 
 def extract_timing(events: list) -> dict | None:
