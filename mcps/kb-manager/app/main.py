@@ -166,6 +166,70 @@ async def keycloak_logout(request: Request):
     response = RedirectResponse(url=keycloak_logout_url, status_code=303)
     # 3. Полностью удаляем все куки авторизации с явным указанием path="/"
     return clear_auth_cookies(response)
+# функция для получения сертификата чтобы производить авторизацию в filegator для 
+def extract_csrf(
+    resp_text: str = "", resp_headers: dict = None, resp_json=None
+) -> str | None:
+  """Универсальный поиск CSRF-токена в заголовках, JSON или теле ответа."""
+  # 1. Из заголовков ответа
+  if resp_headers:
+    for k, v in resp_headers.items():
+      if "csrf" in k.lower() or "xsrf" in k.lower():
+        return v
+
+  # 2. Из JSON-структуры (рекурсивно)
+  def search_obj(obj):
+    if isinstance(obj, dict):
+      for k, v in obj.items():
+        k_lower = k.lower()
+        if (
+            any(t in k_lower for t in ("csrf", "token", "xsrf"))
+            and isinstance(v, str)
+            and len(v) > 8
+        ):
+          return v
+        res = search_obj(v)
+        if res:
+          return res
+    elif isinstance(obj, list):
+      for item in obj:
+        res = search_obj(item)
+        if res:
+          return res
+    return None
+
+  if resp_json:
+    token = search_obj(resp_json)
+    if token:
+      return token
+
+  # 3. Из HTML / текста (мета-теги и JS-переменные)
+  if resp_text:
+    # <meta name="csrf-token" content="...">
+    m = re.search(
+        r'<meta[^>]+(?:name|id)=["\'](?:csrf[_-]?token|xsrf[_-]?token)["\'][^>]+content=["\']([^"\']+)["\']',
+        resp_text,
+        re.I,
+    )
+    if m:
+      return m.group(1)
+    m = re.search(
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:name|id)=["\'](?:csrf[_-]?token|xsrf[_-]?token)["\']',
+        resp_text,
+        re.I,
+    )
+    if m:
+      return m.group(1)
+    # JSON или JS: "csrfToken": "...", "csrf_token": "..."
+    m = re.search(
+        r'["\']?(?:csrf[_-]?token|csrfToken|xsrf[_-]?token|csrf)["\']?\s*[:=]\s*["\']([a-zA-Z0-9_\-]+)["\']',
+        resp_text,
+        re.I,
+    )
+    if m:
+      return m.group(1)
+
+  return None
 
 @auth_router.get("/filegator-sso")
 async def filegator_sso_bridge(request: Request):
@@ -180,44 +244,126 @@ async def filegator_sso_bridge(request: Request):
     except HTTPException:
         return RedirectResponse(url="/auth/login", status_code=302)
 
-    role = user_info.get("role", "manager")
-    is_admin = (role == "admin")
-    fg_username = "admin" if is_admin else "manager"
-    fg_password = FILEGATOR_ADMIN_PASS if is_admin else FILEGATOR_MANAGER_PASS
+    # 1. Извлекаем роли из структуры токена Keycloak
+    client_roles = (
+        user_info.get("resource_access", {})
+        .get("kb-manager-ui", {})
+        .get("roles", [])
+    )
+    realm_roles = user_info.get("realm_access", {}).get("roles", [])
+    preferred_username = user_info.get("preferred_username", "")
 
-    async with httpx.AsyncClient(base_url=FILEGATOR_INTERNAL_URL, timeout=10.0) as client:
-        # 1. Получаем конфиг и CSRF токен (клиент сам сохранит сессионную cookie)
-        config_resp = await client.get("/?r=/getconfig")
+    is_admin = (
+        "admin" in client_roles
+        or "admin" in realm_roles
+        or preferred_username == "admin"
+        or user_info.get("role") == "admin"
+    )
+
+    fg_username = "admin" if is_admin else "manager"
+    raw_pass = FILEGATOR_ADMIN_PASS if is_admin else FILEGATOR_MANAGER_PASS
+    fg_password = raw_pass.strip("'\" \t\r\n")
+    # Прокидываем User-Agent браузера, чтобы сессия PHP не инвалидировалась
+    browser_ua = request.headers.get("user-agent", "")
+
+    async with httpx.AsyncClient(
+        base_url=FILEGATOR_INTERNAL_URL, timeout=10.0
+    ) as client:
+        # Получаем конфиг и CSRF токен
+        root_resp = await client.get("/", headers={"User-Agent": browser_ua})
+        csrf_token = extract_csrf(
+            root_resp.text, dict(root_resp.headers), resp_json=None
+        )
+        config_resp = await client.get(
+            "/?r=/getconfig", headers={"User-Agent": browser_ua}
+        )
         if config_resp.status_code != 200:
             logger.error(f"FileGator getconfig failed: {config_resp.status_code}")
-            raise HTTPException(status_code=502, detail="Failed to connect to FileGator")
+            raise HTTPException(
+                status_code=502, detail="Failed to connect to FileGator"
+            )
 
-        csrf_token = config_resp.json().get("csrf_token")
+        if not csrf_token:
+            try:
+                cfg_json = config_resp.json()
+            except Exception:
+                cfg_json = None
+            csrf_token = extract_csrf(
+                config_resp.text, dict(config_resp.headers), cfg_json
+            )
 
-        # 2. Логинимся через официальный маршрут FileGator с CSRF-токеном
-        headers = {"Content-Type": "application/json"}
-        if csrf_token:
-            headers["x-csrf-token"] = csrf_token
+        if not csrf_token:
+            for c_name, c_val in client.cookies.items():
+                if "csrf" in c_name.lower() or "xsrf" in c_name.lower():
+                    csrf_token = c_val
+                    break
+
+        if not csrf_token:
+            logger.error(
+                "FileGator CSRF token not found! root_resp:"
+                f" {root_resp.text[:300]}, config_resp: {config_resp.text[:300]}"
+            )
+            raise HTTPException(
+                status_code=502, detail="Failed to obtain CSRF token from FileGator"
+            )
+
+        # 3. Отправляем запрос на логин
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": browser_ua,
+            "x-csrf-token": csrf_token,
+        }
 
         login_resp = await client.post(
             "/?r=/login",
             headers=headers,
-            json={"username": fg_username, "password": fg_password}
+            json={"username": fg_username, "password": fg_password},
         )
-
         if login_resp.status_code != 200:
-            logger.error(f"FileGator login failed: {login_resp.status_code} {login_resp.text}")
-            raise HTTPException(status_code=502, detail="FileGator authentication failed")
+            logger.error(
+                f"FileGator login HTTP error: {login_resp.status_code}"
+                f" {login_resp.text}"
+            )
+            raise HTTPException(
+                status_code=502, detail="FileGator authentication failed"
+            )
+        # 4. Проверяем аутентификацию внутри сессии
+        user_check_resp = await client.get(
+            "/?r=/getuser", headers={"User-Agent": browser_ua}
+        )
+        fg_user_data = user_check_resp.json().get("data", {})
 
-        # 3. Перенаправляем iframe на внешний порт и выставляем куку в браузер
-        redirect = RedirectResponse(url=FILEGATOR_PUBLIC_URL, status_code=303)
+        if fg_user_data.get("role") == "guest":
+            logger.error(
+                f"FileGator login failed for '{fg_username}'. Passed pwd len:"
+                f" {len(fg_password)}, CSRF: {bool(csrf_token)}. Response:"
+                f" {fg_user_data}"
+            )
+            raise HTTPException(
+                status_code=401,
+                detail=f"FileGator rejected login for user {fg_username}",
+            )
+
+        logger.info(
+            f"FileGator SSO success for '{fg_username}' (role:"
+            f" {fg_user_data.get('role')})"
+        )
+        # Прокидываем куку в браузер
+        request_host = request.url.hostname or "localhost"
+        target_url = FILEGATOR_PUBLIC_URL.replace(
+            "localhost", request_host
+        ).replace("127.0.0.1", request_host)
+
+        redirect = RedirectResponse(url=target_url, status_code=302)
         for cookie_name, cookie_value in client.cookies.items():
             redirect.set_cookie(
                 key=cookie_name,
                 value=cookie_value,
                 path="/",
                 httponly=True,
-                samesite="lax"
+                samesite="none",
+                secure=True,
             )
         return redirect
 
