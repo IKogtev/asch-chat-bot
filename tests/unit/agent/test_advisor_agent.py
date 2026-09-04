@@ -357,6 +357,79 @@ def test_advisor_content_contract_accepts_no_matching_client_type() -> None:
 
 
 @pytest.mark.unit
+def test_advisor_content_contract_accepts_current_explicit_term_correction() -> None:
+    context = {
+        **_context(),
+        "advisor_client_profile": AdvisorClientProfile(
+            term_months=AdvisorProfileField(
+                value=24,
+                source_turn="turn-1",
+                updated_at=NOW,
+                origin="explicit",
+            )
+        ),
+        "advisor_source_turn": "turn-2",
+        "advisor_updated_at": "2026-09-01T00:01:00+00:00",
+    }
+    payload = {
+        "mode": "no_data",
+        "profile_patch": {
+            "term_months": {
+                "value": 60,
+                "source_turn": "turn-2",
+                "updated_at": "2026-09-01T00:01:00+00:00",
+                "origin": "explicit",
+            }
+        },
+        "selected_client_type": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [],
+        "no_data_reason": "No Client Type matches all supplied constraints",
+    }
+
+    result = validate_advisor_content_result(payload, context)
+
+    assert result["profile_patch"]["term_months"]["value"] == 60
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_stale_explicit_term_correction() -> None:
+    context = {
+        **_context(),
+        "advisor_client_profile": AdvisorClientProfile(
+            term_months=AdvisorProfileField(
+                value=24,
+                source_turn="turn-1",
+                updated_at=NOW,
+                origin="explicit",
+            )
+        ),
+        "advisor_source_turn": "turn-2",
+        "advisor_updated_at": "2026-09-01T00:01:00+00:00",
+    }
+    payload = {
+        "mode": "no_data",
+        "profile_patch": {
+            "term_months": {
+                "value": 60,
+                "source_turn": "turn-1",
+                "updated_at": NOW.isoformat(),
+                "origin": "explicit",
+            }
+        },
+        "selected_client_type": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [],
+        "no_data_reason": "No Client Type matches all supplied constraints",
+    }
+
+    with pytest.raises(ValueError, match="current advisor source turn"):
+        validate_advisor_content_result(payload, context)
+
+
+@pytest.mark.unit
 def test_advisor_content_contract_requires_current_run_sql_for_both_sources() -> None:
     with pytest.raises(ValueError, match="typical_client_profiles"):
         validate_advisor_content_result(

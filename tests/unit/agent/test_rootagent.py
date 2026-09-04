@@ -533,6 +533,78 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_advisor_replaces_explicit_term_in_followup_scenario() -> None:
+    previous = _advisor_recommendation_context()
+    previous["profile"] = {
+        "goal": {
+            "value": "Максимальная доходность",
+            "source_turn": "turn-1",
+            "updated_at": "2026-09-01T00:00:00Z",
+            "origin": "explicit",
+        },
+        "term_months": {
+            "value": 24,
+            "source_turn": "turn-1",
+            "updated_at": "2026-09-01T00:00:00Z",
+            "origin": "explicit",
+        },
+    }
+    content_payload = {
+        "mode": "no_data",
+        "profile_patch": {
+            "term_months": {
+                "value": 60,
+                "source_turn": "turn-2",
+                "updated_at": "2026-09-01T00:01:00Z",
+                "origin": "explicit",
+            }
+        },
+        "selected_client_type": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [],
+        "no_data_reason": "Нет типа клиента для всех ограничений.",
+    }
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: previous,
+        },
+        invocation_id="turn-2",
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        if kwargs["log_label"] == "advisor_content_result_json":
+            ctx.session.state["_advisor_content_result_parsed"] = content_payload
+        else:
+            ctx.session.state["_advisor_result_parsed"] = {
+                "mode": "no_data",
+                "message": "Нет типа клиента для всех ограничений.",
+                "primary_client_type": None,
+                "products": [],
+            }
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    async for _ in agent._handle_advisor(
+        ctx,
+        "А если клиент хочет купить на 5 лет?",
+        "клиент хочет купить на 5 лет",
+    ):
+        pass
+
+    stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
+    assert stored["profile"]["goal"]["value"] == "Максимальная доходность"
+    assert stored["profile"]["term_months"]["value"] == 60
+    assert ctx.session.state["_root_final_text"] == (
+        "Нет типа клиента для всех ограничений."
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("message", "expected_intent", "expected_code"),
     [

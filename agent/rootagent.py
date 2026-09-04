@@ -1030,8 +1030,8 @@ class RootAgent(BaseAgent):
                 message = message + f"\n\n {PRODUCT_CARD_KIT_OFFER}"
             return message
         if mode == "needs_clarification":
-            # Structured options are rendered below; keep only the question from
-            # an older or non-conforming formatter response to avoid two lists.
+            # Структурированные варианты отображаются ниже; из старого или не соответствующего
+            # контракту ответа форматтера оставляем только вопрос, чтобы избежать двух списков.
             message = next(
                 (line.strip() for line in message.splitlines() if line.strip()),
                 message,
@@ -1556,7 +1556,7 @@ class RootAgent(BaseAgent):
                     previous = self._get_product_dialog_context(ctx)
                     target_products = previous.get("products") or enriched_product
                 else:
-                    # A resolved kit replaces stale selections restored from an older turn.
+                    # Найденный комплект заменяет устаревший выбор, восстановленный из предыдущего хода.
                     target_products = [
                         {k: selected_product[k] for k in ("code", "name") if selected_product.get(k)}
                     ]
@@ -3023,7 +3023,7 @@ class RootAgent(BaseAgent):
                 dispatch.get("intent", "kb_answer"),
             ):
                 yield event
-        # 5. Smalltalk
+        # 5. Светская беседа
         elif route == "smalltalk":
             async for event in self._handle_smalltalk(
                 ctx,
@@ -3133,7 +3133,7 @@ class RootAgent(BaseAgent):
             if exc.log_label in {"product_info_result_json", "product_filter_result_json"}:
                 try:
                     payload = extract_json(exc.raw)
-                    # Raw fields can be newer than parsed state when validation failed.
+                    # При ошибке валидации необработанные поля могут быть новее разобранного состояния.
                     self._merge_non_empty_payload_fields(context, payload)
                 except Exception:
                     pass
@@ -3657,7 +3657,14 @@ class RootAgent(BaseAgent):
         content = AdvisorContentResult.model_validate(
             self._get_required_state_dict(ctx, "_advisor_content_result_parsed")
         )
-        merge_result = merge_advisor_profile(current_profile, content.profile_patch)
+        # Контракт контента уже подтвердил, что явные значения patch получены
+        # в текущем вызове, поэтому они заменяют предыдущие значения сценария.
+        correction_fields = set(content.profile_patch.explicit_values())
+        merge_result = merge_advisor_profile(
+            current_profile,
+            content.profile_patch,
+            correction_fields=correction_fields,
+        )
         if merge_result.conflicts:
             raise ValueError("Advisor profile contains unresolved explicit-value conflicts")
         profile = merge_result.profile
