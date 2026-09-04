@@ -357,6 +357,42 @@ def _advisor_candidate_content_payload():
     }
 
 
+def _advisor_recommendation_context():
+    products = [
+        {
+            "code": "1001",
+            "name": "Первый продукт",
+            "is_active": "Действующий",
+        },
+        {
+            "code": "2002",
+            "name": "Второй продукт",
+            "is_active": "Действующий",
+        },
+        {
+            "code": "3003",
+            "name": "Третий продукт",
+            "is_active": "Действующий",
+        },
+    ]
+    return {
+        "schema_version": 2,
+        "profile": {},
+        "primary_client_type": "Консервативный",
+        "displayed_products": products,
+        "top_products": [{"product": product} for product in products],
+        "selected_product": None,
+    }
+
+
+def _advisor_product_dialog_context(advisor_context, selected_product=None):
+    return {
+        "last_mode": "advisor_recommendation",
+        "products": advisor_context["displayed_products"],
+        "selected_product": selected_product,
+    }
+
+
 @pytest.mark.unit
 def test_reset_turn_state_clears_advisor_intermediate_keys_only() -> None:
     agent = _make_agent()
@@ -444,6 +480,14 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
             ctx.session.state["_advisor_content_result_parsed"] = content_payload
         else:
             calls.append("format")
+            formatter_payload = json.loads(
+                ctx.session.state["advisor_ranking_result_json"]
+            )
+            assert "accepted_candidates" not in formatter_payload
+            assert [
+                item["product"]["code"]
+                for item in formatter_payload["top_products"]
+            ] == ["2832"]
             ctx.session.state["_advisor_result_parsed"] = {
                 "mode": "recommendation",
                 "message": "Проверенная рекомендация.",
@@ -473,7 +517,345 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
     assert stored["profile"]["goal"]["value"] == "Сохранение капитала"
     assert stored["primary_client_type"] == "Консервативный"
     assert stored["top_products"][0]["product"]["code"] == "2832"
+    assert stored["displayed_products"] == [
+        {
+            "code": "2832",
+            "name": "Продукт 1",
+            "is_active": "Действующий",
+        }
+    ]
     assert stored["scoring_policy_version"] == "test-pilot-v1"
+    assert ctx.session.state[rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY] == {
+        "last_mode": "advisor_recommendation",
+        "products": stored["displayed_products"],
+        "selected_product": None,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("message", "expected_intent", "expected_code"),
+    [
+        ("2", "product_card", "2002"),
+        ("второй", "product_card", "2002"),
+        ("second", "product_card", "2002"),
+        ("2002", "product_card", "2002"),
+        ("Второй продукт", "product_card", "2002"),
+        ("покажи карточку Второй продукт", "product_card", "2002"),
+        ("комплект для второго", "product_kit", "2002"),
+        ("дай документы по продукту 2002", "product_kit", "2002"),
+    ],
+)
+def test_advisor_followup_resolves_displayed_product_and_hands_off_to_product_info(
+    message,
+    expected_intent,
+    expected_code,
+) -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "advisor",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context,
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: (
+                _advisor_product_dialog_context(advisor_context)
+            ),
+        }
+    )
+
+    dispatch = agent._advisor_followup_dispatch(ctx, message)
+
+    assert dispatch["route"] == "product_info"
+    assert dispatch["intent"] == expected_intent
+    assert expected_code in dispatch["search_query"]
+    selected = ctx.session.state[
+        rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY
+    ]["selected_product"]
+    assert selected == next(
+        product
+        for product in advisor_context["displayed_products"]
+        if product["code"] == expected_code
+    )
+    assert ctx.session.state[
+        rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY
+    ]["selected_product"] == selected
+    assert "_bot_action" not in ctx.session.state
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message",
+    ["0", "-1", "4", "номер abc", "комплект", "карточки 1 и 2"],
+)
+def test_advisor_followup_rejects_invalid_or_missing_selection(message) -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "advisor",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context,
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: (
+                _advisor_product_dialog_context(advisor_context)
+            ),
+        }
+    )
+
+    dispatch = agent._advisor_followup_dispatch(ctx, message)
+
+    assert dispatch["route"] == "advisor"
+    assert dispatch["reason"] == "advisor_product_selection_clarification"
+    assert ctx.session.state["_advisor_followup_message"] == (
+        "Укажи один номер продукта из списка: 1–3."
+    )
+    assert ctx.session.state[
+        rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY
+    ]["selected_product"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_advisor_bare_kit_after_product_card_reuses_shared_selected_product() -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    selected = advisor_context["displayed_products"][1]
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "product_info",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: {
+                **advisor_context,
+                "selected_product": selected,
+            },
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: {
+                **_advisor_product_dialog_context(advisor_context, selected),
+                "last_mode": "product_card",
+            },
+        }
+    )
+
+    pipeline_ctx = rootagent_module.PipelineContext(
+        ctx=ctx,
+        user_text="комплект",
+        clean_text="комплект",
+        session_id="session-1",
+    )
+
+    dispatch = await agent._try_short_circuit(pipeline_ctx)
+
+    assert dispatch["route"] == "product_info"
+    assert dispatch["intent"] == "product_kit"
+    assert dispatch["reason"] == "advisor_product_kit_followup"
+    assert "2002" in dispatch["search_query"]
+    assert ctx.session.state[
+        rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY
+    ]["selected_product"] == selected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Почему второй вариант хуже первого?",
+        "Сравни первый и второй",
+        "Нет, клиент не готов к потере капитала",
+    ],
+)
+def test_advisor_followup_leaves_advisor_only_messages_for_dispatcher(message) -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "advisor",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context,
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: (
+                _advisor_product_dialog_context(advisor_context)
+            ),
+        }
+    )
+
+    assert agent._advisor_followup_dispatch(ctx, message) is None
+
+
+@pytest.mark.unit
+def test_advisor_followup_requires_current_recommendation_context() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(session_state={"last_route": "advisor"})
+
+    assert agent._advisor_followup_dispatch(ctx, "2") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_advisor_followup_runs_before_generic_product_short_circuits() -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "advisor",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context,
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: (
+                _advisor_product_dialog_context(advisor_context)
+            ),
+        }
+    )
+    pipeline_ctx = rootagent_module.PipelineContext(
+        ctx=ctx,
+        user_text="комплект для второго",
+        clean_text="комплект для второго",
+        session_id="session-1",
+    )
+
+    dispatch = await agent._try_short_circuit(pipeline_ctx)
+
+    assert dispatch["route"] == "product_info"
+    assert dispatch["intent"] == "product_kit"
+    assert dispatch["reason"] == "advisor_product_kit_followup"
+    assert ctx.session.state["_dispatcher_result_parsed"] == dispatch
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_advisor_selection_clarification_does_not_run_advisor_agents() -> None:
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            "_advisor_followup_message": (
+                "Укажи один номер продукта из списка: 1–3."
+            )
+        }
+    )
+    called = False
+
+    async def fake_handle_advisor(*args, **kwargs):
+        nonlocal called
+        called = True
+        if False:
+            yield None
+
+    agent._handle_advisor = fake_handle_advisor
+    pipeline_ctx = rootagent_module.PipelineContext(
+        ctx=ctx,
+        user_text="4",
+        clean_text="4",
+        session_id="session-1",
+    )
+    dispatch = {
+        "route": "advisor",
+        "intent": "advisor_recommendation",
+        "search_query": "4",
+    }
+
+    events = [
+        event async for event in agent._execute_target_agent(dispatch, pipeline_ctx)
+    ]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == (
+        "Укажи один номер продукта из списка: 1–3."
+    )
+    assert called is False
+    assert ctx.session.state["_root_final_text"] == (
+        "Укажи один номер продукта из списка: 1–3."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_advisor_resets_previous_profile_for_new_client() -> None:
+    content_payload = _advisor_candidate_content_payload()
+    content_payload.update(
+        mode="needs_clarification",
+        profile_patch={},
+        selected_client_type=None,
+        missing_fields=["goal"],
+        clarification_question="Какова финансовая цель нового клиента?",
+        products=[],
+    )
+    previous = _advisor_recommendation_context()
+    previous["profile"] = {
+        "goal": {
+            "value": "Сохранение капитала",
+            "source_turn": "old-turn",
+            "updated_at": "2026-09-01T00:00:00Z",
+            "origin": "explicit",
+        }
+    }
+    agent = _make_agent()
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: previous,
+        }
+    )
+
+    async def fake_run_json_leaf_agent(**kwargs):
+        serialized_profile = json.loads(
+            ctx.session.state["advisor_client_profile_json"]
+        )
+        assert all(value is None for value in serialized_profile.values())
+        assert json.loads(ctx.session.state["advisor_dialog_context_json"]) == {}
+        ctx.session.state["_advisor_content_result_parsed"] = content_payload
+        if False:
+            yield None
+
+    agent._run_json_leaf_agent = fake_run_json_leaf_agent
+
+    async for _ in agent._handle_advisor(
+        ctx,
+        "Подбери продукт для другого клиента",
+        "Подбери продукт для другого клиента",
+    ):
+        pass
+
+    stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
+    assert all(value is None for value in stored["profile"].values())
+    assert stored["displayed_products"] == []
+    assert stored["selected_product"] is None
+
+
+@pytest.mark.unit
+def test_advisor_followup_resolves_non_numeric_product_code() -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    advisor_context["displayed_products"][0]["code"] = "P-1"
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "advisor",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context,
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: (
+                _advisor_product_dialog_context(advisor_context)
+            ),
+        }
+    )
+
+    dispatch = agent._advisor_followup_dispatch(ctx, "P-1")
+
+    assert dispatch["route"] == "product_info"
+    assert dispatch["intent"] == "product_card"
+    assert "P-1" in dispatch["search_query"]
+
+
+@pytest.mark.unit
+def test_advisor_followup_requires_name_to_disambiguate_duplicate_code() -> None:
+    agent = _make_agent()
+    advisor_context = _advisor_recommendation_context()
+    advisor_context["displayed_products"][2]["code"] = "2002"
+    ctx = _make_ctx(
+        session_state={
+            "last_route": "advisor",
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: advisor_context,
+            rootagent_module.PRODUCT_DIALOG_CONTEXT_STATE_KEY: (
+                _advisor_product_dialog_context(advisor_context)
+            ),
+        }
+    )
+
+    ambiguous = agent._advisor_followup_dispatch(ctx, "2002")
+    resolved = agent._advisor_followup_dispatch(ctx, "2002 Второй продукт")
+
+    assert ambiguous["route"] == "advisor"
+    assert ambiguous["reason"] == "advisor_product_selection_clarification"
+    assert resolved["route"] == "product_info"
+    assert resolved["intent"] == "product_card"
+    assert "Второй продукт" in resolved["search_query"]
 
 
 @pytest.mark.unit

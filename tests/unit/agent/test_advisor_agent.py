@@ -290,6 +290,73 @@ def test_advisor_content_contract_uses_client_profile_names_for_missing_fields()
 
 
 @pytest.mark.unit
+def test_advisor_content_contract_rejects_supplied_field_as_missing() -> None:
+    payload = {
+        "mode": "needs_clarification",
+        "profile_patch": {
+            "goal": {
+                "value": "Максимальная доходность",
+                "source_turn": "turn-1",
+                "updated_at": NOW.isoformat(),
+                "origin": "explicit",
+            },
+            "term_months": {
+                "value": 24,
+                "source_turn": "turn-1",
+                "updated_at": NOW.isoformat(),
+                "origin": "explicit",
+            },
+        },
+        "selected_client_type": None,
+        "missing_fields": ["term_months", "capital_loss_tolerance"],
+        "clarification_question": (
+            "Для клиента важнее максимальная доходность или сохранение капитала?"
+        ),
+        "products": [],
+        "no_data_reason": None,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Client field 'term_months' is supplied and cannot be missing",
+    ):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_accepts_no_matching_client_type() -> None:
+    payload = {
+        "mode": "no_data",
+        "profile_patch": {
+            "goal": {
+                "value": "Максимальная доходность",
+                "source_turn": "turn-1",
+                "updated_at": NOW.isoformat(),
+                "origin": "explicit",
+            },
+            "term_months": {
+                "value": 24,
+                "source_turn": "turn-1",
+                "updated_at": NOW.isoformat(),
+                "origin": "explicit",
+            },
+        },
+        "selected_client_type": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [],
+        "no_data_reason": (
+            "Ни один тип клиента не соответствует всем переданным ограничениям"
+        ),
+    }
+
+    result = validate_advisor_content_result(payload, _context())
+
+    assert result["mode"] == "no_data"
+    assert result["missing_fields"] == []
+
+
+@pytest.mark.unit
 def test_advisor_content_contract_requires_current_run_sql_for_both_sources() -> None:
     with pytest.raises(ValueError, match="typical_client_profiles"):
         validate_advisor_content_result(
@@ -384,7 +451,11 @@ def test_advisor_final_contract_preserves_ranked_products() -> None:
     ranking = _ranking_result()
     payload = {
         "mode": "recommendation",
-        "message": "Варианты для проверки менеджером.",
+        "message": (
+            "Варианты для проверки менеджером.\n"
+            "1. P-1 Продукт 1 (КВ 1%)\n"
+            "2. P-2 Продукт 2 (КВ 1%)"
+        ),
         "primary_client_type": "Консервативный",
         "products": [
             {
@@ -402,6 +473,47 @@ def test_advisor_final_contract_preserves_ranked_products() -> None:
     )
 
     assert [product["code"] for product in result["products"]] == ["P-1", "P-2"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message",
+    [
+        "1. P-1 Продукт 1 (КВ 1%)",
+        (
+            "1. P-1 Продукт 1 (КВ 1%)\n"
+            "2. P-2 Продукт 2 (КВ 1%)\n"
+            "3. P-X Extra product (КВ 1%)"
+        ),
+        (
+            "1. P-1 Продукт 1 (КВ 1%)\n"
+            "3. P-2 Продукт 2 (КВ 1%)"
+        ),
+    ],
+)
+def test_advisor_final_contract_rejects_message_product_list_drift(
+    message: str,
+) -> None:
+    ranking = _ranking_result()
+    products = [
+        {
+            "code": item.product.code,
+            "name": item.product.name,
+            "is_active": item.product.is_active,
+        }
+        for item in ranking.top_products
+    ]
+
+    with pytest.raises(ValueError, match="Recommendation"):
+        validate_advisor_final_result(
+            {
+                "mode": "recommendation",
+                "message": message,
+                "primary_client_type": "Консервативный",
+                "products": products,
+            },
+            {"advisor_ranking_result": ranking},
+        )
 
 
 @pytest.mark.unit
@@ -491,6 +603,8 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "Не фильтруй, не оценивай" in content_prompt
     assert "точное значение `Действующий`" in content_prompt
     assert "не используй `SELECT *`" in content_prompt
+    assert "Никогда не используй `products` для исследования схемы" in content_prompt
+    assert "Валидатор проверяет каждый выполненный SQL-запрос" in content_prompt
     assert "WHERE is_active = 'Действующий'" in content_prompt
     assert "dc_entities" in content_prompt
     assert "dc_columns" in content_prompt
@@ -516,6 +630,8 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert '"client_type_selection"' not in content_prompt
     assert "исходный порядок `top_products`" in format_prompt
     assert "Запрещено добавлять, удалять, заменять или переставлять продукты" in format_prompt
+    assert "никогда не упоминай и не показывай их пользователю" in format_prompt
+    assert "не может превышать настроенный `TOP_N`" in format_prompt
     assert "code, name, is_active, commission" in content_prompt
     assert '"commission": "значение из SQL"' in content_prompt
     assert "<номер списка>. <code> <name> (КВ <commission>%)" in format_prompt
@@ -523,9 +639,40 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "code, name, is_active, commission" in (
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
     )
+    assert "Never use products to explore its schema" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "Validation checks every executed SQL statement" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
     assert "<list number>. <code> <name> (КВ <attributes.commission>%)" in (
         advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
     )
+    assert "cannot exceed the configured TOP_N" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+    assert (
+        "Введи номер продукта, если хочешь посмотреть карточку или напиши если надо "
+        "скачать комплект какого-то продукта."
+        in advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+
+
+@pytest.mark.unit
+def test_advisor_content_prompts_define_missing_field_conflict_behavior() -> None:
+    content_prompt = (
+        REPO_ROOT
+        / "kb_storage"
+        / "prompts"
+        / "advisor_content"
+        / "advisor_content_agent_prompt.md"
+    ).read_text(encoding="utf-8")
+    fallback_prompt = advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+
+    assert "Никогда не включай в `missing_fields` уже заполненное поле" in content_prompt
+    assert "ни один тип клиента не соответствует" in content_prompt
+    assert "Never include a supplied field in missing_fields" in fallback_prompt
+    assert "no Client Type matches the supplied constraints" in fallback_prompt
 
 
 @pytest.mark.unit
@@ -624,15 +771,10 @@ def test_compose_exposes_advisor_runtime_settings() -> None:
     assert compose.count("LLM_TRACE_AGENTS=${LLM_TRACE_AGENTS:-advisor_content_agent}") == 2
 
     assert compose.count("ADVISOR_TEMPERATURE=0.5") == 2
+    assert compose.count("ADVISOR_TOP_N=${ADVISOR_TOP_N:-5}") == 2
     assert (
         compose.count(
-            "ADVISOR_MAX_OUTPUT_TOKENS=${ADVISOR_MAX_OUTPUT_TOKENS:-16000}"
+            "ADVISOR_MAX_OUTPUT_TOKENS=${ADVISOR_MAX_OUTPUT_TOKENS:-25000}"
         )
-        == 1
-    )
-    assert (
-        compose.count(
-            "ADVISOR_MAX_OUTPUT_TOKENS=${ADVISOR_MAX_OUTPUT_TOKENS:-6000}"
-        )
-        == 1
+        == 2
     )

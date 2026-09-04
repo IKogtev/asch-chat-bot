@@ -99,6 +99,32 @@ RE_ASKING_LIST = re.compile(r"\b(какие|что за|список|покаж�
 RE_EXPLICIT_FILTER = re.compile(r"\b(архивные|все продукты|список продуктов|покажи продукты|покажи архивные)\b")
 RE_CONFIRMATION_WORDS = {"давай", "да", "давайте", "пришли", "отправь", "скинь", "кидай", "хочу", "ок", "хорошо", "давай комплект", "пришли комплект"}
 RE_PRODUCT_NAME_TRIM = re.compile(r"(?i)^(найди|покажи|выведи|открой|документы|доки|по|для|скачать|файл|файлы|материалы|презентацию|презентер|памятку|инструкцию|регламент|шаблон|список)\s+")
+RE_ADVISOR_NEW_CLIENT = re.compile(
+    r"\b(?:нов(?:ый|ого|ому)|друг(?:ой|ого|ому)|следующ(?:ий|его|ему))\s+клиент\w*\b"
+    r"|\b(?:new|another|different|next)\s+client\b",
+    re.IGNORECASE,
+)
+RE_ADVISOR_NEW_RECOMMENDATION = re.compile(
+    r"\b(?:нов(?:ая|ую)|друг(?:ая|ую))\s+рекомендац\w*\b"
+    r"|\bподбер\w*\s+заново\b"
+    r"|\b(?:new|another|different)\s+recommendation\b",
+    re.IGNORECASE,
+)
+RE_ADVISOR_CARD_REQUEST = re.compile(
+    r"\b(?:карточк\w*|параметр\w*|подробн\w*|покаж\w*|открой\w*|"
+    r"card|details?|parameters?)\b",
+    re.IGNORECASE,
+)
+RE_ADVISOR_KIT_REQUEST = re.compile(
+    r"\b(?:комплект\w*|документ\w*|материал\w*|пакет\w*|скач\w*|"
+    r"пришл\w*|отправ\w*|kit|documents?|materials?|download)\b",
+    re.IGNORECASE,
+)
+RE_ADVISOR_EXPLANATION_OR_COMPARISON = re.compile(
+    r"\b(?:почему|объясн\w*|сравн\w*|лучше|хуже|разниц\w*|"
+    r"why|explain\w*|compar\w*|better|worse|difference)\b",
+    re.IGNORECASE,
+)
 
 # Выделенные регулярки для Приоритета 1 (Сравнения и Команды)
 RE_COMPARISON = re.compile(
@@ -165,6 +191,7 @@ STATE_KEYS_TO_CLEAR = [
     "advisor_dialog_context_json", "advisor_profile_field_names_json",
     "advisor_minimum_client_type_confidence",
     "advisor_source_turn", "advisor_updated_at",
+    "_advisor_followup_message",
     "_advisor_content_result_parsed", "_advisor_result_parsed",
     "advisor_content_result_json", "advisor_ranking_result",
     "advisor_ranking_result_json", "advisor_result_json",
@@ -1196,6 +1223,244 @@ class RootAgent(BaseAgent):
 
     def _clear_product_dialog_context(self, ctx: InvocationContext) -> None:
         ctx.session.state.pop(PRODUCT_DIALOG_CONTEXT_STATE_KEY, None)
+
+    def _advisor_displayed_products(
+        self,
+        ctx: InvocationContext,
+    ) -> List[Dict[str, str]]:
+        """Возвращает список advisor из переиспользуемого продуктового контекста."""
+        value = self._get_product_dialog_context(ctx)
+        raw_displayed = value.get("products")
+        displayed = self._normalize_dialog_products(raw_displayed)
+        if (
+            not isinstance(raw_displayed, list)
+            or len(displayed) != len(raw_displayed)
+            or any(
+                not all(product.get(key) for key in ("code", "name", "is_active"))
+                for product in displayed
+            )
+        ):
+            return []
+        return displayed
+
+    @staticmethod
+    def _advisor_selection_clarification(product_count: int) -> str:
+        """Формирует детерминированное уточнение для неверного номера."""
+        if product_count == 1:
+            return "Укажи номер продукта из списка: 1."
+        return f"Укажи один номер продукта из списка: 1–{product_count}."
+
+    @staticmethod
+    def _advisor_ordinal_ranks(text: str) -> List[int]:
+        """Извлекает поддерживаемые порядковые слова без числовых кодов продуктов."""
+        normalized = RootAgent._normalize_product_dialog_text(text)
+        mapping = {
+            1: ("первый", "первую", "первым", "первого", "first"),
+            2: ("второй", "вторую", "вторым", "второго", "second"),
+            3: ("третий", "третью", "третьим", "третьего", "third"),
+        }
+        ranks = []
+        for rank, words in mapping.items():
+            if any(re.search(rf"\b{word}\b", normalized) for word in words):
+                ranks.append(rank)
+        return ranks
+
+    def _select_advisor_product(
+        self,
+        products: List[Dict[str, str]],
+        user_text: str,
+    ) -> tuple[Dict[str, str] | None, bool]:
+        """Сопоставляет один selector с advisor-списком.
+
+        Второй элемент результата показывает, что сообщение выглядело как выбор,
+        но не может быть однозначно разрешено.
+        """
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized:
+            return None, False
+
+        code_matches = []
+        for product in products:
+            code = self._normalize_product_dialog_text(product.get("code", ""))
+            if code and (
+                normalized == code
+                or re.search(rf"(?<!\w){re.escape(code)}(?!\w)", normalized)
+            ):
+                code_matches.append(product)
+        name_matches = []
+        for product in products:
+            name = self._normalize_product_dialog_text(product.get("name", ""))
+            if name and (normalized == name or name in normalized):
+                name_matches.append(product)
+
+        selected_by_identity = None
+        if code_matches and name_matches:
+            identity_matches = [
+                product for product in code_matches if product in name_matches
+            ]
+            if len(identity_matches) != 1:
+                return None, True
+            selected_by_identity = identity_matches[0]
+        elif len(name_matches) == 1:
+            selected_by_identity = name_matches[0]
+        elif len(name_matches) > 1:
+            return None, True
+        elif len(code_matches) == 1:
+            selected_by_identity = code_matches[0]
+        elif len(code_matches) > 1:
+            return None, True
+
+        if selected_by_identity is not None:
+            residual = normalized
+            for value in (
+                selected_by_identity.get("name", ""),
+                selected_by_identity.get("code", ""),
+            ):
+                normalized_value = self._normalize_product_dialog_text(value)
+                if normalized_value:
+                    residual = residual.replace(normalized_value, " ")
+            if self._advisor_ordinal_ranks(residual) or re.findall(
+                r"(?<!\d)([+-]?\d{1,2})(?!\d)", residual
+            ):
+                return None, True
+            return selected_by_identity, False
+
+        ordinal_ranks = self._advisor_ordinal_ranks(user_text)
+        numeric_ranks = re.findall(r"(?<!\d)([+-]?\d{1,2})(?!\d)", user_text)
+        if len(ordinal_ranks) > 1 or len(numeric_ranks) > 1:
+            return None, True
+
+        if len(ordinal_ranks) == 1:
+            rank = ordinal_ranks[0]
+            return (products[rank - 1], False) if rank <= len(products) else (None, True)
+
+        standalone_number = re.fullmatch(r"\s*([+-]?\d+)\s*[.!?]?\s*", user_text)
+        marked_number = re.search(
+            r"\b(?:номер|вариант|продукт|option|product|number)\s*№?\s*([+-]?\d+)\b",
+            normalized,
+        )
+        number_match = standalone_number or marked_number
+        if number_match:
+            rank = int(number_match.group(1))
+            return (products[rank - 1], False) if 1 <= rank <= len(products) else (None, True)
+
+        marked_value = re.search(
+            r"\b(?:номер|вариант|option|number)\s*№?\s*([^\s,.!?]+)",
+            normalized,
+        )
+        return None, bool(marked_value)
+
+    def _store_advisor_product_handoff(
+        self,
+        ctx: InvocationContext,
+        products: List[Dict[str, str]],
+        selected: Dict[str, str],
+    ) -> None:
+        """Передает проверенную advisor-идентичность в продуктовый контекст."""
+        selected_product = {
+            key: selected[key]
+            for key in ("code", "name", "is_active")
+            if selected.get(key)
+        }
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+            "last_mode": "advisor_recommendation",
+            "products": products,
+            "selected_product": selected_product,
+        }
+        advisor_context = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY)
+        if isinstance(advisor_context, dict):
+            ctx.session.state[ADVISOR_DIALOG_CONTEXT_STATE_KEY] = {
+                **advisor_context,
+                "selected_product": selected_product,
+            }
+        ctx.session.state["last_product"] = (
+            f"{selected_product['name']} (код {selected_product['code']})"
+        )
+
+    def _advisor_followup_dispatch(
+        self,
+        ctx: InvocationContext,
+        user_text: str,
+    ) -> Dict[str, Any] | None:
+        """Разрешает выбор из последней advisor-рекомендации до LLM dispatcher."""
+        products = self._advisor_displayed_products(ctx)
+        if not products:
+            return None
+        if str(ctx.session.state.get("last_route") or "") not in {"advisor", "product_info"}:
+            return None
+        ctx.session.state.pop("_advisor_followup_message", None)
+
+        normalized = self._normalize_product_dialog_text(user_text)
+        if not normalized or RE_ADVISOR_EXPLANATION_OR_COMPARISON.search(normalized):
+            return None
+
+        asks_kit = bool(RE_ADVISOR_KIT_REQUEST.search(normalized))
+        asks_card = bool(RE_ADVISOR_CARD_REQUEST.search(normalized))
+        selected, invalid_selection = self._select_advisor_product(products, user_text)
+
+        if selected is None and not invalid_selection and (asks_kit or asks_card):
+            current_selected = self._get_selected_product_from_context(ctx)
+            if current_selected:
+                selected_identity = self._product_dialog_identity(current_selected)
+                selected = next(
+                    (
+                        product
+                        for product in products
+                        if self._product_dialog_identity(product) == selected_identity
+                    ),
+                    None,
+                )
+
+        if selected is None:
+            if not invalid_selection and not asks_kit and not asks_card:
+                return None
+            ctx.session.state["_advisor_followup_message"] = (
+                self._advisor_selection_clarification(len(products))
+            )
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "advisor",
+                    "intent": "advisor_recommendation",
+                    "reason": "advisor_product_selection_clarification",
+                    "search_query": user_text,
+                },
+                dict(ctx.session.state),
+            )
+
+        if asks_kit and asks_card:
+            ctx.session.state["_advisor_followup_message"] = (
+                "Уточни следующее действие: показать карточку или скачать комплект."
+            )
+            return validate_dispatcher_result(
+                {
+                    "status": "ok",
+                    "route": "advisor",
+                    "intent": "advisor_recommendation",
+                    "reason": "advisor_product_action_clarification",
+                    "search_query": user_text,
+                },
+                dict(ctx.session.state),
+            )
+
+        intent = "product_kit" if asks_kit else "product_card"
+        self._store_advisor_product_handoff(ctx, products, selected)
+        product_label = f"{selected['name']} (код {selected['code']})"
+        action = (
+            "скачать комплект документов по продукту"
+            if intent == "product_kit"
+            else "показать карточку продукта"
+        )
+        return validate_dispatcher_result(
+            {
+                "status": "ok",
+                "route": "product_info",
+                "intent": intent,
+                "reason": f"advisor_{intent}_followup",
+                "search_query": f"{action} {selected['is_active']} {product_label}",
+            },
+            dict(ctx.session.state),
+        )
 
     @staticmethod
     def _normalize_attribute_values(value: Any) -> List[str]:
@@ -2563,6 +2828,7 @@ class RootAgent(BaseAgent):
 
         # Последовательность проверок по приоритету
         resolvers = (
+            ("advisor_followup", self._advisor_followup_dispatch),
             ("explicit_intent", self._get_explicit_intent_dispatch),
             ("contextual_smalltalk", self._contextual_smalltalk_followup_dispatch),
             ("product_followup", self._product_followup_dispatch),
@@ -2680,12 +2946,19 @@ class RootAgent(BaseAgent):
                 yield event
         # 2. Персональная рекомендация по профилю клиента
         elif route == "advisor":
-            async for event in self._handle_advisor(
-                ctx,
-                user_text,
-                dispatch.get("search_query", ""),
-            ):
-                yield event
+            followup_message = ctx.session.state.pop(
+                "_advisor_followup_message",
+                None,
+            )
+            if followup_message:
+                ctx.session.state["_root_final_text"] = str(followup_message)
+            else:
+                async for event in self._handle_advisor(
+                    ctx,
+                    user_text,
+                    dispatch.get("search_query", ""),
+                ):
+                    yield event
         # 3. Подбор продуктов
         elif route in {"product_info", "product_filter"}:
             self._enrich_product_query(ctx, dispatch, user_text)
@@ -3217,9 +3490,11 @@ class RootAgent(BaseAgent):
         profile: AdvisorClientProfile,
         content: AdvisorContentResult,
         ranking: AdvisorRankingResult | None,
+        displayed_products: Any = None,
     ) -> None:
         """Сохраняет один версионированный результат advisor без временных ключей."""
         selected = content.selected_client_type
+        normalized_displayed = self._normalize_dialog_products(displayed_products)
         ctx.session.state[ADVISOR_DIALOG_CONTEXT_STATE_KEY] = {
             "schema_version": ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION,
             "profile": profile.model_dump(mode="json"),
@@ -3238,6 +3513,7 @@ class RootAgent(BaseAgent):
                 if ranking
                 else []
             ),
+            "displayed_products": normalized_displayed,
             "exclusions": (
                 [item.model_dump(mode="json") for item in ranking.excluded_candidates]
                 if ranking
@@ -3250,6 +3526,22 @@ class RootAgent(BaseAgent):
                 else self.advisor_ranking_service.policy.version
             ),
             "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _store_advisor_product_dialog_context(
+        self,
+        ctx: InvocationContext,
+        displayed_products: Any,
+    ) -> None:
+        """Сохраняет advisor TOP в существующем контексте продуктового списка."""
+        products = self._normalize_dialog_products(displayed_products)
+        if not products:
+            self._clear_product_dialog_context(ctx)
+            return
+        ctx.session.state[PRODUCT_DIALOG_CONTEXT_STATE_KEY] = {
+            "last_mode": "advisor_recommendation",
+            "products": products,
+            "selected_product": None,
         }
 
     async def _run_advisor_formatter(
@@ -3281,6 +3573,22 @@ class RootAgent(BaseAgent):
         search_query: str,
     ) -> AsyncGenerator[Event, None]:
         """Выполняет проверенный advisor-пайплайн и сохраняет итоговый контекст."""
+        if RE_ADVISOR_NEW_CLIENT.search(user_message):
+            ctx.session.state.pop(ADVISOR_DIALOG_CONTEXT_STATE_KEY, None)
+        elif RE_ADVISOR_NEW_RECOMMENDATION.search(user_message):
+            advisor_context = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY)
+            if isinstance(advisor_context, dict):
+                ctx.session.state[ADVISOR_DIALOG_CONTEXT_STATE_KEY] = {
+                    **advisor_context,
+                    "selected_client_type": None,
+                    "primary_client_type": None,
+                    "missing_fields": [],
+                    "candidate_products": [],
+                    "top_products": [],
+                    "displayed_products": [],
+                    "exclusions": [],
+                    "selected_product": None,
+                }
         current_profile = self._advisor_profile_from_context(ctx)
         effective_query = str(search_query or user_message).strip()
         ctx.session.state["advisor_search_query"] = effective_query
@@ -3374,7 +3682,22 @@ class RootAgent(BaseAgent):
         ctx.session.state["advisor_ranking_result"] = ranking.model_dump(mode="json")
         format_payload = {
             "mode": "recommendation",
-            **ranking.model_dump(mode="json"),
+            "primary_client_type": ranking.primary_client_type,
+            "match_evidence": [
+                item.model_dump(mode="json") for item in ranking.match_evidence
+            ],
+            "excluded_candidates": [
+                item.model_dump(mode="json")
+                for item in ranking.excluded_candidates
+            ],
+            "top_products": [
+                item.model_dump(mode="json") for item in ranking.top_products
+            ],
+            "diversity_replacements": [
+                item.model_dump(mode="json")
+                for item in ranking.diversity_replacements
+            ],
+            "scoring_policy_version": ranking.scoring_policy_version,
         }
         if not ranking.top_products:
             format_payload = {
@@ -3391,6 +3714,11 @@ class RootAgent(BaseAgent):
             profile=profile,
             content=content,
             ranking=ranking,
+            displayed_products=final_result.get("products"),
+        )
+        self._store_advisor_product_dialog_context(
+            ctx,
+            final_result.get("products"),
         )
         ctx.session.state["_root_final_text"] = format_text_answer(
             final_result["message"]

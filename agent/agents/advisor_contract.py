@@ -109,6 +109,38 @@ class AdvisorFinalResult(BaseModel):
     products: tuple[AdvisorFinalProduct, ...] = ()
 
 
+ADVISOR_PRODUCT_LINE_RE = re.compile(
+    r"^\s*(?P<number>\d+)\.\s+(?P<code>\S+)\s+"
+    r"(?P<name>.+?)\s+\(КВ\s+[^)\r\n]+%\)\s*$",
+    re.MULTILINE,
+)
+
+
+def _validate_recommendation_message_products(
+    message: str,
+    expected_products: tuple[AdvisorFinalProduct, ...],
+) -> None:
+    """Проверяет, что текст показывает ровно структурированный TOP."""
+    displayed = list(ADVISOR_PRODUCT_LINE_RE.finditer(message))
+    if len(displayed) != len(expected_products):
+        raise ValueError(
+            "Recommendation message must display every ranked TOP product exactly once"
+        )
+    for position, (match, expected) in enumerate(
+        zip(displayed, expected_products),
+        start=1,
+    ):
+        if int(match.group("number")) != position:
+            raise ValueError("Recommendation product numbering must be contiguous")
+        if (
+            match.group("code") != expected.code
+            or match.group("name").strip() != expected.name
+        ):
+            raise ValueError(
+                "Recommendation message products must preserve exact ranked TOP identities and order"
+            )
+
+
 def _context_model(
     context: Mapping[str, Any],
     key: str,
@@ -373,9 +405,14 @@ def validate_advisor_final_result(
                 for item in ranking.top_products
             ):
                 raise ValueError("Final recommendation may contain only active products")
-# Исключили эту строгую проверку
-#            if result.products != expected_products:
-#                raise ValueError("Final products must preserve exact ranked TOP identities and order")
+            if result.products != expected_products:
+                raise ValueError(
+                    "Final products must preserve exact ranked TOP identities and order"
+                )
+            _validate_recommendation_message_products(
+                result.message,
+                expected_products,
+            )
             if result.primary_client_type != ranking.primary_client_type:
                 raise ValueError("Final primary Client Type must match ranking result")
         elif result.products:

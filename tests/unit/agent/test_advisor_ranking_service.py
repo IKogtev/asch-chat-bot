@@ -51,6 +51,7 @@ def policy(**overrides) -> AdvisorScoringPolicy:
         "minimum_score": Decimal("0"),
         "diversity_max_score_gap": Decimal("25"),
         "diversity_max_per_family": 1,
+        "top_n": 3,
     }
     values.update(overrides)
     return AdvisorScoringPolicy(**values)
@@ -224,6 +225,30 @@ def test_ties_use_priority_then_product_code() -> None:
     )
 
     assert [item.product.code for item in result.top_products] == ["A", "C", "B"]
+
+
+@pytest.mark.unit
+def test_top_five_policy_returns_at_most_five_products() -> None:
+    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
+    attributes = moderate_product_attributes()
+
+    result = AdvisorRankingService(
+        policy(top_n=5, diversity_max_per_family=5)
+    ).rank(
+        products=[
+            product(f"P{index}", family=f"F{index}", **attributes)
+            for index in range(6)
+        ],
+        selected_client_type=selected(moderate),
+    )
+
+    assert [item.product.code for item in result.top_products] == [
+        "P0",
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+    ]
 
 
 @pytest.mark.unit

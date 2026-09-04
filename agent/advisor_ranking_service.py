@@ -45,8 +45,8 @@ class AdvisorScoringPolicy(BaseModel):
     diversity_max_score_gap: Decimal = Field(ge=0, le=100)
     # Максимальное количество продуктов одного семейства в TOP. Пример: 1.
     diversity_max_per_family: int = Field(ge=1)
-    # Максимальное количество итоговых рекомендаций. По умолчанию: 3.
-    top_n: int = Field(default=3, ge=1, le=10)
+    # Максимальное количество итоговых рекомендаций. По умолчанию: 5.
+    top_n: int = Field(default=5, ge=1, le=10)
     # Точность округления баллов. Пример: Decimal("0.01") для двух знаков.
     rounding_quantum: Decimal = Field(default=Decimal("0.01"), gt=0)
 
@@ -173,7 +173,7 @@ class AdvisorRankingResult(BaseModel):
     accepted_candidates: tuple[AdvisorRankedProduct, ...]
     # Все причины исключения неподходящих продуктов.
     excluded_candidates: tuple[AdvisorExclusion, ...]
-    # Финальный список рекомендаций после diversity-проверки, обычно TOP-3.
+    # Финальный список рекомендаций после diversity-проверки, обычно TOP-5.
     top_products: tuple[AdvisorRankedProduct, ...]
     # Выполненные замены ради разнообразия итогового списка.
     diversity_replacements: tuple[AdvisorDiversityReplacement, ...] = ()
