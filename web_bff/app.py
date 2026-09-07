@@ -15,13 +15,14 @@ Dev:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote
 
 import asyncpg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
@@ -30,7 +31,8 @@ from bot.services.dialog import CHANNEL_WEB, paginate_search, run_turn
 from utils.logger import setup_logger
 from web_bff.auth import clear_session_cookie, current_user, require_user, set_session_cookie
 from web_bff.config import settings
-from web_bff.files import FileTokenError, FileUrlIssuer, resolve_kit_file
+from web_bff.files import FileTokenError, FileUrlIssuer, build_kit_zip, resolve_kit_file
+from web_bff.kb_tree import KbTreeError, list_kb_node, resolve_kb_file
 from web_bff.news import NewsDetail, NewsListResponse, to_news_detail, to_news_list_item
 from web_bff.otp import OtpError, OtpService
 from web_bff.users import profile_for_adk
@@ -238,6 +240,13 @@ def refresh_file_urls(
                         item.pop("url", None)
                 items.append(item)
             block["items"] = items
+            zip_url = block.get("zip_url")
+            if isinstance(zip_url, str) and zip_url:
+                try:
+                    block["zip_url"] = file_urls.refresh_url(zip_url, user_id)
+                except FileTokenError:
+                    logger.warning("invalid stored kit zip URL user=%s", user_id)
+                    block.pop("zip_url", None)
         refreshed.append(block)
     return refreshed
 
@@ -328,6 +337,32 @@ async def reset_dialog(request: Request, _user_id: str = Depends(require_user)) 
     return {"status": "ok"}
 
 
+@app.get("/kb/tree")
+async def get_kb_tree(
+    request: Request,
+    path: str = Query(default=""),
+    user_id: str = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        node = list_kb_node(Path(settings.kb_root), path)
+    except KbTreeError as exc:
+        detail = str(exc) or "not_found"
+        status_code = (
+            status.HTTP_400_BAD_REQUEST if detail == "invalid_path" else status.HTTP_404_NOT_FOUND
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    files = []
+    for item in node["files"]:
+        files.append(
+            {
+                "name": item["name"],
+                "path": item["path"],
+                "url": request.app.state.file_urls.fs_url(user_id, item["path"], item["name"]),
+            }
+        )
+    return {**node, "files": files}
+
+
 @app.get("/files/{token}")
 async def get_file(
     token: str,
@@ -343,12 +378,41 @@ async def get_file(
 
     filename = str(payload.get("n") or "file")
     kind = payload.get("k")
+    if kind == "fs":
+        try:
+            path = resolve_kb_file(Path(settings.kb_root), str(payload.get("p") or ""))
+        except FileTokenError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
+        return FileResponse(path, filename=filename, media_type="application/octet-stream")
+
     if kind == "kit":
         try:
             path = resolve_kit_file(str(payload.get("root") or ""), str(payload.get("p") or ""))
         except FileTokenError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
         return FileResponse(path, filename=filename, media_type="application/octet-stream")
+
+    if kind == "kit_zip":
+        entries = payload.get("files")
+        if not isinstance(entries, list) or not entries:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
+        try:
+            blob = build_kit_zip([item for item in entries if isinstance(item, dict)])
+        except FileTokenError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file_not_found")
+        zip_name = filename if filename.lower().endswith(".zip") else f"{filename}.zip"
+        ascii_name = "komplekt.zip"
+        from urllib.parse import quote as quote_header
+
+        disposition = (
+            f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote_header(zip_name)}"
+        )
+        return Response(
+            content=blob,
+            media_type="application/zip",
+            headers={"Content-Disposition": disposition},
+        )
 
     if kind == "kb":
         document_id = str(payload.get("id") or "")

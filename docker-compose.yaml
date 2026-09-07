@@ -286,6 +286,7 @@ services:
       - KB_MANAGER_TOKEN=${KB_MANAGER_TOKEN?KB_MANAGER_TOKEN IS REQUIRED}
       - PRODUCT_KITS_ROOT=/app/kb_storage/manager/kb/1 Продукты
       - ARCHIVE_KITS_ROOT=/app/kb_storage/manager/kb/6 Архив
+      - WEB_BFF_KB_ROOT=/app/kb_storage/manager/kb
       - DOWNLOADS_DIR=/app/data/upload/web_files
     command: ["sh", "-c", "cd /app && exec python -m web_bff.app"]
     networks:

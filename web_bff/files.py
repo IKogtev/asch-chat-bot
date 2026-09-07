@@ -57,6 +57,39 @@ class FileUrlIssuer:
         )
         return f"/files/{quote(token, safe='')}"
 
+    def fs_url(self, user_id: str, relative: str, name: str) -> str:
+        token = self._sign(
+            {
+                "u": user_id,
+                "k": "fs",
+                "p": relative,
+                "n": name,
+                "exp": int(time.time()) + self.ttl_sec,
+            }
+        )
+        return f"/files/{quote(token, safe='')}"
+
+    def kit_zip_url(
+        self,
+        user_id: str,
+        files: list[tuple[str, str]],
+        name: str,
+    ) -> str:
+        entries: list[dict[str, str]] = []
+        for path, filename in files:
+            root, rel = kit_ref_from_path(path)
+            entries.append({"root": root, "p": rel, "n": filename})
+        token = self._sign(
+            {
+                "u": user_id,
+                "k": "kit_zip",
+                "files": entries,
+                "n": name,
+                "exp": int(time.time()) + self.ttl_sec,
+            }
+        )
+        return f"/files/{quote(token, safe='')}"
+
     def kb_url(self, user_id: str, document_id: str, name: str) -> str:
         token = self._sign(
             {
@@ -132,3 +165,27 @@ def resolve_kit_file(root_kind: str, relative: str) -> Path:
     if not resolved.is_file():
         raise FileTokenError("not_found")
     return resolved
+
+
+def build_kit_zip(entries: list[dict[str, str]]) -> bytes:
+    import io
+    import zipfile
+
+    if not entries:
+        raise FileTokenError("not_found")
+    buffer = io.BytesIO()
+    used: set[str] = set()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for entry in entries:
+            path = resolve_kit_file(str(entry.get("root") or ""), str(entry.get("p") or ""))
+            name = str(entry.get("n") or path.name) or path.name
+            arcname = name
+            index = 1
+            while arcname in used:
+                stem = Path(name).stem
+                suffix = Path(name).suffix
+                arcname = f"{stem}_{index}{suffix}"
+                index += 1
+            used.add(arcname)
+            archive.write(path, arcname=arcname)
+    return buffer.getvalue()

@@ -39,6 +39,16 @@ def test_build_blocks_includes_search_pagination() -> None:
 
 
 @pytest.mark.unit
+def test_build_blocks_includes_kit_zip_url() -> None:
+    blocks = build_blocks(
+        "комплект",
+        [{"name": "a.pdf", "url": "/files/a"}],
+        zip_url="/files/zip",
+    )
+    assert blocks[1]["zip_url"] == "/files/zip"
+
+
+@pytest.mark.unit
 def test_build_product_suggestions_separates_label_and_message() -> None:
     suggestions = build_product_suggestions(
         {"name": "Fort Knox 1 год", "code": "8914"}
@@ -182,6 +192,9 @@ async def test_run_turn_attaches_kit_files(monkeypatch: pytest.MonkeyPatch) -> N
         def kit_url(self, user_id, path, name):
             return "/files/token"
 
+        def kit_zip_url(self, user_id, files, name):
+            return "/files/zip"
+
         def kb_url(self, user_id, document_id, name):
             return "/files/kb"
 
@@ -191,6 +204,7 @@ async def test_run_turn_attaches_kit_files(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert result.blocks[0]["content"] == "карточка"
     assert result.blocks[1]["items"][0]["url"] == "/files/token"
+    assert result.blocks[1]["zip_url"] == "/files/zip"
 
 
 @pytest.mark.unit

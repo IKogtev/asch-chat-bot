@@ -32,6 +32,7 @@ def build_blocks(
     documents: list[dict[str, Any]] | None = None,
     *,
     suggestions: list[dict[str, str]] | None = None,
+    zip_url: str | None = None,
     shown: int | None = None,
     total: int | None = None,
     has_more: bool | None = None,
@@ -43,6 +44,8 @@ def build_blocks(
     items = [item for item in (documents or []) if item.get("name")]
     if items or total is not None:
         block: dict[str, Any] = {"type": "documents", "items": items}
+        if zip_url:
+            block["zip_url"] = zip_url
         if total is not None:
             block["shown"] = shown if shown is not None else len(items)
             block["total"] = total
@@ -77,6 +80,7 @@ def _blocks_from_delivery(delivery, fallback_text: str = "") -> list[dict[str, A
     return build_blocks(
         text,
         delivery.documents,
+        zip_url=delivery.zip_url,
         shown=delivery.shown,
         total=delivery.total,
         has_more=delivery.has_more,
@@ -188,6 +192,7 @@ async def run_turn(
         final_text,
         delivery.documents,
         suggestions=build_product_suggestions(selected_product) if include_suggestions else None,
+        zip_url=delivery.zip_url,
         shown=delivery.shown,
         total=delivery.total,
         has_more=delivery.has_more,

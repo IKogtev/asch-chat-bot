@@ -4,7 +4,7 @@ from urllib.parse import unquote
 import pytest
 
 from bot.services.config import Settings
-from web_bff.files import FileTokenError, FileUrlIssuer, resolve_kit_file
+from web_bff.files import FileTokenError, FileUrlIssuer, build_kit_zip, resolve_kit_file
 
 
 @pytest.mark.unit
@@ -54,3 +54,27 @@ def test_refresh_url_rejects_other_user() -> None:
     url = issuer.kb_url("user-1", "doc_1", "a.pdf")
     with pytest.raises(FileTokenError, match="wrong_user"):
         issuer.refresh_url(url, "user-2")
+
+
+@pytest.mark.unit
+def test_kit_zip_token_and_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Settings, "PRODUCT_KITS_ROOT", tmp_path)
+    first = tmp_path / "a.pdf"
+    second = tmp_path / "b.pdf"
+    first.write_bytes(b"aaa")
+    second.write_bytes(b"bbb")
+    issuer = FileUrlIssuer("secret")
+    url = issuer.kit_zip_url(
+        "user-1",
+        [(str(first), "a.pdf"), (str(second), "b.pdf")],
+        "Комплект.zip",
+    )
+    token = unquote(url.rsplit("/", 1)[-1])
+    payload = issuer.parse(token)
+    assert payload["k"] == "kit_zip"
+    blob = build_kit_zip(payload["files"])
+    import zipfile
+    import io
+
+    names = zipfile.ZipFile(io.BytesIO(blob)).namelist()
+    assert names == ["a.pdf", "b.pdf"]

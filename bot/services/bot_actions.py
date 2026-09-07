@@ -24,6 +24,10 @@ ARCHIVE_KIT_NOTICE = "Внимание: данный продукт находи
 class FileUrlIssuer(Protocol):
     def kit_url(self, user_id: str, path: str, name: str) -> str: ...
 
+    def kit_zip_url(
+        self, user_id: str, files: list[tuple[str, str]] | list[dict[str, str]], name: str
+    ) -> str: ...
+
     def kb_url(self, user_id: str, document_id: str, name: str) -> str: ...
 
 
@@ -34,6 +38,7 @@ class ActionDelivery:
     text: str = ""
     replace_answer: bool = False
     documents: list[dict[str, Any]] = field(default_factory=list)
+    zip_url: str | None = None
     shown: int | None = None
     total: int | None = None
     has_more: bool | None = None
@@ -136,14 +141,28 @@ async def _deliver_kit(
         notices.append(answer.strip())
 
     documents = []
+    kit_paths: list[tuple[str, str]] = []
     for file_info in result["files"]:
         url = None
         if file_urls is not None:
             url = file_urls.kit_url(user_id, file_info["path"], file_info["name"])
+            kit_paths.append((file_info["path"], file_info["name"]))
         documents.append(
             _doc_item(name=file_info["name"], url=url, size=file_info.get("size"))
         )
-    return ActionDelivery(text="\n\n".join(notices), documents=documents)
+    zip_url = None
+    if file_urls is not None and kit_paths:
+        label = " ".join(
+            part
+            for part in (
+                str(bot_action.get("product_name") or "").strip(),
+                str(bot_action.get("product_code") or "").strip(),
+            )
+            if part
+        )
+        zip_name = f"Комплект {label}.zip" if label else "Комплект.zip"
+        zip_url = file_urls.kit_zip_url(user_id, kit_paths, zip_name)
+    return ActionDelivery(text="\n\n".join(notices), documents=documents, zip_url=zip_url)
 
 
 async def _deliver_downloads(
@@ -169,7 +188,9 @@ async def _deliver_downloads(
             notices.append(f"Не удалось определить document_id для документа №{rank}.")
             continue
         url = file_urls.kb_url(user_id, str(doc_id), name) if file_urls is not None else None
-        documents.append(_doc_item(name=name, url=url))
+        item_out = _doc_item(name=name, url=url)
+        item_out["download"] = True
+        documents.append(item_out)
     return ActionDelivery(
         text="\n".join(notices),
         replace_answer=True,

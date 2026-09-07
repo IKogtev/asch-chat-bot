@@ -34,6 +34,9 @@ class _Urls:
     def kit_url(self, user_id, path, name):
         return f"/files/kit-{name}"
 
+    def kit_zip_url(self, user_id, files, name):
+        return f"/files/kit-zip-{name}"
+
     def kb_url(self, user_id, document_id, name):
         return f"/files/kb-{document_id}"
 
@@ -60,6 +63,7 @@ async def test_apply_kit_keeps_answer_and_adds_file_urls(monkeypatch: pytest.Mon
     assert delivery.replace_answer is False
     assert "Карточка продукта" in delivery.text
     assert delivery.documents == [{"name": "a.pdf", "url": "/files/kit-a.pdf", "size": 12}]
+    assert delivery.zip_url == "/files/kit-zip-Комплект 2832.zip"
 
 
 @pytest.mark.unit
@@ -108,7 +112,9 @@ async def test_apply_download_by_ranks() -> None:
     )
     assert delivery.replace_answer is True
     assert "№9" in delivery.text
-    assert delivery.documents == [{"name": "условия.pdf", "url": "/files/kb-doc_abc"}]
+    assert delivery.documents == [
+        {"name": "условия.pdf", "url": "/files/kb-doc_abc", "download": True}
+    ]
 
 
 @pytest.mark.unit
