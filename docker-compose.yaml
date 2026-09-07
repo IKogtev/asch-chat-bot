@@ -57,7 +57,7 @@ services:
       - .env
     environment:
       - LOG_LEVEL=${AGENT_LOG_LEVEL:-DEBUG}
-      - LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-true}
+      - LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-false}
       - LLM_TRACE_AGENTS=${LLM_TRACE_AGENTS:-advisor_content_agent}
       - LLM_TRACE_MAX_LENGTH=${LLM_TRACE_MAX_LENGTH:-1000}
       - LLM_TRACE_INCLUDE_CONTENT=${LLM_TRACE_INCLUDE_CONTENT:-false}
@@ -581,7 +581,7 @@ services:
       - .env
     environment:
       - LOG_LEVEL=${ADK_WEB_LOG_LEVEL:-DEBUG}
-      - LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-true}
+      - LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-false}
       - LLM_TRACE_AGENTS=${LLM_TRACE_AGENTS:-advisor_content_agent}
       - LLM_TRACE_MAX_LENGTH=${LLM_TRACE_MAX_LENGTH:-1000}
       - LLM_TRACE_INCLUDE_CONTENT=${LLM_TRACE_INCLUDE_CONTENT:-false}

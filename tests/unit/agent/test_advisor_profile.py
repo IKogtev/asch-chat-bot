@@ -83,6 +83,22 @@ def test_explicit_fact_replaces_an_inferred_value() -> None:
 
 
 @pytest.mark.unit
+def test_inferred_fact_does_not_replace_an_explicit_value() -> None:
+    current = AdvisorClientProfile(
+        liquidity_need=fact("Высокая")
+    )
+    patch = AdvisorClientProfile(
+        liquidity_need=fact("Средняя", turn="turn-2", origin="inferred")
+    )
+
+    result = merge_advisor_profile(current, patch)
+
+    assert result.profile.liquidity_need.value == "Высокая"
+    assert result.changed_fields == []
+    assert not result.conflicts
+
+
+@pytest.mark.unit
 def test_conflicting_explicit_values_require_clarification() -> None:
     current = AdvisorClientProfile(term_months=fact(60))
     patch = AdvisorClientProfile(term_months=fact(84, turn="turn-2"))

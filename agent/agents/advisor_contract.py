@@ -231,7 +231,14 @@ def _merged_profile(
         AdvisorClientProfile,
         AdvisorClientProfile(),
     )
-    merge_result = merge_advisor_profile(current, result.profile_patch)
+    # Provenance is validated before this merge, so an explicit value in the
+    # current patch is a trusted user correction of the saved scenario.
+    correction_fields = set(result.profile_patch.explicit_values())
+    merge_result = merge_advisor_profile(
+        current,
+        result.profile_patch,
+        correction_fields=correction_fields,
+    )
     if merge_result.conflicts:
         fields = [conflict.field_name for conflict in merge_result.conflicts]
         raise ValueError(f"Profile patch contains unresolved conflicts: {fields}")

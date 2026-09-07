@@ -357,6 +357,79 @@ def test_advisor_content_contract_accepts_no_matching_client_type() -> None:
 
 
 @pytest.mark.unit
+def test_advisor_content_contract_accepts_current_explicit_term_correction() -> None:
+    context = {
+        **_context(),
+        "advisor_client_profile": AdvisorClientProfile(
+            term_months=AdvisorProfileField(
+                value=24,
+                source_turn="turn-1",
+                updated_at=NOW,
+                origin="explicit",
+            )
+        ),
+        "advisor_source_turn": "turn-2",
+        "advisor_updated_at": "2026-09-01T00:01:00+00:00",
+    }
+    payload = {
+        "mode": "no_data",
+        "profile_patch": {
+            "term_months": {
+                "value": 60,
+                "source_turn": "turn-2",
+                "updated_at": "2026-09-01T00:01:00+00:00",
+                "origin": "explicit",
+            }
+        },
+        "selected_client_type": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [],
+        "no_data_reason": "No Client Type matches all supplied constraints",
+    }
+
+    result = validate_advisor_content_result(payload, context)
+
+    assert result["profile_patch"]["term_months"]["value"] == 60
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_stale_explicit_term_correction() -> None:
+    context = {
+        **_context(),
+        "advisor_client_profile": AdvisorClientProfile(
+            term_months=AdvisorProfileField(
+                value=24,
+                source_turn="turn-1",
+                updated_at=NOW,
+                origin="explicit",
+            )
+        ),
+        "advisor_source_turn": "turn-2",
+        "advisor_updated_at": "2026-09-01T00:01:00+00:00",
+    }
+    payload = {
+        "mode": "no_data",
+        "profile_patch": {
+            "term_months": {
+                "value": 60,
+                "source_turn": "turn-1",
+                "updated_at": NOW.isoformat(),
+                "origin": "explicit",
+            }
+        },
+        "selected_client_type": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "products": [],
+        "no_data_reason": "No Client Type matches all supplied constraints",
+    }
+
+    with pytest.raises(ValueError, match="current advisor source turn"):
+        validate_advisor_content_result(payload, context)
+
+
+@pytest.mark.unit
 def test_advisor_content_contract_requires_current_run_sql_for_both_sources() -> None:
     with pytest.raises(ValueError, match="typical_client_profiles"):
         validate_advisor_content_result(
@@ -599,6 +672,17 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
         "execute_sql",
     }
     assert "typical_client_profiles" in content_prompt
+    tool_protocol_marker = "Первым действием вызови `execute_sql`"
+    final_json_marker = (
+        "Только после завершения всех необходимых вызовов верни ровно один"
+    )
+    assert tool_protocol_marker in content_prompt
+    assert (
+        "Не печатай и не имитируй вызов инструмента как обычный текст"
+        in content_prompt
+    )
+    assert "Не создавай XML-подобную разметку" in content_prompt
+    assert content_prompt.index(tool_protocol_marker) < content_prompt.index(final_json_marker)
     assert "ровно один короткий вопрос" in content_prompt
     assert "Не фильтруй, не оценивай" in content_prompt
     assert "точное значение `Действующий`" in content_prompt
@@ -618,6 +702,17 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     )
     assert "Client Types table column name in missing_fields" in (
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    fallback_prompt = advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    fallback_tool_marker = (
+        "First, call execute_sql through the provided native tool-calling mechanism"
+    )
+    fallback_final_marker = "Only after all required tool calls are complete"
+    assert fallback_tool_marker in fallback_prompt
+    assert "Never print or imitate a tool call as ordinary text" in fallback_prompt
+    assert "Never emit XML-like markup" in fallback_prompt
+    assert fallback_prompt.index(fallback_tool_marker) < fallback_prompt.index(
+        fallback_final_marker
     )
     assert "имена колонок таблицы Client Types" in content_prompt
     assert "client_types_source" not in content_prompt
@@ -767,7 +862,7 @@ def test_compose_exposes_advisor_runtime_settings() -> None:
     """Проверяет Advisor settings в обоих Compose runtime-сервисах."""
     compose = (REPO_ROOT / "docker-compose.yaml").read_text(encoding="utf-8")
 
-    assert compose.count("LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-true}") == 2
+    assert compose.count("LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-false}") == 2
     assert compose.count("LLM_TRACE_AGENTS=${LLM_TRACE_AGENTS:-advisor_content_agent}") == 2
 
     assert compose.count("ADVISOR_TEMPERATURE=0.5") == 2
