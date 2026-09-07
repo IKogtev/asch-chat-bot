@@ -672,6 +672,17 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
         "execute_sql",
     }
     assert "typical_client_profiles" in content_prompt
+    tool_protocol_marker = "Первым действием вызови `execute_sql`"
+    final_json_marker = (
+        "Только после завершения всех необходимых вызовов верни ровно один"
+    )
+    assert tool_protocol_marker in content_prompt
+    assert (
+        "Не печатай и не имитируй вызов инструмента как обычный текст"
+        in content_prompt
+    )
+    assert "Не создавай XML-подобную разметку" in content_prompt
+    assert content_prompt.index(tool_protocol_marker) < content_prompt.index(final_json_marker)
     assert "ровно один короткий вопрос" in content_prompt
     assert "Не фильтруй, не оценивай" in content_prompt
     assert "точное значение `Действующий`" in content_prompt
@@ -691,6 +702,17 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     )
     assert "Client Types table column name in missing_fields" in (
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    fallback_prompt = advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    fallback_tool_marker = (
+        "First, call execute_sql through the provided native tool-calling mechanism"
+    )
+    fallback_final_marker = "Only after all required tool calls are complete"
+    assert fallback_tool_marker in fallback_prompt
+    assert "Never print or imitate a tool call as ordinary text" in fallback_prompt
+    assert "Never emit XML-like markup" in fallback_prompt
+    assert fallback_prompt.index(fallback_tool_marker) < fallback_prompt.index(
+        fallback_final_marker
     )
     assert "имена колонок таблицы Client Types" in content_prompt
     assert "client_types_source" not in content_prompt
@@ -840,7 +862,7 @@ def test_compose_exposes_advisor_runtime_settings() -> None:
     """Проверяет Advisor settings в обоих Compose runtime-сервисах."""
     compose = (REPO_ROOT / "docker-compose.yaml").read_text(encoding="utf-8")
 
-    assert compose.count("LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-true}") == 2
+    assert compose.count("LLM_TRACE_ENABLED=${LLM_TRACE_ENABLED:-false}") == 2
     assert compose.count("LLM_TRACE_AGENTS=${LLM_TRACE_AGENTS:-advisor_content_agent}") == 2
 
     assert compose.count("ADVISOR_TEMPERATURE=0.5") == 2
