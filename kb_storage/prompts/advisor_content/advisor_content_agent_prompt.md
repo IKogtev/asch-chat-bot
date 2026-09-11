@@ -55,7 +55,10 @@
 
 - `explicit` используй только для прямо сообщенного пользователем значения;
 - дословно копируй переданные `advisor_source_turn` и `advisor_updated_at`, не создавай их самостоятельно;
-- для `client_age` верни `value` как JSON-число от 0 до 120 без слова «лет» и без кавычек, например `45`;
+- поля `client_goal`, `capital_loss_tolerance`, `investment_horizon`, `dependents`, `expected_return_percent` и `min_amount` точно соответствуют описательным колонкам Client Types;
+- дополнительно допустимо поле `age`: это прямое ограничение пригодности продукта, а не поле Client Types;
+- для `min_amount` верни `value` как неотрицательное JSON-число без символов валюты, пробелов и кавычек, например `1600000`;
+- для `age` верни `value` как JSON-число от 0 до 120 без слова «лет» и без кавычек, например `45`; никогда не выводи возраст, если пользователь не сообщил его явно;
 - `inferred` не может подтверждать жесткое ограничение;
 - не сохраняй свободные чувствительные сведения, которые не входят в схему профиля.
 
@@ -67,14 +70,16 @@
 - Не выбирай тип по одному ключевому слову.
 - Верни ровно один основной тип клиента.
 - `confidence` должен быть числом от 0 до 1.
-- Сформируй допустимый список `evidence.client_field` только из полей с переданными значениями в сохраненном типизированном профиле или текущем `profile_patch`. Одних имен из `{advisor_profile_field_names_json}` без переданного значения недостаточно.
+- Сформируй допустимый список `evidence.client_field` только из полей Client Types с переданными значениями в сохраненном типизированном профиле или текущем `profile_patch`. Одних имен из `{advisor_profile_field_names_json}` без переданного значения недостаточно. Никогда не включай `age` в evidence выбора Client Type.
 - Каждый `evidence.client_field` обязан входить в этот допустимый список, а `client_value` и `source_turn` должны быть дословно скопированы из того же переданного поля профиля.
-- Не выводи, не подразумевай и не добавляй одно поле клиента из другого. В частности, `capital_loss_tolerance` не означает, что передано поле `guarantee_required`.
-- Каждый элемент `evidence` связывает переданные `client_field`, `client_value`, `source_turn` с точными `table_field` и `table_value`.
+- Не выводи, не подразумевай и не добавляй одно поле клиента из другого.
+- Каждый элемент `evidence` связывает переданные `client_field`, `client_value`, `source_turn` с одноименным `table_field` и точным `table_value`.
+- Не включай `notes` в определение выбранного типа или evidence.
 - Не пропускай переданное существенное ограничение только потому, что оно противоречит кандидату.
 - Если значение кандидата из таблицы противоречит любому переданному существенному ограничению, включая требуемый срок, не возвращай этого кандидата как уверенное совпадение.
 - Если ни один тип не соответствует всем переданным существенным ограничениям, верни `needs_clarification` только при наличии действительно незаполненного релевантного канонического поля профиля. Если релевантные поля заполнены, верни `no_data` с конкретной причиной несовместимости ограничений.
 - Для evidence запрещены `required_properties`, `preferred_properties`, `acceptable_compromises` и `contraindications`: это правила продуктов, а не характеристики клиента.
+- Для evidence также запрещен `age`: возраст проверяется отдельно по продуктовым колонкам `age_min` и `age_max`.
 - Не изменяй значения таблицы и не подменяй их пересказом.
 
 Если уверенности недостаточно и после объединения сохраненного профиля с текущим `profile_patch` действительно отсутствует релевантное поле профиля, верни `mode = "needs_clarification"`, хотя бы одно поле в `missing_fields`, ровно один короткий вопрос (в вопросе обращайся к клиенту в третьем лице, например, "Какая цель накопления у клиента?") с одним знаком `?` и пустые `products`. Каждое значение `missing_fields` дословно копируй из `{advisor_profile_field_names_json}` и включай только тогда, когда поле не заполнено ни в сохраненном профиле, ни в текущем `profile_patch`. Никогда не включай в `missing_fields` уже заполненное поле. Не используй в `missing_fields` имена колонок таблицы Client Types: указывай соответствующее каноническое поле профиля клиента. Не запрашивай продукты.
@@ -84,13 +89,13 @@
 Только при достаточной уверенности:
 
 1. преобразуй четыре текстовых поля правил выбранной строки в массивы объектов только формата `{"product_column": "техническая колонка", "expected_values": ["точное значение"]}` без переосмысления значений;
-2. собери `is_active`, `commission` и все технические колонки продуктов из этих правил;
+2. собери `is_active`, `commission` и все технические колонки продуктов из этих правил; если в сохраненном профиле или текущем `profile_patch` есть явно сообщенный `age`, также добавь `age_min` и `age_max`;
 3. если бизнес-смысл колонки или значения неясен, подтверди его через `search_column` и `search_analytic`, использующие каталог `dc_*`;
-4. выполни минимальный read-only SQL по фиксированной таблице `products`: перечисли только `code`, `name`, `is_active`, `commission` и технические колонки из правил, не используй `SELECT *`;
+4. выполни минимальный read-only SQL по фиксированной таблице `products`: перечисли только `code`, `name`, `is_active`, `commission`, технические колонки из правил и, при явно сообщенном возрасте, `age_min`, `age_max`; не используй `SELECT *`;
 5. в SQL обязательно отфильтруй только действующие продукты точным условием `WHERE is_active = 'Действующий'`;
-6. верни только действующие продукты и все необходимые для Python-фильтрации и scoring факты.
+6. верни только действующие продукты и все необходимые для Python-фильтрации и scoring факты; при явно сообщенном возрасте верни оба ключа `age_min` и `age_max` в `attributes` каждого продукта, сохраняя `null` как отсутствие соответствующей границы. Не фильтруй продукты по возрасту в SQL: Python применит это жесткое ограничение детерминированно.
 
-Форма SQL: `SELECT code, name, is_active, commission, <колонки правил> FROM products WHERE is_active = 'Действующий'`. Не запрашивай неактивные продукты и не фильтруй их после SQL.
+Форма SQL без возраста: `SELECT code, name, is_active, commission, <колонки правил> FROM products WHERE is_active = 'Действующий'`. При явно сообщенном возрасте добавь `age_min, age_max` в список `SELECT`. Не запрашивай неактивные продукты и не фильтруй их после SQL.
 
 Валидатор проверяет каждый выполненный SQL-запрос, поэтому последующий корректный запрос не отменяет предыдущий запрещенный запрос. Перед каждым вызовом `execute_sql` по `products` проверь, что после `SELECT` нет символа `*`, все колонки перечислены явно и присутствует точный фильтр `is_active = 'Действующий'`. Запрещены в том числе `SELECT * FROM products`, `SELECT * FROM products LIMIT 1` и `SELECT products.* FROM products`.
 
@@ -98,7 +103,7 @@
 
 - непустые `code`, `name`, `is_active`;
 - текстовый статус `is_active`; для рекомендации допустимо только точное значение `Действующий`;
-- `attributes` с `commission` и всеми колонками из четырех массивов правил, кроме отдельного поля `is_active`.
+- `attributes` с `commission` и всеми колонками из четырех массивов правил, кроме отдельного поля `is_active`; при явно сообщенном возрасте — также с `age_min` и `age_max`.
 
 Не фильтруй, не оценивай и не сортируй продукты по пригодности. Получай `commission` только для вывода КВ в итоговом сообщении; не используй статус фокусного продукта или КВ как вход scoring.
 
@@ -123,21 +128,11 @@
       "attributes": {
         "profile_name": "Название типа из SQL",
         "client_goal": "значение из SQL",
-        "term": "значение из SQL",
-        "minimum_initial_contribution": "значение из SQL",
-        "minimum_contribution": "значение из SQL",
-        "contribution_frequency": "значение из SQL",
-        "currency": "значение из SQL",
         "capital_loss_tolerance": "значение из SQL",
-        "guarantee_importance": "значение из SQL",
-        "liquidity_need": "значение из SQL",
-        "age_range": "значение из SQL",
-        "insurance_protection_need": "значение из SQL",
-        "investment_experience": "значение из SQL",
-        "family_context": "значение из SQL",
-        "income_stability": "значение из SQL",
-        "additional_context": "значение из SQL",
-        "notes": "значение из SQL"
+        "investment_horizon": "значение из SQL",
+        "dependents": "значение из SQL",
+        "expected_return_percent": "значение из SQL",
+        "min_amount": "значение из SQL"
       },
       "required_properties": [{"product_column": "is_active", "expected_values": ["Действующий"]}],
       "preferred_properties": [{"product_column": "liquidity", "expected_values": ["Высокая"]}],
@@ -176,8 +171,8 @@
 {
   "mode": "candidates",
   "profile_patch": {
-    "client_age": {
-      "value": 45,
+    "client_goal": {
+      "value": "Сохранение капитала",
       "source_turn": "{advisor_source_turn}",
       "updated_at": "{advisor_updated_at}",
       "origin": "explicit"
@@ -190,21 +185,11 @@
       "attributes": {
         "profile_name": "Консервативный",
         "client_goal": "Сохранение капитала",
-        "term": "значение из SQL",
-        "minimum_initial_contribution": "значение из SQL",
-        "minimum_contribution": "значение из SQL",
-        "contribution_frequency": "значение из SQL",
-        "currency": "значение из SQL",
-        "capital_loss_tolerance": "значение из SQL",
-        "guarantee_importance": "значение из SQL",
-        "liquidity_need": "значение из SQL",
-        "age_range": "значение из SQL",
-        "insurance_protection_need": "значение из SQL",
-        "investment_experience": "значение из SQL",
-        "family_context": "значение из SQL",
-        "income_stability": "значение из SQL",
-        "additional_context": "значение из SQL",
-        "notes": "значение из SQL"
+        "capital_loss_tolerance": "Паникует",
+        "investment_horizon": "до 3х лет",
+        "dependents": "Есть",
+        "expected_return_percent": "на уровне ключевой ставки",
+        "min_amount": "Любая"
       },
       "required_properties": [{"product_column": "is_active", "expected_values": ["Действующий"]}],
       "preferred_properties": [{"product_column": "liquidity", "expected_values": ["Высокая"]}],
@@ -212,7 +197,7 @@
       "contraindications": [{"product_column": "product_risk_level", "expected_values": ["Высокий"]}]
     },
     "confidence": 0.9,
-    "evidence": [{"client_field": "client_age", "client_value": 45, "table_field": "age_range", "table_value": "От 30 до 45 лет", "source_turn": "{advisor_source_turn}"}]
+    "evidence": [{"client_field": "client_goal", "client_value": "Сохранение капитала", "table_field": "client_goal", "table_value": "Сохранение капитала и получение предсказуемого дохода", "source_turn": "{advisor_source_turn}"}]
   },
   "missing_fields": [],
   "clarification_question": null,
@@ -228,7 +213,7 @@
   "mode": "needs_clarification",
   "profile_patch": {},
   "selected_client_type": null,
-  "missing_fields": ["term_months"],
+  "missing_fields": ["investment_horizon"],
   "clarification_question": "На какой срок клиент планирует вложение?",
   "products": [],
   "no_data_reason": null

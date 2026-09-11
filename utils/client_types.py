@@ -9,34 +9,28 @@ from typing import Any, Iterable, Mapping
 CLIENT_TYPES_PROFILE_COLUMN = "profile_name"
 CLIENT_TYPE_CODE_COLUMN = "client_type_code"
 CLIENT_TYPES_DESCRIPTION_ROW_LABEL = "Тип профиля"
-CLIENT_TYPES_EXPECTED_COLUMNS = (
+CLIENT_TYPES_PROFILE_COLUMNS = (
     "profile_name",
     "client_goal",
-    "term",
-    "minimum_initial_contribution",
-    "minimum_contribution",
-    "contribution_frequency",
-    "currency",
     "capital_loss_tolerance",
-    "guarantee_importance",
-    "liquidity_need",
-    "age_range",
-    "insurance_protection_need",
-    "investment_experience",
-    "family_context",
-    "income_stability",
-    "additional_context",
-    "required_properties",
-    "preferred_properties",
-    "acceptable_compromises",
-    "contraindications",
-    "notes",
+    "investment_horizon",
+    "dependents",
+    "expected_return_percent",
+    "min_amount",
 )
 CLIENT_TYPES_RULE_COLUMNS = (
     "required_properties",
     "preferred_properties",
     "acceptable_compromises",
     "contraindications",
+)
+CLIENT_TYPES_IGNORED_COLUMNS = (
+    "notes",
+)
+CLIENT_TYPES_EXPECTED_COLUMNS = (
+    *CLIENT_TYPES_PROFILE_COLUMNS,
+    *CLIENT_TYPES_RULE_COLUMNS,
+    *CLIENT_TYPES_IGNORED_COLUMNS,
 )
 CLIENT_TYPES_RULE_PROPERTY_MAP = {
     "статус": "is_active",

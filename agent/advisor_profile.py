@@ -9,9 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 T = TypeVar("T")
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-PositiveInteger = Annotated[int, Field(gt=0)]
-ClientAge = Annotated[int, Field(ge=0, le=120)]
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
+ClientAge = Annotated[int, Field(strict=True, ge=0, le=120)]
 # Назначение: фиксирует происхождение значения поля профиля клиента.
 # `explicit` — значение прямо сообщил пользователь; `inferred` — значение вывела LLM.
 ProfileValueOrigin = Literal["explicit", "inferred"]
@@ -37,33 +36,19 @@ class AdvisorClientProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Финансовая цель клиента. Пример: «Накопить на образование ребенка».
-    goal: AdvisorProfileField[NonEmptyText] | None = None
-    # Плановый срок размещения в месяцах. Пример: 84 месяца (7 лет).
-    term_months: AdvisorProfileField[PositiveInteger] | None = None
-    # Сумма первоначального взноса. Пример: Decimal("500000").
-    contribution_amount: AdvisorProfileField[NonNegativeDecimal] | None = None
-    # Периодичность взносов. Пример: «Ежемесячно» или «Единовременно».
-    contribution_frequency: AdvisorProfileField[NonEmptyText] | None = None
-    # Валюта вложения. Пример: «Рубли».
-    currency: AdvisorProfileField[NonEmptyText] | None = None
-    # Допустимый риск потери капитала. Пример: «Допустима временная потеря до 5%».
+    client_goal: AdvisorProfileField[NonEmptyText] | None = None
+    # Отношение клиента к возможной потере капитала. Пример: «Готов ждать».
     capital_loss_tolerance: AdvisorProfileField[NonEmptyText] | None = None
-    # Обязательна ли гарантия возврата капитала. Пример: True.
-    guarantee_required: AdvisorProfileField[bool] | None = None
-    # Требуемая ликвидность продукта. Пример: «Высокая».
-    liquidity_need: AdvisorProfileField[NonEmptyText] | None = None
-    # Возраст клиента в полных годах. Пример: 42.
-    client_age: AdvisorProfileField[ClientAge] | None = None
-    # Потребность в страховой защите. Пример: «Высокая».
-    insurance_need: AdvisorProfileField[NonEmptyText] | None = None
-    # Инвестиционный опыт клиента. Пример: «Облигации и паевые фонды».
-    investment_experience: AdvisorProfileField[NonEmptyText] | None = None
-    # Семейный контекст, влияющий на рекомендацию. Пример: «Семья с детьми».
-    family_context: AdvisorProfileField[NonEmptyText] | None = None
-    # Стабильность дохода клиента. Пример: «Стабильный доход».
-    income_stability: AdvisorProfileField[NonEmptyText] | None = None
-    # Дополнительные значимые сведения. Пример: «Готов ждать восстановления рынка».
-    additional_context: AdvisorProfileField[NonEmptyText] | None = None
+    # Горизонт инвестирования словами клиента. Пример: «3–5 лет».
+    investment_horizon: AdvisorProfileField[NonEmptyText] | None = None
+    # Наличие финансово зависимых людей. Пример: «Есть».
+    dependents: AdvisorProfileField[NonEmptyText] | None = None
+    # Ожидаемая доходность словами клиента. Пример: «20% годовых и выше».
+    expected_return_percent: AdvisorProfileField[NonEmptyText] | None = None
+    # Доступная сумма размещения. Пример: `Decimal("1600000")`.
+    min_amount: AdvisorProfileField[NonNegativeDecimal] | None = None
+    # Возраст клиента в полных годах. Пример: 45.
+    age: AdvisorProfileField[ClientAge] | None = None
 
     def supplied_fields(self) -> dict[str, AdvisorProfileField[object]]:
         """Возвращает только заполненные поля профиля с их метаданными."""

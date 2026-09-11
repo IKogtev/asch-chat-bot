@@ -76,12 +76,14 @@ The primary Stage 1 input is the Client Types table:
 The current workbook contract is:
 
 - worksheet: `Типовые профили`;
-- table range: `A1:U5`;
-- 21 source technical columns in row 1 and Russian business labels in row 2;
+- table range: `A1:L5`;
+- 12 source technical columns in row 1 and Russian business labels in row 2;
 - one loader-generated database column, `client_type_code`, using stable source-row codes `CT-001`, `CT-002`, and so on;
 - three client types: `Консервативный`, `Умеренный`, and `Агрессивный`;
-- client-type inputs in `client_goal` through `additional_context`;
+- client-type inputs in `client_goal`, `capital_loss_tolerance`, `investment_horizon`, `dependents`, `expected_return_percent`, and `min_amount`;
+- direct client eligibility input `age`, checked against product `age_min` and `age_max` after Client Type selection;
 - product-matching rules in `required_properties`, `preferred_properties`, `acceptable_compromises`, and `contraindications`;
+- `notes` is retained in the workbook but excluded from runtime client-type definitions and evidence;
 - no product codes: matching must use product property names and values.
 
 Treat this workbook as the single source of truth for pilot client types and their product-property rules. Do not copy its rows into prompts, hardcode the three types in Python, or maintain a parallel suitability matrix.
@@ -182,25 +184,19 @@ Do not add a separate advisor-only loader. The shared action must discover the m
 
 Create a typed `AdvisorClientProfile` model. Fields should be optional while the profile is being collected, but validated when present.
 
-The model fields must map explicitly to the technical columns in `typical_client_profiles`. Where the runtime representation is more structured than the workbook text—for example, a numeric age versus the table's `age_range`—implement a documented parser and comparison rule rather than changing or duplicating the workbook value.
+The Client Type matching fields must use the same names as the descriptive technical columns in `typical_client_profiles`. The additional `age` field is checked directly against product eligibility bounds and must not be used as Client Type evidence. `notes` is not a profile field and must not be used for matching or evidence.
 
 Recommended pilot fields:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `goal` | enum/string | Protection, accumulation, regular income, education, retirement, or another approved goal |
-| `target_date` or `term_months` | date/integer | Checks product duration against the client's horizon |
-| `contribution_amount` | decimal | Checks minimum and permitted contribution amount |
-| `contribution_frequency` | enum | Single, monthly, quarterly, annual, or approved values |
-| `currency` | enum | Checks product/client currency compatibility |
+| `client_goal` | string | Client's stated financial goal |
 | `capital_loss_tolerance` | enum | Enforces risk restrictions |
-| `guarantee_required` | boolean | Enforces capital-guarantee requirements |
-| `liquidity_need` | enum | Evaluates early access requirements |
-| `client_age` | integer | Enforces product age limits |
-| `insurance_need` | enum/boolean | Evaluates required protection |
-| `investment_experience` | enum | Supports suitability rules where approved |
-
-Additional collected fields may map to `family_context`, `income_stability`, and `additional_context`. They must be added only when the Client Types table uses them to distinguish profiles or apply an approved rule.
+| `investment_horizon` | string | Client's stated investment horizon |
+| `dependents` | string | Whether the client has financially dependent people |
+| `expected_return_percent` | string | Expected return, including relative benchmarks from the workbook |
+| `min_amount` | non-negative decimal | Available placement amount |
+| `age` | integer, 0–120 | Direct product eligibility check against `age_min` and `age_max`; not used as Client Type evidence |
 
 The model must also record provenance per field:
 
@@ -333,6 +329,8 @@ The scoring policy must define a minimum client-type match confidence and a mini
 
 Apply hard rules before scoring. The matched row's `required_properties` and `contraindications` columns are authoritative for client-type-specific product filtering. Typical exclusions include:
 
+- an explicitly supplied client `age` below a populated product `age_min` or above a populated product `age_max`; a blank bound means no restriction on that side;
+
 - product whose textual catalog status `is_active` is not `ACTIVE_PRODUCT_STATUS` (`"Действующий"`);
 - age outside the permitted range;
 - term incompatible with the target date;
@@ -448,7 +446,7 @@ Use `kb_storage/manager/tables/typical_client_profiles_active.xlsx` as the singl
 | `tests/unit/agent/test_dispatcher_agent.py` | Add routing, boundary, and validation cases |
 | `tests/unit/agent/test_rootagent.py` | Add advisor routing, state, recalculation, and product-info handoff cases |
 | `tests/unit/agent/test_start_agent.py` | Verify advisor construction and dependency injection |
-| `tests/unit/mcps/test_tables_loader_service_database_creation.py` | Verify Client Types table name, three data rows, 21 source columns plus `client_type_code`, code generation, and descriptive-row handling |
+| `tests/unit/mcps/test_tables_loader_service_database_creation.py` | Verify Client Types table name, three data rows, 12 source columns plus `client_type_code`, code generation, and descriptive-row handling |
 | KB Manager API/UI tests | Verify strict-mode invocation, Client Types table presence, success rendering, and failure rendering |
 
 Update runtime prompt mounts or deployment configuration only if the current environment explicitly lists prompt files. Verify the effective prompt inside the running container during integration testing.
@@ -463,7 +461,7 @@ Required behavior:
 2. Confirm the file exists before destructive table replacement starts. If it is missing, fail the action with a clear source path.
 3. Load it through `TablesLoaderService._load_regular_tables`; do not create a separate database-import implementation.
 4. Normalize the single-sheet filename to PostgreSQL table `typical_client_profiles`.
-5. Remove the Russian business-label row, validate the 21 source technical columns, and prepend generated `client_type_code` values in `CT-###` format to the database data.
+5. Remove the Russian business-label row, validate the 12 source technical columns, and prepend generated `client_type_code` values in `CT-###` format to the database data.
 6. Validate the current source contains the three client rows and no descriptive row. Runtime code must remain data-driven so later approved rows can be added without an application release.
 7. Append a dedicated result to the loader output containing:
    - table name;
@@ -514,13 +512,13 @@ Success criterion: running either `.\load_tables.ps1` or the KB Manager `Заг�
 
 Exit criterion: both `load_table` entry points create the same validated `typical_client_profiles` table containing only the three current client types, every workbook rule maps to a structured product field/value, and any missing field is documented as a blocking issue.
 
-Implementation status (August 27, 2026): the technical Phase 0 work is implemented. The shared loader now removes the business-label row, validates the exact 21-column source schema and the four product-rule columns against `products_active.xlsx`, adds deterministic `CT-001`-style codes without modifying the workbook, and prints a human-readable validation result through both the PowerShell and KB Manager UI paths. Unit and syntax checks pass. The live PowerShell/UI reconciliation in step 15 remains pending because Docker Desktop was not running during verification. Business approval of `pilot-v1` and the manual reference cases in steps 7, 9, and 10 remain explicit Phase 0 gates.
+Implementation status (September 9, 2026): the shared loader removes the business-label row, validates the exact 12-column source schema and the four product-rule columns against `products_active.xlsx`, adds deterministic `CT-001`-style codes without modifying the workbook, and reports the result through both the PowerShell and KB Manager UI paths. Runtime definitions use only the six descriptive profile columns and exclude `notes`. Business approval of `pilot-v1` and the manual reference cases in steps 7, 9, and 10 remain explicit Phase 0 gates.
 
 ### Phase 1. Implement domain models and deterministic product ranking
 
 1. Add the typed client-profile model and per-field provenance.
 2. Implement profile merge, explicit correction, conflict detection, and reset-for-new-client behavior.
-3. Reuse the Phase 0 validation of the 21 source-column Client Types schema and implement deterministic runtime parsing only for the four semicolon-separated product-rule columns: `required_properties`, `preferred_properties`, `acceptable_compromises`, and `contraindications`. Do not deterministically parse the descriptive client-profile columns; the LLM uses those columns for semantic client-type selection.
+3. Reuse the Phase 0 validation of the 12 source-column Client Types schema and implement deterministic runtime parsing only for the four semicolon-separated product-rule columns: `required_properties`, `preferred_properties`, `acceptable_compromises`, and `contraindications`. Do not deterministically parse the six descriptive client-profile columns; the LLM uses those columns for semantic client-type selection.
 4. Add typed models for one `selected_client_type` containing its complete SQL row, confidence, and criterion-level evidence; keep mode, missing fields, and clarification question only at the content-result level.
 5. Implement deterministic validation of the LLM result: confidence must be in range, evidence must reference supplied client facts and fields of the selected definition, and clarification mode must contain exactly one question and no selected type.
 6. Add typed product facts and ranking-result models.
@@ -530,7 +528,7 @@ Implementation status (August 27, 2026): the technical Phase 0 work is implement
 
 Exit criterion: pure Python tests validate the Client Types schema, parse the four product-rule columns, reject invalid LLM selection payloads, and produce the approved exclusions and TOP-3 from a preselected valid client type without a live database.
 
-Implementation status (updated September 3, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. `agent/config.py` now supplies environment-backed technical defaults for the versioned `pilot-v1` policy, and `agent/start_agent.py` constructs the ranking service explicitly from them. These defaults make the runtime constructible but do not replace the pending business approval of the weights, thresholds, and reference results.
+Implementation status (updated September 10, 2026): the Phase 1 code is implemented in `agent/advisor_profile.py`, `agent/advisor_profile_matcher.py`, and `agent/advisor_ranking_service.py`. The loader and runtime use the same parser in `utils/client_types.py`. Workbook-backed tests cover typed provenance, merge/correction/conflict/reset behavior, the three current Client Types rows, LLM selection validation, required and contraindicated product rules, direct `age_min`/`age_max` eligibility, soft scoring, stable full-identity tie-breaking, minimum score, diversity, and deterministic output. `agent/config.py` now supplies environment-backed technical defaults for the versioned `pilot-v1` policy, and `agent/start_agent.py` constructs the ranking service explicitly from them. These defaults make the runtime constructible but do not replace the pending business approval of the weights, thresholds, and reference results.
 
 ### Phase 2. Implement advisor agents and contracts
 
@@ -640,7 +638,7 @@ Exit criterion: an operator can reconstruct why a product was selected or exclud
 1. Run focused unit tests during development.
 2. Run the complete unit suite with the project test runner.
 3. Test DBHub connectivity and queries for both `typical_client_profiles` and the products table in the integration environment.
-4. Reconcile the loaded Client Types table to the source workbook: 21 source columns, one generated code column, and exactly three client rows.
+4. Reconcile the loaded Client Types table to the source workbook: 12 source columns, one generated code column, and exactly three client rows.
 5. Verify effective code, environment, and mounted advisor prompts inside the running container.
 6. Execute all reference cases and record actual versus expected client type, TOP-3, exclusions, and explanations.
 7. Run multi-turn manual scenarios in every supported client channel.
@@ -765,7 +763,7 @@ LLM client-type evaluation cases:
 - clicking KB Manager `Загрузить таблицы` loads and reports the same table;
 - both entry points report the same source file, worksheet, row count, and column count;
 - DBHub tools expose `typical_client_profiles`, the products table, and their required columns;
-- the loaded Client Types table contains 21 source columns plus `client_type_code` and exactly three valid client types;
+- the loaded Client Types table contains 12 source columns plus `client_type_code` and exactly three valid client types;
 - the workbook description row is not available as a client-type data row;
 - the advisor content agent uses read-only SQL;
 - every matched client-type fact and property rule matches the current SQL result sourced from the workbook;

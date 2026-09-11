@@ -29,25 +29,33 @@ def fact(value, *, turn: str = "turn-1", origin: str = "explicit"):
 @pytest.mark.unit
 def test_profile_validates_typed_values_and_provenance() -> None:
     profile = AdvisorClientProfile(
-        client_age=fact(42),
-        term_months=fact(84),
-        contribution_amount=fact(Decimal("500000")),
-        currency=fact("Рубли"),
+        client_goal=fact("Накопление"),
+        investment_horizon=fact("7 лет"),
+        dependents=fact("Есть"),
+        min_amount=fact(Decimal("500000")),
+        age=fact(45),
     )
 
-    assert profile.client_age.value == 42
-    assert profile.currency.explicit is True
-    assert profile.explicit_values()["term_months"] == 84
+    assert profile.client_goal.value == "Накопление"
+    assert profile.dependents.explicit is True
+    assert profile.explicit_values()["investment_horizon"] == "7 лет"
+    assert profile.age.value == 45
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
-        ("client_age", 121),
-        ("term_months", 0),
-        ("contribution_amount", Decimal("-1")),
-        ("currency", " "),
+        ("client_goal", " "),
+        ("investment_horizon", " "),
+        ("dependents", " "),
+        ("expected_return_percent", " "),
+        ("min_amount", Decimal("-1")),
+        ("age", -1),
+        ("age", 121),
+        ("age", "45"),
+        ("age", 45.5),
+        ("age", True),
     ],
 )
 def test_profile_rejects_invalid_values(field_name: str, value) -> None:
@@ -57,79 +65,79 @@ def test_profile_rejects_invalid_values(field_name: str, value) -> None:
 
 @pytest.mark.unit
 def test_merge_adds_new_facts_without_losing_existing_values() -> None:
-    current = AdvisorClientProfile(goal=fact("Накопление"))
-    patch = AdvisorClientProfile(term_months=fact(60, turn="turn-2"))
+    current = AdvisorClientProfile(client_goal=fact("Накопление"))
+    patch = AdvisorClientProfile(investment_horizon=fact("5 лет", turn="turn-2"))
 
     result = merge_advisor_profile(current, patch)
 
-    assert result.profile.goal.value == "Накопление"
-    assert result.profile.term_months.value == 60
-    assert result.changed_fields == ["term_months"]
+    assert result.profile.client_goal.value == "Накопление"
+    assert result.profile.investment_horizon.value == "5 лет"
+    assert result.changed_fields == ["investment_horizon"]
 
 
 @pytest.mark.unit
 def test_explicit_fact_replaces_an_inferred_value() -> None:
     current = AdvisorClientProfile(
-        liquidity_need=fact("Средняя", origin="inferred")
+        dependents=fact("Нет", origin="inferred")
     )
     patch = AdvisorClientProfile(
-        liquidity_need=fact("Высокая", turn="turn-2")
+        dependents=fact("Есть", turn="turn-2")
     )
 
     result = merge_advisor_profile(current, patch)
 
-    assert result.profile.liquidity_need.value == "Высокая"
+    assert result.profile.dependents.value == "Есть"
     assert not result.conflicts
 
 
 @pytest.mark.unit
 def test_inferred_fact_does_not_replace_an_explicit_value() -> None:
     current = AdvisorClientProfile(
-        liquidity_need=fact("Высокая")
+        dependents=fact("Есть")
     )
     patch = AdvisorClientProfile(
-        liquidity_need=fact("Средняя", turn="turn-2", origin="inferred")
+        dependents=fact("Нет", turn="turn-2", origin="inferred")
     )
 
     result = merge_advisor_profile(current, patch)
 
-    assert result.profile.liquidity_need.value == "Высокая"
+    assert result.profile.dependents.value == "Есть"
     assert result.changed_fields == []
     assert not result.conflicts
 
 
 @pytest.mark.unit
 def test_conflicting_explicit_values_require_clarification() -> None:
-    current = AdvisorClientProfile(term_months=fact(60))
-    patch = AdvisorClientProfile(term_months=fact(84, turn="turn-2"))
+    current = AdvisorClientProfile(investment_horizon=fact("5 лет"))
+    patch = AdvisorClientProfile(investment_horizon=fact("7 лет", turn="turn-2"))
 
     result = merge_advisor_profile(current, patch)
 
     assert result.requires_clarification is True
-    assert result.profile.term_months.value == 60
-    assert result.conflicts[0].field_name == "term_months"
+    assert result.profile.investment_horizon.value == "5 лет"
+    assert result.conflicts[0].field_name == "investment_horizon"
 
 
 @pytest.mark.unit
 def test_explicit_correction_replaces_the_old_value() -> None:
-    current = AdvisorClientProfile(term_months=fact(60))
-    patch = AdvisorClientProfile(term_months=fact(84, turn="turn-2"))
+    current = AdvisorClientProfile(investment_horizon=fact("5 лет"))
+    patch = AdvisorClientProfile(investment_horizon=fact("7 лет", turn="turn-2"))
 
     result = merge_advisor_profile(
         current,
         patch,
-        correction_fields={"term_months"},
+        correction_fields={"investment_horizon"},
     )
 
-    assert result.profile.term_months.value == 84
+    assert result.profile.investment_horizon.value == "7 лет"
     assert not result.conflicts
 
 
 @pytest.mark.unit
 def test_reset_for_new_client_drops_the_previous_profile() -> None:
-    initial = AdvisorClientProfile(goal=fact("Защита", turn="turn-9"))
+    initial = AdvisorClientProfile(client_goal=fact("Защита", turn="turn-9"))
 
     reset = reset_advisor_profile(initial)
 
-    assert reset.goal.value == "Защита"
-    assert reset.term_months is None
+    assert reset.client_goal.value == "Защита"
+    assert reset.investment_horizon is None

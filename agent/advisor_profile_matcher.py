@@ -9,7 +9,7 @@ from agent.advisor_profile import AdvisorClientProfile
 from utils.client_types import (
     CLIENT_TYPE_CODE_COLUMN,
     CLIENT_TYPES_DESCRIPTION_ROW_LABEL,
-    CLIENT_TYPES_EXPECTED_COLUMNS,
+    CLIENT_TYPES_PROFILE_COLUMNS,
     CLIENT_TYPES_PROFILE_COLUMN,
     CLIENT_TYPES_RULE_COLUMNS,
     ClientTypeRule,
@@ -22,26 +22,11 @@ from utils.client_types import (
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 # Колонки таблицы Client Types, которые описывают клиента и могут использоваться LLM
 # как доказательства выбора типа. Продуктовые правила в этот набор не входят.
-CLIENT_TYPE_MATCHABLE_COLUMNS = frozenset(CLIENT_TYPES_EXPECTED_COLUMNS[1:16])
+CLIENT_TYPE_MATCHABLE_COLUMNS = frozenset(CLIENT_TYPES_PROFILE_COLUMNS[1:])
 # Явное соответствие полей рабочего профиля колонкам Client Types.
-# Например, `goal` можно сопоставлять только с `client_goal`, а не с `currency`.
+# Имена полей рабочего профиля совпадают с колонками Client Types.
 PROFILE_TO_CLIENT_TYPE_COLUMNS = {
-    "goal": frozenset({"client_goal"}),
-    "term_months": frozenset({"term"}),
-    "contribution_amount": frozenset(
-        {"minimum_initial_contribution", "minimum_contribution"}
-    ),
-    "contribution_frequency": frozenset({"contribution_frequency"}),
-    "currency": frozenset({"currency"}),
-    "capital_loss_tolerance": frozenset({"capital_loss_tolerance"}),
-    "guarantee_required": frozenset({"guarantee_importance"}),
-    "liquidity_need": frozenset({"liquidity_need"}),
-    "client_age": frozenset({"age_range"}),
-    "insurance_need": frozenset({"insurance_protection_need"}),
-    "investment_experience": frozenset({"investment_experience"}),
-    "family_context": frozenset({"family_context"}),
-    "income_stability": frozenset({"income_stability"}),
-    "additional_context": frozenset({"additional_context"}),
+    column: frozenset({column}) for column in CLIENT_TYPES_PROFILE_COLUMNS[1:]
 }
 
 
@@ -54,7 +39,7 @@ class AdvisorClientTypeDefinition(BaseModel):
     client_type_code: NonEmptyText | None
     # Название типа клиента из таблицы. Пример: «Консервативный».
     profile_name: NonEmptyText
-    # Описательные характеристики клиента. Пример: `{"currency": "Рубли"}`.
+    # Описательные характеристики клиента. Пример: `{"dependents": "Есть"}`.
     attributes: dict[str, Any]
     # Обязательные свойства продукта. Пример: «Статус: Действующий».
     required_properties: tuple[ClientTypeRule, ...]
@@ -69,12 +54,12 @@ class AdvisorClientTypeDefinition(BaseModel):
     def from_mapping(cls, row: Mapping[str, Any]) -> "AdvisorClientTypeDefinition":
         """Создает тип клиента из строки загруженной таблицы.
 
-        Функция проверяет точную 21-колоночную схему источника, извлекает
+        Функция проверяет точную схему источника, извлекает
         описательные атрибуты и детерминированно разбирает четыре колонки
         продуктовых правил.
 
         Аргументы:
-            row: Строка Client Types с техническими именами колонок и, при
+            row: Строка таблицы типов клиентов с техническими именами колонок и, при
                 наличии, сгенерированным `client_type_code`.
 
         Возвращает:
@@ -92,8 +77,7 @@ class AdvisorClientTypeDefinition(BaseModel):
         parsed_rules = parse_client_type_rules(row)
         attributes = {
             column: row.get(column)
-            for column in CLIENT_TYPES_EXPECTED_COLUMNS
-            if column not in CLIENT_TYPES_RULE_COLUMNS
+            for column in CLIENT_TYPES_PROFILE_COLUMNS
         }
         return cls(
             client_type_code=(
@@ -112,7 +96,7 @@ class AdvisorClientTypeEvidence(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # Поле рабочего профиля. Пример: `goal`.
+    # Поле рабочего профиля. Пример: `client_goal`.
     client_field: NonEmptyText
     # Значение факта из диалога. Пример: «Сохранение капитала».
     client_value: Any
@@ -177,9 +161,7 @@ def validate_selected_client_type(
     definition = selected.definition
     if definition.profile_name == CLIENT_TYPES_DESCRIPTION_ROW_LABEL:
         raise ValueError("Client Types description row cannot be selected")
-    expected_attribute_fields = set(CLIENT_TYPES_EXPECTED_COLUMNS) - set(
-        CLIENT_TYPES_RULE_COLUMNS
-    )
+    expected_attribute_fields = set(CLIENT_TYPES_PROFILE_COLUMNS)
     actual_attribute_fields = set(definition.attributes)
     if actual_attribute_fields != expected_attribute_fields:
         raise ValueError(
@@ -216,7 +198,11 @@ def validate_selected_client_type(
                 f"Evidence references a non-client Client Types field: "
                 f"{evidence.table_field!r}"
             )
-        allowed_table_fields = PROFILE_TO_CLIENT_TYPE_COLUMNS[evidence.client_field]
+        allowed_table_fields = PROFILE_TO_CLIENT_TYPE_COLUMNS.get(evidence.client_field)
+        if allowed_table_fields is None:
+            raise ValueError(
+                f"Client field {evidence.client_field!r} has no Client Types mapping"
+            )
         if evidence.table_field not in allowed_table_fields:
             raise ValueError(
                 f"Client field {evidence.client_field!r} cannot support "

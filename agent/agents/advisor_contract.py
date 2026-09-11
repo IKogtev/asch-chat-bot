@@ -17,6 +17,7 @@ from agent.advisor_ranking_service import (
     ACTIVE_PRODUCT_STATUS,
     AdvisorProductFacts,
     AdvisorRankingResult,
+    validate_product_age_bounds,
 )
 from .validation_utils import build_validation_error
 
@@ -211,13 +212,53 @@ def _validate_products_sql(context: Mapping[str, Any]) -> None:
         sql for sql in _executed_sql_texts(context) if table_pattern.search(sql)
     ]
     for sql in product_sql:
-        select_match = re.search(r"\bselect\b(?P<columns>.*?)\bfrom\b", sql, re.I | re.S)
+        select_match = re.search(
+            r"\bselect\b(?P<columns>.*?)\bfrom\b",
+            sql,
+            re.I | re.S,
+        )
         if select_match is None or "*" in select_match.group("columns"):
             raise ValueError("Advisor products SQL must not use wildcard projection")
         if active_pattern.search(sql) is None:
             raise ValueError(
                 "Advisor products SQL must filter is_active by the active status"
             )
+
+
+def _require_products_sql_columns(
+    context: Mapping[str, Any],
+    required_columns: set[str],
+) -> None:
+    """Проверяет наличие обязательных технических колонок в выборке `products`."""
+    if not required_columns:
+        return
+    table_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(PRODUCTS_TABLE)}(?![A-Za-z0-9_])",
+        re.I,
+    )
+    product_sql = [
+        sql for sql in _executed_sql_texts(context) if table_pattern.search(sql)
+    ]
+    projected_columns = []
+    for sql in product_sql:
+        select_match = re.search(r"\bselect\b(?P<columns>.*?)\bfrom\b", sql, re.I | re.S)
+        if select_match is not None:
+            projected_columns.append(select_match.group("columns"))
+    if not any(
+        all(
+            re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(column)}(?![A-Za-z0-9_])",
+                columns,
+                re.I,
+            )
+            for column in required_columns
+        )
+        for columns in projected_columns
+    ):
+        raise ValueError(
+            "Advisor products SQL is missing required columns: "
+            f"{sorted(required_columns)}"
+        )
 
 
 def _merged_profile(
@@ -231,8 +272,8 @@ def _merged_profile(
         AdvisorClientProfile,
         AdvisorClientProfile(),
     )
-    # Provenance is validated before this merge, so an explicit value in the
-    # current patch is a trusted user correction of the saved scenario.
+    # Происхождение данных проверяется до объединения, поэтому явное значение
+    # текущего фрагмента считается доверенным исправлением сохраненного сценария.
     correction_fields = set(result.profile_patch.explicit_values())
     merge_result = merge_advisor_profile(
         current,
@@ -345,6 +386,10 @@ def _validate_content_semantics(
         for rule in rule_column
         if rule.product_column != "is_active"
     }
+    age_field = merged_profile.age
+    if age_field is not None and age_field.explicit:
+        required_columns.update({"age_min", "age_max"})
+        _require_products_sql_columns(context, {"age_min", "age_max"})
     for product in result.products:
         if product.is_active != ACTIVE_PRODUCT_STATUS:
             raise ValueError("Advisor candidates may contain only active products")
@@ -354,6 +399,8 @@ def _validate_content_semantics(
                 f"Product {product.code!r} is missing rule attributes: "
                 f"{sorted(missing_columns)}"
             )
+        if age_field is not None and age_field.explicit:
+            validate_product_age_bounds(product.to_product_facts())
 
 
 def validate_advisor_content_result(

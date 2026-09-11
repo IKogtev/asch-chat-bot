@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from typing_extensions import Annotated
 
+from agent.advisor_profile import AdvisorClientProfile
 from agent.advisor_profile_matcher import (
     AdvisorClientTypeDefinition,
     AdvisorClientTypeEvidence,
@@ -26,6 +27,10 @@ BELOW_MINIMUM_SCORE = "BELOW_MINIMUM_SCORE"
 ACTIVE_PRODUCT_STATUS = "Действующий"
 # Код исключения: продукт не имеет активного статуса в продуктовом классификаторе.
 INACTIVE_PRODUCT = "INACTIVE_PRODUCT"
+# Код исключения: возраст клиента меньше минимального возраста продукта.
+AGE_BELOW_MINIMUM = "AGE_BELOW_MINIMUM"
+# Код исключения: возраст клиента больше максимального возраста продукта.
+AGE_ABOVE_MAXIMUM = "AGE_ABOVE_MAXIMUM"
 
 
 class AdvisorScoringPolicy(BaseModel):
@@ -167,6 +172,8 @@ class AdvisorRankingResult(BaseModel):
 
     # Основной тип клиента, использованный для правил. Пример: «Умеренный».
     primary_client_type: NonEmptyText
+    # Явно сообщенный возраст клиента, использованный для жесткой фильтрации.
+    client_age: int | None = None
     # Проверенные доказательства выбора типа клиента.
     match_evidence: tuple[AdvisorClientTypeEvidence, ...] = ()
     # Прошедшие жесткие правила и минимальный порог продукты в порядке балла.
@@ -195,6 +202,38 @@ def _matches(product: AdvisorProductFacts, rule: ClientTypeRule) -> bool:
     return actual in expected
 
 
+def _product_age_bound(product: AdvisorProductFacts, column: str) -> Decimal | None:
+    """Возвращает проверенную возрастную границу продукта или отсутствие границы."""
+    value = product.value_for(column)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Product {product.code!r}: {column} must be numeric or null"
+        )
+    try:
+        bound = Decimal(str(value).strip())
+    except (ArithmeticError, ValueError) as exc:
+        raise ValueError(
+            f"Product {product.code!r}: {column} must be numeric or null"
+        ) from exc
+    if not bound.is_finite() or bound < 0 or bound > 120:
+        raise ValueError(
+            f"Product {product.code!r}: {column} must be between 0 and 120"
+        )
+    return bound
+
+
+def validate_product_age_bounds(product: AdvisorProductFacts) -> None:
+    """Проверяет формат и взаимный порядок возрастных границ продукта."""
+    age_min = _product_age_bound(product, "age_min")
+    age_max = _product_age_bound(product, "age_max")
+    if age_min is not None and age_max is not None and age_min > age_max:
+        raise ValueError(
+            f"Product {product.code!r}: age_min must not exceed age_max"
+        )
+
+
 class AdvisorRankingService:
     """Детерминированно фильтрует, оценивает и выбирает TOP продуктов."""
 
@@ -207,6 +246,7 @@ class AdvisorRankingService:
         *,
         products: list[AdvisorProductFacts],
         selected_client_type: AdvisorSelectedClientType,
+        client_profile: AdvisorClientProfile | None = None,
     ) -> AdvisorRankingResult:
         """Выполняет полный цикл фильтрации и ранжирования.
 
@@ -218,20 +258,33 @@ class AdvisorRankingService:
         Аргументы:
             products: Проверенные факты о продуктах-кандидатах.
             selected_client_type: Проверенный единственный тип клиента.
+            client_profile: Текущий профиль для прямых продуктовых ограничений.
 
         Возвращает:
             Полный результат с кандидатами, исключениями, TOP и объяснениями.
 
         Исключения:
-            ValueError: Если данные выбранного типа нарушают контракт.
+            ValueError: Если данные выбранного типа нарушают контракт или возрастные
+                границы продукта имеют недопустимое значение либо порядок.
         """
         primary_client_type = selected_client_type.definition
+        age_field = (client_profile or AdvisorClientProfile()).age
+        client_age = (
+            age_field.value
+            if age_field is not None and age_field.explicit
+            else None
+        )
 
         excluded: list[AdvisorExclusion] = []
         accepted: list[AdvisorRankedProduct] = []
 
         for product in products:
-            hard_exclusions = self._hard_exclusions(product, primary_client_type)
+            validate_product_age_bounds(product)
+            hard_exclusions = self._hard_exclusions(
+                product,
+                primary_client_type,
+                client_age=client_age,
+            )
             if hard_exclusions:
                 excluded.extend(hard_exclusions)
                 continue
@@ -265,6 +318,7 @@ class AdvisorRankingService:
 
         return AdvisorRankingResult(
             primary_client_type=primary_client_type.profile_name,
+            client_age=client_age,
             match_evidence=tuple(selected_client_type.evidence),
             accepted_candidates=tuple(accepted),
             excluded_candidates=tuple(excluded),
@@ -277,6 +331,8 @@ class AdvisorRankingService:
         self,
         product: AdvisorProductFacts,
         client_type: AdvisorClientTypeDefinition,
+        *,
+        client_age: int | None,
     ) -> list[AdvisorExclusion]:
         """Возвращает все жесткие причины исключения одного продукта.
 
@@ -297,6 +353,41 @@ class AdvisorRankingService:
                     actual_value=product.is_active,
                 )
             )
+        if client_age is not None:
+            age_min = _product_age_bound(product, "age_min")
+            age_max = _product_age_bound(product, "age_max")
+            if age_min is not None and Decimal(client_age) < age_min:
+                exclusions.append(
+                    AdvisorExclusion(
+                        product_code=product.code,
+                        product_name=product.name,
+                        product_status=product.is_active,
+                        code=AGE_BELOW_MINIMUM,
+                        reason=(
+                            f"Client age {client_age} is below product minimum age "
+                            f"{age_min}."
+                        ),
+                        product_column="age_min",
+                        expected_values=(f"client_age >= {age_min}",),
+                        actual_value=client_age,
+                    )
+                )
+            if age_max is not None and Decimal(client_age) > age_max:
+                exclusions.append(
+                    AdvisorExclusion(
+                        product_code=product.code,
+                        product_name=product.name,
+                        product_status=product.is_active,
+                        code=AGE_ABOVE_MAXIMUM,
+                        reason=(
+                            f"Client age {client_age} is above product maximum age "
+                            f"{age_max}."
+                        ),
+                        product_column="age_max",
+                        expected_values=(f"client_age <= {age_max}",),
+                        actual_value=client_age,
+                    )
+                )
         for rule in client_type.required_properties:
             if not _matches(product, rule):
                 exclusions.append(

@@ -426,7 +426,9 @@ def test_normalize_client_types_adds_stable_codes_and_removes_description_row(mo
 
     result = service._normalize_client_types_dataframe(source)
 
+    assert len(columns) == 12
     assert list(result.columns) == ["client_type_code", *columns]
+    assert len(result.columns) == 13
     assert result["client_type_code"].tolist() == ["CT-001", "CT-002"]
     assert result["profile_name"].tolist() == ["Консервативный", "Умеренный"]
 

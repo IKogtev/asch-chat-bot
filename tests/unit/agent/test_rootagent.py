@@ -323,12 +323,18 @@ def _advisor_candidate_content_payload():
     return {
         "mode": "candidates",
         "profile_patch": {
-            "goal": {
+            "client_goal": {
                 "value": "Сохранение капитала",
                 "source_turn": "turn-1",
                 "updated_at": "2026-09-01T00:00:00Z",
                 "origin": "explicit",
-            }
+            },
+            "age": {
+                "value": 45,
+                "source_turn": "turn-1",
+                "updated_at": "2026-09-01T00:00:00Z",
+                "origin": "explicit",
+            },
         },
         "selected_client_type": {
             "definition": {
@@ -376,7 +382,7 @@ def _advisor_recommendation_context():
         },
     ]
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "profile": {},
         "primary_client_type": "Консервативный",
         "displayed_products": products,
@@ -411,6 +417,29 @@ def test_reset_turn_state_clears_advisor_intermediate_keys_only() -> None:
     assert ctx.session.state == {
         rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: persistent
     }
+
+
+@pytest.mark.unit
+def test_advisor_profile_ignores_incompatible_persisted_schema() -> None:
+    ctx = _make_ctx(
+        session_state={
+            rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY: {
+                "schema_version": 3,
+                "profile": {
+                    "client_goal": {
+                        "value": "Сохранение капитала",
+                        "source_turn": "old-turn",
+                        "updated_at": "2026-09-01T00:00:00Z",
+                        "origin": "explicit",
+                    }
+                },
+            }
+        }
+    )
+
+    profile = rootagent_module.RootAgent._advisor_profile_from_context(ctx)
+
+    assert all(value is None for value in profile.model_dump().values())
 
 
 @pytest.mark.unit
@@ -461,6 +490,7 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
 
         def rank(self, **kwargs):
             calls.append("rank")
+            assert kwargs["client_profile"].age.value == 45
             return ranking
 
     def validate_selection(selection, **kwargs):
@@ -512,9 +542,10 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
     assert calls == ["validate", "rank", "format"]
     assert ctx.session.state["_root_final_text"] == "Проверенная рекомендация."
     stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
-    assert stored["schema_version"] == 2
+    assert stored["schema_version"] == 4
     assert stored["selected_client_type"]["definition"]["profile_name"] == "Консервативный"
-    assert stored["profile"]["goal"]["value"] == "Сохранение капитала"
+    assert stored["profile"]["client_goal"]["value"] == "Сохранение капитала"
+    assert stored["profile"]["age"]["value"] == 45
     assert stored["primary_client_type"] == "Консервативный"
     assert stored["top_products"][0]["product"]["code"] == "2832"
     assert stored["displayed_products"] == [
@@ -534,17 +565,17 @@ async def test_handle_advisor_validates_ranks_formats_and_persists_context(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_handle_advisor_replaces_explicit_term_in_followup_scenario() -> None:
+async def test_handle_advisor_replaces_explicit_horizon_in_followup_scenario() -> None:
     previous = _advisor_recommendation_context()
     previous["profile"] = {
-        "goal": {
+        "client_goal": {
             "value": "Максимальная доходность",
             "source_turn": "turn-1",
             "updated_at": "2026-09-01T00:00:00Z",
             "origin": "explicit",
         },
-        "term_months": {
-            "value": 24,
+        "investment_horizon": {
+            "value": "2 года",
             "source_turn": "turn-1",
             "updated_at": "2026-09-01T00:00:00Z",
             "origin": "explicit",
@@ -553,8 +584,8 @@ async def test_handle_advisor_replaces_explicit_term_in_followup_scenario() -> N
     content_payload = {
         "mode": "no_data",
         "profile_patch": {
-            "term_months": {
-                "value": 60,
+            "investment_horizon": {
+                "value": "5 лет",
                 "source_turn": "turn-2",
                 "updated_at": "2026-09-01T00:01:00Z",
                 "origin": "explicit",
@@ -597,8 +628,8 @@ async def test_handle_advisor_replaces_explicit_term_in_followup_scenario() -> N
         pass
 
     stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
-    assert stored["profile"]["goal"]["value"] == "Максимальная доходность"
-    assert stored["profile"]["term_months"]["value"] == 60
+    assert stored["profile"]["client_goal"]["value"] == "Максимальная доходность"
+    assert stored["profile"]["investment_horizon"]["value"] == "5 лет"
     assert ctx.session.state["_root_final_text"] == (
         "Нет типа клиента для всех ограничений."
     )
@@ -838,13 +869,13 @@ async def test_handle_advisor_resets_previous_profile_for_new_client() -> None:
         mode="needs_clarification",
         profile_patch={},
         selected_client_type=None,
-        missing_fields=["goal"],
+        missing_fields=["client_goal"],
         clarification_question="Какова финансовая цель нового клиента?",
         products=[],
     )
     previous = _advisor_recommendation_context()
     previous["profile"] = {
-        "goal": {
+        "client_goal": {
             "value": "Сохранение капитала",
             "source_turn": "old-turn",
             "updated_at": "2026-09-01T00:00:00Z",
@@ -969,7 +1000,7 @@ async def test_handle_advisor_returns_health_request_goal_clarification(
         mode="needs_clarification",
         profile_patch={},
         selected_client_type=None,
-        missing_fields=["goal"],
+        missing_fields=["client_goal"],
         clarification_question="Какова финансовая цель клиента?",
         products=[],
     )
@@ -1002,7 +1033,7 @@ async def test_handle_advisor_returns_health_request_goal_clarification(
     assert calls == []
     assert ctx.session.state["_root_final_text"] == "Какова финансовая цель клиента?"
     stored = ctx.session.state[rootagent_module.ADVISOR_DIALOG_CONTEXT_STATE_KEY]
-    assert stored["missing_fields"] == ["goal"]
+    assert stored["missing_fields"] == ["client_goal"]
     assert stored["candidate_products"] == []
     assert stored["top_products"] == []
 

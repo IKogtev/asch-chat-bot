@@ -48,7 +48,7 @@ def _definitions():
 def _profile() -> AdvisorClientProfile:
     """Создает минимальный явный профиль для доказательства выбора типа."""
     return AdvisorClientProfile(
-        goal=AdvisorProfileField(
+        client_goal=AdvisorProfileField(
             value="Сохранение капитала",
             source_turn="turn-1",
             updated_at=NOW,
@@ -66,7 +66,7 @@ def _selected(*, profile_name: str = "Консервативный", confidence:
         confidence=confidence,
         evidence=(
             AdvisorClientTypeEvidence(
-                client_field="goal",
+                client_field="client_goal",
                 client_value="Сохранение капитала",
                 table_field="client_goal",
                 table_value=row.attributes["client_goal"],
@@ -86,7 +86,8 @@ def _context() -> dict[str, object]:
             (
                 "SELECT code, name, is_active, capital_loss_risk, "
                 "product_risk_level, income, currency, product_type, term, "
-                "liquidity, contribution_type, payout_type FROM products "
+                "liquidity, contribution_type, payout_type, age_min, age_max "
+                "FROM products "
                 "WHERE is_active = 'Действующий'"
             ),
         ],
@@ -215,7 +216,7 @@ def test_advisor_content_contract_rejects_invalid_confidence() -> None:
 @pytest.mark.parametrize("field", ["source_turn", "updated_at"])
 def test_advisor_content_contract_rejects_fabricated_provenance(field: str) -> None:
     payload = _candidate_payload()
-    payload["profile_patch"]["goal"][field] = (
+    payload["profile_patch"]["client_goal"][field] = (
         "another-turn" if field == "source_turn" else "2026-08-30T00:00:00Z"
     )
 
@@ -226,8 +227,8 @@ def test_advisor_content_contract_rejects_fabricated_provenance(field: str) -> N
 @pytest.mark.unit
 def test_advisor_content_contract_rejects_logged_invalid_rule_and_provenance_shape() -> None:
     payload = _candidate_payload()
-    payload["profile_patch"]["goal"]["source_turn"] = None
-    payload["profile_patch"]["goal"]["updated_at"] = None
+    payload["profile_patch"]["client_goal"]["source_turn"] = None
+    payload["profile_patch"]["client_goal"]["updated_at"] = None
     payload["selected_client_type"]["definition"]["required_properties"] = [
         "Статус: Действующий"
     ]
@@ -238,18 +239,18 @@ def test_advisor_content_contract_rejects_logged_invalid_rule_and_provenance_sha
 
 
 @pytest.mark.unit
-def test_advisor_content_contract_rejects_age_with_units() -> None:
+def test_advisor_content_contract_rejects_min_amount_with_units() -> None:
     payload = _candidate_payload()
     payload["profile_patch"] = {
-        "client_age": {
-            "value": "45 лет",
+        "min_amount": {
+            "value": "1 600 000 рублей",
             "source_turn": "turn-1",
             "updated_at": NOW.isoformat(),
             "origin": "explicit",
         }
     }
 
-    with pytest.raises(ValueError, match="valid integer"):
+    with pytest.raises(ValueError, match="valid decimal"):
         validate_advisor_content_result(payload, _context())
 
 
@@ -259,7 +260,7 @@ def test_advisor_content_contract_requires_one_valid_clarification() -> None:
     payload.update(
         mode="needs_clarification",
         selected_client_type=None,
-        missing_fields=["term_months"],
+        missing_fields=["investment_horizon"],
         clarification_question="На какой срок планируется вложение? Когда?",
         products=[],
     )
@@ -269,23 +270,23 @@ def test_advisor_content_contract_requires_one_valid_clarification() -> None:
 
 
 @pytest.mark.unit
-def test_advisor_content_contract_uses_client_profile_names_for_missing_fields() -> None:
+def test_advisor_content_contract_uses_workbook_profile_names_for_missing_fields() -> None:
     payload = _candidate_payload()
     payload.update(
         mode="needs_clarification",
         profile_patch={},
         selected_client_type=None,
-        missing_fields=["goal"],
+        missing_fields=["client_goal"],
         clarification_question="Какова финансовая цель клиента?",
         products=[],
     )
 
     result = validate_advisor_content_result(payload, _context())
 
-    assert result["missing_fields"] == ["goal"]
+    assert result["missing_fields"] == ["client_goal"]
 
-    payload["missing_fields"] = ["client_goal"]
-    with pytest.raises(ValueError, match="Unknown missing client field: 'client_goal'"):
+    payload["missing_fields"] = ["goal"]
+    with pytest.raises(ValueError, match="Unknown missing client field: 'goal'"):
         validate_advisor_content_result(payload, _context())
 
 
@@ -294,21 +295,21 @@ def test_advisor_content_contract_rejects_supplied_field_as_missing() -> None:
     payload = {
         "mode": "needs_clarification",
         "profile_patch": {
-            "goal": {
+            "client_goal": {
                 "value": "Максимальная доходность",
                 "source_turn": "turn-1",
                 "updated_at": NOW.isoformat(),
                 "origin": "explicit",
             },
-            "term_months": {
-                "value": 24,
+            "investment_horizon": {
+                "value": "2 года",
                 "source_turn": "turn-1",
                 "updated_at": NOW.isoformat(),
                 "origin": "explicit",
             },
         },
         "selected_client_type": None,
-        "missing_fields": ["term_months", "capital_loss_tolerance"],
+        "missing_fields": ["investment_horizon", "capital_loss_tolerance"],
         "clarification_question": (
             "Для клиента важнее максимальная доходность или сохранение капитала?"
         ),
@@ -318,7 +319,7 @@ def test_advisor_content_contract_rejects_supplied_field_as_missing() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Client field 'term_months' is supplied and cannot be missing",
+        match="Client field 'investment_horizon' is supplied and cannot be missing",
     ):
         validate_advisor_content_result(payload, _context())
 
@@ -328,14 +329,14 @@ def test_advisor_content_contract_accepts_no_matching_client_type() -> None:
     payload = {
         "mode": "no_data",
         "profile_patch": {
-            "goal": {
+            "client_goal": {
                 "value": "Максимальная доходность",
                 "source_turn": "turn-1",
                 "updated_at": NOW.isoformat(),
                 "origin": "explicit",
             },
-            "term_months": {
-                "value": 24,
+            "investment_horizon": {
+                "value": "2 года",
                 "source_turn": "turn-1",
                 "updated_at": NOW.isoformat(),
                 "origin": "explicit",
@@ -361,8 +362,8 @@ def test_advisor_content_contract_accepts_current_explicit_term_correction() -> 
     context = {
         **_context(),
         "advisor_client_profile": AdvisorClientProfile(
-            term_months=AdvisorProfileField(
-                value=24,
+            investment_horizon=AdvisorProfileField(
+                value="2 года",
                 source_turn="turn-1",
                 updated_at=NOW,
                 origin="explicit",
@@ -374,8 +375,8 @@ def test_advisor_content_contract_accepts_current_explicit_term_correction() -> 
     payload = {
         "mode": "no_data",
         "profile_patch": {
-            "term_months": {
-                "value": 60,
+            "investment_horizon": {
+                "value": "5 лет",
                 "source_turn": "turn-2",
                 "updated_at": "2026-09-01T00:01:00+00:00",
                 "origin": "explicit",
@@ -390,7 +391,7 @@ def test_advisor_content_contract_accepts_current_explicit_term_correction() -> 
 
     result = validate_advisor_content_result(payload, context)
 
-    assert result["profile_patch"]["term_months"]["value"] == 60
+    assert result["profile_patch"]["investment_horizon"]["value"] == "5 лет"
 
 
 @pytest.mark.unit
@@ -398,8 +399,8 @@ def test_advisor_content_contract_rejects_stale_explicit_term_correction() -> No
     context = {
         **_context(),
         "advisor_client_profile": AdvisorClientProfile(
-            term_months=AdvisorProfileField(
-                value=24,
+            investment_horizon=AdvisorProfileField(
+                value="2 года",
                 source_turn="turn-1",
                 updated_at=NOW,
                 origin="explicit",
@@ -411,8 +412,8 @@ def test_advisor_content_contract_rejects_stale_explicit_term_correction() -> No
     payload = {
         "mode": "no_data",
         "profile_patch": {
-            "term_months": {
-                "value": 60,
+            "investment_horizon": {
+                "value": "5 лет",
                 "source_turn": "turn-1",
                 "updated_at": NOW.isoformat(),
                 "origin": "explicit",
@@ -489,6 +490,79 @@ def test_advisor_content_contract_rejects_inactive_candidates() -> None:
     payload["products"][0]["is_active"] = "Архивный"
 
     with pytest.raises(ValueError, match="only active products"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_requires_age_bounds_for_explicit_age() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["age"] = {
+        "value": 45,
+        "source_turn": "turn-1",
+        "updated_at": NOW.isoformat(),
+        "origin": "explicit",
+    }
+    payload["products"][0]["attributes"].update(
+        {"age_min": 18, "age_max": 75.4}
+    )
+
+    result = validate_advisor_content_result(payload, _context())
+
+    assert result["profile_patch"]["age"]["value"] == 45
+    assert result["products"][0]["attributes"]["age_max"] == 75.4
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_missing_age_bound() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["age"] = {
+        "value": 45,
+        "source_turn": "turn-1",
+        "updated_at": NOW.isoformat(),
+        "origin": "explicit",
+    }
+    payload["products"][0]["attributes"]["age_min"] = 18
+
+    with pytest.raises(ValueError, match="missing rule attributes.*age_max"):
+        validate_advisor_content_result(payload, _context())
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_requires_age_bounds_in_products_sql() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["age"] = {
+        "value": 45,
+        "source_turn": "turn-1",
+        "updated_at": NOW.isoformat(),
+        "origin": "explicit",
+    }
+    payload["products"][0]["attributes"].update(
+        {"age_min": 18, "age_max": 75.4}
+    )
+    context = _context()
+    context["_advisor_executed_sql"][1] = (
+        "SELECT code, name, is_active FROM products "
+        "WHERE is_active = 'Действующий'"
+    )
+
+    with pytest.raises(ValueError, match="SQL is missing required columns"):
+        validate_advisor_content_result(payload, context)
+
+
+@pytest.mark.unit
+def test_advisor_content_contract_rejects_invalid_age_bounds() -> None:
+    payload = _candidate_payload()
+    payload["profile_patch"]["age"] = {
+        "value": 45,
+        "source_turn": "turn-1",
+        "updated_at": NOW.isoformat(),
+        "origin": "explicit",
+    }
+    payload["products"][0]["attributes"].update(
+        {"age_min": 76, "age_max": 18}
+    )
+
+    with pytest.raises(ValueError, match="age_min must not exceed age_max"):
         validate_advisor_content_result(payload, _context())
 
 
@@ -695,7 +769,9 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "dc_analytics" in content_prompt
     assert '"product_column"' in content_prompt
     assert '"expected_values"' in content_prompt
-    assert "JSON-число от 0 до 120" in content_prompt
+    assert "неотрицательное JSON-число" in content_prompt
+    assert '"notes": "значение из SQL"' not in content_prompt
+    assert "Do not include notes" in advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
     assert "{advisor_profile_field_names_json}" in content_prompt
     assert "{advisor_profile_field_names_json}" in (
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
@@ -728,6 +804,8 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "никогда не упоминай и не показывай их пользователю" in format_prompt
     assert "не может превышать настроенный `TOP_N`" in format_prompt
     assert "code, name, is_active, commission" in content_prompt
+    assert "age_min" in content_prompt
+    assert "age_max" in content_prompt
     assert '"commission": "значение из SQL"' in content_prompt
     assert "<номер списка>. <code> <name> (КВ <commission>%)" in format_prompt
     assert "1. NNNN Юнит Линк Двойной доход (КВ K1%)" in format_prompt
@@ -738,6 +816,9 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
     )
     assert "Validation checks every executed SQL statement" in (
+        advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
+    )
+    assert "age is a direct product eligibility constraint" in (
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
     )
     assert "<list number>. <code> <name> (КВ <attributes.commission>%)" in (

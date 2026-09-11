@@ -17,7 +17,12 @@ from tests.unit.agent._advisor_workbook import (
     client_type_workbook_rows,
     load_client_type_definitions,
 )
-from utils.client_types import CLIENT_TYPE_CODE_COLUMN, CLIENT_TYPES_DESCRIPTION_ROW_LABEL
+from utils.client_types import (
+    CLIENT_TYPE_CODE_COLUMN,
+    CLIENT_TYPES_DESCRIPTION_ROW_LABEL,
+    CLIENT_TYPES_EXPECTED_COLUMNS,
+    CLIENT_TYPES_PROFILE_COLUMNS,
+)
 
 
 TABLE_PATH = (
@@ -40,7 +45,7 @@ def definitions() -> list[AdvisorClientTypeDefinition]:
 
 def selected_payload(*, confidence: float = 0.9, name: str = "Консервативный"):
     profile = AdvisorClientProfile(
-        goal=AdvisorProfileField(
+        client_goal=AdvisorProfileField(
             value="Сохранение капитала",
             source_turn="turn-1",
             updated_at=NOW,
@@ -53,7 +58,7 @@ def selected_payload(*, confidence: float = 0.9, name: str = "Консерват
         confidence=confidence,
         evidence=(
             AdvisorClientTypeEvidence(
-                client_field="goal",
+                client_field="client_goal",
                 client_value="Сохранение капитала",
                 table_field="client_goal",
                 table_value=client_type.attributes["client_goal"],
@@ -66,8 +71,10 @@ def selected_payload(*, confidence: float = 0.9, name: str = "Консерват
 
 @pytest.mark.unit
 def test_real_workbook_rows_validate_and_parse_all_four_rule_columns() -> None:
+    rows = workbook_rows()
     client_types = definitions()
 
+    assert list(rows[0]) == [CLIENT_TYPE_CODE_COLUMN, *CLIENT_TYPES_EXPECTED_COLUMNS]
     assert [row.client_type_code for row in client_types] == [
         "CT-001",
         "CT-002",
@@ -82,6 +89,8 @@ def test_real_workbook_rows_validate_and_parse_all_four_rule_columns() -> None:
     assert all(row.preferred_properties for row in client_types)
     assert all(row.acceptable_compromises for row in client_types)
     assert all(row.contraindications for row in client_types)
+    assert all(tuple(row.attributes) == CLIENT_TYPES_PROFILE_COLUMNS for row in client_types)
+    assert all("notes" not in row.attributes for row in client_types)
 
 
 @pytest.mark.unit
@@ -116,7 +125,7 @@ def test_selection_rejects_description_row() -> None:
 def test_selection_rejects_incomplete_selected_definition() -> None:
     profile, selected = selected_payload()
     attributes = dict(selected.definition.attributes)
-    del attributes["notes"]
+    del attributes["min_amount"]
     invalid_definition = selected.definition.model_copy(
         update={"attributes": attributes}
     )
@@ -153,8 +162,8 @@ def test_selection_rejects_evidence_with_an_unmapped_table_field() -> None:
     )
     invalid_evidence = selected.evidence[0].model_copy(
         update={
-            "table_field": "currency",
-            "table_value": client_type.attributes["currency"],
+            "table_field": "min_amount",
+            "table_value": client_type.attributes["min_amount"],
         }
     )
     invalid_selected = selected.model_copy(update={"evidence": (invalid_evidence,)})
@@ -162,6 +171,31 @@ def test_selection_rejects_evidence_with_an_unmapped_table_field() -> None:
     with pytest.raises(ValueError, match="cannot support"):
         validate_selected_client_type(
             invalid_selected,
+            client_profile=profile,
+            minimum_confidence=0.75,
+        )
+
+
+@pytest.mark.unit
+def test_selection_rejects_age_as_client_type_evidence() -> None:
+    profile, selected = selected_payload()
+    profile.age = AdvisorProfileField(
+        value=45,
+        source_turn="turn-1",
+        updated_at=NOW,
+        origin="explicit",
+    )
+    invalid_evidence = AdvisorClientTypeEvidence(
+        client_field="age",
+        client_value=45,
+        table_field="client_goal",
+        table_value=selected.definition.attributes["client_goal"],
+        source_turn="turn-1",
+    )
+
+    with pytest.raises(ValueError, match="has no Client Types mapping"):
+        validate_selected_client_type(
+            selected.model_copy(update={"evidence": (invalid_evidence,)}),
             client_profile=profile,
             minimum_confidence=0.75,
         )

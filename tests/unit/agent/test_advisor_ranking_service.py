@@ -7,6 +7,8 @@ import pytest
 
 from agent.advisor_ranking_service import (
     ACTIVE_PRODUCT_STATUS,
+    AGE_ABOVE_MAXIMUM,
+    AGE_BELOW_MINIMUM,
     BELOW_MINIMUM_SCORE,
     CONTRAINDICATED_PROPERTY,
     INACTIVE_PRODUCT,
@@ -15,6 +17,7 @@ from agent.advisor_ranking_service import (
     AdvisorRankingService,
     AdvisorScoringPolicy,
 )
+from agent.advisor_profile import AdvisorClientProfile, AdvisorProfileField
 from agent.advisor_profile_matcher import (
     AdvisorClientTypeDefinition,
     AdvisorSelectedClientType,
@@ -33,6 +36,7 @@ PRODUCTS_PATH = (
     / "products_active.xlsx"
 )
 CLIENT_TYPES_PATH = PRODUCTS_PATH.with_name("typical_client_profiles_active.xlsx")
+NOW = "2026-09-10T00:00:00Z"
 
 
 def definitions() -> list[AdvisorClientTypeDefinition]:
@@ -87,6 +91,17 @@ def moderate_product_attributes() -> dict[str, object]:
         "contribution_type": "Единоразово + возможны пополнения",
         "payout_type": "Ежеквартальные выплаты",
     }
+
+
+def profile_with_age(age: int, *, origin: str = "explicit") -> AdvisorClientProfile:
+    return AdvisorClientProfile(
+        age=AdvisorProfileField(
+            value=age,
+            source_turn="turn-age",
+            updated_at=NOW,
+            origin=origin,
+        )
+    )
 
 
 @pytest.mark.unit
@@ -188,6 +203,107 @@ def test_inactive_status_product_is_excluded_before_ranking(
         item.product_code == "INACTIVE" and item.code == INACTIVE_PRODUCT
         for item in result.excluded_candidates
     )
+
+
+@pytest.mark.unit
+def test_explicit_client_age_filters_product_age_bounds() -> None:
+    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
+    attributes = moderate_product_attributes()
+
+    result = AdvisorRankingService(policy(diversity_max_per_family=4)).rank(
+        products=[
+            product("TOO-YOUNG", age_min=50, age_max=75.4, **attributes),
+            product("ELIGIBLE", age_min=3, age_max=60.4, **attributes),
+            product("TOO-OLD", age_min=18, age_max=40.4, **attributes),
+            product("UNBOUNDED", age_min=None, age_max=None, **attributes),
+        ],
+        selected_client_type=selected(moderate),
+        client_profile=profile_with_age(45),
+    )
+
+    assert [item.product.code for item in result.top_products] == [
+        "ELIGIBLE",
+        "UNBOUNDED",
+    ]
+    assert result.client_age == 45
+    exclusions = {item.product_code: item.code for item in result.excluded_candidates}
+    assert exclusions == {
+        "TOO-YOUNG": AGE_BELOW_MINIMUM,
+        "TOO-OLD": AGE_ABOVE_MAXIMUM,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("attributes", "message"),
+    [
+        ({"age_min": "unknown"}, "age_min must be numeric or null"),
+        ({"age_max": 121}, "age_max must be between 0 and 120"),
+        (
+            {"age_min": 76, "age_max": 18},
+            "age_min must not exceed age_max",
+        ),
+    ],
+)
+def test_invalid_product_age_bounds_identify_product(
+    attributes: dict[str, object],
+    message: str,
+) -> None:
+    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
+
+    with pytest.raises(ValueError, match=rf"Product 'INVALID-AGE': {message}"):
+        AdvisorRankingService(policy()).rank(
+            products=[
+                product(
+                    "INVALID-AGE",
+                    **moderate_product_attributes(),
+                    **attributes,
+                )
+            ],
+            selected_client_type=selected(moderate),
+        )
+
+
+@pytest.mark.unit
+def test_client_below_product_minimum_age_is_excluded() -> None:
+    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
+
+    result = AdvisorRankingService(policy()).rank(
+        products=[
+            product(
+                "P1",
+                age_min=18,
+                age_max=75.4,
+                **moderate_product_attributes(),
+            )
+        ],
+        selected_client_type=selected(moderate),
+        client_profile=profile_with_age(17),
+    )
+
+    assert not result.top_products
+    assert result.excluded_candidates[0].code == AGE_BELOW_MINIMUM
+
+
+@pytest.mark.unit
+def test_inferred_age_does_not_apply_hard_product_filter() -> None:
+    moderate = next(row for row in definitions() if row.profile_name == "Умеренный")
+
+    result = AdvisorRankingService(policy()).rank(
+        products=[
+            product(
+                "P1",
+                age_min=18,
+                age_max=40.4,
+                **moderate_product_attributes(),
+            )
+        ],
+        selected_client_type=selected(moderate),
+        client_profile=profile_with_age(45, origin="inferred"),
+    )
+
+    assert [item.product.code for item in result.top_products] == ["P1"]
+    assert result.client_age is None
 
 
 @pytest.mark.unit

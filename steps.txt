@@ -983,4 +983,11 @@ update prompt for useful output format to this template (throughnumbered list of
 - обновить код для новой структуры таблицы типов клиентов
 - протестировать, сделать мерж в main
 - передать на тестирование
+===========
+I done point 1, use it. Do not review green columns (products properties), they are correct.
+implement points 2, 3, 4. But reconstruct profile fields to correspond into workbook columns.
+Implement 5, but do not use "notes" column
+Implement 6-8
+==========
+add to the client profile field age and add constraint for this field "age" with product filttering age_min and age_max
 

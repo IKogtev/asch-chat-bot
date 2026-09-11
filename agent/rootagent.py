@@ -60,7 +60,7 @@ OWASP_CONTEXT_WINDOW = 6
 OWASP_HISTORY_STATE_KEY = "_owasp_recent_messages"
 PRODUCT_DIALOG_CONTEXT_STATE_KEY = "_product_dialog_context"
 ADVISOR_DIALOG_CONTEXT_STATE_KEY = "advisor_dialog_context"
-ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION = 2
+ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION = 4
 PRODUCT_FILTER_FOLLOWUP_QUESTION = (
     "Могу показать карточку продукта или скачать комплект. Какой продукт тебя интересует ?"
 )
@@ -685,7 +685,7 @@ class RootAgent(BaseAgent):
         source_mode: str | None = None,
     ) -> None:
         """
-        Сохраняет last_product и selected_product из результата продуктового агента.
+        Сохраняет `last_product` и `selected_product` из результата продуктового агента.
         """
         resolved = product_result.get("resolved_product") or {}
         code = str(resolved.get("code") or "").strip()
@@ -728,8 +728,8 @@ class RootAgent(BaseAgent):
         smalltalk_result: Dict[str, Any],
     ) -> None:
         """
-        Если smalltalk_agent выбрал продукт, сохраняем его в last_product
-        и в _product_dialog_context.selected_product.
+        Если `smalltalk_agent` выбрал продукт, сохраняет его в `last_product`
+        и в `_product_dialog_context.selected_product`.
         """
         selected = smalltalk_result.get("selected_product")
         if not isinstance(selected, dict):
@@ -2686,7 +2686,7 @@ class RootAgent(BaseAgent):
         context: Dict[str, Any],
         payload: Dict[str, Any],
     ) -> None:
-        """Fill missing fallback context without replacing validated state."""
+        """Заполняет недостающий резервный контекст без замены проверенного состояния."""
         for key in ("mode", "resolved_product", "clarification_options", "products"):
             if not context.get(key) and payload.get(key):
                 context[key] = payload[key]
@@ -2742,7 +2742,7 @@ class RootAgent(BaseAgent):
 
     async def _prepare_pipeline_context(self, ctx: Any) -> PipelineContext:
         """
-        Извлекает и нормализует данные из сессии и текущего вызова ctx.
+        Извлекает и нормализует данные из сессии и текущего вызова `ctx`.
         Инициализирует базовое состояние для дальнейшей обработки.
         """
         user_text = self._extract_user_text(ctx)
@@ -3362,7 +3362,7 @@ class RootAgent(BaseAgent):
         intent: str,
     ) -> AsyncGenerator[Event, None]:
         """
-        Запуск smalltalk_agent для приветствий, прощаний и светской беседы.
+        Запускает `smalltalk_agent` для приветствий, прощаний и светской беседы.
         """
         logger.info(
             "smalltalk route: user_message=%s intent=%s",
@@ -3497,7 +3497,10 @@ class RootAgent(BaseAgent):
     def _advisor_profile_from_context(ctx: InvocationContext) -> AdvisorClientProfile:
         """Восстанавливает типизированный профиль из постоянного advisor-контекста."""
         value = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY)
-        if not isinstance(value, dict):
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION
+        ):
             return AdvisorClientProfile()
         return AdvisorClientProfile.model_validate(value.get("profile") or {})
 
@@ -3616,6 +3619,13 @@ class RootAgent(BaseAgent):
                     "exclusions": [],
                     "selected_product": None,
                 }
+        advisor_context = ctx.session.state.get(ADVISOR_DIALOG_CONTEXT_STATE_KEY)
+        if (
+            isinstance(advisor_context, dict)
+            and advisor_context.get("schema_version")
+            != ADVISOR_DIALOG_CONTEXT_SCHEMA_VERSION
+        ):
+            ctx.session.state.pop(ADVISOR_DIALOG_CONTEXT_STATE_KEY, None)
         current_profile = self._advisor_profile_from_context(ctx)
         effective_query = str(search_query or user_message).strip()
         ctx.session.state["advisor_search_query"] = effective_query
@@ -3712,11 +3722,13 @@ class RootAgent(BaseAgent):
         ranking = self.advisor_ranking_service.rank(
             products=[product.to_product_facts() for product in content.products],
             selected_client_type=selected,
+            client_profile=profile,
         )
         ctx.session.state["advisor_ranking_result"] = ranking.model_dump(mode="json")
         format_payload = {
             "mode": "recommendation",
             "primary_client_type": ranking.primary_client_type,
+            "client_age": ranking.client_age,
             "match_evidence": [
                 item.model_dump(mode="json") for item in ranking.match_evidence
             ],

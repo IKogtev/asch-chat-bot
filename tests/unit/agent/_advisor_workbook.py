@@ -6,7 +6,7 @@ from xml.etree import ElementTree
 from zipfile import ZipFile
 
 from agent.advisor_profile_matcher import AdvisorClientTypeDefinition
-from utils.client_types import CLIENT_TYPE_CODE_COLUMN, CLIENT_TYPES_EXPECTED_COLUMNS
+from utils.client_types import CLIENT_TYPE_CODE_COLUMN
 
 
 SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -85,10 +85,7 @@ def client_type_workbook_rows(path: Path) -> list[dict[str, object]]:
         result.append(
             {
                 CLIENT_TYPE_CODE_COLUMN: f"CT-{index:03d}",
-                **{
-                    column: row.get(column)
-                    for column in CLIENT_TYPES_EXPECTED_COLUMNS
-                },
+                **row,
             }
         )
     return result
