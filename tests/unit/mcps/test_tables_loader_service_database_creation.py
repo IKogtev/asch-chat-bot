@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+import warnings
 from datetime import date
 from pathlib import Path
 
@@ -197,11 +198,19 @@ def test_enrich_products_with_kit_folders_rebuilds_columns(monkeypatch, tmp_path
         def __len__(self):
             return len(self.rows)
 
+        def __getitem__(self, column):
+            class FakeSeries(list):
+                def astype(self, _dtype):
+                    return list(self)
+
+            return FakeSeries(row.get(column) for row in self.rows)
+
         def __setitem__(self, column, value):
             if column not in self.columns:
                 self.columns.append(column)
-            for row in self.rows:
-                row[column] = value
+            values = value if isinstance(value, list) else [value] * len(self.rows)
+            for row, item in zip(self.rows, values):
+                row[column] = item
 
         def iterrows(self):
             for idx, row in enumerate(self.rows):
@@ -579,7 +588,11 @@ class DateFakeDataFrame:
         return len(self.rows)
 
     def __getitem__(self, column):
-        return [row.get(column) for row in self.rows]
+        class DateFakeSeries(list):
+            def astype(self, _dtype):
+                return list(self)
+
+        return DateFakeSeries(row.get(column) for row in self.rows)
 
     def __setitem__(self, column, value):
         if column not in self.columns:
@@ -631,6 +644,36 @@ def test_enrich_products_infers_input_date_from_kit_files(monkeypatch, tmp_path)
     assert service.product_input_dates_from_table == 0
     assert service.product_input_dates_from_kits == 1
     assert service.product_input_dates_missing == 0
+
+
+@pytest.mark.unit
+def test_enrich_products_infers_input_date_without_incompatible_dtype_warning(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    module = _load_tables_loader_module(monkeypatch)
+    monkeypatch.setitem(sys.modules, "pandas", real_pandas)
+    module.pd = real_pandas
+    folder = tmp_path / "Fort Knox (2832)"
+    folder.mkdir()
+    (folder / "presenter 20.05.26.pdf").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("PRODUCT_KITS_ROOT", str(tmp_path))
+
+    service = module.TablesLoaderService("postgresql://u:p@host:5432/db", ".")
+    df = real_pandas.DataFrame(
+        {
+            "code": ["2832"],
+            "name": ["Fort Knox"],
+            "input_date": real_pandas.Series([float("nan")], dtype="float64"),
+        }
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        result = service._enrich_products_with_kit_folders(df)
+
+    assert result.loc[0, "input_date"] == real_pandas.Timestamp("2026-05-20")
+    assert real_pandas.api.types.is_datetime64_any_dtype(result["input_date"].dtype)
 
 
 @pytest.mark.unit

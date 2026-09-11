@@ -1119,6 +1119,7 @@ class TablesLoaderService:
             df[PRODUCT_INPUT_DATE_COLUMN] = ""
         elif input_date_column != PRODUCT_INPUT_DATE_COLUMN:
             df[PRODUCT_INPUT_DATE_COLUMN] = df[input_date_column]
+        df[PRODUCT_INPUT_DATE_COLUMN] = df[PRODUCT_INPUT_DATE_COLUMN].astype("object")
         df[PRODUCT_KIT_FOLDER_COLUMN] = ""
         df[PRODUCT_KIT_STATUS_COLUMN] = ""
 
