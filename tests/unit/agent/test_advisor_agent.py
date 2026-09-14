@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -22,7 +20,6 @@ from agent.advisor_ranking_service import (
 from agent.agents import advisor_content_agent, advisor_format_agent
 from agent.agents.advisor_content_agent import ADVISOR_TOOL_FILTER
 from agent.agents.advisor_contract import (
-    AdvisorContentResult,
     validate_advisor_content_result,
     validate_advisor_final_result,
 )
@@ -801,6 +798,14 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert '"client_type_selection"' not in content_prompt
     assert "исходный порядок `top_products`" in format_prompt
     assert "Запрещено добавлять, удалять, заменять или переставлять продукты" in format_prompt
+    assert "продукт с меньшим `score` может намеренно находиться" in format_prompt
+    assert "не разделяя, не классифицируя и не перегруппировывая продукты" in format_prompt
+    assert "Также в списке есть" not in format_prompt
+    assert "наиболее предпочтительные продукты" not in format_prompt
+    assert "products[i].code = top_products[i].product.code" in format_prompt
+    assert "строке списка с номером `i + 1`" in format_prompt
+    assert "сначала сформируй массив `products`" in format_prompt
+    assert "внутренне сравни упорядоченные тройки" in format_prompt
     assert "никогда не упоминай и не показывай их пользователю" in format_prompt
     assert "не может превышать настроенный `TOP_N`" in format_prompt
     assert "code, name, is_active, commission" in content_prompt
@@ -808,7 +813,8 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
     assert "age_max" in content_prompt
     assert '"commission": "значение из SQL"' in content_prompt
     assert "<номер списка>. <code> <name> (КВ <commission>%)" in format_prompt
-    assert "1. NNNN Юнит Линк Двойной доход (КВ K1%)" in format_prompt
+    assert "4. 8992 Чистый процент 1 год (КВ 1.0%)" in format_prompt
+    assert "5. 8914 Фиксированный доход 1 год (КВ 1.0%)" in format_prompt
     assert "code, name, is_active, commission" in (
         advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
     )
@@ -825,6 +831,18 @@ def test_advisor_agent_prompts_and_tool_allowlist_match_phase_2() -> None:
         advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
     )
     assert "cannot exceed the configured TOP_N" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+    assert "may intentionally place a lower-score product before" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+    assert "top_products[i].product.code" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+    assert "without dividing, classifying, or regrouping products" in (
+        advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
+    )
+    assert "internally compare the ordered (code, name, is_active) tuples" in (
         advisor_format_agent.ADVISOR_FORMAT_FALLBACK_PROMPT
     )
     assert (
@@ -852,7 +870,7 @@ def test_advisor_content_prompts_define_missing_field_conflict_behavior() -> Non
 
 
 @pytest.mark.unit
-def test_advisor_prompt_examples_match_content_schema() -> None:
+def test_advisor_content_prompts_enforce_profile_evidence_data_flow() -> None:
     prompt = (
         REPO_ROOT
         / "kb_storage"
@@ -860,27 +878,23 @@ def test_advisor_prompt_examples_match_content_schema() -> None:
         / "advisor_content"
         / "advisor_content_agent_prompt.md"
     ).read_text(encoding="utf-8")
-    examples = re.findall(
-        r"`(?:candidates|needs_clarification|no_data)`:\s*```json\s*(\{.*?\})\s*```",
-        prompt,
-        flags=re.DOTALL,
-    )
+    fallback = advisor_content_agent.ADVISOR_CONTENT_FALLBACK_PROMPT
 
-    assert len(examples) == 3
-    rendered_examples = [
-        item.replace("{advisor_source_turn}", "turn-1").replace(
-            "{advisor_updated_at}", NOW.isoformat()
-        )
-        for item in examples
-    ]
-    assert [
-        AdvisorContentResult.model_validate(json.loads(item)).mode
-        for item in rendered_examples
-    ] == [
-        "candidates",
-        "needs_clarification",
-        "no_data",
-    ]
+    assert "current_explicit_fields" in prompt
+    assert "saved_profile_fields" in prompt
+    assert "merged_profile_fields" in prompt
+    assert "каждый факт текущей реплики" in prompt
+    assert "клиент хочет большую доходность и готов идти на риск" in prompt
+    assert "profile_patch: {}` вместе с evidence" in prompt
+    assert "Финальная механическая проверка" in prompt
+    assert "```" not in prompt
+
+    assert "current_explicit_fields" in fallback
+    assert "merged_profile_fields" in fallback
+    assert "every current-message fact used for Client Type selection" in fallback
+    assert "клиент хочет большую доходность и готов идти на риск" in fallback
+    assert "Returning profile_patch={} while evidence uses" in fallback
+    assert "mechanical evidence check" in fallback
 
 
 @pytest.mark.unit

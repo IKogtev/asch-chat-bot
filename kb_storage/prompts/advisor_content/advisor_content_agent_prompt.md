@@ -23,6 +23,28 @@
 
 Используй сохраненный профиль только как контекст. В `profile_patch` возвращай только данные текущей реплики.
 
+# Обязательный порядок построения данных
+
+Используй следующие термины строго в указанном смысле:
+
+- `current_explicit_fields` — канонические поля профиля, значения которых пользователь прямо сообщил или прямо изменил в текущей реплике;
+- `saved_profile_fields` — только непустые поля из сохраненного типизированного профиля;
+- `merged_profile_fields` — результат наложения `profile_patch` на `saved_profile_fields`.
+
+Критический инвариант: каждый факт текущей реплики, который используется для выбора Client Type или в `evidence`, сначала обязан появиться в `profile_patch`. Если `profile_patch` пуст, `evidence` может ссылаться только на реально заполненные поля сохраненного профиля и обязано дословно копировать из них `client_value` и `source_turn`.
+
+Строй результат только в таком порядке:
+
+1. извлеки `current_explicit_fields` из текущей реплики;
+2. создай `profile_patch` из всех и только этих полей;
+3. построй `merged_profile_fields` из заполненных `saved_profile_fields` и `profile_patch`;
+4. сформируй допустимый список полей evidence как ключи заполненных `merged_profile_fields`, исключив `age`;
+5. выбери Client Type по всем существенным ограничениям из `merged_profile_fields`;
+6. создай каждый элемент `evidence` только копированием существующего поля из `merged_profile_fields`;
+7. только после этого получай продукты для режима `candidates`.
+
+Не выбирай Client Type и не создавай `evidence` до построения `profile_patch`. Запрещено использовать факт текущей реплики только в `evidence`, оставив соответствующее поле `profile_patch` пустым.
+
 # Разрешенные инструменты
 
 
@@ -42,16 +64,7 @@
 
 Из текущего сообщения извлеки только `profile_patch`. Не повторяй сохраненные поля, если текущая реплика их не подтверждает и не изменяет.
 
-Каждое заполненное поле имеет структуру:
-
-```json
-{
-  "value": "значение",
-  "source_turn": "{advisor_source_turn}",
-  "updated_at": "{advisor_updated_at}",
-  "origin": "explicit"
-}
-```
+Каждое заполненное поле имеет структуру `{"value": "значение", "source_turn": "{advisor_source_turn}", "updated_at": "{advisor_updated_at}", "origin": "explicit"}`.
 
 - `explicit` используй только для прямо сообщенного пользователем значения;
 - дословно копируй переданные `advisor_source_turn` и `advisor_updated_at`, не создавай их самостоятельно;
@@ -66,12 +79,12 @@
 
 Источник — только `typical_client_profiles` из текущего `execute_sql`.
 
-- До выбора типа семантически сравни каждое переданное существенное ограничение клиента с соответствующими описательными колонками Client Types.
+- До выбора типа семантически сравни каждое существенное ограничение из `merged_profile_fields` с соответствующими описательными колонками Client Types.
 - Не выбирай тип по одному ключевому слову.
 - Верни ровно один основной тип клиента.
 - `confidence` должен быть числом от 0 до 1.
-- Сформируй допустимый список `evidence.client_field` только из полей Client Types с переданными значениями в сохраненном типизированном профиле или текущем `profile_patch`. Одних имен из `{advisor_profile_field_names_json}` без переданного значения недостаточно. Никогда не включай `age` в evidence выбора Client Type.
-- Каждый `evidence.client_field` обязан входить в этот допустимый список, а `client_value` и `source_turn` должны быть дословно скопированы из того же переданного поля профиля.
+- Одних имен из `{advisor_profile_field_names_json}` без переданного значения недостаточно для evidence.
+- Каждый `evidence.client_field` обязан входить в допустимый список из шага 4, а `client_value` и `source_turn` должны быть дословно скопированы из того же поля `merged_profile_fields`.
 - Не выводи, не подразумевай и не добавляй одно поле клиента из другого.
 - Каждый элемент `evidence` связывает переданные `client_field`, `client_value`, `source_turn` с одноименным `table_field` и точным `table_value`.
 - Не включай `notes` в определение выбранного типа или evidence.
@@ -115,123 +128,31 @@
 
 Следующая структура применяется только к последнему сообщению после завершения всех необходимых вызовов инструментов.
 
-Верни только эти верхнеуровневые ключи:
+Верни только верхнеуровневые ключи `mode`, `profile_patch`, `selected_client_type`, `missing_fields`, `clarification_question`, `products`, `no_data_reason`. JSON-ключи `"selected_client_type"` и вложенный `"definition"` обязательны для режима `candidates`.
 
-```json
-{
-  "mode": "needs_clarification | candidates | no_data",
-  "profile_patch": {},
-  "selected_client_type": {
-    "definition": {
-      "client_type_code": "CT-001",
-      "profile_name": "Название типа из SQL",
-      "attributes": {
-        "profile_name": "Название типа из SQL",
-        "client_goal": "значение из SQL",
-        "capital_loss_tolerance": "значение из SQL",
-        "investment_horizon": "значение из SQL",
-        "dependents": "значение из SQL",
-        "expected_return_percent": "значение из SQL",
-        "min_amount": "значение из SQL"
-      },
-      "required_properties": [{"product_column": "is_active", "expected_values": ["Действующий"]}],
-      "preferred_properties": [{"product_column": "liquidity", "expected_values": ["Высокая"]}],
-      "acceptable_compromises": [{"product_column": "term", "expected_values": ["Среднесрочный"]}],
-      "contraindications": [{"product_column": "product_risk_level", "expected_values": ["Высокий"]}]
-    },
-    "confidence": 0.0,
-    "evidence": [
-      {
-        "client_field": "поле профиля",
-        "client_value": "значение клиента",
-        "table_field": "колонка Client Types",
-        "table_value": "значение из SQL",
-        "source_turn": "{advisor_source_turn}"
-      }
-    ]
-  },
-  "missing_fields": [],
-  "clarification_question": null,
-  "products": [],
-  "no_data_reason": null
-}
-```
+Для `candidates` верни непустой `selected_client_type` с ключами `definition`, `confidence`, `evidence`. В `definition` дословно перенеси из выбранной строки SQL `client_type_code`, `profile_name`, все описательные `attributes` и четыре массива правил. Обязательные поля продукта: code, name, is_active, commission. Каждый продукт имеет ключи `code`, `name`, `is_active`, `attributes`, `family`, `tie_break_priority`; форма комиссии внутри `attributes`: `"commission": "значение из SQL"`.
 
 Для `needs_clarification` верни все те же верхнеуровневые ключи, `selected_client_type: null`, непустые `missing_fields`, один `clarification_question`, пустые `products` и `no_data_reason: null`.
 
 Для `no_data` верни все те же верхнеуровневые ключи, `selected_client_type: null`, пустые `missing_fields` и `products`, `clarification_question: null` и конкретный `no_data_reason`.
 
-# Полные примеры формы ответа
+# Контрольный пример связи profile_patch и evidence
 
-Значения ниже показывают только форму. В реальном ответе используй исключительно текущую реплику и текущий SQL.
+Только для примера текущая реплика равна `клиент хочет большую доходность и готов идти на риск`.
 
-`candidates`:
+Правильно: `profile_patch` содержит `client_goal` со значением `большую доходность` и `capital_loss_tolerance` со значением `готов идти на риск`; оба поля содержат текущие `source_turn`, `updated_at`, `origin: "explicit"`. Только после этого `evidence` может ссылаться на эти два поля и должно дословно копировать их `client_value` и `source_turn`.
 
-```json
-{
-  "mode": "candidates",
-  "profile_patch": {
-    "client_goal": {
-      "value": "Сохранение капитала",
-      "source_turn": "{advisor_source_turn}",
-      "updated_at": "{advisor_updated_at}",
-      "origin": "explicit"
-    }
-  },
-  "selected_client_type": {
-    "definition": {
-      "client_type_code": "CT-001",
-      "profile_name": "Консервативный",
-      "attributes": {
-        "profile_name": "Консервативный",
-        "client_goal": "Сохранение капитала",
-        "capital_loss_tolerance": "Паникует",
-        "investment_horizon": "до 3х лет",
-        "dependents": "Есть",
-        "expected_return_percent": "на уровне ключевой ставки",
-        "min_amount": "Любая"
-      },
-      "required_properties": [{"product_column": "is_active", "expected_values": ["Действующий"]}],
-      "preferred_properties": [{"product_column": "liquidity", "expected_values": ["Высокая"]}],
-      "acceptable_compromises": [{"product_column": "term", "expected_values": ["Среднесрочный"]}],
-      "contraindications": [{"product_column": "product_risk_level", "expected_values": ["Высокий"]}]
-    },
-    "confidence": 0.9,
-    "evidence": [{"client_field": "client_goal", "client_value": "Сохранение капитала", "table_field": "client_goal", "table_value": "Сохранение капитала и получение предсказуемого дохода", "source_turn": "{advisor_source_turn}"}]
-  },
-  "missing_fields": [],
-  "clarification_question": null,
-  "products": [{"code": "код из SQL", "name": "название из SQL", "is_active": "Действующий", "attributes": {"commission": "значение из SQL", "liquidity": "значение из SQL", "term": "значение из SQL", "product_risk_level": "значение из SQL"}, "family": null, "tie_break_priority": 100}],
-  "no_data_reason": null
-}
-```
+Неправильно: `profile_patch: {}` вместе с evidence, где `client_field` равен `client_goal` или `capital_loss_tolerance` и `client_value` взят из текущей реплики. Такой факт еще не существует в `merged_profile_fields` и нарушает контракт.
 
-`needs_clarification`:
+# Финальная механическая проверка
 
-```json
-{
-  "mode": "needs_clarification",
-  "profile_patch": {},
-  "selected_client_type": null,
-  "missing_fields": ["investment_horizon"],
-  "clarification_question": "На какой срок клиент планирует вложение?",
-  "products": [],
-  "no_data_reason": null
-}
-```
+Перед возвратом выполни проверку в указанном порядке:
 
-`no_data`:
+1. JSON парсится и содержит только разрешенные верхнеуровневые ключи.
+2. Для каждого элемента `evidence` найди `client_field` в заполненных `merged_profile_fields`.
+3. Убедись, что `client_value` и `source_turn` дословно равны значениям найденного поля.
+4. Если поле не найдено, сначала добавь его в `profile_patch`, только если оно прямо сообщено в текущей реплике; иначе удали неподтвержденный evidence и не возвращай неподтвержденный выбор Client Type.
+5. Если `profile_patch` пуст, убедись, что ни один evidence не использует факт только из текущей реплики.
+6. Убедись, что каждый факт дословно подтвержден текущими входными данными или SQL.
 
-```json
-{
-  "mode": "no_data",
-  "profile_patch": {},
-  "selected_client_type": null,
-  "missing_fields": [],
-  "clarification_question": null,
-  "products": [],
-  "no_data_reason": "Ни один тип клиента из текущего SQL не соответствует всем переданным ограничениям"
-}
-```
-
-Не добавляй неизвестные ключи. Перед возвратом проверь, что JSON парсится и каждый факт дословно подтвержден текущими входными данными или SQL.
+Не добавляй неизвестные ключи. Финальное сообщение — только сырой JSON-объект без Markdown-ограждений, комментариев, заголовков и текста вокруг него.
